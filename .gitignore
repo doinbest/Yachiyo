@@ -1,0 +1,42 @@
+# STM32CubeMX local metadata
+*.mxproject.bak
+*.ioc.bak
+
+# Keil MDK-ARM user settings and build outputs
+*.uvoptx
+*.uvguix.*
+*.bak
+*.dep
+*.crf
+*.d
+*.o
+*.axf
+*.hex
+*.bin
+*.elf
+*.map
+*.lst
+*.lnp
+*.htm
+*.build_log.htm
+**/MDK-ARM/DebugConfig/
+
+# EIDE build outputs and editor-local settings
+**/eide/build/
+**/eide/.pack/
+**/eide/.cmsis/
+.vscode/
+.idea/
+
+# Embedded skill runtime state and logs
+.embeddedskills/build/
+.embeddedskills/logs/
+.embeddedskills/state.json
+
+# Operating system files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Generated deployment archives
+*.tar.gz

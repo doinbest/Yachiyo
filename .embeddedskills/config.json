@@ -1,0 +1,45 @@
+{
+  "keil": {
+    "project": "template/MDK-ARM/template.uvprojx",
+    "target": "template",
+    "log_dir": ".embeddedskills/build"
+  },
+  "eide": {
+    "project": "template/MDK-ARM/eide",
+    "config": "template",
+    "log_dir": ".embeddedskills/build"
+  },
+  "serial": {
+    "port": "",
+    "baudrate": 115200,
+    "bytesize": 8,
+    "parity": "none",
+    "stopbits": 1,
+    "encoding": "utf-8",
+    "timeout_sec": 1.0,
+    "log_dir": ".embeddedskills/logs/serial"
+  },
+  "openocd": {
+    "board": "",
+    "interface": "",
+    "target": "target/stm32f4x.cfg",
+    "adapter_speed": "4000",
+    "transport": "swd",
+    "tpiu_name": "stm32f4x.tpiu",
+    "traceclk": "168000000",
+    "pin_freq": "2000000"
+  },
+  "can": {
+    "interface": "",
+    "channel": "",
+    "bitrate": 875000,
+    "data_bitrate": 2000000,
+    "log_dir": ".embeddedskills/logs/can"
+  },
+  "workflow": {
+    "preferred_build": "keil",
+    "preferred_flash": "auto",
+    "preferred_debug": "auto",
+    "preferred_observe": "auto"
+  }
+}
