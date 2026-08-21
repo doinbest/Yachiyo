@@ -92,6 +92,15 @@ bool Mecanum_Velocity_Control(float forward_mm_s,
                               float yaw_rad_s);
 
 /**
+  * @brief    向广播地址0发送四轮立即停止命令
+  * @param    无
+  * @retval   无
+  * @note     只表示已调用底层停止发帧函数；现有void接口无法确认UART5
+  *           DMA是否接受，更不等价于驱动器已经确认停止
+  */
+void Mecanum_Stop(void);
+
+/**
   * @brief    离散位置式航向角 PID 状态。
   *
   * PID 输入为角度误差（deg），输出为车体角速度（rad/s）。

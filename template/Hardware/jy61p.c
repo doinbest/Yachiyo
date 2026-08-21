@@ -16,6 +16,7 @@ static uint8_t jy61p_rx_buffer[JY61P_FRAME_LENGTH];
 static uint8_t jy61p_rx_count = 0U;
 static volatile JY61P_Angle_t jy61p_latest_angle;
 static volatile bool jy61p_angle_is_new = false;
+static volatile JY61P_Status_t jy61p_status;
 
 /**********************************************************
 *** 角度数据换算
@@ -58,6 +59,7 @@ static void JY61P_Angle_Frame_Update(void)
 
   if (checksum != jy61p_rx_buffer[JY61P_FRAME_LENGTH - 1U])
   {
+    ++jy61p_status.checksum_error_count;
     return;
   }
 
@@ -72,6 +74,9 @@ static void JY61P_Angle_Frame_Update(void)
   jy61p_latest_angle.pitch = (float)raw_pitch * JY61P_ANGLE_SCALE;
   jy61p_latest_angle.yaw = (float)raw_yaw * JY61P_ANGLE_SCALE;
   ++jy61p_latest_angle.update_count;
+  jy61p_latest_angle.last_update_ms = HAL_GetTick();
+  jy61p_status.valid_frame_count = jy61p_latest_angle.update_count;
+  jy61p_status.last_update_ms = jy61p_latest_angle.last_update_ms;
   jy61p_angle_is_new = true;
 }
 
@@ -144,6 +149,11 @@ bool JY61P_Init(UART_HandleTypeDef *huart)
   jy61p_latest_angle.pitch = 0.0f;
   jy61p_latest_angle.yaw = 0.0f;
   jy61p_latest_angle.update_count = 0U;
+  jy61p_latest_angle.last_update_ms = 0U;
+  jy61p_status.valid_frame_count = 0U;
+  jy61p_status.checksum_error_count = 0U;
+  jy61p_status.uart_error_count = 0U;
+  jy61p_status.last_update_ms = 0U;
   jy61p_angle_is_new = false;
 
   /* 参考 F103 HAL 例程，从第一个字节开始持续使用 UART4 中断接收。 */
@@ -190,6 +200,7 @@ void JY61P_Error_Callback(UART_HandleTypeDef *huart)
     __HAL_UART_CLEAR_OREFLAG(huart);
   }
 
+  ++jy61p_status.uart_error_count;
   jy61p_rx_count = 0U;
   (void)HAL_UART_Receive_IT(jy61p_uart, &jy61p_rx_data, 1U);
 }
@@ -219,6 +230,7 @@ bool JY61P_Angle_Get(JY61P_Angle_t *angle)
   angle->pitch = jy61p_latest_angle.pitch;
   angle->yaw = jy61p_latest_angle.yaw;
   angle->update_count = jy61p_latest_angle.update_count;
+  angle->last_update_ms = jy61p_latest_angle.last_update_ms;
   jy61p_angle_is_new = false;
 
   if (interrupt_state == 0U)
@@ -226,6 +238,38 @@ bool JY61P_Angle_Get(JY61P_Angle_t *angle)
     __enable_irq();
   }
 
+  return true;
+}
+
+bool JY61P_Angle_Is_Fresh(const JY61P_Angle_t *angle,
+                          uint32_t max_age_ms)
+{
+  if ((angle == NULL) || (angle->update_count == 0U))
+  {
+    return false;
+  }
+  return ((uint32_t)(HAL_GetTick() - angle->last_update_ms) <= max_age_ms);
+}
+
+bool JY61P_Status_Get(JY61P_Status_t *status)
+{
+  uint32_t interrupt_state;
+
+  if (status == NULL)
+  {
+    return false;
+  }
+
+  interrupt_state = __get_PRIMASK();
+  __disable_irq();
+  status->valid_frame_count = jy61p_status.valid_frame_count;
+  status->checksum_error_count = jy61p_status.checksum_error_count;
+  status->uart_error_count = jy61p_status.uart_error_count;
+  status->last_update_ms = jy61p_status.last_update_ms;
+  if (interrupt_state == 0U)
+  {
+    __enable_irq();
+  }
   return true;
 }
 

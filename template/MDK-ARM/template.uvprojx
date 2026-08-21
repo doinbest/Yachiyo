@@ -1185,6 +1185,16 @@
               <FileType>5</FileType>
               <FilePath>..\Hardware\tjc_screen.h</FilePath>
             </File>
+            <File>
+              <FileName>orange_pi_link.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Hardware\orange_pi_link.c</FilePath>
+            </File>
+            <File>
+              <FileName>orange_pi_link.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Hardware\orange_pi_link.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -1249,6 +1259,36 @@
               <FileName>jy61p_show.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\App\jy61p_show.h</FilePath>
+            </File>
+            <File>
+              <FileName>competition_task_code.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\competition_task_code.c</FilePath>
+            </File>
+            <File>
+              <FileName>competition_task_code.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\competition_task_code.h</FilePath>
+            </File>
+            <File>
+              <FileName>robot_safety.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\robot_safety.c</FilePath>
+            </File>
+            <File>
+              <FileName>robot_safety.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\robot_safety.h</FilePath>
+            </File>
+            <File>
+              <FileName>robot_task.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\robot_task.c</FilePath>
+            </File>
+            <File>
+              <FileName>robot_task.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\robot_task.h</FilePath>
             </File>
           </Files>
         </Group>

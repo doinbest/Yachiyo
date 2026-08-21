@@ -38,6 +38,9 @@
 #include "chassis_key_test.h"
 #include "jy61p.h"
 #include "oled.h"
+#include "orange_pi_link.h"
+#include "robot_safety.h"
+#include "robot_task.h"
 #include "screen_verify.h"
 #include "tjc_screen.h"
 
@@ -50,6 +53,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define DEBUG_STATUS_REFRESH_MS 100U
 
 /* USER CODE END PD */
 
@@ -70,6 +75,15 @@ HAL_StatusTypeDef oled_status = HAL_ERROR;
 
 /* 陶晶驰串口屏通信状态，可在Keil Watch窗口中实时观察。 */
 TJC_Status_t tjc_status = {0};
+
+/* 第一版任务、香橙派和安全状态，便于在Keil Watch窗口观察。 */
+RobotTaskStatus_t robot_task_status;
+OrangePiLinkStatus_t orange_pi_status = {0};
+RobotSafetyStatus_t robot_safety_status;
+JY61P_Status_t jy61p_status = {0};
+
+/* 调试快照低频刷新，避免主循环每轮都短暂关闭中断复制状态。 */
+static uint32_t debug_status_tick = 0U;
 
 /* USER CODE END PV */
 
@@ -137,6 +151,16 @@ int main(void)
     Error_Handler();
   }
 
+  /* 从此处开始，软件错误可以通过统一安全路径请求四轮广播停止。 */
+  RobotSafety_Init();
+
+  /* 香橙派使用USART1：PA9发送、PA10接收、115200、8N1，中断只搬运字节。 */
+  if (!OrangePi_Link_Init(&huart1))
+  {
+    Error_Handler();
+  }
+  RobotTask_Init();
+
   /* JY61P使用UART4：PC10发送、PC11接收，115200、8N1。 */
   if (!JY61P_Init(&huart4))
   {
@@ -171,11 +195,25 @@ int main(void)
     /* UART4中断完成字节接收；主循环只读取最新姿态角，暂不显示到OLED。 */
     (void)JY61P_Angle_Get(&jy61p_angle);
 
+    /* 解析香橙派可靠帧，确认四组三位任务码；第一版不会自动启动路线。 */
+    RobotTask_Process();
+
     /* 串口屏DMA发送、接收帧解析和最小页面验证。 */
     Screen_Check_Process();
     (void)TJC_Status_Get(&tjc_status);
 
     Chassis_Key_Process(&jy61p_angle);
+
+    /* 调试快照只用于Keil Watch，按低频刷新且不参与业务判断。 */
+    if ((uint32_t)(HAL_GetTick() - debug_status_tick) >=
+        DEBUG_STATUS_REFRESH_MS)
+    {
+      debug_status_tick = HAL_GetTick();
+      (void)RobotTask_Status_Get(&robot_task_status);
+      (void)OrangePi_Link_Status_Get(&orange_pi_status);
+      (void)RobotSafety_Status_Get(&robot_safety_status);
+      (void)JY61P_Status_Get(&jy61p_status);
+    }
   }
   /* USER CODE END 3 */
 }
@@ -235,6 +273,7 @@ void SystemClock_Config(void)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   JY61P_Rx_Callback(huart);
+  OrangePi_Link_Rx_Callback(huart);
   TJC_Rx_Callback(huart);
 }
 
@@ -256,6 +295,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   JY61P_Error_Callback(huart);
+  OrangePi_Link_Error_Callback(huart);
   TJC_Error_Callback(huart);
 }
 
@@ -268,7 +308,8 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  /* 若电机总线已经初始化，先请求四轮停止，再关闭中断锁死。 */
+  RobotSafety_Stop(ROBOT_STOP_INTERNAL_ERROR);
   __disable_irq();
   while (1)
   {

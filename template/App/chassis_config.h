@@ -63,6 +63,9 @@
 #define CHASSIS_KEY_HEADING_INTEGRAL_LIMIT 20.0f
 #define CHASSIS_KEY_HEADING_OUTPUT_LIMIT   0.5f
 
+/* 运动中超过该时间未收到有效姿态帧，立即锁存安全停止。 */
+#define CHASSIS_IMU_TIMEOUT_MS             200U
+
 /* 将原按键测试的120RPM换算为车体前向线速度，保持原测试速度不变。 */
 #define CHASSIS_KEY_TEST_SPEED_MM_S \
   ((float)CHASSIS_TEST_SPEED_RPM * 3.14159265358979323846f * \

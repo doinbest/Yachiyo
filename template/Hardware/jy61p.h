@@ -18,7 +18,17 @@ typedef struct
   float pitch;             /**< 俯仰角：绕 Y 轴旋转。 */
   float yaw;               /**< 航向角：绕 Z 轴旋转。 */
   uint32_t update_count;   /**< 校验正确的角度帧累计数量。 */
+  uint32_t last_update_ms; /**< 最近有效角度帧到达的HAL毫秒时间。 */
 } JY61P_Angle_t;
+
+/** JY61P接收和校验统计。 */
+typedef struct
+{
+  uint32_t valid_frame_count;
+  uint32_t checksum_error_count;
+  uint32_t uart_error_count;
+  uint32_t last_update_ms;
+} JY61P_Status_t;
 
 /**********************************************************
 *** JY61P初始化
@@ -65,6 +75,24 @@ void JY61P_Error_Callback(UART_HandleTypeDef *huart);
   * @note     返回false时不会修改调用者原有的角度数据
   */
 bool JY61P_Angle_Get(JY61P_Angle_t *angle);
+
+/**
+  * @brief    判断一份JY61P角度数据是否仍然新鲜
+  * @param    angle      ：最近读取的角度数据
+  * @param    max_age_ms ：允许的最大数据年龄，单位ms
+  * @retval   true  至少收到过一帧且未超过最大年龄
+  * @retval   false 参数为空、未收到数据或数据已经超时
+  */
+bool JY61P_Angle_Is_Fresh(const JY61P_Angle_t *angle,
+                          uint32_t max_age_ms);
+
+/**
+  * @brief    读取JY61P接收和校验统计
+  * @param    status ：调用者提供的输出结构体
+  * @retval   true  读取成功
+  * @retval   false 参数为空
+  */
+bool JY61P_Status_Get(JY61P_Status_t *status);
 
 /**********************************************************
 *** 航向角清零

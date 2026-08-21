@@ -13,7 +13,7 @@
 - 备用构建环境：EIDE
 - 调试接口：SWD，具体调试器在连接硬件后确定
 
-当前 CubeMX 工程已启用 CAN1、CAN2、TIM1、UART4、USART1、USART2、USART3 和 USART6。CAN 配置中的当前计算速率为 875 kbit/s；正式使用前仍需结合时钟树、总线节点和模块手册复核。
+当前 CubeMX 工程已启用 CAN1、CAN2、TIM1、UART4、UART5、USART1、USART2、USART3 和 USART6。第一版代码将 UART5 用于 X42S/Emm_V5 电机总线、UART4 用于现有 JY61P 临时验证模块、USART1 用于香橙派可靠帧接收、USART3 用于淘晶驰屏。CAN 配置中的当前计算速率仍需分别结合时钟树、总线节点和模块手册复核。
 
 ## 开发方式
 
@@ -43,7 +43,9 @@
 - `template/template.ioc`：STM32CubeMX 配置
 - `template/Core`：启动代码、主程序和外设初始化
 - `template/Drivers`：CMSIS 与 STM32 HAL 驱动
-- `template/Modules`：项目自研或外接模块驱动
+- `template/Hardware`：电机、姿态、香橙派链路、屏幕和按键驱动
+- `template/App`：麦轮底盘、任务码、任务入口和安全策略
+- `template/System`：时间与无业务含义的公共能力
 - `template/MDK-ARM/template.uvprojx`：Keil 工程
 - `template/MDK-ARM/eide`：EIDE 工程
 - `.embeddedskills/config.json`：构建、调试和通信工具的项目级配置
@@ -57,12 +59,15 @@
 
 构建产物、调试状态、串口日志和 CAN 日志不提交到 Git。
 
-## Zigbee 网页上位机
+## 第一版比赛软件底座
 
-当前工程已加入基于 USART2（PA2/PA3、115200 bit/s、8N1）的 Zigbee 透明串口
-上位机命令层，可控制张大头 ZDT X42S 步进电机的使能、速度、相对位置、停止、
-同步、清零、回零和状态读取。完整协议与最小联调步骤见
-`docs/上位机协议.md`。
+当前已加入 2027 四组三位/六色任务码、香橙派 USART1 带 CRC16 帧接收、最小任务状态和统一安全停止。自动比赛路线、X42S 到位反馈、HWT101 正式驱动和雷达尚未实现，香橙派 `START` 帧不会启动电机。
+
+新增文件、协议字节、Keil Watch 变量、无电机测试和架空底盘步骤见 `docs/开发记录/第一版智能搬运车软件底座实现与使用手册.md`。
+
+## Zigbee 网页上位机原型
+
+仓库保留了基于 USART2（PA2/PA3、115200 bit/s、8N1）的 Zigbee 网页上位机原型和 `docs/上位机协议.md`。当前 `template/Hardware/usart2(zigbee - pid)` 仍是占位代码，且没有加入 Keil Target，因此不能把网页中存在命令控件理解为 MCU 命令层已经可用。
 
 网页工程位于 `upper-computer-web/`，采用浏览器 Web Serial API。请使用桌面版
 Chrome 或 Edge，通过 HTTPS 发布地址或本机开发服务器访问；直接双击本地 HTML

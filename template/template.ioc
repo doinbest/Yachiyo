@@ -123,6 +123,7 @@ NVIC.SVCall_IRQn=true\:0\:0\:false\:false\:true\:false\:false\:false
 NVIC.SysTick_IRQn=true\:15\:0\:false\:false\:true\:false\:true\:false
 NVIC.UART4_IRQn=true\:1\:0\:false\:false\:true\:true\:true\:true
 NVIC.UART5_IRQn=true\:0\:0\:false\:false\:true\:true\:true\:true
+NVIC.USART1_IRQn=true\:2\:0\:false\:false\:true\:true\:true\:true
 NVIC.USART3_IRQn=true\:0\:0\:false\:false\:true\:true\:true\:true
 NVIC.UsageFault_IRQn=true\:0\:0\:false\:false\:true\:false\:false\:false
 PA10.Mode=Asynchronous
