@@ -72,8 +72,96 @@ bool Mecanum_Body_Speed_Calc(
   * @note     每台电机位置命令的 snF=1，最后用广播地址0统一触发
   */
 bool Mecanum_Move_Control(float forward_mm,
-                          float left_mm,
-                          float yaw_rad);
+                           float left_mm,
+                           float yaw_rad);
+
+/**********************************************************
+*** 连续速度控制与航向角 PID
+**********************************************************/
+/**
+  * @brief    按车体速度发送四轮速度命令。
+  * @param    forward_mm_s ：车体前向速度，向前为正，单位 mm/s
+  * @param    left_mm_s    ：车体横向速度，向左为正，单位 mm/s
+  * @param    yaw_rad_s    ：车体角速度，逆时针为正，单位 rad/s
+  * @retval   true  ：四轮速度命令已经发送
+  * @retval   false ：运动学参数无效，未发送命令
+  * @note     该函数会依次发送四个 UART5 DMA 命令，禁止在中断中调用。
+  */
+bool Mecanum_Velocity_Control(float forward_mm_s,
+                              float left_mm_s,
+                              float yaw_rad_s);
+
+/**
+  * @brief    离散位置式航向角 PID 状态。
+  *
+  * PID 输入为角度误差（deg），输出为车体角速度（rad/s）。
+  * ki、kd 使用显式采样周期计算，便于在不同任务周期下重新整定。
+  */
+typedef struct
+{
+  float kp;
+  float ki;
+  float kd;
+  float sample_time_s;
+  float integral_limit;
+  float output_limit;
+  float target_yaw_deg;
+  float integral;
+  float previous_error_deg;
+  float output_rad_s;
+  bool initialized;
+} Mecanum_HeadingPid_t;
+
+/**
+  * @brief    初始化航向角 PID。
+  * @param    pid               ：PID 状态结构体
+  * @param    kp/ki/kd          ：PID 参数，输入误差单位为度，输出单位为rad/s
+  * @param    sample_time_s     ：固定调用周期，单位s，例如50ms填写0.05f
+  * @param    integral_limit    ：积分项输入限幅，单位deg*s
+  * @param    output_limit      ：输出角速度限幅，单位rad/s
+  * @retval   无
+  */
+void Mecanum_HeadingPid_Init(Mecanum_HeadingPid_t *pid,
+                             float kp,
+                             float ki,
+                             float kd,
+                             float sample_time_s,
+                             float integral_limit,
+                             float output_limit);
+
+/**
+  * @brief    设置目标航向并清除上一段运动的积分状态。
+  * @param    pid       ：PID 状态结构体
+  * @param    target_deg：目标航向角，单位deg
+  * @retval   无
+  */
+void Mecanum_HeadingPid_Set_Target(Mecanum_HeadingPid_t *pid,
+                                   float target_deg);
+
+/**
+  * @brief    根据当前Yaw计算一次离散位置式PID输出。
+  * @param    pid             ：PID状态结构体
+  * @param    current_yaw_deg ：IMU当前Yaw，单位deg
+  * @retval   车体角速度修正量，单位rad/s
+  * @note     目标值和当前值的误差会归一化到[-180,180]。
+  */
+float Mecanum_HeadingPid_Update(Mecanum_HeadingPid_t *pid,
+                                float current_yaw_deg);
+
+/**
+  * @brief    计算航向PID并发送一次带航向保持的车体速度命令。
+  * @param    pid             ：PID状态结构体
+  * @param    current_yaw_deg ：IMU当前Yaw，单位deg
+  * @param    forward_mm_s    ：期望前向速度，单位mm/s
+  * @param    left_mm_s       ：期望左向速度，单位mm/s
+  * @retval   true  ：速度命令已发送
+  * @retval   false ：参数或运动学配置无效
+  * @note     应在固定周期的主循环/任务中调用，禁止在中断中调用。
+  */
+bool Mecanum_Heading_Hold_Step(Mecanum_HeadingPid_t *pid,
+                               float current_yaw_deg,
+                               float forward_mm_s,
+                               float left_mm_s);
 
 /**********************************************************
 *** 距离与步进电机计数换算

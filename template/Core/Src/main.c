@@ -3,6 +3,13 @@
   ******************************************************************************
   * @file           : main.c
   * @brief          : Main program body
+  *
+  * @par OLED和JY61P接线
+  * - OLED SCL  -> PB6（I2C1_SCL，100 kHz）
+  * - OLED SDA  -> PB7（I2C1_SDA，设备7位地址默认0x3C）
+  * - JY61P RX  -> PC10（UART4_TX，115200、8N1）
+  * - JY61P TX  -> PC11（UART4_RX，115200、8N1）
+  * - OLED、JY61P 和 STM32 必须共地，信号电平必须为3.3 V
   ******************************************************************************
   * @attention
   *
@@ -30,6 +37,7 @@
 
 #include "chassis_key_test.h"
 #include "jy61p.h"
+#include "oled.h"
 #include "screen_verify.h"
 #include "tjc_screen.h"
 
@@ -56,6 +64,9 @@
 
 /* JY61P最新三轴角度，可在Keil Watch窗口中实时观察。 */
 JY61P_Angle_t jy61p_angle = {0};
+
+/* OLED通信状态：HAL_OK表示地址0x3C应答正常且初始化成功。 */
+HAL_StatusTypeDef oled_status = HAL_ERROR;
 
 /* 陶晶驰串口屏通信状态，可在Keil Watch窗口中实时观察。 */
 TJC_Status_t tjc_status = {0};
@@ -132,6 +143,9 @@ int main(void)
     Error_Handler();
   }
 
+  /* OLED使用I2C1：PB6为SCL、PB7为SDA，默认7位地址0x3C；暂时只初始化并清屏。 */
+  oled_status = OLED_Init(&hi2c1);
+
   /* 陶晶驰串口屏使用USART3：PB10发送、PB11接收、115200、8N1。 */
   if (TJC_Init(&huart3) != HAL_OK)
   {
@@ -154,15 +168,14 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* 实时接收并解析JY61P角度帧，再读取最新的Roll、Pitch、Yaw。 */
-    JY61P_Data_Process();
+    /* UART4中断完成字节接收；主循环只读取最新姿态角，暂不显示到OLED。 */
     (void)JY61P_Angle_Get(&jy61p_angle);
 
     /* 串口屏DMA发送、接收帧解析和最小页面验证。 */
     Screen_Check_Process();
     (void)TJC_Status_Get(&tjc_status);
 
-    Chassis_Key_Process();
+    Chassis_Key_Process(&jy61p_angle);
   }
   /* USER CODE END 3 */
 }
@@ -221,6 +234,7 @@ void SystemClock_Config(void)
   */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+  JY61P_Rx_Callback(huart);
   TJC_Rx_Callback(huart);
 }
 
@@ -241,6 +255,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
+  JY61P_Error_Callback(huart);
   TJC_Error_Callback(huart);
 }
 

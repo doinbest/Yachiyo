@@ -11,10 +11,11 @@
 #define JY61P_SEND_TIMEOUT_MS    100U
 
 static UART_HandleTypeDef *jy61p_uart = NULL;
+static uint8_t jy61p_rx_data = 0U;
 static uint8_t jy61p_rx_buffer[JY61P_FRAME_LENGTH];
 static uint8_t jy61p_rx_count = 0U;
-static JY61P_Angle_t jy61p_latest_angle;
-static bool jy61p_angle_is_new = false;
+static volatile JY61P_Angle_t jy61p_latest_angle;
+static volatile bool jy61p_angle_is_new = false;
 
 /**********************************************************
 *** 角度数据换算
@@ -130,6 +131,8 @@ static void JY61P_Byte_Process(uint8_t rx_data)
   */
 bool JY61P_Init(UART_HandleTypeDef *huart)
 {
+  HAL_StatusTypeDef hal_status;
+
   if (huart == NULL)
   {
     return false;
@@ -142,35 +145,53 @@ bool JY61P_Init(UART_HandleTypeDef *huart)
   jy61p_latest_angle.yaw = 0.0f;
   jy61p_latest_angle.update_count = 0U;
   jy61p_angle_is_new = false;
-  return true;
+
+  /* 参考 F103 HAL 例程，从第一个字节开始持续使用 UART4 中断接收。 */
+  hal_status = HAL_UART_Receive_IT(jy61p_uart, &jy61p_rx_data, 1U);
+  return (hal_status == HAL_OK);
 }
 
 /**********************************************************
-*** 串口数据接收与解析
+*** 串口接收完成回调
 **********************************************************/
 /**
-  * @brief    非阻塞读取 UART4 数据，并解析 JY61P 三轴角度帧
-  * @param    无
+  * @brief    处理 UART4 收到的一个字节并重新开启下一字节接收
+  * @param    huart ：触发接收完成事件的串口句柄
   * @retval   无
-  * @note     HAL接收超时设为0；没有新字节时函数立即返回
   */
-void JY61P_Data_Process(void)
+void JY61P_Rx_Callback(UART_HandleTypeDef *huart)
 {
-  uint8_t rx_data;
-
-  if (jy61p_uart == NULL)
+  if ((jy61p_uart == NULL) || (huart != jy61p_uart))
   {
     return;
   }
 
-  /*
-   * 每次主循环尽可能取出当前已经到达的数据。
-   * HAL_TIMEOUT 仅表示此刻 RXNE 中没有新字节，不属于通信故障。
-   */
-  while (HAL_UART_Receive(jy61p_uart, &rx_data, 1U, 0U) == HAL_OK)
+  JY61P_Byte_Process(jy61p_rx_data);
+  (void)HAL_UART_Receive_IT(jy61p_uart, &jy61p_rx_data, 1U);
+}
+
+/**********************************************************
+*** 串口错误回调
+**********************************************************/
+/**
+  * @brief    清除 UART4 接收错误并重新开启单字节接收
+  * @param    huart ：触发错误事件的串口句柄
+  * @retval   无
+  */
+void JY61P_Error_Callback(UART_HandleTypeDef *huart)
+{
+  if ((jy61p_uart == NULL) || (huart != jy61p_uart))
   {
-    JY61P_Byte_Process(rx_data);
+    return;
   }
+
+  if ((HAL_UART_GetError(huart) & HAL_UART_ERROR_ORE) != 0U)
+  {
+    __HAL_UART_CLEAR_OREFLAG(huart);
+  }
+
+  jy61p_rx_count = 0U;
+  (void)HAL_UART_Receive_IT(jy61p_uart, &jy61p_rx_data, 1U);
 }
 
 /**********************************************************
@@ -184,13 +205,27 @@ void JY61P_Data_Process(void)
   */
 bool JY61P_Angle_Get(JY61P_Angle_t *angle)
 {
+  uint32_t interrupt_state;
+
   if ((angle == NULL) || (!jy61p_angle_is_new))
   {
     return false;
   }
 
-  *angle = jy61p_latest_angle;
+  /* 防止 UART4 中断在结构体复制过程中更新其中一部分成员。 */
+  interrupt_state = __get_PRIMASK();
+  __disable_irq();
+  angle->roll = jy61p_latest_angle.roll;
+  angle->pitch = jy61p_latest_angle.pitch;
+  angle->yaw = jy61p_latest_angle.yaw;
+  angle->update_count = jy61p_latest_angle.update_count;
   jy61p_angle_is_new = false;
+
+  if (interrupt_state == 0U)
+  {
+    __enable_irq();
+  }
+
   return true;
 }
 

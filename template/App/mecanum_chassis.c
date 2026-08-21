@@ -9,6 +9,7 @@
 #include "Emm_V5.h"
 
 #define MECANUM_PI 3.14159265358979323846f
+#define MECANUM_MAX_MOTOR_RPM 5000U
 
 /* 轮号0~3依次映射电机地址1~4。 */
 static const uint8_t motor_address[MECANUM_WHEEL_COUNT] =
@@ -27,6 +28,32 @@ static const uint8_t motor_forward_direction[MECANUM_WHEEL_COUNT] =
   CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR,
   CHASSIS_MOTOR_FRONT_RIGHT_FORWARD_DIR
 };
+
+static float Mecanum_Clamp(float value, float min_value, float max_value)
+{
+  if (value < min_value)
+  {
+    return min_value;
+  }
+  if (value > max_value)
+  {
+    return max_value;
+  }
+  return value;
+}
+
+static float Mecanum_Wrap_Angle_Error(float error_deg)
+{
+  while (error_deg > 180.0f)
+  {
+    error_deg -= 360.0f;
+  }
+  while (error_deg < -180.0f)
+  {
+    error_deg += 360.0f;
+  }
+  return error_deg;
+}
 
 /**********************************************************
 *** 基础数值换算
@@ -279,4 +306,152 @@ bool Mecanum_Move_Control(float forward_mm,
   Delay_Milliseconds(CHASSIS_UART_COMMAND_INTERVAL_MS);
 
   return true;
+}
+
+/**********************************************************
+*** 连续速度控制
+**********************************************************/
+bool Mecanum_Velocity_Control(float forward_mm_s,
+                              float left_mm_s,
+                              float yaw_rad_s)
+{
+  float wheel_mm_s[MECANUM_WHEEL_COUNT];
+  float wheel_circumference_mm;
+  float wheel_rpm;
+  uint16_t command_rpm;
+  uint8_t direction;
+  uint8_t wheel;
+
+  if (!Mecanum_Wheel_Speed_Calc(forward_mm_s, left_mm_s, yaw_rad_s,
+                                wheel_mm_s))
+  {
+    return false;
+  }
+
+  wheel_circumference_mm = MECANUM_PI * CHASSIS_WHEEL_DIAMETER_MM;
+  if (wheel_circumference_mm <= 0.0f)
+  {
+    return false;
+  }
+
+  for (wheel = 0U; wheel < MECANUM_WHEEL_COUNT; ++wheel)
+  {
+    /* 车轮线速度(mm/s)转换为电机转速(RPM)。 */
+    wheel_rpm = Mecanum_Get_Abs(wheel_mm_s[wheel]) * 60.0f /
+                wheel_circumference_mm * CHASSIS_MOTOR_TO_WHEEL_RATIO;
+    wheel_rpm = Mecanum_Clamp(wheel_rpm, 0.0f,
+                              (float)MECANUM_MAX_MOTOR_RPM);
+    command_rpm = (uint16_t)(wheel_rpm + 0.5f);
+
+    direction = motor_forward_direction[wheel];
+    if (wheel_mm_s[wheel] < 0.0f)
+    {
+      direction = (direction == 0U) ? 1U : 0U;
+    }
+
+    Emm_V5_Vel_Control(motor_address[wheel], direction, command_rpm,
+                       CHASSIS_VELOCITY_ACCELERATION, 0U);
+    Delay_Milliseconds(CHASSIS_UART_COMMAND_INTERVAL_MS);
+  }
+
+  return true;
+}
+
+/**********************************************************
+*** 离散位置式航向角 PID
+**********************************************************/
+void Mecanum_HeadingPid_Init(Mecanum_HeadingPid_t *pid,
+                             float kp,
+                             float ki,
+                             float kd,
+                             float sample_time_s,
+                             float integral_limit,
+                             float output_limit)
+{
+  if (pid == NULL)
+  {
+    return;
+  }
+
+  pid->kp = kp;
+  pid->ki = ki;
+  pid->kd = kd;
+  pid->sample_time_s = sample_time_s;
+  pid->integral_limit = Mecanum_Get_Abs(integral_limit);
+  pid->output_limit = Mecanum_Get_Abs(output_limit);
+  pid->target_yaw_deg = 0.0f;
+  pid->integral = 0.0f;
+  pid->previous_error_deg = 0.0f;
+  pid->output_rad_s = 0.0f;
+  pid->initialized = false;
+}
+
+void Mecanum_HeadingPid_Set_Target(Mecanum_HeadingPid_t *pid,
+                                   float target_deg)
+{
+  if (pid == NULL)
+  {
+    return;
+  }
+
+  pid->target_yaw_deg = Mecanum_Wrap_Angle_Error(target_deg);
+  pid->integral = 0.0f;
+  pid->previous_error_deg = 0.0f;
+  pid->output_rad_s = 0.0f;
+  pid->initialized = false;
+}
+
+float Mecanum_HeadingPid_Update(Mecanum_HeadingPid_t *pid,
+                                float current_yaw_deg)
+{
+  float error_deg;
+  float derivative_deg_s;
+  float integral_term;
+  float output_rad_s;
+
+  if ((pid == NULL) || (pid->sample_time_s <= 0.0f))
+  {
+    return 0.0f;
+  }
+
+  error_deg = Mecanum_Wrap_Angle_Error(pid->target_yaw_deg -
+                                       current_yaw_deg);
+
+  if (!pid->initialized)
+  {
+    pid->previous_error_deg = error_deg;
+    pid->initialized = true;
+  }
+
+  pid->integral += error_deg * pid->sample_time_s;
+  pid->integral = Mecanum_Clamp(pid->integral,
+                                -pid->integral_limit,
+                                pid->integral_limit);
+  derivative_deg_s = (error_deg - pid->previous_error_deg) /
+                     pid->sample_time_s;
+  integral_term = pid->ki * pid->integral;
+  output_rad_s = pid->kp * error_deg + integral_term +
+                 pid->kd * derivative_deg_s;
+  pid->output_rad_s = Mecanum_Clamp(output_rad_s,
+                                    -pid->output_limit,
+                                    pid->output_limit);
+  pid->previous_error_deg = error_deg;
+
+  return pid->output_rad_s;
+}
+
+bool Mecanum_Heading_Hold_Step(Mecanum_HeadingPid_t *pid,
+                               float current_yaw_deg,
+                               float forward_mm_s,
+                               float left_mm_s)
+{
+  float yaw_rad_s;
+
+  if (pid == NULL)
+  {
+    return false;
+  }
+
+  yaw_rad_s = Mecanum_HeadingPid_Update(pid, current_yaw_deg);
+  return Mecanum_Velocity_Control(forward_mm_s, left_mm_s, yaw_rad_s);
 }

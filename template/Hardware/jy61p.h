@@ -3,7 +3,7 @@
  * @brief   维特 JY61P 三轴角度读取驱动。
  *
  * JY61P 通过 UART4 与 STM32 通信：PC10 为 UART4_TX，PC11 为 UART4_RX。
- * 当前工程采用115200、8N1，并在主循环中使用非阻塞方式读取角度数据。
+ * 当前工程采用115200、8N1，并参考 F103 HAL 工程使用单字节中断接收。
  */
 #ifndef JY61P_H
 #define JY61P_H
@@ -33,15 +33,26 @@ typedef struct
 bool JY61P_Init(UART_HandleTypeDef *huart);
 
 /**********************************************************
-*** 串口数据接收与解析
+*** 串口接收完成回调
 **********************************************************/
 /**
-  * @brief    非阻塞读取 UART4 数据，并解析 JY61P 三轴角度帧
-  * @param    无
+  * @brief    处理 UART4 收到的一个字节并重新开启下一字节接收
+  * @param    huart ：触发接收完成事件的串口句柄
   * @retval   无
-  * @note     应在 while(1) 中持续调用；没有数据时会立即返回
+  * @note     应由 HAL_UART_RxCpltCallback() 调用
   */
-void JY61P_Data_Process(void);
+void JY61P_Rx_Callback(UART_HandleTypeDef *huart);
+
+/**********************************************************
+*** 串口错误回调
+**********************************************************/
+/**
+  * @brief    清除 UART4 接收错误并重新开启单字节接收
+  * @param    huart ：触发错误事件的串口句柄
+  * @retval   无
+  * @note     应由 HAL_UART_ErrorCallback() 调用
+  */
+void JY61P_Error_Callback(UART_HandleTypeDef *huart);
 
 /**********************************************************
 *** 三轴角度读取

@@ -1161,6 +1161,21 @@
               <FilePath>..\Hardware\jy61p.h</FilePath>
             </File>
             <File>
+              <FileName>oled.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Hardware\oled.c</FilePath>
+            </File>
+            <File>
+              <FileName>oled.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Hardware\oled.h</FilePath>
+            </File>
+            <File>
+              <FileName>oled_font.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Hardware\oled_font.h</FilePath>
+            </File>
+            <File>
               <FileName>tjc_screen.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Hardware\tjc_screen.c</FilePath>
@@ -1224,6 +1239,16 @@
               <FileName>screen_verify.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\App\screen_verify.h</FilePath>
+            </File>
+            <File>
+              <FileName>jy61p_show.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\jy61p_show.c</FilePath>
+            </File>
+            <File>
+              <FileName>jy61p_show.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\jy61p_show.h</FilePath>
             </File>
           </Files>
         </Group>
