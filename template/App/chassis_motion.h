@@ -16,7 +16,8 @@ typedef enum
 typedef enum
 {
   CHASSIS_MOTION_ANGULAR_VELOCITY,
-  CHASSIS_MOTION_HEADING
+  CHASSIS_MOTION_HEADING,
+  CHASSIS_MOTION_HOLD_CURRENT /* Capture qualified module yaw once at start. */
 } ChassisMotion_Mode_t;
 typedef struct
 {
@@ -51,6 +52,7 @@ void ChassisMotion_TargetDefaults(ChassisMotion_Target_t *target);
  * @param target 车体mm/s、rad/s；线速度模长<=100、角速度<=0.15。
  * @return true为RAM目标接受，非发送完成或到位；失败原因见状态。
  * @pre 主循环调用；heading模式要求本次静止验证通过、角度新鲜且已AnchorSet。
+ * HOLD_CURRENT只要求验证后的新鲜角度，不建立或修改地图锚点。
  */
 bool ChassisMotion_Start(const ChassisMotion_Target_t *target);
 /** @brief Feedback-position task in map mm/deg; main-loop, qualified fresh IMU,

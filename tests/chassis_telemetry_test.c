@@ -10,6 +10,7 @@
 static uint32_t tick;
 static bool motion_busy;
 static ChassisMotion_Status_t motion_fixture;
+static ChassisMotion_Target_t submitted;
 static bool route_busy;
 bool ChassisRoute_IsBusy(void){return route_busy;}
 void ChassisRoute_StatusGet(ChassisRoute_Status_t *out){memset(out,0,sizeof(*out));out->state="waiting";out->reason="arrived";out->segment=2;out->action_id=9;out->target_x_mm=1200;out->stop_confirmed=true;}
@@ -31,12 +32,16 @@ bool Mecanum_FeedbackGet(unsigned i,Mecanum_Feedback_t *out){memset(out,0,sizeof
 void Mecanum_StatusGet(Mecanum_Status_t *out){memset(out,0,sizeof(*out));}
 void ChassisMotion_StatusGet(ChassisMotion_Status_t *out){*out=motion_fixture;if(!out->reason)out->reason="idle";}
 void ChassisMotion_TargetDefaults(ChassisMotion_Target_t *t){memset(t,0,sizeof(*t));}
-bool ChassisMotion_Start(const ChassisMotion_Target_t *t){return t->hold_ms>0;}
+bool ChassisMotion_Start(const ChassisMotion_Target_t *t){submitted=*t;return t->hold_ms>0;}
 bool ChassisMotion_Stop(uint32_t ms){(void)ms;return true;}
 bool ChassisMotion_IsBusy(void){return motion_busy;}
 bool ChassisMotion_AnchorSet(float yaw){(void)yaw;return true;}
 int main(void)
 {
+  {char *run[]={"chassis","run","50","0","0","19500"};
+   assert(ChassisTelemetry_Command(6,run));assert(submitted.mode==CHASSIS_MOTION_HOLD_CURRENT);
+   run[4]="0.1";assert(ChassisTelemetry_Command(6,run));
+   assert(submitted.mode==CHASSIS_MOTION_ANGULAR_VELOCITY && submitted.omega_rad_s>0);}
   char *bad[]={"chassis","stream","on","-1"};
   ChassisTelemetry_Init();tick=200;ChassisTelemetry_Process();assert(!frame[0]);
   assert(!ChassisTelemetry_Stream(true,0));
@@ -58,6 +63,9 @@ int main(void)
   tx_ready=true;ChassisTelemetry_Process();assert(frame[0]);
   {char *task[]={"chassis","task"};motion_fixture.distance_mode=true;assert(ChassisTelemetry_Command(2,task));
    assert(strstr(reply,"error_mm=") && strstr(reply,"stop_confirmed="));motion_fixture.distance_mode=false;}
+  {char *task[]={"chassis","task"};motion_fixture.requested.mode=CHASSIS_MOTION_HOLD_CURRENT;
+   motion_fixture.requested.heading_deg=12.5f;assert(ChassisTelemetry_Command(2,task));
+   assert(strstr(reply,"mode=2 target_deg=12.50") && strstr(reply,"yaw_valid="));}
   assert(!ChassisTelemetry_ConfirmPositionUnits(16384));
   assert(ChassisTelemetry_ConfirmPositionUnits(65536));
   assert(ChassisTelemetry_Stream(false,0));frame[0]=0;tick=1000;ChassisTelemetry_Process();assert(!frame[0]);

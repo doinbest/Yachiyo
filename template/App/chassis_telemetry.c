@@ -313,7 +313,10 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
         target.heading_deg = z;
       }
       else
+      {
         target.omega_rad_s = z;
+        if (z == 0.0f) target.mode = CHASSIS_MOTION_HOLD_CURRENT;
+      }
       ok = ChassisMotion_Start(&target);
     }
   }
@@ -329,11 +332,14 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
     ChassisLocalization_Get(&localization);
     (void)snprintf(text, sizeof(text),
                    "OK chassis task state=%u reason=%s dt_ms=%lu seq=%lu stage=%u error=%u ack=%u "
-                   "locked=%u units=%lu\r\n",
+                   "locked=%u units=%lu mode=%u target_deg=%.2f yaw_deg=%.2f yaw_valid=%u omega=%.4f\r\n",
                    (unsigned)status.state, status.reason ? status.reason : "none",
                    (unsigned long)status.control_dt_ms, (unsigned long)tx.sequence,
                    (unsigned)tx.stage, (unsigned)tx.error, (unsigned)tx.ack_profile,
-                   (unsigned)tx.locked, (unsigned long)localization.units_per_rev);
+                   (unsigned)tx.locked, (unsigned long)localization.units_per_rev,
+                   (unsigned)status.requested.mode, (double)status.requested.heading_deg,
+                   (double)status.current_deg, (unsigned)status.heading_valid,
+                   (double)status.body_target.omega_rad_s);
     reply(text);
     if(status.distance_mode)
     {

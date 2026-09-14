@@ -1,4 +1,4 @@
-import {frameCommand} from './protocol.mjs?v=imu-simple-1';
+import {frameCommand} from './protocol.mjs?v=heading-hold-1';
 
 export const readOnlyCommand=wire=>/^(?:info|help|(?:state|position|config) (?:all|base|z|x)|chassis (?:task|status|stop-status|feedback|route status)|imu status|qr (?:status|read)|(?:vision|material|camera|map) status)$/.test(wire);
 

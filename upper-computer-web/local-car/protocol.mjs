@@ -36,7 +36,7 @@ export const commands = [
   command('vision-stop','vision','停止视觉任务','vision stop'),
   command('info','system','设备信息','info'),
   command('help','system','固件指令帮助','help'),
-  command('chassis-run','chassis','有限速度测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-100,100,0.1),number('vy','左向速度 / mm·s⁻¹',0,-100,100,0.1),number('omega','逆时针角速度 / rad·s⁻¹',0,-0.15,0.15,0.01),number('seconds','保持时间 / s',1,0.1,59,0.1)],'起步和停车各 500 ms；总时长为保持时间加 1 秒。'),
+  command('chassis-run','chassis','平移与转向测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-100,100,0.1),number('vy','左向速度 / mm·s⁻¹',0,-100,100,0.1),number('omega','逆时针角速度 / rad·s⁻¹',0,-0.15,0.15,0.01),number('seconds','保持时间 / s',1,0.1,59,0.1)],'角速度为 0 时自动保持起步航向，需要 IMU 验证通过；非 0 时执行给定转向。起步和停车各 500 ms；总时长为保持时间加 1 秒。'),
   command('chassis-heading','chassis','航向保持测试','chassis heading {vx} {vy} {heading} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-100,100,0.1),number('vy','左向速度 / mm·s⁻¹',0,-100,100,0.1),number('heading','HWT101 模块目标角度 / °','',-180,180,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'需本次启动验证通过；目标角度不是地图角度。起步和停车各 500 ms。'),
   command('chassis-origin','chassis','设置地图初始位姿','chassis origin {x} {y} {heading}',[number('x','地图 X / mm','',-10000,10000,0.1),number('y','地图 Y / mm','',-10000,10000,0.1),number('heading','地图航向 / °','',-180,180,0.1)],'需静止且 IMU 验证有效；只设地图位姿，不执行运动。'),
   command('chassis-task','chassis','读取运动任务','chassis task',[],'时间任务结束不表示到达地图位置或反馈确认停止。'),

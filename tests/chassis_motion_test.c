@@ -42,6 +42,27 @@ static void complete_stop(void){bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending
 int main(void)
 {
   ChassisMotion_Target_t t;
+  /* A timed straight task captures module yaw; no artificial map origin. */
+  reset();ChassisMotion_TargetDefaults(&t);t.mode=CHASSIS_MOTION_HOLD_CURRENT;
+  t.vx_mm_s=50;t.transition_ms=0;
+  assert(!ChassisMotion_Start(&t));assert(!strcmp(status().reason,"imu_invalid"));
+  valid=true;reading(0,179);assert(ChassisMotion_Start(&t));
+  assert(fabsf(status().requested.heading_deg-179)<.001f && !status().map_anchor_valid);
+  reading(20,-179);ChassisMotion_Process();assert(pid_calls==1 && sent_omega<0);
+  assert(status().state==CHASSIS_MOTION_RUNNING && !status().map_anchor_valid);
+  valid=false;ChassisMotion_Process();assert(stops==1);complete_stop();
+  assert(status().state==CHASSIS_MOTION_ERROR);
+  reset();valid=true;reading(0,-42);t.vx_mm_s=-50;
+  assert(ChassisMotion_Start(&t));assert(fabsf(status().requested.heading_deg+42)<.001f);
+  reading(20,-40);ChassisMotion_Process();assert(sent_vx<0 && sent_omega<0);
+  tick+=301;ChassisMotion_Process();assert(stops==1);complete_stop();
+  assert(status().state==CHASSIS_MOTION_ERROR);
+  reset();valid=true;reading(0,12);t.vx_mm_s=0;t.vy_mm_s=30;t.hold_ms=100;
+  assert(ChassisMotion_Start(&t));
+  for(unsigned ms=20;ms<=600;ms+=20){reading(ms,12);ChassisMotion_Process();}
+  complete_stop();assert(status().state==CHASSIS_MOTION_DONE && !strcmp(status().reason,"timed_complete"));
+  assert(!status().map_anchor_valid && status().requested.heading_deg==12);
+  t.omega_rad_s=.1f;assert(!ChassisMotion_Start(&t)); /* no two rotation controllers */
   reset();ChassisMotion_TargetDefaults(&t);assert(t.transition_ms==500&&t.stop_ms==500);t.vx_mm_s=100;t.hold_ms=100;
   assert(ChassisMotion_Start(&t));assert(ChassisMotion_IsBusy());
   for(tick=20;tick<=240;tick+=20)ChassisMotion_Process();

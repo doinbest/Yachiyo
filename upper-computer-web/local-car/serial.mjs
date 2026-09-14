@@ -1,4 +1,4 @@
-import { frameCommand, LineDecoder } from './protocol.mjs?v=imu-simple-1';
+import { frameCommand, LineDecoder } from './protocol.mjs?v=heading-hold-1';
 
 // One open port, one reader and one explicit write at a time. No automatic commands.
 export class SerialLink {

@@ -517,6 +517,7 @@ static void ArmConsole_HelpShow(void)
       "chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n"
       "chassis route start|next|status|cancel (four fixed stops, manual next)\r\n"
       "chassis run <vx_mm_s> <vy_mm_s> <omega_rad_s> <hold_ms>\r\n"
+      "  omega=0: hold starting IMU heading; verified fresh IMU required\r\n"
       "chassis heading <vx_mm_s> <vy_mm_s> <module_heading_deg> <hold_ms>\r\n"
       "chassis origin <map_x_mm> <map_y_mm> <map_heading_deg> (verified IMU, stationary)\r\n"
       "chassis profile none|receive (confirm actual drive ACK first, RAM only)\r\n"

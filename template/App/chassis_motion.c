@@ -137,9 +137,10 @@ static bool target_valid(const ChassisMotion_Target_t *t)
   if (hypotf(t->vx_mm_s, t->vy_mm_s) > CHASSIS_MOTION_MAX_LINEAR_MM_S ||
       fabsf(t->omega_rad_s) > CHASSIS_MOTION_MAX_OMEGA_RAD_S)
     return false;
-  if (t->mode != CHASSIS_MOTION_ANGULAR_VELOCITY && t->mode != CHASSIS_MOTION_HEADING)
+  if (t->mode != CHASSIS_MOTION_ANGULAR_VELOCITY && t->mode != CHASSIS_MOTION_HEADING &&
+      t->mode != CHASSIS_MOTION_HOLD_CURRENT)
     return false;
-  if (t->mode == CHASSIS_MOTION_HEADING && t->omega_rad_s != 0)
+  if (t->mode != CHASSIS_MOTION_ANGULAR_VELOCITY && t->omega_rad_s != 0)
     return false;
   if (t->transition_ms > CHASSIS_MOTION_MAX_DURATION_MS ||
       t->hold_ms > CHASSIS_MOTION_MAX_DURATION_MS || t->stop_ms > CHASSIS_MOTION_MAX_DURATION_MS)
@@ -180,7 +181,7 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
     Motion.reason = "bus_unavailable";
     return false;
   }
-  if (t->mode == CHASSIS_MOTION_HEADING && !heading_read(now))
+  if (t->mode != CHASSIS_MOTION_ANGULAR_VELOCITY && !heading_read(now))
   {
     Motion.reason = "imu_invalid";
     return false;
@@ -193,6 +194,8 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
   Motion.distance_mode = Motion.stop_confirmed = false;
   Motion.requested = *t;
   Motion.requested.heading_deg = wrap_deg(t->heading_deg);
+  if (t->mode == CHASSIS_MOTION_HOLD_CURRENT)
+    Motion.requested.heading_deg = wrap_deg(Motion.current_deg);
   Motion.state = CHASSIS_MOTION_RUNNING;
   Motion.reason = "running";
   Motion.action_id++;
@@ -203,7 +206,7 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
   memset(Motion.rpm_command, 0, sizeof(Motion.rpm_command));
   Motion.rpm_scale = 1;
   WaitingForStop = FinishAsError = ManualRamp = DistanceBraking = false;
-  if (t->mode == CHASSIS_MOTION_HEADING)
+  if (t->mode != CHASSIS_MOTION_ANGULAR_VELOCITY)
   {
     Mecanum_HeadingPid_Init(&HeadingPid, CHASSIS_HEADING_TEST_KP, 0, 0,
                             CHASSIS_MOTION_PERIOD_MS / 1000.0f, 0, CHASSIS_MOTION_MAX_OMEGA_RAD_S);
@@ -617,7 +620,7 @@ void ChassisMotion_Process(void)
     request_stop("calibration_busy", true);
     return;
   }
-  if (Motion.requested.mode == CHASSIS_MOTION_HEADING && !heading_ok)
+  if (Motion.requested.mode != CHASSIS_MOTION_ANGULAR_VELOCITY && !heading_ok)
   {
     request_stop("imu_invalid", true);
     return;
@@ -678,7 +681,7 @@ void ChassisMotion_Process(void)
     command.vx_mm_s = Motion.requested.vx_mm_s * factor;
     command.vy_mm_s = Motion.requested.vy_mm_s * factor;
     command.omega_rad_s = Motion.requested.omega_rad_s * factor;
-    if (Motion.requested.mode == CHASSIS_MOTION_HEADING)
+    if (Motion.requested.mode != CHASSIS_MOTION_ANGULAR_VELOCITY)
     {
       if (LastYawCount != PidSampleCount)
       {
