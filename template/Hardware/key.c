@@ -18,13 +18,13 @@ typedef struct
   uint32_t change_tick;
 } KeyObject_t;
 
-/* PE2、PE3、PE4、PE5 依次对应前、后、左、右。 */
+/* 事件名对应物理引脚，具体业务动作由主循环按当前页面分派。 */
 static KeyObject_t key_objects[KEY_COUNT] =
 {
-  {GPIOE, GPIO_PIN_2, KEY_EVENT_FORWARD,  GPIO_PIN_SET, GPIO_PIN_SET, 0U},
-  {GPIOE, GPIO_PIN_3, KEY_EVENT_BACKWARD, GPIO_PIN_SET, GPIO_PIN_SET, 0U},
-  {GPIOE, GPIO_PIN_4, KEY_EVENT_LEFT,     GPIO_PIN_SET, GPIO_PIN_SET, 0U},
-  {GPIOE, GPIO_PIN_5, KEY_EVENT_RIGHT,    GPIO_PIN_SET, GPIO_PIN_SET, 0U}
+  {GPIOE, GPIO_PIN_2, KEY_EVENT_PE2,  GPIO_PIN_SET, GPIO_PIN_SET, 0U},
+  {GPIOE, GPIO_PIN_3, KEY_EVENT_PE3, GPIO_PIN_SET, GPIO_PIN_SET, 0U},
+  {GPIOE, GPIO_PIN_4, KEY_EVENT_PE4,     GPIO_PIN_SET, GPIO_PIN_SET, 0U},
+  {GPIOE, GPIO_PIN_5, KEY_EVENT_PE5,    GPIO_PIN_SET, GPIO_PIN_SET, 0U}
 };
 
 static KeyEvent_t pending_event = KEY_EVENT_NONE;
@@ -106,7 +106,7 @@ void Key_Scan(void)
   * @brief    读取并清除一个已经消抖完成的按键按下事件
   * @param    无
   * @retval   KEY_EVENT_NONE      ：当前没有新的按键事件
-  * @retval   其他 KeyEvent_t 值  ：对应方向按键被按下
+  * @retval   其他 KeyEvent_t 值  ：对应物理按键被按下
   */
 KeyEvent_t Key_Get_Press_Event(void)
 {

@@ -1,8 +1,8 @@
 /**
  * @file    orange_pi_link.h
- * @brief   香橙派与STM32之间的USART可靠帧接收接口。
+ * @brief   香橙派与STM32之间的USB CDC可靠帧接收接口。
  *
- * USART1接收中断只把字节写入环形缓冲区；协议版本、类型、序号、长度、
+ * USB CDC接收回调只把字节写入环形缓冲区；协议版本、类型、序号、长度、
  * 时间戳和CRC16均在主循环解析，不直接操作底盘或机械机构。
  */
 #ifndef ORANGE_PI_LINK_H
@@ -52,13 +52,12 @@ typedef struct
 } OrangePiLinkStatus_t;
 
 /**
- * @brief    初始化香橙派串口链路
- * @param    huart ：已经由CubeMX初始化的串口，当前工程使用&huart1
+ * @brief    初始化香橙派 USB CDC 链路
  * @retval   true  初始化成功
  * @retval   false 串口句柄为空
- * @note     必须先由CubeMX配置USART1_IRQn，再在主循环调用Process
+ * @note     必须先完成 USB CDC 初始化，再在主循环调用Process
  */
-bool OrangePi_Link_Init(UART_HandleTypeDef *huart);
+bool OrangePi_Link_Init(void);
 
 /**
  * @brief    从环形缓冲区取出并解析有限数量的输入字节
@@ -102,18 +101,12 @@ bool OrangePi_Link_Status_Get(OrangePiLinkStatus_t *status);
 uint16_t OrangePi_Link_Crc16_Calc(const uint8_t *data, uint16_t length);
 
 /**
- * @brief    处理香橙派USART单字节接收完成事件
- * @param    huart ：触发HAL回调的串口句柄
+ * @brief    将 USB CDC 收到的一批字节写入香橙派接收环形缓冲区
+ * @param    data ：接收数据
+ * @param    length ：数据长度
  * @retval   无
  * @note     只写环形缓冲并重启接收，由HAL_UART_RxCpltCallback()调用
  */
-void OrangePi_Link_Rx_Callback(UART_HandleTypeDef *huart);
-
-/**
- * @brief    记录香橙派USART错误并重新启动接收
- * @param    huart ：触发HAL错误回调的串口句柄
- * @retval   无
- */
-void OrangePi_Link_Error_Callback(UART_HandleTypeDef *huart);
+void OrangePi_Link_Usb_Rx_Callback(const uint8_t *data, uint32_t length);
 
 #endif /* ORANGE_PI_LINK_H */

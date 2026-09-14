@@ -13,16 +13,15 @@
 /**
  * @brief 按键按下事件
  *
- * 枚举顺序与板载 PE2、PE3、PE4、PE5 的物理顺序一致，分别用于
- * 底盘前进、后退、左移和右移测试。
+ * 枚举顺序与板载 PE2、PE3、PE4、PE5 的物理顺序一致，表示物理键编号；具体动作由当前应用分派。
  */
 typedef enum
 {
   KEY_EVENT_NONE = 0,
-  KEY_EVENT_FORWARD,
-  KEY_EVENT_BACKWARD,
-  KEY_EVENT_LEFT,
-  KEY_EVENT_RIGHT
+  KEY_EVENT_PE2,
+  KEY_EVENT_PE3,
+  KEY_EVENT_PE4,
+  KEY_EVENT_PE5
 } KeyEvent_t;
 
 /**********************************************************
@@ -54,7 +53,7 @@ void Key_Scan(void);
   * @brief    读取并清除一个已经消抖完成的按键按下事件
   * @param    无
   * @retval   KEY_EVENT_NONE      ：当前没有新的按键事件
-  * @retval   其他 KeyEvent_t 值  ：对应方向按键被按下
+  * @retval   其他 KeyEvent_t 值  ：对应物理按键被按下
   */
 KeyEvent_t Key_Get_Press_Event(void);
 

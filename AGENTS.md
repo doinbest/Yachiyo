@@ -69,6 +69,16 @@
 
 ## 工程文件与生成代码
 
+### 当前硬件基线（2026-09-11）
+
+- 后续开发在本 `模版搭建` 目录进行；`stm32_orangepi_test` 是历史迁移来源。
+- USART1 PA9/PA10：Zigbee 控制台；USART2 PA2/PA3：预留雷达；USART3 PD8/PD9：串口屏；UART4 PC10/PC11：二维码；UART5 PC12/PD2：步进电机。
+- 香橙派通信使用核心板原生 USB CDC（PA11/PA12），配套 Python 为 `orange_pi/change.py`。当前使用 B2 颜色协议，不能套用早期 `orange_pi_link` CRC 帧或 B3 圆环编号协议。
+- OLED：I2C1 PB6/PB7；HWT101：I2C2 PB10/PB11（作者已确认 SDA 是 PB11），只使用 Z 轴角度。
+- 现有机械臂/底盘/视觉业务从旧工程迁入；详情、验证边界及旧代码警告见 `docs/开发记录/2026-09-11新PCB与USB通信迁移.md`。
+
+### 文件维护约定
+
 - `template/template.ioc`、`.uvprojx` 和 `.eide/eide.yml` 属于工程配置文件，除非用户明确要求，否则不修改。
 - 通过 STM32CubeMX 生成代码前，检查 USER CODE 区域和将要发生的差异。
 - 自研功能优先放在适合的 `App`、`BSP` 或 `Modules` 目录中，不直接修改 HAL/CMSIS 第三方源码。

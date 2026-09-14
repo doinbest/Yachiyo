@@ -72,6 +72,30 @@ HAL_StatusTypeDef OLED_String_Show(uint8_t x, uint8_t page,
 HAL_StatusTypeDef OLED_Line_Show(uint8_t page, const char *text);
 
 /**********************************************************
+*** OLED 8x16字符串显示
+**********************************************************/
+/**
+  * @brief    使用8x16数字字库在指定位置显示字符串
+  * @param    x    ：起始横坐标，范围0~127
+  * @param    line ：显示行号，范围0~3，每行高度16像素
+  * @param    text ：由数字和加号组成、以'\0'结尾的字符串
+  * @retval   HAL状态
+  */
+HAL_StatusTypeDef OLED_String_Show_8x16(uint8_t x, uint8_t line,
+                                        const char *text);
+
+/**********************************************************
+*** OLED任务码显示
+**********************************************************/
+/**
+  * @brief    将DDD+DDD+DDD+DDD格式任务码分成两行居中显示
+  * @param    task_code ：15字符任务码字符串
+  * @retval   HAL_OK显示成功；HAL_ERROR表示格式或参数错误
+  * @note     前两组显示在第一行，后两组显示在第二行
+  */
+HAL_StatusTypeDef OLED_TaskCode_Show(const char *task_code);
+
+/**********************************************************
 *** OLED显示开关
 **********************************************************/
 HAL_StatusTypeDef OLED_Display_On(void);

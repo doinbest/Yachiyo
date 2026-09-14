@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "usart.h"
+#include <stdbool.h>
 
 /**********************************************************
 ***	Emm_V5.0步进闭环控制例程
@@ -41,6 +42,14 @@ typedef enum {
 
 #define		MMCL_LEN		512
 extern __IO uint16_t MMCL_count, MMCL_cmd[MMCL_LEN];
+
+/**
+  * 函    数：读取最近一次Emm_V5命令的总线请求接受状态
+  * 参    数：无
+  * 返 回 值：HAL_OK表示请求已复制接受，HAL_BUSY表示总线槽忙或隔离
+  * 说    明：发送完成、ACK和超时由MotorBus按owner返回事件；不可据此判断到位
+  */
+HAL_StatusTypeDef Emm_V5_TxStatusGet(void);
 
 /**
 ***********************************************************

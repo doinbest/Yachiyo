@@ -8,6 +8,8 @@
 #include "oled.h"
 #include "oled_font.h"
 
+#include <string.h>
+
 #define OLED_CONTROL_COMMAND      0x00U
 #define OLED_CONTROL_DATA         0x40U
 #define OLED_I2C_TIMEOUT_MS       100U
@@ -15,6 +17,8 @@
 #define OLED_CHAR_WIDTH             6U
 #define OLED_ASCII_FIRST          0x20U
 #define OLED_ASCII_LAST           0x7EU
+#define OLED_CHAR_8X16_WIDTH         8U  /* 8x16任务码字符宽度。 */
+#define OLED_LINE_8X16_COUNT         4U  /* 128x64屏幕可显示的8x16行数。 */
 
 static I2C_HandleTypeDef *oled_i2c = NULL;
 
@@ -115,16 +119,24 @@ HAL_StatusTypeDef OLED_Init(I2C_HandleTypeDef *hi2c)
                                      OLED_I2C_TIMEOUT_MS);
   if (hal_status != HAL_OK)
   {
+    oled_i2c = NULL;
     return hal_status;
   }
 
   hal_status = OLED_Command_Send(init_command, sizeof(init_command));
   if (hal_status != HAL_OK)
   {
+    oled_i2c = NULL;
     return hal_status;
   }
 
-  return OLED_Clear();
+  hal_status = OLED_Clear();
+  if (hal_status != HAL_OK)
+  {
+    oled_i2c = NULL;
+  }
+
+  return hal_status;
 }
 
 /**********************************************************
@@ -315,6 +327,176 @@ HAL_StatusTypeDef OLED_Line_Show(uint8_t page, const char *text)
                                  tx_data,
                                  sizeof(tx_data),
                                  OLED_I2C_TIMEOUT_MS);
+}
+
+/**********************************************************
+*** OLED 8x16字符串显示
+**********************************************************/
+/**
+  * 函    数：获取8x16任务码字符的字模索引
+  * 参    数：character 数字或加号字符
+  * 返 回 值：0~10表示有效索引；0xFF表示不支持的字符
+  * 说    明：字模表依次保存数字0~9和加号
+  */
+static uint8_t OLED_FontIndex_8x16_Get(char character)
+{
+  if ((character >= '0') && (character <= '9'))
+  {
+    return (uint8_t)character - (uint8_t)'0';
+  }
+
+  if (character == '+')
+  {
+    return 10U;
+  }
+
+  return 0xFFU;
+}
+
+/**
+  * 函    数：显示8x16任务码字符串
+  * 参    数：x 起始横坐标
+  * 参    数：line 显示行号，范围0~3
+  * 参    数：text 由数字和加号组成的字符串
+  * 返 回 值：HAL状态
+  * 说    明：每个字符占用相邻的两个OLED页
+  */
+HAL_StatusTypeDef OLED_String_Show_8x16(uint8_t x, uint8_t line,
+                                        const char *text)
+{
+  uint8_t TxData[OLED_CHAR_8X16_WIDTH + 1U];
+  uint8_t Page;
+  uint8_t FontIndex;
+  uint8_t Index;
+  HAL_StatusTypeDef Status;
+
+  if ((oled_i2c == NULL) || (text == NULL) ||
+      (line >= OLED_LINE_8X16_COUNT))
+  {
+    return HAL_ERROR;
+  }
+
+  Page = (uint8_t)(line * 2U);
+  TxData[0] = OLED_CONTROL_DATA;
+
+  while ((*text != '\0') && (x <= (OLED_WIDTH - OLED_CHAR_8X16_WIDTH)))
+  {
+    FontIndex = OLED_FontIndex_8x16_Get(*text);
+    if (FontIndex == 0xFFU)
+    {
+      return HAL_ERROR;
+    }
+
+    Status = OLED_Position_Set(x, Page);
+    if (Status != HAL_OK)
+    {
+      return Status;
+    }
+
+    for (Index = 0U; Index < OLED_CHAR_8X16_WIDTH; Index++)
+    {
+      TxData[Index + 1U] = oled_font_8x16[FontIndex][Index];
+    }
+    Status = HAL_I2C_Master_Transmit(
+               oled_i2c,
+               (uint16_t)(OLED_I2C_ADDRESS_7BIT << 1U),
+               TxData,
+               sizeof(TxData),
+               OLED_I2C_TIMEOUT_MS);
+    if (Status != HAL_OK)
+    {
+      return Status;
+    }
+
+    Status = OLED_Position_Set(x, (uint8_t)(Page + 1U));
+    if (Status != HAL_OK)
+    {
+      return Status;
+    }
+
+    for (Index = 0U; Index < OLED_CHAR_8X16_WIDTH; Index++)
+    {
+      TxData[Index + 1U] =
+        oled_font_8x16[FontIndex][Index + OLED_CHAR_8X16_WIDTH];
+    }
+    Status = HAL_I2C_Master_Transmit(
+               oled_i2c,
+               (uint16_t)(OLED_I2C_ADDRESS_7BIT << 1U),
+               TxData,
+               sizeof(TxData),
+               OLED_I2C_TIMEOUT_MS);
+    if (Status != HAL_OK)
+    {
+      return Status;
+    }
+
+    x = (uint8_t)(x + OLED_CHAR_8X16_WIDTH);
+    text++;
+  }
+
+  return HAL_OK;
+}
+
+/**
+  * 函    数：分两行显示二维码任务码
+  * 参    数：task_code DDD+DDD+DDD+DDD格式的15字符任务码
+  * 返 回 值：HAL_OK显示成功；HAL_ERROR表示格式或参数错误
+  * 说    明：前两组显示在第一行，后两组显示在第二行
+  */
+HAL_StatusTypeDef OLED_TaskCode_Show(const char *task_code)
+{
+  char LineText[8];
+  uint8_t Index;
+  HAL_StatusTypeDef Status;
+
+  if (task_code == NULL)
+  {
+    return HAL_ERROR;
+  }
+
+  for (Index = 0U; Index < 15U; Index++)
+  {
+    if ((Index == 3U) || (Index == 7U) || (Index == 11U))
+    {
+      if (task_code[Index] != '+')
+      {
+        return HAL_ERROR;
+      }
+    }
+    else if ((task_code[Index] < '0') || (task_code[Index] > '9'))
+    {
+      return HAL_ERROR;
+    }
+  }
+
+  if (task_code[15] != '\0')
+  {
+    return HAL_ERROR;
+  }
+
+  Status = OLED_Clear();
+  if (Status != HAL_OK)
+  {
+    return Status;
+  }
+
+  (void)memcpy(LineText, task_code, 7U);
+  LineText[7] = '\0';
+  Status = OLED_String_Show_8x16(36U, 0U, LineText);
+  if (Status != HAL_OK)
+  {
+    return Status;
+  }
+
+  (void)memcpy(LineText, &task_code[8], 7U);
+  LineText[7] = '\0';
+  Status = OLED_String_Show_8x16(36U, 1U, LineText);
+  if (Status != HAL_OK)
+  {
+    return Status;
+  }
+
+  return HAL_OK;
 }
 
 /**********************************************************

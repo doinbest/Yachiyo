@@ -31,7 +31,11 @@
 # Embedded skill runtime state and logs
 .embeddedskills/build/
 .embeddedskills/logs/
+.embeddedskills/migration/
+.embeddedskills/tests/
+.embeddedskills/chassis-v1/
 .embeddedskills/state.json
+.embeddedskills/local-car.json
 
 # Operating system files
 Thumbs.db

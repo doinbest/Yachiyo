@@ -1,11 +1,26 @@
 #include "Emm_V5.h"
 
-/*
- * 按张大头官方 UART 例程，Emm 命令直接由 UART5 TX DMA 发送。
- * 保留原命令函数中的 can_SendCmd 名称，只改变其底层 HAL 调用，
- * 不再经过额外的电机 UART 封装层。
- */
-#define can_SendCmd(cmd, length) HAL_UART_Transmit_DMA(&huart5, (uint8_t *)(cmd), (length))
+#include "motor_bus.h"
+
+/* Public packers submit a persistent copy; HAL_OK here means accepted only. */
+static volatile HAL_StatusTypeDef Emm_V5_TxStatus = HAL_OK;
+static HAL_StatusTypeDef Emm_Send(const uint8_t *data,uint16_t length)
+{
+  MotorBus_Event_t discarded;
+  MotorBus_Owner_t owner;
+  uint8_t reply=0;
+  if(length<3 || length>MOTOR_BUS_FRAME_MAX)return HAL_ERROR;
+  owner=(data[0]>=5 && data[0]<=7) || (data[0]==0 && data[1]==0xfe) ? MOTOR_BUS_ARM : MOTOR_BUS_LEGACY;
+  /* Chassis motion must use the atomic Mecanum batch, including legacy position. */
+  if(owner==MOTOR_BUS_LEGACY && data[0]<=4 &&
+     (data[1]==0xf6 || data[1]==0xfd || data[1]==0xff || data[1]==0xfc))return HAL_ERROR;
+  if(data[1]==0xaa)return HAL_ERROR; /* Nested multi-motor packets bypass atomic ownership. */
+  if(owner==MOTOR_BUS_ARM && data[0]!=0 && data[1]!=0xfe)
+    reply=data[1]==0x36 ? 8 : data[1]==0x35 ? 6 : 4;
+  if(owner==MOTOR_BUS_LEGACY)(void)MotorBus_EventGet(owner,&discarded);
+  return MotorBus_Submit(owner,data,(uint8_t)length,reply,0,data[1]==0xfe) ? HAL_OK : HAL_BUSY;
+}
+#define Emm_UartSendCmd(cmd,length) (Emm_V5_TxStatus=Emm_Send((const uint8_t *)(cmd),(length)))
 
 /**********************************************************
 ***	Emm_V5.0步进闭环控制例程
@@ -17,6 +32,17 @@
 **********************************************************/
 
 __IO uint16_t MMCL_count = 0, MMCL_cmd[MMCL_LEN] = {0};
+
+/**
+  * 函    数：读取最近一次Emm_V5命令的DMA发送启动状态
+  * 参    数：无
+  * 返 回 值：MotorBus 请求接受状态，不代表 TX 完成或驱动器 ACK
+  * 说    明：用于上层识别HAL_BUSY或HAL_ERROR，避免发送失败被静默忽略
+  */
+HAL_StatusTypeDef Emm_V5_TxStatusGet(void)
+{
+  return Emm_V5_TxStatus;
+}
 
 /**********************************************************
 *** 触发动作命令
@@ -37,7 +63,7 @@ void Emm_V5_Trig_Encoder_Cal(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-	can_SendCmd(cmd, 4);
+	Emm_UartSendCmd(cmd, 4);
 }
 
 /**
@@ -56,7 +82,7 @@ void Emm_V5_Reset_Motor(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-	can_SendCmd(cmd, 4);
+	Emm_UartSendCmd(cmd, 4);
 }
 
 /**
@@ -75,7 +101,7 @@ void Emm_V5_Reset_CurPos_To_Zero(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-	can_SendCmd(cmd, 4);
+	Emm_UartSendCmd(cmd, 4);
 }
 
 /**
@@ -94,7 +120,7 @@ void Emm_V5_Reset_Clog_Pro(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 4);
+  Emm_UartSendCmd(cmd, 4);
 }
 
 /**
@@ -113,7 +139,7 @@ void Emm_V5_Restore_Motor(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-	can_SendCmd(cmd, 4);
+	Emm_UartSendCmd(cmd, 4);
 }
 
 /**********************************************************
@@ -143,7 +169,7 @@ void Emm_V5_Multi_Motor_Cmd(uint8_t addr)
 		cmd[j] = 0x6B; ++j;                  // 校验字节
 		
 		// 发送命令
-		can_SendCmd(cmd, j); MMCL_count = 0;
+		Emm_UartSendCmd(cmd, j); MMCL_count = 0;
 	}
 	else
 	{
@@ -171,7 +197,7 @@ void Emm_V5_En_Control(uint8_t addr, bool state, bool snF)
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 6);
+  Emm_UartSendCmd(cmd, 6);
 }
 
 /**
@@ -198,7 +224,7 @@ void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bo
   cmd[7] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 8);
+  Emm_UartSendCmd(cmd, 8);
 }
 
 /**
@@ -232,7 +258,7 @@ void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, ui
   cmd[12] =  0x6B;                      // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 13);
+  Emm_UartSendCmd(cmd, 13);
 }
 
 /**
@@ -259,7 +285,7 @@ void Emm_V5_Set_QPos_Params(uint8_t addr, uint16_t vel, uint8_t acc, uint8_t raF
   cmd[7] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 8);
+  Emm_UartSendCmd(cmd, 8);
 }
 
 /**
@@ -282,7 +308,7 @@ void Emm_V5_QPos_Control(uint8_t addr, int32_t clk)
   cmd[6] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 7);
+  Emm_UartSendCmd(cmd, 7);
 }
 
 /**
@@ -303,7 +329,7 @@ void Emm_V5_Stop_Now(uint8_t addr, bool snF)
   cmd[4] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 5);
+  Emm_UartSendCmd(cmd, 5);
 }
 
 /**
@@ -322,7 +348,7 @@ void Emm_V5_Synchronous_motion(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 4);
+  Emm_UartSendCmd(cmd, 4);
 }
 
 /**********************************************************
@@ -346,7 +372,7 @@ void Emm_V5_Origin_Set_O(uint8_t addr, bool svF)
   cmd[4] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 5);
+  Emm_UartSendCmd(cmd, 5);
 }
 
 /**
@@ -368,7 +394,7 @@ void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF)
   cmd[4] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 5);
+  Emm_UartSendCmd(cmd, 5);
 }
 
 /**
@@ -387,7 +413,7 @@ void Emm_V5_Origin_Interrupt(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 4);
+  Emm_UartSendCmd(cmd, 4);
 }
 
 /**
@@ -405,7 +431,7 @@ void Emm_V5_Origin_Read_Params(uint8_t addr)
   cmd[2] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 3);
+  Emm_UartSendCmd(cmd, 3);
 }
 
 /**
@@ -449,7 +475,7 @@ void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t
   cmd[19] =  0x6B;                      // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 20);
+  Emm_UartSendCmd(cmd, 20);
 }
 
 /**
@@ -467,7 +493,7 @@ void X_V2_Origin_Read_SL_RP(uint8_t addr)
   cmd[2] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 3);
+  Emm_UartSendCmd(cmd, 3);
 }
 
 /**
@@ -491,7 +517,7 @@ void X_V2_Origin_Modify_SL_RP(uint8_t addr, bool svF, uint16_t sl_rp)
   cmd[6]  =  0x6B;                      // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 7);
+  Emm_UartSendCmd(cmd, 7);
 }
 
 /**********************************************************
@@ -544,7 +570,7 @@ void Emm_V5_Auto_Return_Sys_Params_Timed(uint8_t addr, SysParams_t s, uint16_t t
   cmd[i] = 0x6B; ++i;                   	// 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, i);
+  Emm_UartSendCmd(cmd, i);
 }
 
 /**
@@ -586,7 +612,7 @@ void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t s)
   cmd[i] = 0x6B; ++i;                   // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, i);
+  Emm_UartSendCmd(cmd, i);
 }
 
 /**********************************************************
@@ -612,7 +638,7 @@ void Emm_V5_Modify_Motor_ID(uint8_t addr, bool svF, uint8_t id)
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 6);
+  Emm_UartSendCmd(cmd, 6);
 }
 
 /**
@@ -635,7 +661,7 @@ void Emm_V5_Modify_MicroStep(uint8_t addr, bool svF, uint8_t mstep)
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 6);
+  Emm_UartSendCmd(cmd, 6);
 }
 
 /**
@@ -655,7 +681,7 @@ void Emm_V5_Modify_PDFlag(uint8_t addr, bool pdf)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 4);
+  Emm_UartSendCmd(cmd, 4);
 }
 
 /**
@@ -673,7 +699,7 @@ void Emm_V5_Read_Opt_Param_Sta(uint8_t addr)
   cmd[2] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 3);
+  Emm_UartSendCmd(cmd, 3);
 }
 
 /**
@@ -698,7 +724,7 @@ void Emm_V5_Modify_Motor_Type(uint8_t addr, bool svF, bool mottype)
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 6);
+  Emm_UartSendCmd(cmd, 6);
 }
 
 /**
@@ -721,7 +747,7 @@ void Emm_V5_Modify_Firmware_Type(uint8_t addr, bool svF, bool fwtype)
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 6);
+  Emm_UartSendCmd(cmd, 6);
 }
 
 /**
@@ -744,7 +770,7 @@ void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, bool ctrl_mode)
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 6);
+  Emm_UartSendCmd(cmd, 6);
 }
 
 /**
@@ -767,7 +793,7 @@ void Emm_V5_Modify_Motor_Dir(uint8_t addr, bool svF, bool dir)
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 6);
+  Emm_UartSendCmd(cmd, 6);
 }
 
 /**
@@ -790,7 +816,7 @@ void Emm_V5_Modify_Lock_Btn(uint8_t addr, bool svF, bool lock)
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 6);
+  Emm_UartSendCmd(cmd, 6);
 }
 
 /**
@@ -813,7 +839,7 @@ void Emm_V5_Modify_S_Vel(uint8_t addr, bool svF, bool s_vel)
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 6);
+  Emm_UartSendCmd(cmd, 6);
 }
 
 /**
@@ -837,7 +863,7 @@ void Emm_V5_Modify_OM_mA(uint8_t addr, bool svF, uint16_t om_ma)
   cmd[6] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 7);
+  Emm_UartSendCmd(cmd, 7);
 }
 
 /**
@@ -861,7 +887,7 @@ void Emm_V5_Modify_FOC_mA(uint8_t addr, bool svF, uint16_t foc_mA)
   cmd[6] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 7);
+  Emm_UartSendCmd(cmd, 7);
 }
 
 /**
@@ -879,7 +905,7 @@ void Emm_V5_Read_PID_Params(uint8_t addr)
   cmd[2] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 3);
+  Emm_UartSendCmd(cmd, 3);
 }
 
 /**
@@ -915,7 +941,7 @@ void Emm_V5_Modify_PID_Params(uint8_t addr, bool svF, uint32_t kp, uint32_t ki, 
   cmd[16] =  0x6B;                      // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 17);
+  Emm_UartSendCmd(cmd, 17);
 }
 
 /**
@@ -934,7 +960,7 @@ void Emm_V5_Read_DMX512_Params(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 4);
+  Emm_UartSendCmd(cmd, 4);
 }
 
 /**
@@ -976,7 +1002,7 @@ void Emm_V5_Modify_DMX512_Params(uint8_t addr, bool svF, uint16_t tch, uint8_t n
   cmd[18] =  0x6B;                      // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 19);
+  Emm_UartSendCmd(cmd, 19);
 }
 
 /**
@@ -994,7 +1020,7 @@ void Emm_V5_Read_Pos_Window(uint8_t addr)
   cmd[2] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 3);
+  Emm_UartSendCmd(cmd, 3);
 }
 
 /**
@@ -1018,7 +1044,7 @@ void Emm_V5_Modify_Pos_Window(uint8_t addr, bool svF, uint16_t prw)
   cmd[6] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 7);
+  Emm_UartSendCmd(cmd, 7);
 }
 
 /**
@@ -1036,7 +1062,7 @@ void Emm_V5_Read_Otocp(uint8_t addr)
   cmd[2] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 3);
+  Emm_UartSendCmd(cmd, 3);
 }
 
 /**
@@ -1066,7 +1092,7 @@ void Emm_V5_Modify_Otocp(uint8_t addr, bool svF, uint16_t otp, uint16_t ocp, uin
   cmd[10] =  0x6B;                      // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 11);
+  Emm_UartSendCmd(cmd, 11);
 }
 
 /**
@@ -1084,7 +1110,7 @@ void Emm_V5_Read_Heart_Protect(uint8_t addr)
   cmd[2] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 3);
+  Emm_UartSendCmd(cmd, 3);
 }
 
 /**
@@ -1110,7 +1136,7 @@ void Emm_V5_Modify_Heart_Protect(uint8_t addr, bool svF, uint32_t hp)
   cmd[8]  =  0x6B;                      // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 9);
+  Emm_UartSendCmd(cmd, 9);
 }
 
 /**
@@ -1128,7 +1154,7 @@ void Emm_V5_Read_Integral_Limit(uint8_t addr)
   cmd[2] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 3);
+  Emm_UartSendCmd(cmd, 3);
 }
 
 /**
@@ -1154,7 +1180,7 @@ void Emm_V5_Modify_Integral_Limit(uint8_t addr, bool svF, uint32_t il)
   cmd[8]  =  0x6B;                      // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 9);
+  Emm_UartSendCmd(cmd, 9);
 }
 
 /**********************************************************
@@ -1176,7 +1202,7 @@ void Emm_V5_Read_System_State_Params(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 4);
+  Emm_UartSendCmd(cmd, 4);
 }
 
 /**
@@ -1195,7 +1221,7 @@ void Emm_V5_Read_Motor_Conf_Params(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
   
   // 发送命令
-  can_SendCmd(cmd, 4);
+  Emm_UartSendCmd(cmd, 4);
 }
 
 

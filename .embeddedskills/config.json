@@ -10,7 +10,7 @@
     "log_dir": ".embeddedskills/build"
   },
   "serial": {
-    "port": "",
+    "port": "COM38",
     "baudrate": 115200,
     "bytesize": 8,
     "parity": "none",

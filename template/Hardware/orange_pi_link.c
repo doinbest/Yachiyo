@@ -1,6 +1,6 @@
 /**
  * @file    orange_pi_link.c
- * @brief   香橙派USART可靠帧接收实现。
+ * @brief   香橙派USB CDC可靠帧接收实现。
  */
 #include "orange_pi_link.h"
 
@@ -17,8 +17,6 @@
 #define ORANGE_PI_PARTIAL_FRAME_TIMEOUT_MS 50U
 #define ORANGE_PI_RX_RING_LENGTH           128U
 
-static UART_HandleTypeDef *orange_pi_uart = NULL;
-static uint8_t orange_pi_rx_data = 0U;
 static uint8_t orange_pi_rx_ring[ORANGE_PI_RX_RING_LENGTH];
 static volatile uint16_t orange_pi_rx_write = 0U;
 static volatile uint16_t orange_pi_rx_read = 0U;
@@ -176,16 +174,8 @@ static void OrangePi_Link_Byte_Process(uint8_t data, uint32_t now_ms)
   }
 }
 
-bool OrangePi_Link_Init(UART_HandleTypeDef *huart)
+bool OrangePi_Link_Init(void)
 {
-  HAL_StatusTypeDef hal_status;
-
-  if (huart == NULL)
-  {
-    return false;
-  }
-
-  orange_pi_uart = huart;
   OrangePi_Link_Parser_Reset();
   orange_pi_queue_read = 0U;
   orange_pi_queue_write = 0U;
@@ -195,8 +185,7 @@ bool OrangePi_Link_Init(UART_HandleTypeDef *huart)
   orange_pi_parser_reset_requested = false;
   orange_pi_last_byte_ms = HAL_GetTick();
   (void)memset(&orange_pi_status, 0, sizeof(orange_pi_status));
-  hal_status = HAL_UART_Receive_IT(orange_pi_uart, &orange_pi_rx_data, 1U);
-  return (hal_status == HAL_OK);
+  return true;
 }
 
 void OrangePi_Link_Process(void)
@@ -204,11 +193,6 @@ void OrangePi_Link_Process(void)
   uint8_t data;
   uint8_t processed = 0U;
   uint32_t now_ms;
-
-  if (orange_pi_uart == NULL)
-  {
-    return;
-  }
 
   now_ms = HAL_GetTick();
   if (orange_pi_parser_reset_requested)
@@ -310,47 +294,27 @@ uint16_t OrangePi_Link_Crc16_Calc(const uint8_t *data, uint16_t length)
   return crc;
 }
 
-void OrangePi_Link_Rx_Callback(UART_HandleTypeDef *huart)
+void OrangePi_Link_Usb_Rx_Callback(const uint8_t *data, uint32_t length)
 {
+  uint32_t index;
   uint16_t next_write;
 
-  if ((orange_pi_uart == NULL) || (huart != orange_pi_uart))
+  if ((data == NULL) || (length == 0U))
   {
     return;
   }
 
-  next_write = (uint16_t)((orange_pi_rx_write + 1U) %
-                          ORANGE_PI_RX_RING_LENGTH);
-  if (next_write == orange_pi_rx_read)
+  for (index = 0U; index < length; ++index)
   {
-    ++orange_pi_status.rx_overflow_count;
-    /* 已经丢失字节，主循环必须放弃旧半帧并从下一个帧头重新同步。 */
-    orange_pi_parser_reset_requested = true;
-  }
-  else
-  {
-    orange_pi_rx_ring[orange_pi_rx_write] = orange_pi_rx_data;
+    next_write = (uint16_t)((orange_pi_rx_write + 1U) %
+                            ORANGE_PI_RX_RING_LENGTH);
+    if (next_write == orange_pi_rx_read)
+    {
+      ++orange_pi_status.rx_overflow_count;
+      orange_pi_parser_reset_requested = true;
+      break;
+    }
+    orange_pi_rx_ring[orange_pi_rx_write] = data[index];
     orange_pi_rx_write = next_write;
   }
-
-  if (HAL_UART_Receive_IT(orange_pi_uart, &orange_pi_rx_data, 1U) != HAL_OK)
-  {
-    ++orange_pi_status.uart_error_count;
-  }
-}
-
-void OrangePi_Link_Error_Callback(UART_HandleTypeDef *huart)
-{
-  if ((orange_pi_uart == NULL) || (huart != orange_pi_uart))
-  {
-    return;
-  }
-
-  if ((HAL_UART_GetError(huart) & HAL_UART_ERROR_ORE) != 0U)
-  {
-    __HAL_UART_CLEAR_OREFLAG(huart);
-  }
-  ++orange_pi_status.uart_error_count;
-  orange_pi_parser_reset_requested = true;
-  (void)HAL_UART_Receive_IT(orange_pi_uart, &orange_pi_rx_data, 1U);
 }

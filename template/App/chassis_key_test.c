@@ -1,6 +1,7 @@
 /**
  * @file    chassis_key_test.c
  * @brief   四按键麦克纳姆底盘1米平移测试程序实现。
+ * @note    保留的独立测试入口；当前main使用OLED翻页，不调用本模块。
  */
 #include "chassis_key_test.h"
 
@@ -8,7 +9,6 @@
 #include "delay.h"
 #include "key.h"
 #include "mecanum_chassis.h"
-#include "robot_safety.h"
 
 static bool chassis_is_moving = false;
 static uint32_t chassis_move_start_tick = 0U;
@@ -17,14 +17,6 @@ static uint32_t chassis_last_control_tick = 0U;
 static float chassis_forward_mm_s = 0.0f;
 static float chassis_left_mm_s = 0.0f;
 static Mecanum_HeadingPid_t chassis_heading_pid;
-
-/** 清除按键测试的运动中间状态，不改变安全停止锁存原因。 */
-static void Chassis_Key_Motion_State_Clear(void)
-{
-  chassis_is_moving = false;
-  chassis_forward_mm_s = 0.0f;
-  chassis_left_mm_s = 0.0f;
-}
 
 /**********************************************************
 *** 启动一次底盘平移测试
@@ -80,11 +72,6 @@ static void Chassis_Key_Move_Start(float forward_mm,
       CHASSIS_MOVE_FINISH_MARGIN_MS;
     chassis_is_moving = true;
   }
-  else
-  {
-    RobotSafety_Stop(ROBOT_STOP_CHASSIS_COMMAND_FAILED);
-    Chassis_Key_Motion_State_Clear();
-  }
 }
 
 /**********************************************************
@@ -119,11 +106,11 @@ void Chassis_Key_Init(void)
 **********************************************************/
 /**
   * @brief    扫描方向按键，并控制底盘前后左右移动1米
-  * @param    imu_angle ：最新的JY61P角度数据
+  * @param    imu_angle ：最新的HWT101 Z轴角度数据
   * @retval   无
   * @note     应在 while(1) 中持续调用；每次有效按下只发送一组同步命令
   */
-void Chassis_Key_Process(const JY61P_Angle_t *imu_angle)
+void Chassis_Key_Process(const HWT101_Angle_t *imu_angle)
 {
   KeyEvent_t key_event;
   uint32_t current_tick;
@@ -137,26 +124,12 @@ void Chassis_Key_Process(const JY61P_Angle_t *imu_angle)
   key_event = Key_Get_Press_Event();
   current_tick = HAL_GetTick();
 
-  if (RobotSafety_Is_Stopped())
-  {
-    /* 仍然读取并丢弃按键事件，防止复位前遗留一次旧方向请求。 */
-    Chassis_Key_Motion_State_Clear();
-    return;
-  }
-
   /*
    * 没有接入四轮到位反馈前，使用理论运动时间加1秒余量作为测试互锁。
    * 运动期间仍会读取并丢弃新按键事件，避免旧事件在停车后突然执行。
    */
   if (chassis_is_moving)
   {
-    if (!JY61P_Angle_Is_Fresh(imu_angle, CHASSIS_IMU_TIMEOUT_MS))
-    {
-      RobotSafety_Stop(ROBOT_STOP_IMU_TIMEOUT);
-      Chassis_Key_Motion_State_Clear();
-      return;
-    }
-
     if (!Delay_Time_Is_Up(chassis_move_start_tick,
                           chassis_move_lock_time_ms))
     {
@@ -169,42 +142,44 @@ void Chassis_Key_Process(const JY61P_Angle_t *imu_angle)
                                        chassis_forward_mm_s,
                                        chassis_left_mm_s))
         {
-          RobotSafety_Stop(ROBOT_STOP_CHASSIS_COMMAND_FAILED);
-          Chassis_Key_Motion_State_Clear();
+          (void)Mecanum_Velocity_Control(0.0f, 0.0f, 0.0f);
+          chassis_is_moving = false;
         }
       }
       return;
     }
 
     /* 理论距离时间到达后，明确发送四轮速度0，结束本次按键测试。 */
-    Mecanum_Stop();
-    Chassis_Key_Motion_State_Clear();
+    (void)Mecanum_Velocity_Control(0.0f, 0.0f, 0.0f);
+    chassis_is_moving = false;
+    chassis_forward_mm_s = 0.0f;
+    chassis_left_mm_s = 0.0f;
   }
 
-  if (!JY61P_Angle_Is_Fresh(imu_angle, CHASSIS_IMU_TIMEOUT_MS))
+  if (imu_angle->update_count == 0U)
   {
-    /* 未收到有效帧或数据已过期，不允许启动新的按键运动。 */
+    /* 尚未收到有效IMU帧，不允许用默认0度作为航向基准启动。 */
     return;
   }
 
   switch (key_event)
   {
-    case KEY_EVENT_FORWARD:
+    case KEY_EVENT_PE2:
       Chassis_Key_Move_Start(CHASSIS_KEY_TEST_DISTANCE_MM, 0.0f,
                              imu_angle->yaw);
       break;
 
-    case KEY_EVENT_BACKWARD:
+    case KEY_EVENT_PE3:
       Chassis_Key_Move_Start(-CHASSIS_KEY_TEST_DISTANCE_MM, 0.0f,
                              imu_angle->yaw);
       break;
 
-    case KEY_EVENT_LEFT:
+    case KEY_EVENT_PE4:
       Chassis_Key_Move_Start(0.0f, CHASSIS_KEY_TEST_DISTANCE_MM,
                              imu_angle->yaw);
       break;
 
-    case KEY_EVENT_RIGHT:
+    case KEY_EVENT_PE5:
       Chassis_Key_Move_Start(0.0f, -CHASSIS_KEY_TEST_DISTANCE_MM,
                              imu_angle->yaw);
       break;

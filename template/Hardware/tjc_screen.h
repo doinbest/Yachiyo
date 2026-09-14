@@ -2,8 +2,8 @@
  * @file    tjc_screen.h
  * @brief   陶晶驰串口屏 USART3 通信驱动。
  *
- * 当前工程使用 PB10/USART3_TX 向串口屏发送数据，使用
- * PB11/USART3_RX 接收串口屏数据。发送采用 DMA，接收采用
+ * 当前工程使用 PD8/USART3_TX 向串口屏发送数据，使用
+ * PD9/USART3_RX 接收串口屏数据。发送采用 DMA，接收采用
  * 单字节中断和环形缓冲区，完整帧在主循环中解析。
  */
 #ifndef TJC_SCREEN_H
