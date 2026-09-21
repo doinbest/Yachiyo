@@ -20,7 +20,6 @@ void Camera_SnapshotGet(Camera_SnapshotTypeDef *out)
 { memset(out, 0, sizeof(*out)); out->UsbConfigured = configured; out->RequestActive = 1;
   out->Data = camera_data; out->TargetValid = out->HasValidData = camera_data.Sequence != 0; }
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef color) { (void)color; requests++; return camera_result; }
-HAL_StatusTypeDef Camera_RingStart(Camera_RingTypeDef ring) { (void)ring; requests++; return HAL_ERROR; }
 void Camera_RequestStop(void) {}
 MechanicalArm_ResultTypeDef MechanicalArm_Stop(MechanicalArm_AxisTypeDef axis) { (void)axis; motor_stops++; return MECHANICAL_ARM_RESULT_NONE; }
 MechanicalArm_ResultTypeDef MechanicalArm_StateRead(MechanicalArm_AxisTypeDef axis) { (void)axis; return MECHANICAL_ARM_RESULT_NONE; }
@@ -29,13 +28,13 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef a
 { (void)axis; (void)pulses; (void)rpm; (void)acceleration; (void)mode; moves++; return MECHANICAL_ARM_RESULT_NONE; }
 int main(void)
 {
+  assert(ARM_VISION_CALIBRATION_MATERIAL == 2);
+  assert(ARM_VISION_JOB_PICK_MATERIAL == 2);
   for (unsigned owner = 0; owner < 2; owner++)
   {
     ArmVision_Init(); route_busy = owner == 0; motion_busy = owner == 1;
     assert(ArmVision_ReferenceSet() == ARM_VISION_RESULT_BUSY);
-    assert(ArmVision_CalibrationStart(CAMERA_RING_1) == ARM_VISION_RESULT_BUSY);
     assert(ArmVision_MaterialCalibrationStart(CAMERA_COLOR_BLUE) == ARM_VISION_RESULT_BUSY);
-    assert(ArmVision_RingStart(CAMERA_RING_1, ARM_VISION_JOB_ALIGN_ONLY) == ARM_VISION_RESULT_BUSY);
     assert(ArmVision_MaterialStart(CAMERA_COLOR_BLUE, ARM_VISION_JOB_ALIGN_ONLY) == ARM_VISION_RESULT_BUSY);
     assert(!requests && !moves && !ArmVision_IsBusy());
     ArmVision_Stop(); assert(!ArmVision_IsBusy());
@@ -43,14 +42,13 @@ int main(void)
   route_busy = motion_busy = false;
   ArmVision_Init(); assert(ArmVision_ReferenceSet() == ARM_VISION_RESULT_OK);
   assert(ArmVision_MaterialCalibrationStart(CAMERA_COLOR_BLUE) == ARM_VISION_RESULT_OK);
+  assert(!strcmp(ArmVision_CalibrationSourceNameGet(), "material"));
   route_busy = true; ArmVision_Stop();
   assert(!ArmVision_IsBusy() && motor_stops == 1);
   route_busy = false; requests = 0;
   ArmVision_Init(); peer_busy = 1;
   assert(ArmVision_ReferenceSet() == ARM_VISION_RESULT_BUSY);
-  assert(ArmVision_CalibrationStart(CAMERA_RING_1) == ARM_VISION_RESULT_BUSY);
   assert(ArmVision_MaterialCalibrationStart(CAMERA_COLOR_BLUE) == ARM_VISION_RESULT_BUSY);
-  assert(ArmVision_RingStart(CAMERA_RING_1, ARM_VISION_JOB_ALIGN_ONLY) == ARM_VISION_RESULT_BUSY);
   assert(ArmVision_MaterialStart(CAMERA_COLOR_BLUE, ARM_VISION_JOB_ALIGN_ONLY) == ARM_VISION_RESULT_BUSY);
   assert(!requests && !moves);
   peer_busy = 0; assert(ArmVision_ReferenceSet() == ARM_VISION_RESULT_OK);

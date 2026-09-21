@@ -23,13 +23,6 @@ typedef enum
   CAMERA_COLOR_LIGHT_BLUE = 0x06
 } Camera_ColorTypeDef;
 
-typedef enum
-{
-  CAMERA_RING_1 = 0x0A,
-  CAMERA_RING_2 = 0x0B,
-  CAMERA_RING_3 = 0x0C
-} Camera_RingTypeDef;
-
 typedef struct
 {
   uint8_t Function;
@@ -72,8 +65,6 @@ typedef enum
 HAL_StatusTypeDef Camera_Init(void);
 /* @brief 主循环发送FF B2 Color FF；USB未就绪返回ERROR，忙返回BUSY，可稍后重试。 */
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef Color);
-/* @brief 保留旧API；当前change.py不支持B3圆环编号，返回HAL_ERROR。 */
-HAL_StatusTypeDef Camera_RingStart(Camera_RingTypeDef Ring);
 void Camera_RequestStop(void);
 void Camera_Process(void);
 /** @brief 消费一次尚未读取的有效坐标；getter不会发送请求或访问USB。 */

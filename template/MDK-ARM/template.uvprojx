@@ -2133,16 +2133,6 @@
               <FilePath>..\App\chassis_config.h</FilePath>
             </File>
             <File>
-              <FileName>chassis_key_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\App\chassis_key_test.c</FilePath>
-            </File>
-            <File>
-              <FileName>chassis_key_test.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\App\chassis_key_test.h</FilePath>
-            </File>
-            <File>
               <FileName>contest_screen.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\contest_screen.c</FilePath>
@@ -2151,16 +2141,6 @@
               <FileName>contest_screen.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\App\contest_screen.h</FilePath>
-            </File>
-            <File>
-              <FileName>hwt101_show.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\App\hwt101_show.c</FilePath>
-            </File>
-            <File>
-              <FileName>hwt101_show.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\App\hwt101_show.h</FilePath>
             </File>
             <File>
               <FileName>mechanical_arm.c</FileName>

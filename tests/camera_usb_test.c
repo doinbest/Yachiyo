@@ -124,7 +124,6 @@ int main(void)
   Camera_RequestStop();
   Camera_SnapshotGet(&snapshot);
   assert(!snapshot.RequestActive && Camera_VisualStateGet(&snapshot) == CAMERA_VIS_IDLE);
-  assert(Camera_RingStart(CAMERA_RING_1) == HAL_ERROR);
   /* A reserved Valid value must not make historical coordinates fresh again. */
   Camera_Init(); Camera_MaterialStart(CAMERA_COLOR_BLUE); tick = 2000;
   make_frame(frame, 1); Camera_UsbRxCallback(frame, sizeof(frame)); Camera_Process();

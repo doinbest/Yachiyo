@@ -230,7 +230,7 @@ static void ArmVision_CollectStart(ArmVision_PhaseTypeDef Phase)
   * 函    数：初始化一次视觉对准任务状态
   * 参    数：无
   * 返 回 值：无
-  * 说    明：B2物料和B3圆环共用同一套Base、X二维修正流程；
+  * 说    明：B2物料使用Base、X二维修正流程；
   *           独立camera命令不进入本状态机
   */
 static void ArmVision_AlignStart(void)
@@ -567,37 +567,6 @@ ArmVision_ResultTypeDef ArmVision_ReferenceSet(void)
 }
 
 /**
-  * 函    数：启动B3二维自动标定
-  * 参    数：Ring 固定圆环编号
-  * 返 回 值：视觉任务接收结果
-  * 说    明：运行前Z轴必须位于观察高度，Base和X周围需保留安全行程
-  */
-ArmVision_ResultTypeDef ArmVision_CalibrationStart(Camera_RingTypeDef Ring)
-{
-  if ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U) ||
-      (MechanicalArm_IsBusy() != 0U) || ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return ARM_VISION_RESULT_BUSY;
-  if (ArmVision_ReferenceValid == 0U) return ARM_VISION_RESULT_NOT_READY;
-  if ((Ring < CAMERA_RING_1) || (Ring > CAMERA_RING_3))
-    return ARM_VISION_RESULT_PARAM_ERROR;
-  if (!ArmVision_CameraRequestAccepted(Camera_RingStart(Ring)))
-  {
-    return ARM_VISION_RESULT_ERROR;
-  }
-
-  ArmVision_CalibrationValid = 0U;
-  ArmVision_CalibrationResultReady = 0U;
-  ArmVision_ErrorInfoSet(MECHANICAL_ARM_AXIS_INVALID, 0U, 0U);
-  ArmVision_ErrorSet(ARM_VISION_ERROR_NONE);
-  ArmVision_CalibrationSource = ARM_VISION_CALIBRATION_RING;
-  ArmVision_CalibrationTarget = (uint8_t)Ring;
-  ArmVision_StartTick = HAL_GetTick();
-  ArmVision_LastDataTick = ArmVision_StartTick;
-  ArmVision_HasCameraData = 0U;
-  ArmVision_CollectStart(ARM_VISION_PHASE_CAL_BASE_ZERO);
-  return ARM_VISION_RESULT_OK;
-}
-
-/**
   * 函    数：启动B2物料二维自动标定
   * 参    数：Color 物料颜色
   * 返 回 值：视觉任务接收结果
@@ -627,33 +596,6 @@ ArmVision_ResultTypeDef ArmVision_MaterialCalibrationStart(
   ArmVision_LastDataTick = ArmVision_StartTick;
   ArmVision_HasCameraData = 0U;
   ArmVision_CollectStart(ARM_VISION_PHASE_CAL_BASE_ZERO);
-  return ARM_VISION_RESULT_OK;
-}
-
-/**
-  * 函    数：启动圆环视觉任务
-  * 参    数：Ring 圆环编号；Job 任务类型
-  * 返 回 值：视觉任务接收结果
-  * 说    明：第一阶段只开放ALIGN_ONLY，不执行Z下降和松爪
-  */
-ArmVision_ResultTypeDef ArmVision_RingStart(Camera_RingTypeDef Ring,
-                                            ArmVision_JobTypeDef Job)
-{
-  if ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U) ||
-      (MechanicalArm_IsBusy() != 0U) || ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return ARM_VISION_RESULT_BUSY;
-  if ((ArmVision_ReferenceValid == 0U) || (ArmVision_CalibrationValid == 0U))
-    return ARM_VISION_RESULT_NOT_READY;
-  if ((Ring < CAMERA_RING_1) || (Ring > CAMERA_RING_3))
-    return ARM_VISION_RESULT_PARAM_ERROR;
-  if (Job != ARM_VISION_JOB_ALIGN_ONLY) return ARM_VISION_RESULT_NOT_READY;
-  if (!ArmVision_CameraRequestAccepted(Camera_RingStart(Ring)))
-  {
-    return ARM_VISION_RESULT_ERROR;
-  }
-
-  ArmVision_ErrorInfoSet(MECHANICAL_ARM_AXIS_INVALID, 0U, 0U);
-  ArmVision_ErrorSet(ARM_VISION_ERROR_NONE);
-  ArmVision_AlignStart();
   return ARM_VISION_RESULT_OK;
 }
 
@@ -933,13 +875,13 @@ ArmVision_CalibrationSourceTypeDef ArmVision_CalibrationSourceGet(void)
   * 函    数：取得二维标定数据来源名称
   * 参    数：无
   * 返 回 值：ASCII来源名称
-  * 说    明：供控制台直接显示none、ring或material
+  * 说    明：供控制台直接显示none或material
   */
 const char *ArmVision_CalibrationSourceNameGet(void)
 {
   static const char *Names[] =
   {
-    "none", "ring", "material"
+    "none", "reserved", "material" /* 数值1为已退役B3来源，保留索引。 */
   };
 
   return Names[(uint8_t)ArmVision_CalibrationSource];
@@ -948,7 +890,7 @@ const char *ArmVision_CalibrationSourceNameGet(void)
 /**
   * 函    数：查询二维标定目标编号
   * 参    数：无
-  * 返 回 值：圆环编号或物料颜色编号
+  * 返 回 值：物料颜色编号
   * 说    明：无有效标定时返回0
   */
 uint8_t ArmVision_CalibrationTargetGet(void)

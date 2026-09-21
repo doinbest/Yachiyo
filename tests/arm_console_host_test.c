@@ -7,7 +7,7 @@
 #include "../template/Hardware/QR.c"
 static char output[16000];
 static uint32_t tick = 100;
-static unsigned camera_calls, motor_calls, stop_calls, b3_calls, notice_clears;
+static unsigned camera_calls, motor_calls, stop_calls, notice_clears;
 static uint8_t arm_busy, material_busy, motor_busy;
 static bool motion_busy;
 static bool bus_locked;
@@ -64,8 +64,6 @@ ArmVision_ResultTypeDef ArmVision_ReferenceSet(void) { return arm_busy || materi
 ArmVision_ResultTypeDef ArmVision_MaterialStart(Camera_ColorTypeDef color, ArmVision_JobTypeDef job)
 { (void)color; (void)job; if (arm_busy || material_busy) return ARM_VISION_RESULT_BUSY; arm_busy = 1; return ARM_VISION_RESULT_OK; }
 ArmVision_ResultTypeDef ArmVision_MaterialCalibrationStart(Camera_ColorTypeDef color) { return ArmVision_MaterialStart(color, ARM_VISION_JOB_ALIGN_ONLY); }
-ArmVision_ResultTypeDef ArmVision_CalibrationStart(Camera_RingTypeDef ring) { (void)ring; b3_calls++; return ARM_VISION_RESULT_ERROR; }
-ArmVision_ResultTypeDef ArmVision_RingStart(Camera_RingTypeDef ring, ArmVision_JobTypeDef job) { (void)job; return ArmVision_CalibrationStart(ring); }
 void ArmVision_Stop(void) { if (arm_busy) stop_calls++; arm_busy = 0; }
 const char *ArmVision_StateNameGet(void) { return arm_busy ? "COLLECT" : "IDLE"; }
 ArmVision_ErrorTypeDef ArmVision_ErrorGet(void) { return ARM_VISION_ERROR_NONE; }
@@ -272,8 +270,13 @@ int main(void)
   cal_status.state=HWT101_CAL_DONE;
   command("imu cal forget\r");assert(strstr(output,"deprecated") && cal_status.state==HWT101_CAL_DONE && cal_cancels==6);
   command("screen status\r");assert(strstr(output,"4294967295") && strstr(output,"12345"));
-  command("vision calib 1\r");assert(strstr(output,"Unsupported") && !b3_calls);
-  command("vision ring 1\r");assert(strstr(output,"Unsupported") && !b3_calls);
+  {
+    unsigned before_camera = camera_calls, before_motor = motor_calls;
+    command("vision calib 1\r");assert(strstr(output,"ERR Unsupported B3"));
+    command("vision ring 1\r");assert(strstr(output,"ERR Unsupported B3"));
+    command("camera ring 1\r");assert(strstr(output,"ERR Unsupported B3"));
+    assert(camera_calls == before_camera && motor_calls == before_motor);
+  }
   command("camera material 3\r");assert(camera_calls==1 && snapshot.RequestTarget==3);
   camera_result=HAL_BUSY;command("camera material 2\r");assert(strstr(output,"busy") && snapshot.RequestTarget==3);
   camera_result=HAL_ERROR;snapshot.UsbConfigured=0;command("camera material 2\r");assert(strstr(output,"usb") && snapshot.RequestTarget==3);

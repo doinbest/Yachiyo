@@ -7,8 +7,7 @@
 typedef enum
 {
   ARM_VISION_JOB_ALIGN_ONLY = 0,
-  ARM_VISION_JOB_PLACE_RING,
-  ARM_VISION_JOB_PICK_MATERIAL
+  ARM_VISION_JOB_PICK_MATERIAL = 2 /* 1为已退役B3任务，保持既有编号。 */
 } ArmVision_JobTypeDef;
 
 typedef enum
@@ -23,8 +22,7 @@ typedef enum
 typedef enum
 {
   ARM_VISION_CALIBRATION_NONE = 0,
-  ARM_VISION_CALIBRATION_RING,
-  ARM_VISION_CALIBRATION_MATERIAL
+  ARM_VISION_CALIBRATION_MATERIAL = 2 /* 1为已退役B3来源。 */
 } ArmVision_CalibrationSourceTypeDef;
 
 typedef enum
@@ -97,11 +95,8 @@ typedef struct
 void ArmVision_Init(void);
 /** @brief 仅确认当前参考位置，不运动；任何视觉任务或电机忙时返回BUSY。 */
 ArmVision_ResultTypeDef ArmVision_ReferenceSet(void);
-ArmVision_ResultTypeDef ArmVision_CalibrationStart(Camera_RingTypeDef Ring);
 ArmVision_ResultTypeDef ArmVision_MaterialCalibrationStart(
     Camera_ColorTypeDef Color);
-ArmVision_ResultTypeDef ArmVision_RingStart(Camera_RingTypeDef Ring,
-                                            ArmVision_JobTypeDef Job);
 /** @brief B2颜色1~6的Base/X自动对准，需要有效参考和二维运动标定。
  * @param Job 当前只接受ALIGN_ONLY；OK表示受理，BUSY不切换目标或启动运动。 */
 ArmVision_ResultTypeDef ArmVision_MaterialStart(Camera_ColorTypeDef Color,

@@ -170,19 +170,6 @@ HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef Color)
 }
 
 /**
-  * 函    数：启动指定圆环识别
-  * 参    数：Ring 圆环枚举
-  * 返 回 值：HAL执行状态
-  * 说    明：当前Python不支持B3圆环编号识别，明确返回HAL_ERROR
-  */
-HAL_StatusTypeDef Camera_RingStart(Camera_RingTypeDef Ring)
-{
-  /* change.py通过B2自动从粗定位切换到色环精定位，没有B3编号识别。 */
-  (void)Ring;
-  return HAL_ERROR;
-}
-
-/**
   * 函    数：停止当前摄像头请求
   * 参    数：无
   * 返 回 值：无
