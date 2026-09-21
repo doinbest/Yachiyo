@@ -65,7 +65,7 @@ export const commands = [
   command('qr-stream-off','qr','关闭任务码跟随','qr stream off'),
 ];
 
-// Keep legacy groups/IDs for existing favorites; owner is the six-page UI module.
+// Keep stable command groups/IDs; owner is the six-page UI module.
 const debugIds = new Set(['position','grip-idle','grip-duty','move','velocity','wheel','wheel-stop','chassis-hold','chassis-status','feedback-read','feedback-select','feedback-on','feedback-off','camera-material','camera-status','camera-stop','vision-material','imu-stream-on','imu-stream-off']);
 const calibrationIds = new Set(['home','origin','zero','config-get','config-set','vision-ref','vision-calib-material','vision-calib-chassis','profile','units','reset-confirmed','chassis-origin','imu-cal-start','imu-verify','imu-cal-cancel']);
 for (const definition of commands) {
@@ -75,7 +75,7 @@ for (const definition of commands) {
 }
 commands.find(c => c.id === 'stop').note = 'stop all 会请求停止正在运行的视觉/物料任务；否则停止机械臂轴。它不等于整车所有电机已停止。';
 
-/** Classifies without rewriting text; unknown manual favorites stay manual. */
+/** Classifies without rewriting text; unknown commands stay manual. */
 export function moduleForWire(text) {
   if (typeof text !== 'string') return 'manual';
   const line = text.trim().replace(/^(?:arm> )+/, '').replace(/^(?:OK|ERR)\s+/, '');
