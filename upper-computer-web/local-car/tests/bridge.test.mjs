@@ -65,7 +65,7 @@ test('old HTTP replies cannot overwrite newer stop or connection events',async()
   const resume=f.bridge.resume();
   f.bridge.deliver({id:16,kind:'stop',latched:true,status:'confirmed',token:222});
   finish();await resume;assert.equal(f.bridge.stopLatched,true);
-  const connect=f.bridge.connect(null,115200);
+  const connect=f.bridge.connect('COM7',115200);
   f.bridge.deliver({id:17,kind:'connection',connected:false});
   finish();await connect;assert.equal(f.bridge.connected,false);assert.equal(f.states.at(-1),'disconnected');
   const disconnect=f.bridge.disconnect();
@@ -85,4 +85,17 @@ for(const restart of [false,true])test(`poll skips duplicates and ${restart?'ser
   f.bridge.running=true;const generation=++f.bridge.generation;await f.bridge.poll(generation);await rejection;
   assert.deepEqual(f.received,['fresh']);assert.deepEqual(f.states,['connected','disconnected','connected']);
   assert.equal(f.requests.filter(r=>r.url==='/api/send').length,1);
+});
+
+test('connect requires explicit selection and sends the chosen port instead of a fixed COM number',async()=>{
+  const f=fixture();
+  await assert.rejects(f.bridge.connect('',115200),/选择/);
+  assert.equal(f.requests.length,0);
+  await f.bridge.connect('COM7',115200);
+  assert.deepEqual(f.requests.at(-1).body,{port:'COM7',baudrate:115200});
+  assert.equal(f.bridge.port,'COM7');
+  f.setStatus({port:'COM12'});await f.bridge.attach();
+  assert.equal(f.bridge.port,'COM12');
+  f.bridge.deliver({id:100,kind:'connection',connected:true,port:'COM8'});
+  assert.equal(f.bridge.port,'COM8');
 });

@@ -6,7 +6,7 @@ export const readOnlyCommand=wire=>/^(?:info|help|(?:state|position|config) (?:a
 export class BridgeLink {
   constructor({fetch:fetcher=globalThis.fetch.bind(globalThis),receive=()=>{},state=()=>{},error=()=>{},event=()=>{},configuration=()=>{}}={}) {
     Object.assign(this,{fetcher,receive,state,error,event,configuration});
-    this.connected=false;this.available=false;this.stopLatched=false;this.cursor=0;
+    this.connected=false;this.port='';this.available=false;this.stopLatched=false;this.cursor=0;
     this.connectionRevision=0;this.stopRevision=0;
     this.pending=new Map();this.completed=new Map();this.generation=0;this.running=false;
   }
@@ -20,7 +20,7 @@ export class BridgeLink {
   async attach(){
     const status=await this.api('status');this.token=status.token;this.available=true;
     this.cursor=status.last_event_id||0;this.config=status.config;this.configuration(this.config);
-    this.stopLatched=!!status.stop_latched;this.setConnected(!!status.connected);
+    this.port=status.port||'';this.stopLatched=!!status.stop_latched;this.setConnected(!!status.connected);
     this.event({kind:'stop',latched:this.stopLatched,...status.stop});return status;
   }
   async start(){if(this.running)return;this.running=true;const generation=++this.generation;
@@ -44,7 +44,7 @@ export class BridgeLink {
     }
   }
   deliver(e){
-    if(e.kind==='connection'){this.connectionRevision++;this.setConnected(!!e.connected);if(!e.connected)this.rejectPending('串口已断开，命令不会重发。');}
+    if(e.kind==='connection'){this.connectionRevision++;if(e.port)this.port=e.port;this.setConnected(!!e.connected);if(!e.connected)this.rejectPending('串口已断开，命令不会重发。');}
     if(e.kind==='stop'){this.stopRevision++;this.stopLatched=!!e.latched;if(this.stopLatched)this.rejectPending('停止锁定已取消待发送指令。');}
     if(e.request_id&&(e.kind==='tx'||e.error)){
       const p=this.pending.get(e.request_id);
@@ -54,7 +54,7 @@ export class BridgeLink {
     if(e.kind==='rx')this.receive(e.text);
     this.event(e);
   }
-  async connect(_serial,baudrate=115200){const revision=this.connectionRevision;this.state('connecting');try{await this.api('connect',{port:'COM23',baudrate});if(revision===this.connectionRevision)this.setConnected(true);else this.state(this.connected?'connected':'disconnected');}catch(error){this.state(this.connected?'connected':'disconnected');throw error;}}
+  async connect(port,baudrate=115200){if(typeof port!=='string'||!/^COM[1-9]\d*$/i.test(port))throw new Error('请先选择串口。');port=port.toUpperCase();const revision=this.connectionRevision;this.state('connecting');try{await this.api('connect',{port,baudrate});if(revision===this.connectionRevision){this.port=port;this.setConnected(true);}else this.state(this.connected?'connected':'disconnected');}catch(error){this.state(this.connected?'connected':'disconnected');throw error;}}
   async disconnect(){const revision=this.connectionRevision;await this.api('disconnect',{});if(revision===this.connectionRevision){this.setConnected(false);this.rejectPending('串口已断开。');}}
   async send(command,fromPreparation=false){
     frameCommand(command);if(!this.connected)throw new Error('请先连接本地服务串口。');

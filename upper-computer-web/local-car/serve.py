@@ -13,6 +13,16 @@ import webbrowser
 from serial_bridge import SerialBridge
 
 
+def available_ports():
+    """Enumerate only; this never opens a serial device."""
+    try:
+        from serial.tools import list_ports
+    except ImportError as error:
+        raise OSError('Install pyserial: python -m pip install pyserial') from error
+    return [{'device':p.device, 'description':p.description or ''}
+            for p in sorted(list_ports.comports(), key=lambda p:p.device)]
+
+
 class ConsoleHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -54,6 +64,11 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
         path = urlsplit(self.path)
         if path.path == '/api/status':
             self._json(200, self.server.bridge.status())
+        elif path.path == '/api/ports':
+            try:
+                self._json(200, {'ports':available_ports()})
+            except OSError as error:
+                self._json(503, {'error':str(error)})
         elif path.path == '/api/events':
             try:
                 after = int(parse_qs(path.query).get('after', ['0'])[0])
@@ -147,8 +162,16 @@ def console_command(bridge, line, port, baudrate):
         return True
     if line.lower() in ('quit', 'exit'):
         return False
-    if line.lower() == 'connect':
-        bridge.connect(port, baudrate)
+    if line.lower() == 'ports':
+        print(json.dumps(available_ports(), ensure_ascii=False), flush=True)
+    elif line.split()[0].lower() == 'connect':
+        parts = line.split()
+        if len(parts) > 2:
+            raise ValueError('Use connect COMx')
+        target = parts[1] if len(parts) == 2 else port
+        if not target:
+            raise ValueError('Select a port: use ports, then connect COMx')
+        bridge.connect(target, baudrate)
     elif line.lower() == 'disconnect':
         bridge.disconnect()
     elif line.lower() in ('stop', 'chassis stop', 'wheel stop'):
@@ -166,7 +189,7 @@ def console_command(bridge, line, port, baudrate):
 def main():
     parser = argparse.ArgumentParser(description='Local car shared serial console')
     parser.add_argument('--port', type=int, default=8765, help='Loopback HTTP port')
-    parser.add_argument('--serial-port', default='COM23', help='Explicit connect target; never auto-opens')
+    parser.add_argument('--serial-port', default=None, help='Optional explicit CMD connect target; no default port')
     parser.add_argument('--baudrate', type=int, default=115200)
     parser.add_argument('--no-browser', action='store_true')
     parser.add_argument('--no-console', action='store_true')
@@ -180,8 +203,8 @@ def main():
         print(f'Cannot start local server: {error}\nUse the existing console or choose --port 8766.', flush=True)
         return 1
     url = server.console_origin + '/'
-    print(f'Car dashboard: {url}\nCMD and webpage share one serial owner. Target: {args.serial_port} {args.baudrate} 8N1.', flush=True)
-    print('No automatic connection. Commands: connect, status, stop, resume, disconnect, quit.\nCtrl+C requests CHASSIS STOP and keeps this window open. quit stops, waits up to 6 seconds, then closes.', flush=True)
+    print(f'Car dashboard: {url}\nCMD and webpage share one serial owner. Target: {args.serial_port or "not selected"} {args.baudrate} 8N1.', flush=True)
+    print('No automatic connection. Commands: ports, connect COMx, status, stop, resume, disconnect, quit.\nCtrl+C requests CHASSIS STOP and keeps this window open. quit stops, waits up to 6 seconds, then closes.', flush=True)
     finished = threading.Event()
     http_thread = threading.Thread(target=server.serve_forever, name='car-http', daemon=True)
     output_thread = threading.Thread(target=print_events, args=(bridge, finished), daemon=True)

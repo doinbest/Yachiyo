@@ -70,12 +70,17 @@ test('cancellation, send failure and timeout never progress to origin',async()=>
   const p=new RoutePreparation({send:async()=>false,getConfig:()=>config});p.connection(true);p.start();await Promise.resolve();assert.equal(p.phase,'failed');
 });
 
-test('blank or partially confirmed saved configuration refuses preparation without sending',()=>{
-  for(const c of [null,{}, {...config,profile:''},{...config,units_per_rev:null},{...config,directions_confirmed:false}]){
+test('Emm preset supplies protocol constants without a measurement checkbox; wheel direction remains required',()=>{
+  for(const c of [null,{}, {...config,directions_confirmed:false}]){
     assert.equal(validCarConfig(c),false);const wires=[];const p=new RoutePreparation({send:w=>wires.push(w),getConfig:()=>c});p.connection(true);
-    assert.equal(p.start(),false);assert.equal(wires.length,0);assert.match(p.message,/本车配置/);
+    assert.equal(p.start(),false);assert.equal(wires.length,0);
   }
-  assert.equal(validCarConfig({...config,profile:'none'}),true);
+  const f=fixture();f.p.getConfig=()=>({profile:'none',units_per_rev:null,directions_confirmed:true});
+  assert.equal(validCarConfig(f.p.getConfig()),true);
+  f.throughFeedback();
+  assert.ok(f.wires.includes('chassis profile receive'));
+  assert.ok(f.wires.includes('chassis units 65536'));
+  assert.equal(f.p.phase,'imu');
 });
 
 test('stop while origin confirmation waits prevents delayed replies and timer from starting any new request',()=>{

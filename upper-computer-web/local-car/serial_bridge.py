@@ -160,7 +160,7 @@ class SerialBridge:
 
     def connect(self, port, baudrate):
         if not isinstance(port, str) or not re.fullmatch(r'COM[1-9]\d*', port, re.I):
-            raise ValueError('Specify a Windows COM port explicitly, for example COM23')
+            raise ValueError('Specify a Windows COM port explicitly, for example COM7')
         if type(baudrate) is not int or not 1200 <= baudrate <= 2000000:
             raise ValueError('Specify a valid integer baudrate explicitly')
         done, result = threading.Event(), {}
@@ -356,7 +356,7 @@ class SerialBridge:
                                                    rtscts=False, dsrdtr=False)
                         self.connected, self.port, self.baudrate = True, port, baudrate
                         self.next_command_at = 0
-                        self._event('connection', f'Connected {port} {baudrate} 8N1', connected=True)
+                        self._event('connection', f'Connected {port} {baudrate} 8N1', connected=True, port=port, baudrate=baudrate)
                     except Exception as error:
                         result['error'] = f'Cannot open serial: {error}. If busy/access denied, close the other serial program.'
                         self._event('connection', result['error'], connected=self.connected)

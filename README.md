@@ -14,7 +14,7 @@
 
 控制台需要 Python 3、pyserial；缺少时执行 `python -m pip install pyserial`。服务启动后用桌面 Chrome/Edge 打开 `http://127.0.0.1:8765/`。无需 npm 安装、旧 React 页面或云部署。启动不会自动连接串口。
 
-网页共享模式当前默认 COM23 / 115200 / 8N1；实际串口应现场核对，它与 `.embeddedskills/config.json` 的工具串口配置相互独立。准备、实车运动和停车流程详见控制台手册。
+网页共享模式需从设备列表手动选择串口，无默认 COM 号；通信格式默认 115200 / 8N1，实际串口应现场核对，它与 `.embeddedskills/config.json` 的工具串口配置相互独立。准备、实车运动和停车流程详见控制台手册。
 
 ## 硬件与通信
 

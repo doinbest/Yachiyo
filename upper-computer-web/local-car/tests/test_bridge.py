@@ -282,6 +282,33 @@ class BridgeTests(unittest.TestCase):
         self.bridge.save_config({'profile':'none'})
         self.assertTrue(self.bridge.get_events(0, 0)['gap'])
 
+    def test_ports_endpoint_lists_devices_without_opening_them(self):
+        from types import SimpleNamespace
+        server = make_server(self.bridge, ROOT, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        origin = f'http://127.0.0.1:{server.server_port}'
+        try:
+            with patch('serial.tools.list_ports.comports', return_value=[
+                SimpleNamespace(device='COM7', description='USB-SERIAL CH340')]):
+                with urlopen(origin+'/api/ports') as response:
+                    self.assertEqual(json.load(response), {'ports':[
+                        {'device':'COM7', 'description':'USB-SERIAL CH340'}]})
+            with patch('serial.tools.list_ports.comports', return_value=[]):
+                with urlopen(origin+'/api/ports') as response:
+                    self.assertEqual(json.load(response), {'ports':[]})
+            self.assertEqual(self.ports, [])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_cmd_connect_requires_explicit_port(self):
+        with self.assertRaises(ValueError):
+            console_command(self.bridge, 'connect', None, 115200)
+        self.assertEqual(self.ports, [])
+        console_command(self.bridge, 'connect COM7', None, 115200)
+        self.assertEqual(self.ports[-1].options['port'], 'COM7')
+
     def test_http_rejects_origin_host_and_token_and_serves_static(self):
         server = make_server(self.bridge, ROOT, 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

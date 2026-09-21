@@ -85,7 +85,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   $('sim-reset').addEventListener('click',reset);
   $('sim-fields').addEventListener('input',()=>invalidate('参数已编辑 · 整条路线将使用新初始位姿；单段使用当前位姿'));
   $('sim-model').addEventListener('change',()=>invalidate('模型已切换 · 请重新运行路线'));
-  $('map-source').addEventListener('change',e=>{pauseSimulation('已切换数据来源 · 模拟暂停，可继续');mode=e.target.value;$('sim-controls').hidden=mode!=='offline';$('route-editor').hidden=mode!=='offline';$('online-controls').hidden=mode==='offline';render();});
+  $('map-source').addEventListener('change',e=>{pauseSimulation('已切换数据来源 · 模拟暂停，可继续');mode=e.target.value;$('sim-controls').hidden=mode!=='offline';$('route-editor').hidden=mode!=='offline';$('simulation-actions').hidden=mode!=='offline';$('online-controls').hidden=mode==='offline';render();});
   $('stream-on').addEventListener('click',async()=>{
     if(isPreparing())return;
     let nonce=0;while(!nonce)nonce=crypto.getRandomValues(new Uint32Array(1))[0];
@@ -156,5 +156,5 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   }
   document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseSimulation('页面已隐藏 · 模拟暂停，可继续');});
   render();requestAnimationFrame(frame);
-  return {beginPreparedTelemetry(nonce){pauseSimulation('准备实车跑图 · 离线模拟暂停');mode='feedback';$('map-source').value=mode;$('sim-controls').hidden=true;$('route-editor').hidden=true;$('online-controls').hidden=false;telemetry.begin(nonce,performance.now());render();},snapshot(){telemetry.tick(performance.now());return telemetry;},receive(line){telemetry.accept(line,performance.now());},connection(value){connected=value;telemetry.stop(value?'已连接 · 遥测需手动开启':'串口未连接');render();}};
+  return {beginPreparedTelemetry(nonce){pauseSimulation('准备实车跑图 · 离线模拟暂停');mode='feedback';$('map-source').value=mode;$('sim-controls').hidden=true;$('route-editor').hidden=true;$('simulation-actions').hidden=true;$('online-controls').hidden=false;telemetry.begin(nonce,performance.now());render();},snapshot(){telemetry.tick(performance.now());return telemetry;},receive(line){telemetry.accept(line,performance.now());},connection(value){connected=value;telemetry.stop(value?'已连接 · 遥测需手动开启':'串口未连接');render();}};
 }
