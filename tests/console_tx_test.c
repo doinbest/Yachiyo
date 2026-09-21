@@ -59,6 +59,15 @@ int main(void)
   assert(ConsoleTx_EventDropped()==6);
   assert(!ConsoleTx_Event(NULL,1) && !ConsoleTx_Event("",0));
   assert(ConsoleTx_EventDropped()==8);
+  ConsoleTx_Init(&uart); next_status=HAL_OK;
+  assert(ConsoleTx_UrgentIdle());
+  assert(ConsoleTx_Urgent("reset reply",11)); assert(!ConsoleTx_UrgentIdle());
+  ConsoleTx_Process(); assert(!ConsoleTx_UrgentIdle());
+  ConsoleTx_TxCpltCallback(&uart); assert(!ConsoleTx_UrgentIdle());
+  ConsoleTx_Process(); assert(ConsoleTx_UrgentIdle());
+  assert(ConsoleTx_Urgent("reset reply",11)); ConsoleTx_Process();
+  ConsoleTx_ErrorCallback(&uart); ConsoleTx_Process();
+  { ConsoleTx_Stats_t stats; ConsoleTx_GetStats(&stats); assert(ConsoleTx_UrgentIdle() && stats.urgent_dropped==1); }
   puts("console_tx: lifetime, priority, latest telemetry, busy, overflow, timeout PASS");
   return 0;
 }

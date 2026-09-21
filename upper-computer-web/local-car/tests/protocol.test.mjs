@@ -38,3 +38,14 @@ test('accepted is not completion and state is reported only from explicit feedba
   assert.match(describeReply('ERR busy'), /拒绝/);
   assert.doesNotMatch(describeReply('OK material auto color=1'), /已完成|已到位/);
 });
+
+ test('reset and yaw zero are distinct writable system commands', async () => {
+  const {moduleForWire}=await import('../protocol.mjs');
+  const {readOnlyCommand}=await import('../bridge.mjs');
+  for(const [id,wire] of [['system-reset','system reset'],['imu-zero','imu zero']]) {
+    assert.equal(buildCommand(id,{}),wire);
+    assert.equal(moduleForWire(wire),'system');
+    assert.equal(moduleForWire(`OK ${wire} pending`),'system');
+    assert.equal(readOnlyCommand(wire),false);
+  }
+ });

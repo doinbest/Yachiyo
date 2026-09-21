@@ -34,6 +34,8 @@ export const commands = [
   command('vision-calib-chassis','vision','底盘物料标定','vision calib chassis {target}',[target()]),
   command('vision-material','vision','物料对准','vision material {target}',[target()]),
   command('vision-stop','vision','停止视觉任务','vision stop'),
+  command('system-reset','system','重启 STM32','system reset',[],'仅空闲时重启主控；会重新执行初始化，不能代替停车或电机驱动器复位。'),
+  command('imu-zero','system','Z 轴角度清零','imu zero',[],'保持静止；只将当前模块角度设为零，不做零偏标定。之后重新验证 IMU 并设置地图起点。'),
   command('info','system','设备信息','info'),
   command('help','system','固件指令帮助','help'),
   command('chassis-run','chassis','平移与转向测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-100,100,0.1),number('vy','左向速度 / mm·s⁻¹',0,-100,100,0.1),number('omega','逆时针角速度 / rad·s⁻¹',0,-0.15,0.15,0.01),number('seconds','保持时间 / s',1,0.1,59,0.1)],'角速度为 0 时自动保持起步航向，需要 IMU 验证通过；非 0 时执行给定转向。起步和停车各 500 ms；总时长为保持时间加 1 秒。'),
@@ -82,7 +84,7 @@ export function moduleForWire(text) {
   if (/^(?:chassis\b|wheel(?:\s|=)|\[CHASSIS\])/.test(line)) return 'chassis';
   if (/^(?:camera|material|vision)\b/.test(line)) return 'vision';
   if (/^(?:pos|enable|disable|state|stop|position|home|origin|zero|config|grip)\b/.test(line)) return 'arm';
-  if (/^(?:imu|info|help|HWT101)\b/.test(line) || /^\[IMU\b/.test(line)) return 'system';
+  if (/^(?:system|console|imu|info|help|HWT101)\b/.test(line) || /^\[IMU\b/.test(line)) return 'system';
   return 'manual';
 }
 

@@ -129,6 +129,10 @@ void ConsoleTx_TelemetryCancel(void)
   if (telemetry_size) dropped++;
   telemetry_size = 0;
 }
+bool ConsoleTx_UrgentIdle(void)
+{
+  return port && !urgent_used && !(active_size && active_kind == TX_URGENT);
+}
 bool ConsoleTx_TelemetryReady(void)
 {
   return port && !busy && !active_size && !used && !urgent_used && !event_size && !telemetry_size;

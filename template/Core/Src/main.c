@@ -341,6 +341,15 @@ static void HWT101_Upload_Process(void)
   {
     HWT101_UploadFinalRunId = Cal.run_id;
     HWT101_UploadFinalState = Cal.state;
+    if (!strcmp(Cal.result, "ZERO_SAMPLE"))
+    {
+      UploadLength = snprintf(UploadText, sizeof(UploadText),
+          "\r\nOK imu zero sample before_deg=%.3f after_deg=%.3f verified=0 control_ready=0\r\narm> ",
+          (double)Cal.zero_before_deg, (double)Cal.zero_after_deg);
+      if ((UploadLength > 0) && (UploadLength < (int)sizeof(UploadText)))
+        (void)ConsoleTx_Write((uint8_t *)UploadText, (uint16_t)UploadLength);
+      return;
+    }
     if (Cal.state == HWT101_CAL_FAILED) ImuTiming_Report(&Cal);
     UploadLength = snprintf(UploadText, sizeof(UploadText),
         "\r\n[IMU CAL] result=%s state=%s reason=%s HAL=%u run_id=%lu verified=%u control_ready=%u\r\n",
@@ -574,8 +583,13 @@ int main(void)
     ImuTiming_Begin();
     ConsoleRx_Process();
     ArmConsole_StopProcess(); /* Ctrl+C cancels producers before they can submit motion. */
-    MotorBus_Process();
     ConsoleTx_Process();
+    if (ArmConsole_ResetPending())
+    {
+      ArmConsole_Process(); /* Consume a queued stop before committing reset. */
+      if (ArmConsole_ResetProcess()) continue;
+    }
+    MotorBus_Process();
     Camera_Process();
     ImuTiming_Mark(IMU_TIME_CAMERA);
     MechanicalArm_Process();
@@ -606,6 +620,7 @@ int main(void)
     HWT101_Upload_Process();
     ImuTiming_Mark(IMU_TIME_LOG);
     ArmConsole_Process();
+    if (ArmConsole_ResetPending()) continue;
     ImuTiming_Mark(IMU_TIME_CONSOLE);
     TJC_Process();
     if (!ChassisMotion_IsBusy() && !ChassisRoute_IsBusy()) ContestScreen_Process();

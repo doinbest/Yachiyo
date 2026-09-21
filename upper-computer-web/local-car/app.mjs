@@ -1,7 +1,7 @@
 import {mountWheelFeedback} from './wheel-feedback.mjs';
 import {createAttemptTracker} from './command-attempt.mjs?v=terminal-3';
 import {mountPreparation} from './route-preparation.mjs?v=chassis-3';
-import {commands,buildCommand,frameCommand,describeReply,moduleForWire} from './protocol.mjs?v=heading-hold-1';
+import {commands,buildCommand,frameCommand,describeReply,moduleForWire} from './protocol.mjs?v=reset-zero-1';
 import {BridgeLink,readOnlyCommand} from './bridge.mjs?v=dma-1';
 import {mountMap} from './map-view.mjs?v=dma-1';
 import {mountQr} from './qr-panel.mjs?v=bridge-1';
@@ -18,7 +18,17 @@ let favorites=Array.isArray(prefs.favorites)?prefs.favorites.filter(f=>{try{if(t
 function appendLog(direction,text){const owner=moduleForWire(text);logs.push({time:new Date().toLocaleTimeString('zh-CN',{hour12:false}),direction,text,owner});if(logs.length>500)logs.shift();if(direction==='TX')txCount++;if(direction==='RX')rxCount++;if(text.startsWith('ERR'))errors++;if(!$('autoscroll').checked)unseen++;renderLogs();}
 function renderLogs(){const scroll=$('terminal').scrollTop;const scope=$('log-module').value;const entries=logs.filter(l=>(filter==='ALL'||l.direction===filter)&&(scope==='all'||l.owner===(scope==='current'?active:scope)||l.direction==='SYS'));const fragment=document.createDocumentFragment();for(const l of entries){const row=node('div',undefined,`log-entry ${l.direction.toLowerCase()} ${l.text.startsWith('ERR')?'error':''}`);row.append(node('time',l.time),node('b',l.direction),node('span',l.text));fragment.append(row);}if(!entries.length)fragment.append(node('p','本模块尚无收发记录，可切换“全部模块”查看。','empty-log'));$('terminal').replaceChildren(fragment);$('log-count').textContent=`${logs.length}${errors?' · 错误 '+errors:''}`;$('tx-count').textContent=txCount;$('rx-count').textContent=rxCount;$('terminal').scrollTop=$('autoscroll').checked?$('terminal').scrollHeight:scroll;$('new-logs').hidden=!unseen;$('new-logs').textContent=`${unseen} 条新记录 · 恢复跟随`;}
 let connectionState='disconnected';
-function receive(line){appendLog('RX',line);wheelView?.receive(line);mapView?.receive(line);qrView?.receive(line);prepView?.receive(line);const owner=moduleForWire(line);if(owner!=='manual'&&!line.startsWith('@CHASSIS ')&&/^(OK |ERR |\[IMU CAL\]|EVT qr )/.test(line)){status.set(owner,{line,time:Date.now(),live:bridge.connected});renderStatus();}}
+function receive(line){appendLog('RX',line);
+  if(line==='STM32 mechanical arm console ready'){
+    status.clear();
+    for(const view of [wheelView,mapView,qrView,prepView]){view?.connection(false);view?.connection(bridge.connected);}
+    appendLog('SYS','已收到 STM32 启动信息；旧状态已清除，请重新验证 IMU、准备跑图并手动开启订阅。');renderStatus();
+  }
+  if(/^OK imu zero started/.test(line)){
+    mapView?.connection(bridge.connected);prepView?.connection(false);prepView?.connection(bridge.connected);
+    appendLog('SYS','Z 轴归零已受理。完成后查询 IMU 状态查看新角度；跑图前重新验证并设置地图起点。');
+  }
+wheelView?.receive(line);mapView?.receive(line);qrView?.receive(line);prepView?.receive(line);const owner=moduleForWire(line);if(owner!=='manual'&&!line.startsWith('@CHASSIS ')&&/^(OK |ERR |\[IMU CAL\]|EVT qr )/.test(line)){status.set(owner,{line,time:Date.now(),live:bridge.connected});renderStatus();}}
 function connection(state){connectionState=state;const connected=state==='connected';if(connected&&bridge.port){const select=$('serial-port');if(!Array.from(select.options).some(o=>o.value===bridge.port)){const o=node('option',bridge.port);o.value=bridge.port;select.append(o);}select.value=bridge.port;}wheelView?.connection(connected);mapView?.connection(connected);qrView?.connection(connected);prepView?.connection(connected);$('connection-status').textContent=({connected:`本地服务已连接 ${bridge.port}`,connecting:`正在连接 ${$('serial-port').value}…`,disconnecting:'正在断开…',disconnected:'尚未连接'})[state];$('connection-dot').classList.toggle('online',connected);$('connect').disabled=state!=='disconnected'||!$('serial-port').value;$('serial-port').disabled=state!=='disconnected';$('refresh-ports').disabled=state!=='disconnected';$('disconnect').disabled=!connected;$('baud').disabled=state!=='disconnected';for(const value of status.values())value.live=false;if(!connected)$('subscription-note').textContent='';updateControls();renderStatus();if(connected)appendLog('SYS','已连接，尚未自动发送任何指令。');}
 function communicationError(error){appendLog('SYS',`通信异常：${error.message}`);toast(error.message);prepView?.refreshConfiguration();updateControls();}
 function stopped(){return bridge.stopLatched;}
@@ -39,6 +49,7 @@ function showAttempt({wire,state,current}) {
 const attempts=createAttemptTracker(showAttempt);
 async function send(wire,fromPreparation=false){
   if(['chassis stop','wheel stop'].includes(wire))return requestStop();
+  if(/^system\s+reset$/.test(wire.trim())&&!window.confirm('重启 STM32？\n仅在整车静止、任务空闲时操作。主控将重新初始化，外部驱动器不会断电复位。重启后需重新验证 IMU 和准备跑图。'))return false;
   return attempts.run(wire,()=>executeSend(wire,fromPreparation));
 }
 async function executeSend(wire,fromPreparation=false){
@@ -104,7 +115,12 @@ const recovery=node('details',undefined,'advanced');recovery.append(node('summar
 recovery.append(node('p','用于驱动器已实际复位后的总线恢复，不会复位硬件。先停止四轮采集并等待在途事务结束，再确认恢复。底部“解除停止锁定”仅解除网页软件停车锁，两者不同。','form-note'));
 actions(recovery,[['feedback-off','停止四轮采集'],['reset-confirmed','确认驱动已复位']]);ch.append(recovery);
 tabs(pages.vision,[['任务执行',body=>{body.append(node('p','Base 回零 → 内部请求识别 → 底盘搜索 → 底盘/X 对准。当前终点为对准完成。','form-note'));actions(body,[['material-status','读取任务状态'],['material-stop','停止物料任务']]);body.append(controlForm('material-auto'));}],['相机调试',body=>{body.append(node('p','仅识别，不主动驱动机构；停止识别请求不等于停止物料任务。','form-note'));actions(body,[['camera-status','读取相机状态'],['camera-stop','停止识别请求']]);body.append(controlForm('camera-material'));}],['标定与分步测试',body=>{actions(body,[['vision-status','读取 Base/X 状态'],['vision-stop','停止 Base/X 对准']]);advanced(body,'参考与两种标定路径',['vision-ref','vision-calib-material','vision-calib-chassis']);body.append(controlForm('vision-material',{label:'Base/X 独立对准'}));}]]);
-const sys=pages.system;actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','验证 10 秒'],['imu-cal-cancel','取消标定/验证']]);advanced(sys,'IMU 连续角度输出',['imu-stream-on','imu-stream-off']);
+const sys=pages.system;actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','验证 10 秒'],['imu-cal-cancel','取消标定/验证']]);sys.append(node('p','Z 轴角度清零：把当前朝向设为 0°，不消除漂移、不标定零偏。保持静止操作；跑图前重新验证 IMU 并设置地图起点。','form-note'));
+actions(sys,[['imu-zero','Z 轴角度清零']]);
+advanced(sys,'IMU 连续角度输出',['imu-stream-on','imu-stream-off']);
+const resetSection=node('details',undefined,'advanced');resetSection.append(node('summary','主控重启'));
+resetSection.append(node('p','先确认整车静止。仅重启 STM32，会重新执行开机初始化；不会给电机驱动器、HWT101 或香橙派断电。软件任务或标定忙时拒绝执行，不能代替停车。','form-note'));
+actions(resetSection,[['system-reset','重启 STM32']]);sys.append(resetSection);
 qrView=mountQr({root:pages.qr,send,notify:toast,canSend});}
 function addFavorite(label,wire){if(!wire)return;if(favorites.some(f=>f.wire===wire)){toast('此命令已在常用中。');return;}if(favorites.length>=24){toast('最多保留 24 条常用，请先移除。');return;}favorites.push({label,wire});prefs.favorites=favorites;save();renderFavorites();toast('已加入常用。');}
 function renderFavorites(){const shown=favorites.map((f,index)=>({...f,index,owner:moduleForWire(f.wire)})).filter(f=>f.owner===active||f.owner==='manual');$('favorites-count').textContent=`${shown.length} 项 · 点击即发送`;$('favorites').replaceChildren(...shown.map(f=>{const box=node('div',undefined,'favorite'),b=node('button',`${f.owner==='manual'?'手动 · ':''}${f.label}`),remove=node('button','×','remove');b.dataset.send='1';b.title=f.wire;b.append(node('code',f.wire));b.onclick=()=>void send(f.wire);remove.setAttribute('aria-label',`移除 ${f.label}`);remove.onclick=()=>{favorites.splice(f.index,1);prefs.favorites=favorites;save();renderFavorites();};box.append(b,remove);return box;}));updateControls();}

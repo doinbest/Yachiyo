@@ -11,6 +11,8 @@ typedef struct {
   uint16_t reply_pending, reply_peak;
 } ConsoleTx_Stats_t;
 /** Main-loop only: reserved FIFO for stop replies, selected at text/frame boundaries. */
+/** @brief 主循环检查紧急回复队列及其在途DMA是否已全部结束。 */
+bool ConsoleTx_UrgentIdle(void);
 bool ConsoleTx_Urgent(const char *data, uint16_t size);
 /** Main-loop only: each debug source keeps its latest unsent sample (max 320 bytes). */
 bool ConsoleTx_Debug(unsigned source, const char *data, uint16_t size);

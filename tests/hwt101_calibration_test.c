@@ -87,6 +87,15 @@ int main(void)
     HWT101_Cal_Cancel(); assert(!HWT101_Cal_IsBusy());
   }
   route_busy = motion_busy = false;
+  setup(100); assert(HWT101_Cal_ZeroStart());
+  advance(100,0); assert(zeros==0);
+  finish();
+  assert(zeros==1 && starts==0 && saves==0 && exits==0);
+  assert(snapshot().zero_sample_received && !snapshot().verified && !snapshot().control_ready);
+  assert(!strcmp(snapshot().result,"ZERO_SAMPLE"));
+  setup(100); fail_write_reg=0x76; assert(HWT101_Cal_ZeroStart()); finish();
+  assert(!strcmp(snapshot().reason,"yaw_zero_write") && !saves);
+  setup(100); assert(HWT101_Cal_ZeroStart()); HWT101_Cal_Cancel(); finish(); assert(!zeros);
   setup(100);assert(HWT101_Cal_VerifyStart(10000));
   advance(100,0);assert(zeros==0 && snapshot().samples==0);
   until_verify();assert(zeros==1 && saves==0 && starts==0 && exits==0);

@@ -45,6 +45,8 @@
 
 static UART_HandleTypeDef *ArmConsole_Uart;
 static uint8_t ArmConsole_ImuStream;
+static uint8_t ResetPending, ResetAckDrained;
+static uint32_t ResetStarted, ResetDrainTick, ResetDropBaseline;
 static uint8_t ArmConsole_RingBuffer[ARM_CONSOLE_RING_SIZE];
 static volatile uint16_t ArmConsole_RingWrite;
 static volatile uint16_t ArmConsole_RingRead;
@@ -568,6 +570,8 @@ static void ArmConsole_HelpShow(void)
       "imu status     readonly HWT101 angle and I2C statistics\r\n"
       "imu cal start  keep still: 20s native calibration + 30s verification\r\n"
       "imu cal cancel  cancel and clear boot verification\r\n"
+      "system reset  restart STM32 when motion and IMU tasks are idle\r\n"
+      "imu zero  zero Z angle only; reverify and reset map origin afterwards\r\n"
       "imu verify  zero yaw then verify for 10s\r\n"
       "imu stream on|off  continuous angle log (default off)\r\n"
       "screen status  readonly USART3 statistics\r\n"
@@ -1681,12 +1685,14 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
   }
   if ((!strcmp(Tokens[0], "imu")) &&
       (((TokenCount == 3U) && !strcmp(Tokens[1], "cal") && !strcmp(Tokens[2], "start")) ||
+       ((TokenCount == 2U) && !strcmp(Tokens[1], "zero")) ||
        ((TokenCount == 2U) && !strcmp(Tokens[1], "verify")) ||
        ((TokenCount == 3U) && !strcmp(Tokens[1], "verify") && !strcmp(Tokens[2], "10"))))
   {
     HWT101_CalStatus_t Cal;
     uint8_t Native = !strcmp(Tokens[1], "cal");
-    uint32_t VerifyMs = Native ? 30000U : 10000U;
+    uint8_t ZeroOnly = !strcmp(Tokens[1], "zero");
+    uint32_t VerifyMs = Native ? 30000U : ZeroOnly ? 0U : 10000U;
     bool Started;
     if (HWT101_Cal_IsBusy())
     {
@@ -1698,14 +1704,14 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
       ArmConsole_Write("ERR imu motion_busy stop all motion first\r\n");
       return 1U;
     }
-    Started = Native ? HWT101_Cal_Start() : HWT101_Cal_VerifyStart(VerifyMs);
+    Started = Native ? HWT101_Cal_Start() : ZeroOnly ? HWT101_Cal_ZeroStart() : HWT101_Cal_VerifyStart(VerifyMs);
     if (Started)
     {
       ArmConsole_ImuStream = 0U;
       ConsoleTx_DebugCancel(CONSOLE_DEBUG_IMU);
       ArmConsole_CameraTraceStop();
       ArmConsole_Printf("OK imu %s started cal_ms=%lu verify_ms=%lu keep_still=1 stream=off\r\n",
-                        Native ? "cal" : "verify", Native ? 20000UL : 0UL, (unsigned long)VerifyMs);
+                        Native ? "cal" : ZeroOnly ? "zero" : "verify", Native ? 20000UL : 0UL, (unsigned long)VerifyMs);
     }
     else if (HWT101_Cal_GetStatus(&Cal))
       ArmConsole_Printf("ERR imu cal reason=%s HAL=%u\r\n", Cal.reason, (unsigned)Cal.hal);
@@ -1922,8 +1928,15 @@ static void ArmConsole_StopStatusShow(void)
     (void)ConsoleTx_Urgent(text, (uint16_t)length);
 }
 
+static void ArmConsole_ResetCancel(void)
+{
+  if (ResetPending) ArmConsole_Write("ERR system reset cancelled_by_stop\r\n");
+  ResetPending = 0U;
+}
+
 static void ArmConsole_StopRequest(uint32_t token)
 {
+  ArmConsole_ResetCancel();
   /* Cancel every automatic producer before requesting the shared UART5 stop. */
   (void)ChassisRoute_Cancel();
   ArmVision_Stop();
@@ -1982,6 +1995,60 @@ static uint8_t ArmConsole_StopCommandHandle(uint8_t count, char *tokens[])
   return 1;
 }
 
+uint8_t ArmConsole_ResetPending(void) { return ResetPending; }
+
+uint8_t ArmConsole_ResetProcess(void)
+{
+  ConsoleTx_Stats_t tx;
+  if (!ResetPending) return 0U;
+  ConsoleTx_GetStats(&tx);
+  if (tx.urgent_dropped != ResetDropBaseline || (uint32_t)(HAL_GetTick() - ResetStarted) > 5000U)
+  {
+    ArmConsole_Write(tx.urgent_dropped != ResetDropBaseline ?
+      "ERR system reset ack_failed cancelled\r\n" : "ERR system reset ack_timeout cancelled\r\n");
+    ResetPending = 0U;
+    return 0U;
+  }
+  if (ConsoleTx_UrgentIdle())
+  {
+    if (!ResetAckDrained) { ResetAckDrained = 1U; ResetDrainTick = HAL_GetTick(); }
+    else if ((uint32_t)(HAL_GetTick() - ResetDrainTick) >= 200U)
+    {
+      uint32_t primask = __get_PRIMASK();
+      __disable_irq();
+      if (!ArmConsole_StopPending)
+      {
+        ResetPending = 0U;
+        NVIC_SystemReset();
+      }
+      __set_PRIMASK(primask);
+    }
+  }
+  else ResetAckDrained = 0U;
+  return ResetPending;
+}
+
+static uint8_t ArmConsole_SystemCommandHandle(uint8_t count, char *tokens[])
+{
+  static const char reply[] = "\r\nOK system reset pending target=stm32 peripherals_not_reset=1\r\n";
+  ConsoleTx_Stats_t tx;
+  if (strcmp(tokens[0], "system")) return 0U;
+  if (count != 2U || strcmp(tokens[1], "reset"))
+    ArmConsole_Write("ERR format: system reset\r\n");
+  else if (ChassisMotion_IsBusy() || ChassisRoute_IsBusy() || Mecanum_IsBusy() ||
+           MechanicalArm_IsBusy() || ArmVision_IsBusy() || MaterialVision_IsBusy() || HWT101_Cal_IsBusy())
+    ArmConsole_Write("ERR system reset busy stop motion and finish/cancel calibration first\r\n");
+  else
+  {
+    ConsoleTx_GetStats(&tx);
+    ResetDropBaseline = tx.urgent_dropped;
+    if (!ConsoleTx_Urgent(reply, sizeof(reply) - 1U))
+      ArmConsole_Write("ERR system reset ack_queue_full cancelled\r\n");
+    else { ResetPending = 1U; ResetAckDrained = 0U; ResetStarted = HAL_GetTick(); }
+  }
+  return 1U;
+}
+
 static uint8_t ArmConsole_CommandExecute(char *Line)
 {
   char *Tokens[ARM_CONSOLE_TOKEN_COUNT];
@@ -1996,6 +2063,17 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   }
   /* Queries and log subscription never operate actuators and bypass motion guards. */
   if (ArmConsole_StopCommandHandle(TokenCount, Tokens)) return 1U;
+  if (ResetPending)
+  {
+    /* Every valid foreground stop keeps its existing scope and cancels reset. */
+    if (TokenCount == 2U &&
+        ((!strcmp(Tokens[0], "stop") && MechanicalArm_AxisGet(Tokens[1]) != MECHANICAL_ARM_AXIS_INVALID) ||
+         (!strcmp(Tokens[1], "stop") && (!strcmp(Tokens[0], "vision") ||
+          !strcmp(Tokens[0], "material") || !strcmp(Tokens[0], "camera")))))
+      ArmConsole_ResetCancel();
+    else { ArmConsole_Write("ERR system reset_pending\r\n"); return 1U; }
+  }
+  if (ArmConsole_SystemCommandHandle(TokenCount, Tokens)) return 1U;
   if (TokenCount == 2U && !strcmp(Tokens[0], "console") && !strcmp(Tokens[1], "status")) {
     ConsoleTx_Stats_t tx;
     ConsoleRx_Stats_t rx;
@@ -2075,7 +2153,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
 
   if (strcmp(Tokens[0], "imu") == 0)
   {
-    ArmConsole_Write("ERR imu format: imu status | imu cal start|cancel | imu verify | imu stream on|off\r\n");
+    ArmConsole_Write("ERR imu format: imu status | imu cal start|cancel | imu zero | imu verify | imu stream on|off\r\n");
     return 1U;
   }
 
@@ -2104,6 +2182,7 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
 
   ArmConsole_Uart = huart;
   ConsoleTx_Init(huart);
+  ResetPending = ResetAckDrained = 0U;
   ArmConsole_ImuStream = 0U;
   ArmConsole_QrStream = 0U;
   memset(&ArmConsole_QrPending, 0, sizeof(ArmConsole_QrPending));

@@ -1,6 +1,7 @@
 #ifndef TEST_MAIN_H
 #define TEST_MAIN_H
 #include <stdint.h>
+void NVIC_SystemReset(void);
 #include <stddef.h>
 typedef enum { HAL_OK, HAL_ERROR, HAL_BUSY, HAL_TIMEOUT } HAL_StatusTypeDef;
 typedef struct { unsigned int instance; } I2C_HandleTypeDef;

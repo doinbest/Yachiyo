@@ -7,6 +7,11 @@
 #include "../template/Hardware/QR.c"
 static char output[16000];
 static uint32_t tick = 100;
+static unsigned reset_calls, zero_calls;
+static bool urgent_idle=true;
+static uint32_t urgent_losses;
+void NVIC_SystemReset(void) { reset_calls++; }
+bool ConsoleTx_UrgentIdle(void) { return urgent_idle; }
 static unsigned camera_calls, motor_calls, stop_calls, notice_clears;
 static uint8_t arm_busy, material_busy, motor_busy;
 static bool motion_busy;
@@ -29,7 +34,7 @@ bool ConsoleTx_Write(const uint8_t *data,uint16_t length)
 bool ConsoleTx_Urgent(const char *data,uint16_t length){return ConsoleTx_Write((const uint8_t *)data,length);}
 bool ConsoleTx_Debug(unsigned source,const char *data,uint16_t length){(void)source;return ConsoleTx_Write((const uint8_t *)data,length);}
 void ConsoleTx_DebugCancel(unsigned source){(void)source;}
-void ConsoleTx_GetStats(ConsoleTx_Stats_t *out){memset(out,0,sizeof(*out));}
+void ConsoleTx_GetStats(ConsoleTx_Stats_t *out){memset(out,0,sizeof(*out));out->urgent_dropped=urgent_losses;}
 void ConsoleRx_GetStats(ConsoleRx_Stats_t *out){memset(out,0,sizeof(*out));}
 uint32_t ConsoleTx_Dropped(void){return 0;}
 bool ConsoleTx_Event(const char *data,uint16_t length)
@@ -101,6 +106,7 @@ static unsigned cal_starts, cal_cancels, refresh_calls;
 static uint32_t verify_duration;
 static bool chassis_busy;
 bool HWT101_Cal_IsBusy(void) { return cal_status.busy; }
+bool HWT101_Cal_ZeroStart(void) { zero_calls++; cal_status.busy=true; return true; }
 bool HWT101_Cal_Start(void)
 {
   assert(!chassis_busy && !arm_busy && !motor_busy && !material_busy);
@@ -352,5 +358,38 @@ int main(void)
   command("info\r");assert(strstr(output,"STM32F407"));
   for(unsigned j=0;j<600;j++)ArmConsole_ReceiveData('x');
   ArmConsole_ReceiveData(3);command("chassis stop 99\r");assert(strstr(output,"token=99"));
+  chassis_busy=false; heading_status.active=false; motor_busy=arm_busy=material_busy=0;
+  route_reserved=motion_busy=cal_status.busy=false;
+  command("imu zero extra\r"); assert(!zero_calls && strstr(output,"ERR imu format"));
+  motor_busy=1; command("imu zero\r"); assert(!zero_calls && strstr(output,"motion_busy")); motor_busy=0;
+  command("imu zero\r"); assert(zero_calls==1 && strstr(output,"OK imu zero started"));
+  cal_status.busy=false;
+  for(unsigned owner=0;owner<7;owner++) {
+    chassis_busy=owner==0; motor_busy=owner==1; arm_busy=owner==2; material_busy=owner==3;
+    route_reserved=owner==4; motion_busy=owner==5; cal_status.busy=owner==6;
+    command("system reset\r"); assert(!ArmConsole_ResetPending() && strstr(output,"ERR system reset busy"));
+  }
+  chassis_busy=false; motor_busy=arm_busy=material_busy=0; route_reserved=motion_busy=cal_status.busy=false;
+  command("system reset extra\r"); assert(!ArmConsole_ResetPending());
+  urgent_idle=false; command("system reset\r"); assert(ArmConsole_ResetPending() && strstr(output,"OK system reset pending"));
+  before=motor_calls; command("enable base\r"); assert(motor_calls==before && strstr(output,"reset_pending"));
+  tick+=1000; assert(ArmConsole_ResetProcess() && !reset_calls);
+  urgent_idle=true; assert(ArmConsole_ResetProcess() && !reset_calls);
+  tick+=199; assert(ArmConsole_ResetProcess() && !reset_calls);
+  tick++; ArmConsole_ResetProcess(); assert(reset_calls==1);
+  command("system reset\r"); ArmConsole_ReceiveData(3); ArmConsole_StopProcess();
+  assert(!ArmConsole_ResetPending()); tick+=6000; ArmConsole_ResetProcess(); assert(reset_calls==1);
+  {
+    const char *stops[]={"stop all\r","stop base\r","stop z\r","stop x\r","vision stop\r","material stop\r","camera stop\r"};
+    for(unsigned i=0;i<sizeof(stops)/sizeof(stops[0]);i++) {
+      command("system reset\r"); assert(ArmConsole_ResetPending());
+      command(stops[i]); assert(!ArmConsole_ResetPending() && strstr(output,"cancelled_by_stop"));
+      tick+=6000; ArmConsole_ResetProcess(); assert(reset_calls==1);
+    }
+  }
+  urgent_idle=false; command("system reset\r"); tick+=5001; ArmConsole_ResetProcess();
+  assert(!ArmConsole_ResetPending() && reset_calls==1 && strstr(output,"ack_timeout"));
+  command("system reset\r"); urgent_losses++; ArmConsole_ResetProcess();
+  assert(!ArmConsole_ResetPending() && reset_calls==1 && strstr(output,"ack_failed"));
   puts("arm_console_host_test: commands, units, busy, status, CRLF and async prompts OK");return 0;
 }

@@ -185,6 +185,7 @@ static bool StartRun(bool native, uint32_t duration_ms)
 }
 
 bool HWT101_Cal_Start(void) { return StartRun(true, 30000U); }
+bool HWT101_Cal_ZeroStart(void) { return StartRun(false, 0U); }
 
 bool HWT101_Cal_VerifyStart(uint32_t duration_ms)
 {
@@ -240,6 +241,14 @@ static void VerifySample(void)
   {
     cal.zero_after_deg = angle.yaw;
     cal.zero_sample_received = true;
+    if (cal.verify_ms == 0U)
+    {
+      /* A fresh post-write sample is observable evidence, not drift verification. */
+      Finish(HWT101_CAL_DONE);
+      cal.reason = "yaw_zero_sample";
+      cal.result = "ZERO_SAMPLE";
+      return;
+    }
     previous_yaw = angle.yaw;
     verify_tick = last_sample_tick = angle.last_update_ms;
   }

@@ -19,6 +19,10 @@ void ArmConsole_ReceiveFault(void);
 void ArmConsole_StopProcess(void);
 /** @brief 主循环执行命令及日志；status只读缓存，角度deg、速度rpm或mm/s。 */
 void ArmConsole_Process(void);
+/** @brief 复位等待期间暂停主循环业务；继续服务RX/TX及停车命令。 */
+uint8_t ArmConsole_ResetPending(void);
+/** @brief 回复发送完成且等待200ms后请求软件复位；失败或5s超时取消。 */
+uint8_t ArmConsole_ResetProcess(void);
 /** @brief 查询连续角度日志开关；默认关闭，不影响采样和标定。
  * @return 1为开启，0为关闭；主循环使用。 */
 uint8_t ArmConsole_ImuStreamEnabled(void);
