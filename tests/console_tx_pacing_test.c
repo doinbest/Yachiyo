@@ -12,7 +12,7 @@ static uint16_t send_size;
 static char wire[12000];
 static size_t written;
 uint32_t HAL_GetTick(void) { return tick; }
-HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *u,uint8_t *p,uint16_t n)
+HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef *u,uint8_t *p,uint16_t n)
 {
   assert(u == &uart && !sending && n > 0 && n <= 32);
   if(have_finished) assert((uint32_t)(tick-finished_at)>=30);

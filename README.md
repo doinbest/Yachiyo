@@ -59,6 +59,7 @@ python -m unittest discover -s upper-computer-web/local-car/tests -p test_bridge
 - [当前 USART1 协议](docs/上位机协议.md)
 - [资料索引](docs/README.md)：硬件资料、设计基线和历史开发记录。
 - [代码规范](docs/开发规范/张大头风格STM32代码规范与AI提示词.md)
+- [2026-09-22 USART1 DMA 与无线输出整理](docs/开发记录/2026-09-22USART1-DMA与无线输出整理.md)
 - [2026-09-21 清理记录](docs/开发记录/2026-09-21控制台与历史代码清理.md)
 
 2026-09-11 从 `stm32_orangepi_test` 迁入现有业务，迁移事实保留在[迁移记录](docs/开发记录/2026-09-11新PCB与USB通信迁移.md)。2026-09-21 清理退出使用的代码；历史文档保留当时实验结论，旧源码可通过 Git 历史追溯。

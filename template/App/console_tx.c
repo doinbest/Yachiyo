@@ -3,7 +3,9 @@
 #define REPLY_SIZE 8192U
 #define FRAME_SIZE 2048U
 #define EVENT_SIZE 128U
-enum { TX_REPLY, TX_EVENT, TX_TELEMETRY };
+#define URGENT_SIZE 1024U
+#define DEBUG_SIZE 320U
+enum { TX_REPLY, TX_EVENT, TX_TELEMETRY, TX_URGENT, TX_DEBUG };
 static UART_HandleTypeDef *port;
 static uint8_t replies[REPLY_SIZE], active[FRAME_SIZE];
 static char telemetry[FRAME_SIZE];
@@ -16,6 +18,15 @@ static uint32_t gap_started;
 static bool gap_valid;
 static uint8_t active_kind, busy;
 static volatile uint8_t completed, failed;
+static uint8_t urgent[URGENT_SIZE];
+static uint16_t urgent_read, urgent_write, urgent_used, reply_peak;
+static char debug[CONSOLE_DEBUG_COUNT][DEBUG_SIZE];
+static uint16_t debug_size[CONSOLE_DEBUG_COUNT];
+static uint32_t debug_started[CONSOLE_DEBUG_COUNT];
+static bool debug_sent[CONSOLE_DEBUG_COUNT];
+static unsigned debug_next, active_debug;
+static bool reply_continues;
+static uint32_t bytes_sent, urgent_dropped, debug_dropped;
 
 void ConsoleTx_Init(UART_HandleTypeDef *uart)
 {
@@ -26,6 +37,12 @@ void ConsoleTx_Init(UART_HandleTypeDef *uart)
   active_offset = chunk_size = 0;
   completed_at = gap_started = 0;
   gap_valid = false;
+  urgent_read = urgent_write = urgent_used = reply_peak = 0;
+  bytes_sent = urgent_dropped = debug_dropped = 0;
+  memset(debug_size, 0, sizeof(debug_size));
+  memset(debug_sent, 0, sizeof(debug_sent));
+  debug_next = active_debug = 0;
+  reply_continues = false;
 }
 bool ConsoleTx_Write(const uint8_t *data, uint16_t size)
 {
@@ -41,7 +58,46 @@ bool ConsoleTx_Write(const uint8_t *data, uint16_t size)
     write_at = (write_at + 1U) % REPLY_SIZE;
   }
   used += size;
+  if (used > reply_peak) reply_peak = used;
   return true;
+}
+bool ConsoleTx_Urgent(const char *data, uint16_t size)
+{
+  uint16_t i;
+  if (!port || !data || !size || size > URGENT_SIZE - urgent_used)
+  { urgent_dropped++; return false; }
+  for (i = 0; i < size; i++) {
+    urgent[urgent_write] = (uint8_t)data[i];
+    urgent_write = (urgent_write + 1U) % URGENT_SIZE;
+  }
+  urgent_used += size;
+  return true;
+}
+bool ConsoleTx_Debug(unsigned source, const char *data, uint16_t size)
+{
+  if (!port || source >= CONSOLE_DEBUG_COUNT || !data || !size || size > DEBUG_SIZE)
+  { debug_dropped++; return false; }
+  if (debug_size[source]) debug_dropped++;
+  memcpy(debug[source], data, size);
+  debug_size[source] = size;
+  return true;
+}
+void ConsoleTx_DebugCancel(unsigned source)
+{
+  if (source < CONSOLE_DEBUG_COUNT) {
+    if (debug_size[source]) debug_dropped++;
+    debug_size[source] = 0;
+  }
+}
+void ConsoleTx_GetStats(ConsoleTx_Stats_t *out)
+{
+  if (!out) return;
+  out->bytes_sent = bytes_sent;
+  out->reply_pending = used;
+  out->reply_peak = reply_peak;
+  out->reply_dropped = reply_dropped;
+  out->urgent_dropped = urgent_dropped;
+  out->debug_dropped = debug_dropped;
 }
 bool ConsoleTx_Telemetry(const char *data, uint16_t size)
 {
@@ -75,7 +131,7 @@ void ConsoleTx_TelemetryCancel(void)
 }
 bool ConsoleTx_TelemetryReady(void)
 {
-  return port && !busy && !active_size && !used && !event_size && !telemetry_size;
+  return port && !busy && !active_size && !used && !urgent_used && !event_size && !telemetry_size;
 }
 void ConsoleTx_EventCancel(void)
 {
@@ -86,6 +142,8 @@ static void ConsoleTx_ActiveDropped(void)
 {
   if (active_kind == TX_TELEMETRY) dropped++;
   else if (active_kind == TX_EVENT) event_dropped++;
+  else if (active_kind == TX_URGENT) urgent_dropped++;
+  else if (active_kind == TX_DEBUG) debug_dropped++;
   else reply_dropped++;
 }
 void ConsoleTx_Process(void)
@@ -100,6 +158,7 @@ void ConsoleTx_Process(void)
     {
       (void)HAL_UART_AbortTransmit(port);
       ConsoleTx_ActiveDropped();
+      reply_continues = false;
       active_size = 0;
       gap_started = HAL_GetTick();
     }
@@ -108,7 +167,12 @@ void ConsoleTx_Process(void)
     else
     {
       active_offset += chunk_size;
-      if (active_offset == active_size) active_size = 0;
+      bytes_sent += chunk_size;
+      if (active_offset == active_size) {
+        if (active_kind == TX_REPLY)
+          reply_continues = used && active[active_size - 1U] != '\n';
+        active_size = 0;
+      }
       gap_started = completed_at;
     }
     gap_valid = true;
@@ -119,11 +183,19 @@ void ConsoleTx_Process(void)
   if (!active_size)
   {
     active_offset = 0;
-    if (used)
+    if (urgent_used && !reply_continues)
+    {
+      active_size = urgent_used;
+      for (i = 0; i < active_size; i++) active[i] = urgent[(urgent_read + i) % URGENT_SIZE];
+      active_kind = TX_URGENT;
+    }
+    else if (used)
     {
       n = used > 256U ? 256U : used;
-      for (i = 0; i < n; i++)
+      for (i = 0; i < n; i++) {
         active[i] = replies[(read_at + i) % REPLY_SIZE];
+        if (active[i] == '\n') { n = i + 1U; break; }
+      }
       active_size = n;
       active_kind = TX_REPLY;
     }
@@ -139,8 +211,17 @@ void ConsoleTx_Process(void)
       active_size = telemetry_size;
       active_kind = TX_TELEMETRY;
     }
-    else
-      return;
+    else {
+      for (i = 0; i < CONSOLE_DEBUG_COUNT; i++) {
+        active_debug = (debug_next + i) % CONSOLE_DEBUG_COUNT;
+        if (debug_size[active_debug] && (!debug_sent[active_debug] ||
+            (uint32_t)(HAL_GetTick() - debug_started[active_debug]) >= 500U)) break;
+      }
+      if (i == CONSOLE_DEBUG_COUNT) return;
+      active_size = debug_size[active_debug];
+      memcpy(active, debug[active_debug], active_size);
+      active_kind = TX_DEBUG;
+    }
   }
   /* HAL may complete immediately in an IRQ; set flags before enabling TX. */
   completed = failed = 0;
@@ -148,7 +229,7 @@ void ConsoleTx_Process(void)
   started = HAL_GetTick();
   chunk_size = active_size - active_offset;
   if (chunk_size > CONSOLE_TX_CHUNK_BYTES) chunk_size = CONSOLE_TX_CHUNK_BYTES;
-  status = HAL_UART_Transmit_IT(port, active + active_offset, chunk_size);
+  status = HAL_UART_Transmit_DMA(port, active + active_offset, chunk_size);
   /* Commit queue removal only when HAL takes the frame (or rejects it).
      HAL_BUSY leaves each slot intact, so a later reply can still take priority. */
   if (active_offset == 0 && status != HAL_BUSY)
@@ -159,6 +240,16 @@ void ConsoleTx_Process(void)
       used -= active_size;
     }
     else if (active_kind == TX_EVENT) event_size = 0;
+    else if (active_kind == TX_URGENT) {
+      urgent_read = (urgent_read + active_size) % URGENT_SIZE;
+      urgent_used -= active_size;
+    }
+    else if (active_kind == TX_DEBUG) {
+      debug_size[active_debug] = 0;
+      debug_started[active_debug] = HAL_GetTick();
+      debug_sent[active_debug] = true;
+      debug_next = (active_debug + 1U) % CONSOLE_DEBUG_COUNT;
+    }
     else telemetry_size = 0;
   }
   if (status != HAL_OK)
@@ -167,6 +258,7 @@ void ConsoleTx_Process(void)
     if (status != HAL_BUSY)
     {
       ConsoleTx_ActiveDropped();
+      reply_continues = false;
       active_size = 0;
       gap_started = HAL_GetTick();
       gap_valid = true;

@@ -34,6 +34,8 @@ if __name__ == "__main__":
     build_test("qr_test", "template/Hardware/QR.c")
     build_test("hwt101_i2c_test", "template/Hardware/hwt101_i2c.c")
     build_test("hwt101_calibration_test", "template/App/hwt101_calibration.c")
+    build_test("console_rx_test", "template/App/console_rx.c")
+    build_test("console_priority_test", "template/App/console_tx.c")
     build_test("console_tx_test", "template/App/console_tx.c")
     build_test("console_tx_pacing_test", "template/App/console_tx.c")
     build_test("chassis_model_test", "template/App/chassis_model.c")

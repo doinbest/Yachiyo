@@ -67,7 +67,7 @@
 - 桥接回归：`python -m unittest discover -s upper-computer-web/local-car/tests -p test_bridge.py`。
 - 控制台启动：`upper-computer-web/local-car/start.cmd`；无需 npm 安装或云部署。
 - 用户明确要求一键构建烧录或自动诊断时使用 `workflow`；下载调试按实际硬件选择 `openocd` 等工具，不猜测调试器。
-- `serial` 用于端口扫描和日志；`can` 用于 CAN 联调，当前配置 875 kbit/s，实际操作前与所有节点复核；`embedded-docs` 用于文档维护。
+- `serial` 用于端口扫描和日志；CAN1/CAN2 自 2026-09-22 起停用；将来重新启用 CAN 时再确认参数并使用 `can`；`embedded-docs` 用于文档维护。
 
 ## 硬件操作与产物
 

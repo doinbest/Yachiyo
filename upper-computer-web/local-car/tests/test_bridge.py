@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from serial_bridge import SerialBridge
+from serial_bridge import SerialBridge, READ_COMMAND
 from serve import make_server, print_events, console_command
 import serve
 
@@ -60,6 +60,11 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_diagnostic_queries_are_read_only(self):
+        self.assertIsNotNone(READ_COMMAND.fullmatch('console status'))
+        self.assertIsNotNone(READ_COMMAND.fullmatch('chassis snapshot'))
+        self.assertIsNone(READ_COMMAND.fullmatch('console status extra'))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.ports = []

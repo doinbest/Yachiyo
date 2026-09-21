@@ -5,6 +5,17 @@
 /* Wireless pacing trial values; validate on the actual link after flashing. */
 #define CONSOLE_TX_CHUNK_BYTES 32U
 #define CONSOLE_TX_GAP_MS 30U
+enum { CONSOLE_DEBUG_IMU, CONSOLE_DEBUG_VISION, CONSOLE_DEBUG_COUNT };
+typedef struct {
+  uint32_t bytes_sent, reply_dropped, urgent_dropped, debug_dropped;
+  uint16_t reply_pending, reply_peak;
+} ConsoleTx_Stats_t;
+/** Main-loop only: reserved FIFO for stop replies, selected at text/frame boundaries. */
+bool ConsoleTx_Urgent(const char *data, uint16_t size);
+/** Main-loop only: each debug source keeps its latest unsent sample (max 320 bytes). */
+bool ConsoleTx_Debug(unsigned source, const char *data, uint16_t size);
+void ConsoleTx_DebugCancel(unsigned source);
+void ConsoleTx_GetStats(ConsoleTx_Stats_t *out);
 /** USART1 only. Main-loop producers; IRQ callbacks only set completion flags. */
 void ConsoleTx_Init(UART_HandleTypeDef *uart);
 /** @return copied into reply queue, NOT transmission completion. */

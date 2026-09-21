@@ -49,15 +49,20 @@ int main(void)
   assert(ChassisTelemetry_Stream(true,12345));assert(strstr(reply,"\"kind\":\"config\""));puts(reply);
   assert(strstr(reply,"\"telemetry_period_ms\":2000"));
   tick=220;ChassisTelemetry_Process();assert(!frame[0]);
-  tick=2200;ChassisLocalization_Process();ChassisTelemetry_Process();assert(strstr(frame,"\"position_valid\":[false,false,false,false]"));
-  assert(strstr(frame,"-4294967295"));assert(strstr(frame,"\"route\":{\"state\":\"waiting\""));assert(strstr(frame,"\"action_id\":9"));assert(strstr(frame,"\"stop_confirmed\":true"));assert(strstr(frame,"\"dropped\":7"));puts(frame);
+  tick=2200;ChassisLocalization_Process();ChassisTelemetry_Process();assert(strstr(frame,"\"v\":2"));
+  assert(strlen(frame)<1000);assert(strstr(frame,"-4294967295"));assert(strstr(frame,"\"route\":[\"waiting\",\"arrived\",2,9"));assert(strstr(frame,"\"dropped\":7"));puts(frame);
+  {char *snapshot[]={"chassis","snapshot"};assert(ChassisTelemetry_Command(2,snapshot));
+   assert(strstr(reply,"\"v\":1") && strstr(reply,"\"position_valid\":[false,false,false,false]"));
+   assert(strstr(reply,"\"stop_confirmed\":true"));
+   printf("wire bytes compact=%u detailed=%u\n",(unsigned)strlen(frame),(unsigned)strlen(reply));
+   assert(strlen(frame)*10 < strlen(reply)*7);}
   motion_fixture.distance_mode=true;motion_fixture.state=CHASSIS_MOTION_STOPPING;
   motion_fixture.reason="position_reached";motion_fixture.action_id=UINT32_MAX;
   motion_fixture.target_x_mm=motion_fixture.target_y_mm=10000;
   motion_fixture.error_x_mm=motion_fixture.error_y_mm=-20000;
   frame[0]=0;tick=UINT32_MAX;ChassisTelemetry_Process();
-  assert(strstr(frame,"\"distance\":{") && strstr(frame,"\"action_id\":4294967295") && strstr(frame,"\r\n"));
-  assert(strlen(frame)<2048);puts(frame);motion_fixture.distance_mode=false;
+  assert(strstr(frame,"\"distance\":[") && strstr(frame,"4294967295") && strstr(frame,"\r\n"));
+  assert(strlen(frame)<1200);puts(frame);motion_fixture.distance_mode=false;
   frame[0]=0;tick=100;ChassisTelemetry_Process();assert(!frame[0]);
   tick=2200;tx_ready=false;ChassisTelemetry_Process();assert(!frame[0]);
   tx_ready=true;ChassisTelemetry_Process();assert(frame[0]);

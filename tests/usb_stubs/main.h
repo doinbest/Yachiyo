@@ -6,7 +6,14 @@ typedef enum { HAL_OK, HAL_ERROR, HAL_BUSY, HAL_TIMEOUT } HAL_StatusTypeDef;
 typedef struct { unsigned int instance; } I2C_HandleTypeDef;
 typedef struct { unsigned int instance; } SPI_HandleTypeDef;
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *, uint8_t *, uint8_t *, uint16_t, uint32_t);
-typedef struct { unsigned int instance; void *Instance; void *hdmarx; } UART_HandleTypeDef;
+typedef struct { uint32_t counter; } DMA_HandleTypeDef;
+typedef struct { unsigned int instance; void *Instance; void *hdmarx; uint32_t ErrorCode; } UART_HandleTypeDef;
+#define __HAL_DMA_GET_COUNTER(p) (((DMA_HandleTypeDef *)(p))->counter)
+#define HAL_UART_ERROR_ORE 8U
+#define HAL_UART_ERROR_FE 4U
+#define HAL_UART_ERROR_NE 2U
+#define HAL_UART_ERROR_DMA 16U
+HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *);
 #define UART5 ((void *)5)
 #define DMA_IT_HT 1U
 #define __HAL_DMA_DISABLE_IT(a,b) ((void)(a),(void)(b))

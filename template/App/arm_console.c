@@ -14,6 +14,7 @@
 #include "tjc_screen.h"
 #include "oled_ui.h"
 #include "console_tx.h"
+#include "console_rx.h"
 #include "chassis_motion.h"
 #include "chassis_route.h"
 #include "chassis_telemetry.h"
@@ -24,8 +25,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ARM_CONSOLE_RING_SIZE 128U
-/* USART1中断接收环形缓冲区长度。 */
+#define ARM_CONSOLE_RING_SIZE 512U
+/* USART1 DMA回调写入的软件环形缓冲区长度。 */
 
 #define ARM_CONSOLE_LINE_SIZE 64U
 /* 单条终端命令允许占用的最大缓冲区长度。 */
@@ -48,6 +49,9 @@ static uint8_t ArmConsole_RingBuffer[ARM_CONSOLE_RING_SIZE];
 static volatile uint16_t ArmConsole_RingWrite;
 static volatile uint16_t ArmConsole_RingRead;
 static volatile uint8_t ArmConsole_RingOverflow;
+static volatile uint8_t ArmConsole_RxDiscard;
+static volatile uint32_t ArmConsole_RxOverflowCount;
+static volatile uint16_t ArmConsole_RxPeak;
 static volatile uint8_t ArmConsole_StopPending;
 static char ArmConsole_LineBuffer[ARM_CONSOLE_LINE_SIZE];
 static uint8_t ArmConsole_LineLength;
@@ -70,7 +74,7 @@ static uint32_t ArmConsole_QrSkipped;
   * 函    数：向USART1输出一段ASCII文本
   * 参    数：Text 以零结尾的字符串
   * 返 回 值：无
-  * 说    明：主循环复制到回复队列，由USART1中断发送，不等待线路发送结束
+  * 说    明：主循环复制到回复队列，由USART1 DMA发送，不等待线路发送结束
   */
 static void ArmConsole_Write(const char *Text)
 {
@@ -153,6 +157,7 @@ static void ArmConsole_CameraTraceDirectStart(void)
   */
 static void ArmConsole_CameraTraceStop(void)
 {
+  ConsoleTx_DebugCancel(CONSOLE_DEBUG_VISION);
   ArmConsole_CameraTrace = 0U;
   ArmConsole_CameraTraceDirect = 0U;
   ArmConsole_CameraTraceSequence = 0U;
@@ -235,6 +240,8 @@ static void ArmConsole_MaterialErrorShow(void)
   */
 static void ArmConsole_CameraTraceShow(void)
 {
+  char text[192];
+  int length;
   Camera_SnapshotTypeDef Snapshot;
   Camera_DataTypeDef *Data;
   uint32_t Now;
@@ -266,15 +273,16 @@ static void ArmConsole_CameraTraceShow(void)
   }
   ArmConsole_CameraTraceLastTick = Now;
   ArmConsole_CameraTraceSequence = Data->Sequence;
-  ArmConsole_Printf("VISION DATA fn=0x%02X target=0x%02X\r\n",
+  length = snprintf(text, sizeof(text), "VISION DATA fn=0x%02X target=0x%02X\r\nCX=%d CY=%d DX=%d DY=%d seq=%lu\r\n",
                      (unsigned int)Data->Function,
-                     (unsigned int)Data->Target);
-  ArmConsole_Printf("CX=%d CY=%d DX=%d DY=%d seq=%lu\r\n",
+                     (unsigned int)Data->Target,
                      (int)Data->CX,
                      (int)Data->CY,
                      (int)Data->DX,
                      (int)Data->DY,
                      (unsigned long)Data->Sequence);
+  if (length > 0 && length < (int)sizeof(text))
+    (void)ConsoleTx_Debug(CONSOLE_DEBUG_VISION, text, (uint16_t)length);
 }
 
 /**
@@ -302,7 +310,7 @@ static void ArmConsole_VisionMoveShow(void)
 /**
   * 函    数：从环形缓冲区取出一个接收字节
   * 参    数：Data 字节输出地址
-  * 返 回 值：1取到数据，0为空，2先处理Ctrl+C（不消费后续字节）
+  * 返 回 值：1取到数据，0为空，2先处理Ctrl+C，3接收丢失需重同步（不消费后续字节）
   * 说    明：短临界区防止Ctrl+C回调清空缓冲区时读指针竞争
   */
 static uint8_t ArmConsole_RingPop(uint8_t *Data)
@@ -313,6 +321,13 @@ static uint8_t ArmConsole_RingPop(uint8_t *Data)
   {
     __set_PRIMASK(primask);
     return 2U;
+  }
+  if (ArmConsole_RingOverflow) {
+    ArmConsole_RingOverflow = 0U;
+    ArmConsole_LineLength = ArmConsole_LastWasCr = 0U;
+    ArmConsole_LineOverflow = 1U;
+    __set_PRIMASK(primask);
+    return 3U;
   }
   if ((Data == NULL) || (ArmConsole_RingRead == ArmConsole_RingWrite))
   {
@@ -512,7 +527,8 @@ static const char *ArmConsole_HomeModeNameGet(uint8_t HomeMode)
   */
 static void ArmConsole_HelpShow(void)
 {
-  /* 按命令组入队，由USART1中断发送；不占用底盘控制周期等待串口。 */
+  ArmConsole_Write("console status | chassis snapshot (read-only diagnostics)\r\n");
+  /* 按命令组入队，由USART1 DMA发送；不占用底盘控制周期等待串口。 */
   ArmConsole_Write(
       "chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n"
       "chassis route start|next|status|cancel (four fixed stops, manual next)\r\n"
@@ -1658,7 +1674,7 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
       }
       ArmConsole_ImuStream = 1U;
     }
-    else if (!strcmp(Tokens[2], "off")) ArmConsole_ImuStream = 0U;
+    else if (!strcmp(Tokens[2], "off")) { ArmConsole_ImuStream = 0U; ConsoleTx_DebugCancel(CONSOLE_DEBUG_IMU); }
     else return 0U;
     ArmConsole_Printf("OK imu stream=%s\r\n", ArmConsole_ImuStream ? "on" : "off");
     return 1U;
@@ -1686,6 +1702,7 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
     if (Started)
     {
       ArmConsole_ImuStream = 0U;
+      ConsoleTx_DebugCancel(CONSOLE_DEBUG_IMU);
       ArmConsole_CameraTraceStop();
       ArmConsole_Printf("OK imu %s started cal_ms=%lu verify_ms=%lu keep_still=1 stream=off\r\n",
                         Native ? "cal" : "verify", Native ? 20000UL : 0UL, (unsigned long)VerifyMs);
@@ -1894,11 +1911,15 @@ static void ArmConsole_QrEventProcess(void)
 
 static void ArmConsole_StopStatusShow(void)
 {
+  char text[192];
+  int length;
   ChassisStop_Status_t status;
   ChassisMotion_StopStatusGet(&status);
-  ArmConsole_Printf("OK chassis stop id=%lu token=%lu requested_ms=%lu tx_complete=%u wheels_stopped=%u reason=%s\r\n",
+  length = snprintf(text, sizeof(text), "\r\nOK chassis stop id=%lu token=%lu requested_ms=%lu tx_complete=%u wheels_stopped=%u reason=%s\r\n",
     (unsigned long)status.id, (unsigned long)status.token, (unsigned long)status.requested_ms,
     status.tx_complete ? 1U : 0U, status.wheels_stopped ? 1U : 0U, status.reason);
+  if (length > 0 && length < (int)sizeof(text))
+    (void)ConsoleTx_Urgent(text, (uint16_t)length);
 }
 
 static void ArmConsole_StopRequest(uint32_t token)
@@ -1975,6 +1996,21 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   }
   /* Queries and log subscription never operate actuators and bypass motion guards. */
   if (ArmConsole_StopCommandHandle(TokenCount, Tokens)) return 1U;
+  if (TokenCount == 2U && !strcmp(Tokens[0], "console") && !strcmp(Tokens[1], "status")) {
+    ConsoleTx_Stats_t tx;
+    ConsoleRx_Stats_t rx;
+    ConsoleTx_GetStats(&tx); ConsoleRx_GetStats(&rx);
+    ArmConsole_Printf("OK console rx_bytes=%lu rx_overflow=%lu rx_peak=%u uart_errors=%lu ore=%lu fe=%lu ne=%lu dma_errors=%lu\r\n",
+      (unsigned long)rx.bytes_received, (unsigned long)ArmConsole_RxOverflowCount, ArmConsole_RxPeak,
+      (unsigned long)rx.uart_errors, (unsigned long)rx.overruns, (unsigned long)rx.framing_errors,
+      (unsigned long)rx.noise_errors, (unsigned long)rx.dma_errors);
+    ArmConsole_Printf("OK console tx_bytes=%lu reply_pending=%u reply_peak=%u reply_dropped=%lu urgent_dropped=%lu debug_dropped=%lu\r\n",
+      (unsigned long)tx.bytes_sent, tx.reply_pending, tx.reply_peak, (unsigned long)tx.reply_dropped,
+      (unsigned long)tx.urgent_dropped, (unsigned long)tx.debug_dropped);
+    ArmConsole_Printf("OK console rx_restarts=%lu rx_restart_failures=%lu telemetry_dropped=%lu\r\n",
+      (unsigned long)rx.restarts, (unsigned long)rx.restart_failures, (unsigned long)ConsoleTx_Dropped());
+    return 1U;
+  }
   if (!strcmp(Tokens[0], "qr")) return ArmConsole_QrCommandHandle(TokenCount, Tokens);
   if (ChassisRoute_Command(TokenCount, Tokens)) return 1U;
   if (ChassisTelemetry_Command(TokenCount, Tokens)) return 1U;
@@ -2057,7 +2093,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   * 函    数：初始化USART1机械臂终端
   * 参    数：huart USART1句柄
   * 返 回 值：HAL执行状态
-  * 说    明：清空终端缓存并显示启动信息，首次单字节接收由main启动
+  * 说    明：清空终端缓存并显示启动信息，循环DMA接收由main启动
   */
 HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
 {
@@ -2075,6 +2111,9 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   ArmConsole_RingWrite = 0U;
   ArmConsole_RingRead = 0U;
   ArmConsole_RingOverflow = 0U;
+  ArmConsole_RxDiscard = 0U;
+  ArmConsole_RxOverflowCount = 0U;
+  ArmConsole_RxPeak = 0U;
   ArmConsole_StopPending = 0U;
   ArmConsole_LineLength = 0U;
   ArmConsole_LineOverflow = 0U;
@@ -2101,29 +2140,46 @@ uint8_t ArmConsole_ImuStreamEnabled(void)
   * 函    数：接收一个USART1中断字节
   * 参    数：Data 上位机发来的字节
   * 返 回 值：无
-  * 说    明：仅写入128字节环形缓冲区，满时丢弃新字节并置溢出标志
+  * 说    明：写入512字节环形缓冲；满时丢弃受损命令并等待换行重新同步
   */
 void ArmConsole_ReceiveData(uint8_t Data)
 {
   uint16_t NextWrite;
+  uint16_t Used;
 
   if (Data == 0x03U)
   {
     /* Out-of-band latch cannot be lost even when the ASCII ring is full.
      * Discard input preceding this byte; following tokenized stop remains readable. */
     ArmConsole_RingRead = ArmConsole_RingWrite;
+    ArmConsole_RxDiscard = 0U;
     ArmConsole_StopPending = 1U;
     return;
+  }
+
+  if (ArmConsole_RxDiscard) {
+    if (Data != '\r' && Data != '\n') return;
+    ArmConsole_RxDiscard = 0U;
   }
 
   NextWrite = (uint16_t)((ArmConsole_RingWrite + 1U) % ARM_CONSOLE_RING_SIZE);
   if (NextWrite == ArmConsole_RingRead)
   {
-    ArmConsole_RingOverflow = 1U;
+    ArmConsole_RxOverflowCount++;
+    ArmConsole_ReceiveFault();
     return;
   }
   ArmConsole_RingBuffer[ArmConsole_RingWrite] = Data;
   ArmConsole_RingWrite = NextWrite;
+  Used = (uint16_t)((NextWrite + ARM_CONSOLE_RING_SIZE - ArmConsole_RingRead) % ARM_CONSOLE_RING_SIZE);
+  if (Used > ArmConsole_RxPeak) ArmConsole_RxPeak = Used;
+}
+
+void ArmConsole_ReceiveFault(void)
+{
+  ArmConsole_RingRead = ArmConsole_RingWrite;
+  ArmConsole_RxDiscard = 1U;
+  ArmConsole_RingOverflow = 1U;
 }
 
 /**
@@ -2135,6 +2191,7 @@ void ArmConsole_ReceiveData(uint8_t Data)
 void ArmConsole_Process(void)
 {
   uint8_t Data;
+  uint8_t Result;
 
   ArmConsole_StopProcess();
 
@@ -2144,22 +2201,18 @@ void ArmConsole_Process(void)
   ArmConsole_CameraTraceShow();
   ArmConsole_VisionMoveShow();
 
-  if (ArmConsole_RingOverflow != 0U)
+  while ((Result = ArmConsole_RingPop(&Data)) != 0U)
   {
-    ArmConsole_RingOverflow = 0U;
-    ArmConsole_LineLength = 0U;
-    ArmConsole_LineOverflow = 0U;
-    ArmConsole_Write("\r\nERR format\r\n");
-    ArmConsole_PromptShow();
-  }
-
-  while (ArmConsole_RingPop(&Data) != 0U)
-  {
+    if (Result == 3U) {
+      ArmConsole_Write("\r\nERR rx data lost; discard through newline\r\n");
+      continue;
+    }
     if (ArmConsole_StopPending)
     {
       ArmConsole_StopProcess();
       continue; /* The byte popped before Ctrl+C belongs to discarded input. */
     }
+    if (ArmConsole_RingOverflow) continue;
     if ((Data == '\r') || (Data == '\n'))
     {
       if ((Data == '\n') && (ArmConsole_LastWasCr != 0U))
@@ -2216,19 +2269,4 @@ void ArmConsole_Process(void)
   }
   /* Handle stream off commands before producing the next QR event. */
   ArmConsole_QrEventProcess();
-}
-
-/**
-  * 函    数：处理USART1错误后的终端状态
-  * 参    数：huart 串口句柄
-  * 返 回 值：无
-  * 说    明：单字节接收的重新启动统一由main.c错误回调完成
-  */
-void ArmConsole_ErrorCallback(UART_HandleTypeDef *huart)
-{
-  if ((ArmConsole_Uart != NULL) && (huart == ArmConsole_Uart))
-  {
-    ArmConsole_LineLength = 0U;
-    ArmConsole_LineOverflow = 0U;
-  }
 }

@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {BridgeLink,readOnlyCommand} from '../bridge.mjs';
+test('communication diagnostics remain read-only while stopped',()=>{
+  assert.equal(readOnlyCommand('console status'),true);
+  assert.equal(readOnlyCommand('chassis snapshot'),true);
+  assert.equal(readOnlyCommand('console status extra'),false);
+});
 
 function fixture(){
   const requests=[],received=[],events=[],states=[];let status={token:'session',connected:true,last_event_id:15,stop_latched:false,config:{profile:'',units_per_rev:null,directions_confirmed:false}},id=0;

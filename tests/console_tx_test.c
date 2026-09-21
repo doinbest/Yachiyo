@@ -8,7 +8,7 @@ static uint16_t length;
 static HAL_StatusTypeDef next_status;
 static UART_HandleTypeDef uart;
 uint32_t HAL_GetTick(void) { return tick; }
-HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *u, uint8_t *p, uint16_t n)
+HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef *u, uint8_t *p, uint16_t n)
 { assert(u == &uart); if(next_status != HAL_OK) return next_status; active=p;length=n;return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_AbortTransmit(UART_HandleTypeDef *u) { (void)u;active=NULL;return HAL_OK; }
 static void pump(void) { tick+=30;ConsoleTx_Process(); }

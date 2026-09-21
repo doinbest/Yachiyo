@@ -30,6 +30,32 @@ const distanceStates={idle:'待命',running:'运行中',stopping:'正在停车',
 const validMotion=r=>!!r&&typeof r.reason==='string'&&u32(r.action_id)&&vector(r.target,3)&&vector(r.error,3)&&typeof r.feedback_valid==='boolean'&&typeof r.stop_confirmed==='boolean';
 const validRoute=r=>validMotion(r)&&typeof r.state==='string'&&Object.hasOwn(routeStates,r.state)&&Number.isInteger(r.segment)&&r.segment>=0&&r.segment<=4;
 const validDistance=r=>validMotion(r)&&typeof r.active==='boolean'&&typeof r.state==='string'&&Object.hasOwn(distanceStates,r.state);
+// v2 uses positional arrays on the wire only. The UI retains named fields and
+// the same freshness/stop checks as v1; malformed arrays are never defaulted.
+function expandCompact(r){
+  const a=(v,n)=>Array.isArray(v)&&v.length===n;
+  const bool=v=>typeof v==='boolean';
+  const ticks=v=>a(v,4)&&v.every(u32);
+  const mask=v=>Number.isInteger(v)&&v>=0&&v<=15;
+  const pose=v=>a(v,4)&&bool(v[0])&&v.slice(1).every(Number.isFinite);
+  const motion=(v,distance)=>a(v,8)&&
+    (distance?bool(v[0])&&typeof v[1]==='string'&&typeof v[2]==='string':typeof v[0]==='string'&&typeof v[1]==='string'&&u32(v[2]))&&
+    u32(v[3])&&vector(v[4],3)&&vector(v[5],3)&&bool(v[6])&&bool(v[7]);
+  const f=r.feedback,t=r.task,x=r.tx,l=r.localization;
+  if(!a(t,4)||typeof t[0]!=='string'||typeof t[1]!=='string'||!u32(t[2])||!u32(t[3])||
+     !vector(r.target,7)||!a(f,8)||!vector(f[0],4)||!vector(f[1],4)||!mask(f[2])||!mask(f[3])||!ticks(f[4])||!ticks(f[5])||!u32(f[6])||!u32(f[7])||
+     !a(r.yaw,2)||!bool(r.yaw[0])||!Number.isFinite(r.yaw[1])||!a(r.pose,2)||!r.pose.every(pose)||
+     !a(l,3)||!u32(l[0])||!u32(l[1])||!bool(l[2])||!motion(r.route,false)||
+     (r.distance!==undefined&&!motion(r.distance,true))||!a(x,7)||!x.slice(0,4).every(u32)||!bool(x[4])||!bool(x[5])||!u32(x[6]))return null;
+  const p=v=>({valid:v[0],x_mm:v[1],y_mm:v[2],yaw_rad:v[3]});
+  const m=(v,d)=>({...d?{active:v[0],state:v[1],reason:v[2]}:{state:v[0],reason:v[1],segment:v[2]},action_id:v[3],target:v[4],error:v[5],feedback_valid:v[6],stop_confirmed:v[7]});
+  const result={...r,task:{state:t[0],reason:t[1],id:t[2],control_dt_ms:t[3]},target:{body:r.target.slice(0,3),rpm:r.target.slice(3)},
+    feedback:{rpm:f[0],pos:f[1],speed_valid:[0,1,2,3].map(i=>!!(f[2]&(1<<i))),position_valid:[0,1,2,3].map(i=>!!(f[3]&(1<<i))),speed_ms:f[4],position_ms:f[5],seq:f[6],span_ms:f[7]},
+    yaw:{valid:r.yaw[0],rad:r.yaw[1]},pose:{command:p(r.pose[0]),feedback:p(r.pose[1])},localization:{generation:l[0],feedback_tick:l[1],origin_valid:l[2]},
+    route:m(r.route,false),tx:{seq:x[0],stage:x[1],error:x[2],ack_profile:x[3],tx_complete:x[4],acknowledged:x[5],acknowledged_wheels:x[6]}};
+  if(r.distance!==undefined)result.distance=m(r.distance,true);
+  return validRoute(result.route)&&(result.distance===undefined||validDistance(result.distance))?result:null;
+}
 function motionDetails(motion){
   const [x,y,heading]=motion.target;
   const error=motion.feedback_valid?`误差 ΔX ${motion.error[0].toFixed(1)} · ΔY ${motion.error[1].toFixed(1)} mm · 航向 ${motion.error[2].toFixed(1)}°`:'反馈无效 · 误差不可用';
@@ -59,7 +85,12 @@ export class Telemetry {
     if(!line.startsWith('@CHASSIS'))return false;
     this.tick(now);
     let r;try{r=JSON.parse(line.slice(8).trim());}catch{this.state=null;this.breakPaths();this.status='遥测格式错误';return true;}
-    if(!r||typeof r!=='object'||r.v!==1||this.session===null||r.session!==this.session)return true;
+    if(!r||typeof r!=='object'||![1,2].includes(r.v)||this.session===null||r.session!==this.session)return true;
+    if(r.v===2){
+      if(r.kind!=='state')return true;
+      r=expandCompact(r);
+      if(!r){this.state=null;this.breakPaths();this.status='状态字段无效';return true;}
+    }
     if(r.kind==='config'){
       if((r.telemetry_period_ms!==undefined&&(!Number.isInteger(r.telemetry_period_ms)||r.telemetry_period_ms<200||r.telemetry_period_ms>10000))||!validGeometry(r.geometry)||JSON.stringify(r.wheel_ids)!=='[1,2,3,4]'||!Array.isArray(r.forward_dir)||r.forward_dir.length!==4||!r.forward_dir.every(d=>d===0||d===1)||typeof r.rev!=='string'||!r.rev){this.breakPaths();this.config=null;this.state=null;this.status='配置不兼容';return true;}
       this.config=r;this.receivedAt=now;this.state=null;this.lastTime=null;this.breakPaths();this.status='配置就绪 · 等待状态';return true;

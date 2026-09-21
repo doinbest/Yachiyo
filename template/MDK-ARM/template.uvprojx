@@ -1744,6 +1744,11 @@
               <FilePath>..\App\console_tx.c</FilePath>
             </File>
             <File>
+              <FileName>console_rx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\console_rx.c</FilePath>
+            </File>
+            <File>
               <FileName>console_tx.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\App\console_tx.h</FilePath>

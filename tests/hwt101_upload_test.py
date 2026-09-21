@@ -12,6 +12,7 @@ fixture = r'''
 #include <stdio.h>
 #include <string.h>
 #include "hwt101_calibration.h"
+#include "console_tx.h"
 #define CONSOLE_UPLOAD_TIMEOUT_MS 100U
 #define HWT101_UPLOAD_INTERVAL_MS 200U
 
@@ -42,6 +43,8 @@ bool ConsoleTx_Write(const uint8_t *data,uint16_t size)
   if(strstr(line,"[IMU TIME]"))timing_lines++;
   return HAL_OK;
 }
+bool ConsoleTx_Debug(unsigned source,const char *data,uint16_t size)
+{assert(source==CONSOLE_DEBUG_IMU);return ConsoleTx_Write((const uint8_t *)data,size);}
 '''
 main = r'''
 static void reset_output(void) {output[0]=0;}

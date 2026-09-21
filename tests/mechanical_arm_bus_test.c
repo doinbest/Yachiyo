@@ -7,7 +7,7 @@ static uint32_t tick;
 static bool route_busy, motion_busy;
 bool ChassisRoute_IsBusy(void) { return route_busy; }
 bool ChassisMotion_IsBusy(void) { return motion_busy; }
-static UART_HandleTypeDef uart = {0, UART5, 0};
+static UART_HandleTypeDef uart = {.Instance=UART5};
 UART_HandleTypeDef huart5;
 static uint8_t frame[32];
 uint32_t HAL_GetTick(void)

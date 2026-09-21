@@ -4,7 +4,7 @@
 #include "mechanical_arm.h"
 #include "motor_bus.h"
 
-static UART_HandleTypeDef uart = {0, UART5, 0};
+static UART_HandleTypeDef uart = {.Instance=UART5};
 UART_HandleTypeDef huart5;
 static uint32_t tick;
 static uint8_t *rx_buffer, frame[32];

@@ -11,7 +11,6 @@ virtualFolder:
     - path: ../../Core/Inc/headfile.h
     - path: ../../Core/Src/main.c
     - path: ../../Core/Src/gpio.c
-    - path: ../../Core/Src/can.c
     - path: ../../Core/Src/dma.c
     - path: ../../Core/Src/i2c.c
     - path: ../../Core/Src/tim.c
@@ -34,7 +33,6 @@ virtualFolder:
     - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_cortex.c
     - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c
     - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_exti.c
-    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_can.c
     - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2c.c
     - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2c_ex.c
     - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim.c
@@ -53,6 +51,8 @@ virtualFolder:
     - path: ../../Hardware/motor_bus.h
     - path: ../../App/console_tx.c
     - path: ../../App/console_tx.h
+    - path: ../../App/console_rx.c
+    - path: ../../App/console_rx.h
     - path: ../../App/chassis_model.c
     - path: ../../App/chassis_model.h
     - path: ../../App/chassis_motion.c

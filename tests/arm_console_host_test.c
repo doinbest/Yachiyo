@@ -26,6 +26,12 @@ uint32_t HAL_GetTick(void) { return tick; }
 void ConsoleTx_Init(UART_HandleTypeDef *uart) {(void)uart;}
 bool ConsoleTx_Write(const uint8_t *data,uint16_t length)
 {assert(strlen(output)+length<sizeof(output));strncat(output,(const char*)data,length);return true;}
+bool ConsoleTx_Urgent(const char *data,uint16_t length){return ConsoleTx_Write((const uint8_t *)data,length);}
+bool ConsoleTx_Debug(unsigned source,const char *data,uint16_t length){(void)source;return ConsoleTx_Write((const uint8_t *)data,length);}
+void ConsoleTx_DebugCancel(unsigned source){(void)source;}
+void ConsoleTx_GetStats(ConsoleTx_Stats_t *out){memset(out,0,sizeof(*out));}
+void ConsoleRx_GetStats(ConsoleRx_Stats_t *out){memset(out,0,sizeof(*out));}
+uint32_t ConsoleTx_Dropped(void){return 0;}
 bool ConsoleTx_Event(const char *data,uint16_t length)
 { assert(length<sizeof(qr_event));if(qr_event[0])qr_event_dropped++;memcpy(qr_event,data,length);qr_event[length]=0;qr_event_count++;return true; }
 void ConsoleTx_EventCancel(void) {if(qr_event[0])qr_event_dropped++;qr_event[0]=0;}
@@ -340,5 +346,11 @@ int main(void)
   ArmConsole_MotorEventHandle(&event);
   assert(strstr(output,"ERR ack_timeout axis=base state_unknown bus_locked=1"));
   bus_locked=false;command("enable base\r");assert(strstr(output,"ERR motor tx bus_locked=0"));
+  /* A damaged line cannot turn into a valid actuator command after recovery. */
+  before=motor_calls;command("enable ");ArmConsole_ReceiveFault();
+  command("base\r");assert(motor_calls==before);
+  command("info\r");assert(strstr(output,"STM32F407"));
+  for(unsigned j=0;j<600;j++)ArmConsole_ReceiveData('x');
+  ArmConsole_ReceiveData(3);command("chassis stop 99\r");assert(strstr(output,"token=99"));
   puts("arm_console_host_test: commands, units, busy, status, CRLF and async prompts OK");return 0;
 }

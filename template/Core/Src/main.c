@@ -56,6 +56,7 @@
 #include "w25q128.h"
 #include "motor_bus.h"
 #include "console_tx.h"
+#include "console_rx.h"
 #include "chassis_motion.h"
 #include "chassis_localization.h"
 #include "chassis_route.h"
@@ -88,7 +89,7 @@
 /* USER CODE BEGIN PV */
 
 static uint8_t QR_RxByte;
-static uint8_t ArmConsole_RxByte;
+
 static char QR_TaskCode[QR_TASK_CODE_BUFFER_SIZE];
 static uint8_t Camera_ColorTaskReady;
 static uint8_t Camera_ColorDigitIndex;
@@ -312,7 +313,7 @@ static void ImuTiming_Report(const HWT101_CalStatus_t *Cal)
   * 函    数：通过USART1上传HWT101最新角度
   * 参    数：无
   * 返 回 值：无
-  * 说    明：默认只报告标定进度和结果；stream开启时每200ms上传角度。
+  * 说    明：默认只报告标定进度和结果；stream开启时每200ms更新最新角度槽，发送层每路至少间隔500ms。
   */
 static void HWT101_Upload_Process(void)
 {
@@ -393,7 +394,7 @@ static void HWT101_Upload_Process(void)
         (unsigned)Fresh, Cal.state_name, (unsigned long)Comm.i2c_error_count);
   if ((UploadLength > 0) && (UploadLength < (int)sizeof(UploadText)))
   {
-    (void)ConsoleTx_Write((uint8_t *)UploadText, (uint16_t)UploadLength);
+    (void)ConsoleTx_Debug(CONSOLE_DEBUG_IMU, UploadText, (uint16_t)UploadLength);
     HWT101_UploadLastTick = CurrentTick;
   }
 }
@@ -505,8 +506,8 @@ int main(void)
     Error_Handler();
   }
 
-  /* USART1采用单字节中断接收，第一次接收需要在初始化阶段手动启动。 */
-  if (HAL_UART_Receive_IT(&huart1, &ArmConsole_RxByte, 1U) != HAL_OK)
+  /* USART1循环DMA接收；HT/TC/IDLE均由HAL分发。 */
+  if (ConsoleRx_Init(&huart1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -571,6 +572,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     ImuTiming_Begin();
+    ConsoleRx_Process();
     ArmConsole_StopProcess(); /* Ctrl+C cancels producers before they can submit motion. */
     MotorBus_Process();
     ConsoleTx_Process();
@@ -707,12 +709,7 @@ void SystemClock_Config(void)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   TJC_Rx_Callback(huart);
-  if (huart->Instance == USART1)
-  {
-    ArmConsole_ReceiveData(ArmConsole_RxByte);
-    (void)HAL_UART_Receive_IT(&huart1, &ArmConsole_RxByte, 1U);
-  }
-  else if (huart->Instance == UART4)
+  if (huart->Instance == UART4)
   {
     QR_ReceiveData(QR_RxByte);
     (void)HAL_UART_Receive_IT(&huart4, &QR_RxByte, 1U);
@@ -723,7 +720,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 /**
   * @brief    分发HAL串口DMA空闲接收事件
   * @param    huart ：触发回调的串口句柄
-  * @param    Size  ：本次DMA实际收到的字节数
+  * @param    Size  ：HAL提供的DMA写入位置（USART1读取实时NDTR防止重复事件）
   * @retval   无
   */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
@@ -731,6 +728,10 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
   if (huart->Instance == UART5)
   {
     MotorBus_RxEventCallback(huart, Size);
+  }
+  else if (huart->Instance == USART1)
+  {
+    ConsoleRx_RxEventCallback(huart);
   }
 }
 
@@ -765,13 +766,9 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   TJC_Error_Callback(huart);
   if (huart->Instance == USART1)
   {
-    __HAL_UART_CLEAR_PEFLAG(huart);
-    __HAL_UART_CLEAR_FEFLAG(huart);
-    __HAL_UART_CLEAR_NEFLAG(huart);
-    __HAL_UART_CLEAR_OREFLAG(huart);
-    ConsoleTx_ErrorCallback(huart);
-    ArmConsole_ErrorCallback(huart);
-    (void)HAL_UART_Receive_IT(&huart1, &ArmConsole_RxByte, 1U);
+    ConsoleRx_ErrorCallback(huart);
+    /* RX overrun/framing errors do not cancel a healthy TX DMA. */
+    if (huart->ErrorCode & HAL_UART_ERROR_DMA) ConsoleTx_ErrorCallback(huart);
   }
   else if (huart->Instance == UART4)
   {

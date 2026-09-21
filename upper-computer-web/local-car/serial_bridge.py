@@ -17,9 +17,9 @@ STOP_REPLY = re.compile(
     r'OK chassis stop id=(\d+) token=(\d+) requested_ms=(\d+) '
     r'tx_complete=([01]) wheels_stopped=([01]) reason=([A-Za-z0-9_]+)')
 READ_COMMAND = re.compile(
-    r'(?:info|help|(?:state|position|config) (?:base|z|x|all)|'
+    r'(?:info|help|console status|(?:state|position|config) (?:base|z|x|all)|'
     r'(?:vision|camera|material|imu|qr) status|qr read|'
-    r'chassis (?:task|status|feedback|stop-status|route status)|map status)')
+    r'chassis (?:task|status|snapshot|feedback|stop-status|route status)|map status)')
 PREPARATION_COMMAND = re.compile(
     r'(?:chassis (?:profile (?:none|receive)|units 65536|feedback (?:0|on)|'
     r'origin 2250 150 90|stream (?:off|on [1-9]\d{0,9}))|imu verify 10)')

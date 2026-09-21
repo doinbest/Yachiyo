@@ -117,7 +117,50 @@ bool ChassisTelemetry_ConfirmPositionUnits(uint32_t value)
     return config();
   return true;
 }
-void ChassisTelemetry_Process(void)
+/* v2 array order is documented in docs/上位机协议.md and checked against the
+   production browser decoder. All values/validity timestamps retain v1 units. */
+static void compact_state(uint32_t now, const ChassisMotion_Status_t *m,
+                          const Mecanum_Status_t *tx, const ChassisLocalization_Status_t *l,
+                          const ChassisRoute_Status_t *r, const char *state)
+{
+  const Mecanum_Feedback_t *f = l->wheels;
+  unsigned i, speed_mask = 0, position_mask = 0;
+  for (i = 0; i < 4; i++) {
+    if (f[i].speed_valid && now - f[i].speed_ms <= 600U) speed_mask |= 1U << i;
+    if (f[i].position_valid && now - f[i].position_ms <= 600U) position_mask |= 1U << i;
+  }
+  append("\r\n@CHASSIS {\"v\":2,\"kind\":\"state\",\"session\":%lu,\"t_ms\":%lu,\"trace_seq\":%lu,",
+    (unsigned long)session_id, (unsigned long)now, (unsigned long)trace_sequence);
+  append("\"task\":[\"%s\",\"%s\",%lu,%lu],\"target\":[%.3f,%.3f,%.5f,%d,%d,%d,%d],",
+    state,m->reason?m->reason:"none",(unsigned long)m->action_id,(unsigned long)m->control_dt_ms,
+    (double)m->body_target.vx_mm_s,(double)m->body_target.vy_mm_s,(double)m->body_target.omega_rad_s,
+    m->rpm_command[0],m->rpm_command[1],m->rpm_command[2],m->rpm_command[3]);
+  append("\"feedback\":[[%ld,%ld,%ld,%ld],[%lld,%lld,%lld,%lld],%u,%u,[%lu,%lu,%lu,%lu],[%lu,%lu,%lu,%lu],%lu,%lu],",
+    (long)f[0].speed_rpm,(long)f[1].speed_rpm,(long)f[2].speed_rpm,(long)f[3].speed_rpm,
+    (long long)f[0].position_raw,(long long)f[1].position_raw,(long long)f[2].position_raw,(long long)f[3].position_raw,
+    speed_mask,position_mask,
+    (unsigned long)f[0].speed_ms,(unsigned long)f[1].speed_ms,(unsigned long)f[2].speed_ms,(unsigned long)f[3].speed_ms,
+    (unsigned long)f[0].position_ms,(unsigned long)f[1].position_ms,(unsigned long)f[2].position_ms,(unsigned long)f[3].position_ms,
+    (unsigned long)l->feedback_sequence,(unsigned long)l->observer.feedback_span_ms);
+  append("\"yaw\":[%s,%.6f],\"pose\":[[%s,%.3f,%.3f,%.6f],[%s,%.3f,%.3f,%.6f]],\"localization\":[%lu,%lu,%s],",
+    boolean(m->heading_valid && m->map_anchor_valid),(double)m->map_yaw_rad,
+    boolean(l->observer.command_valid),(double)l->observer.command.x_mm,(double)l->observer.command.y_mm,(double)l->observer.command.yaw_rad,
+    boolean(l->feedback_valid),(double)l->observer.feedback.x_mm,(double)l->observer.feedback.y_mm,(double)l->observer.feedback.yaw_rad,
+    (unsigned long)l->generation,(unsigned long)l->feedback_tick,boolean(l->origin_valid));
+  append("\"route\":[\"%s\",\"%s\",%lu,%lu,[%.3f,%.3f,%.3f],[%.3f,%.3f,%.3f],%s,%s],",
+    r->state?r->state:"idle",r->reason?r->reason:"none",(unsigned long)r->segment,(unsigned long)r->action_id,
+    (double)r->target_x_mm,(double)r->target_y_mm,(double)r->target_yaw_deg,
+    (double)r->error_x_mm,(double)r->error_y_mm,(double)r->error_heading_deg,boolean(r->feedback_valid),boolean(r->stop_confirmed));
+  if (m->distance_mode)
+    append("\"distance\":[%s,\"%s\",\"%s\",%lu,[%.3f,%.3f,%.3f],[%.3f,%.3f,%.3f],%s,%s],",
+      boolean(ChassisMotion_IsBusy()),state,m->reason?m->reason:"none",(unsigned long)m->action_id,
+      (double)m->target_x_mm,(double)m->target_y_mm,(double)m->target_map_yaw_deg,
+      (double)m->error_x_mm,(double)m->error_y_mm,(double)m->error_heading_deg,boolean(l->feedback_valid),boolean(m->stop_confirmed));
+  append("\"tx\":[%lu,%u,%u,%u,%s,%s,%u],\"dropped\":%lu}\r\n",
+    (unsigned long)tx->sequence,(unsigned)tx->stage,(unsigned)tx->error,(unsigned)tx->ack_profile,
+    boolean(tx->tx_complete),boolean(tx->acknowledged),(unsigned)tx->acknowledged_wheels,(unsigned long)ConsoleTx_Dropped());
+}
+static void emit_state(bool detailed)
 {
   /* Main-loop only snapshots keep formatting off the small interrupt/main stack. */
   static ChassisMotion_Status_t motion;
@@ -127,16 +170,21 @@ void ChassisTelemetry_Process(void)
   const Mecanum_Feedback_t *f;
   uint32_t now = HAL_GetTick();
   static const char *states[] = {"idle", "running", "stopping", "done", "error"};
-  if (!streaming || (uint32_t)(now - last_emit) < TELEMETRY_PERIOD_MS ||
-      !ConsoleTx_TelemetryReady())
+  if (!detailed && (!streaming || (uint32_t)(now - last_emit) < TELEMETRY_PERIOD_MS ||
+      !ConsoleTx_TelemetryReady()))
     return;
   ChassisMotion_StatusGet(&motion);
   Mecanum_StatusGet(&tx);
   ChassisLocalization_Get(&localization);
   ChassisRoute_StatusGet(&route);
   f = localization.wheels;
-  last_emit = now;
+  if (!detailed) last_emit = now;
   begin();
+  if (!detailed) {
+    compact_state(now, &motion, &tx, &localization, &route, states[motion.state]);
+    if (format_ok) (void)ConsoleTx_Telemetry(line, (uint16_t)length);
+    return;
+  }
   append("\r\n@CHASSIS {\"v\":1,\"kind\":\"state\",\"session\":%lu,\"t_ms\":%lu,\"trace_seq\":%lu,",
          (unsigned long)session_id, (unsigned long)now, (unsigned long)trace_sequence);
   append("\"task\":{\"state\":\"%s\",\"reason\":\"%s\",\"id\":%lu,\"control_dt_ms\":%lu},",
@@ -200,8 +248,9 @@ void ChassisTelemetry_Process(void)
          (unsigned)tx.ack_profile, boolean(tx.tx_complete), boolean(tx.acknowledged),
          (unsigned)tx.acknowledged_wheels, (unsigned long)ConsoleTx_Dropped());
   if (format_ok)
-    (void)ConsoleTx_Telemetry(line, (uint16_t)length);
+    (void)ConsoleTx_Write((const uint8_t *)line, (uint16_t)length);
 }
+void ChassisTelemetry_Process(void) { emit_state(false); }
 static bool number(const char *s, float *value)
 {
   char *end;
@@ -234,6 +283,7 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
   ChassisLocalization_Status_t localization;
   if (n < 2 || strcmp(t[0], "chassis"))
     return false;
+  if (n == 2 && !strcmp(t[1], "snapshot")) { emit_state(true); return true; }
   if ((ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) &&
       (!strcmp(t[1], "origin") || !strcmp(t[1], "units") ||
        !strcmp(t[1], "profile") || (!strcmp(t[1], "feedback") && n > 2) ||
