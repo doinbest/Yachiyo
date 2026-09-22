@@ -73,7 +73,7 @@ class BridgeTests(unittest.TestCase):
             self.ports.append(port)
             return port
         self.bridge = SerialBridge(Path(self.temp.name), serial_factory=factory,
-                                   stop_timeout=.75, command_interval=.08)
+                                   stop_timeout=.75, command_interval=.08, stop_interval=.2)
 
     def tearDown(self):
         self.bridge.close()
@@ -128,9 +128,9 @@ class BridgeTests(unittest.TestCase):
         self.bridge.send('chassis run 10 0 0 1000')
         stop = self.bridge.request_stop()
         self.assertEqual(stop['token'], self.bridge.request_stop()['token'])
-        wait_for(lambda: len(port.writes) >= 4)
-        self.assertEqual([data for _, data in port.writes[1:4]],
-                         [b'\x03', b'chassis stop\r\n', f'chassis stop {stop["token"]}\r\n'.encode()])
+        wait_for(lambda: len(port.writes) >= 3)
+        self.assertEqual([data for _, data in port.writes[1:3]],
+                         [b'\x03', f'chassis stop {stop["token"]}\r\n'.encode()])
         self.assertTrue(self.bridge.status()['stop_latched'])
         self.assertFalse(any(b'chassis run' in data for _, data in port.writes))
         with self.assertRaises(ValueError):
@@ -143,7 +143,7 @@ class BridgeTests(unittest.TestCase):
     def test_only_complete_matching_stop_reply_confirms(self):
         port = self.connect()
         token = self.bridge.request_stop()['token']
-        wait_for(lambda: len(port.writes) >= 3)
+        wait_for(lambda: len(port.writes) >= 2)
         port.rx.put(b'OK chassis stop\r\n')
         self.reply(port, token + 1)
         port.rx.put(f'OK chassis stop id=7 token={token} requested_ms=20 tx_complete=1 '.encode())
@@ -158,6 +158,42 @@ class BridgeTests(unittest.TestCase):
         wait_for(lambda: self.bridge.status()['stop']['status'] == 'timeout')
         self.assertEqual(sum(data == f'chassis stop {token}\r\n'.encode() for _, data in port.writes), 3)
         self.assertFalse(self.bridge.status()['stop']['wheels_stopped'])
+
+    def test_accepted_stop_only_polls_and_late_reply_does_not_restart_traffic(self):
+        port = self.connect()
+        token = self.bridge.request_stop()['token']
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertNotIn(b'chassis stop\r\n', [data for _, data in port.writes])
+        self.reply(port, token, complete=0, stopped=0)
+        wait_for(lambda: self.bridge.status()['stop']['status'] == 'accepted')
+        wait_for(lambda: self.bridge.status()['stop']['status'] == 'timeout')
+        self.assertEqual(sum(data == f'chassis stop {token}\r\n'.encode() for _, data in port.writes), 1)
+        queries = [t for t, data in port.writes if data == b'chassis stop-status\r\n']
+        self.assertTrue(queries)
+        self.assertTrue(all(b-a >= .19 for a,b in zip(queries, queries[1:])))
+        count = len(port.writes)
+        self.reply(port, token, complete=1, stopped=0)
+        wait_for(lambda: self.bridge.status()['stop']['tx_complete'])
+        self.assertEqual(self.bridge.status()['stop']['status'], 'timeout')
+        time.sleep(.25)
+        self.assertEqual(len(port.writes), count)
+        self.reply(port, token+1)
+        time.sleep(.03)
+        self.assertFalse(self.bridge.status()['stop']['wheels_stopped'])
+        self.reply(port, token)
+        wait_for(lambda: self.bridge.status()['stop']['status'] == 'confirmed')
+        self.assertTrue(self.bridge.status()['stop_latched'])
+        self.assertEqual(len(port.writes), count)
+
+    def test_late_reply_after_resume_is_ignored(self):
+        port = self.connect()
+        token = self.bridge.request_stop()['token']
+        wait_for(lambda: self.bridge.status()['stop']['status'] == 'timeout')
+        self.bridge.resume()
+        self.reply(port, token)
+        time.sleep(.04)
+        self.assertEqual(self.bridge.status()['stop']['status'], 'timeout')
+        self.assertFalse(self.bridge.status()['stop_latched'])
 
     def test_disconnect_waits_and_reconnect_never_replays(self):
         port = self.connect()
@@ -196,6 +232,9 @@ class BridgeTests(unittest.TestCase):
                 self.bridge.send(command, owner=owner)
         self.bridge.send('imu status')
         self.bridge.send('chassis units 65536', owner='page-one')
+        self.bridge.send('imu verify 5', owner='page-one')
+        with self.assertRaises(ValueError):
+            self.bridge.send('imu verify 10', owner='page-one')
         with self.assertRaises(ValueError):
             self.bridge.preparation(False, 'page-two')
         self.bridge.request_stop()

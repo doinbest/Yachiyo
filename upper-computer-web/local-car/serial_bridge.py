@@ -21,8 +21,8 @@ READ_COMMAND = re.compile(
     r'(?:vision|camera|material|imu|qr) status|qr read|'
     r'chassis (?:task|status|snapshot|feedback|stop-status|route status)|map status)')
 PREPARATION_COMMAND = re.compile(
-    r'(?:chassis (?:profile (?:none|receive)|units 65536|feedback (?:0|on)|'
-    r'origin 2250 150 90|stream (?:off|on [1-9]\d{0,9}))|imu verify 10)')
+    r'(?:chassis (?:units 65536|feedback (?:0|on)|'
+    r'origin 2250 150 90|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')
 CANCEL_COMMAND = re.compile(r'(?:chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|(?:vision|material|camera) stop)')
 TERMINAL_STOP = {'confirmed', 'timeout', 'disconnected'}
 
@@ -37,7 +37,7 @@ def open_serial(**options):
 
 class SerialBridge:
     def __init__(self, state_dir, serial_factory=open_serial, *, stop_timeout=6.0,
-                 command_interval=.12, event_limit=2000):
+                 command_interval=.12, event_limit=2000, stop_interval=2.0):
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.config_path = self.state_dir / 'local-car.json'
@@ -61,6 +61,8 @@ class SerialBridge:
         self.stop_latched = False
         self.stop = {'status':'idle', 'token':0, 'tx_complete':False, 'wheels_stopped':False}
         self.stop_timeout = stop_timeout
+        self.stop_interval = stop_interval
+        self.stop_reply_active = False
         self.command_interval = command_interval
         self.next_command_at = 0
         self.stop_attempts = 0
@@ -238,6 +240,7 @@ class SerialBridge:
             self.stop = {'status':'requested' if self.connected else 'disconnected',
                          'token':secrets.randbelow(0xFFFFFFFF)+1,
                          'tx_complete':False, 'wheels_stopped':False}
+            self.stop_reply_active = self.connected
             self.stop_attempts = 0
             self.stop_started_at = time.monotonic()
             self.stop_next_at = self.stop_started_at
@@ -252,6 +255,7 @@ class SerialBridge:
             if self.stop_latched and self.stop['status'] not in TERMINAL_STOP:
                 raise ValueError('Stop request is still pending; wait for its result')
             self.stop_latched = False
+            self.stop_reply_active = False
             fields = dict(self.stop)
             fields['stop_id'] = fields.pop('id', 0)
             self._event('stop', 'Normal command entry resumed; no motion sent', latched=False, **fields)
@@ -304,12 +308,14 @@ class SerialBridge:
                     line = self.rx_buffer.rstrip(b'\r').decode('utf-8', errors='replace')
                     self._event('rx', line)
                     match = STOP_REPLY.fullmatch(line)
-                    if match and self.stop_latched and self.stop['status'] not in TERMINAL_STOP:
+                    if match and self.stop_latched and self.stop_reply_active and self.stop['status'] != 'confirmed':
                         ident, token, requested, complete, stopped, reason = match.groups()
                         if int(token) == self.stop['token']:
                             self.stop.update(id=int(ident), requested_ms=int(requested),
                                              tx_complete=complete == '1', wheels_stopped=stopped == '1', reason=reason)
-                            self.stop['status'] = 'confirmed' if complete == stopped == '1' else 'accepted'
+                            # Late evidence updates the result without restarting timed-out traffic.
+                            self.stop['status'] = ('confirmed' if complete == stopped == '1' else
+                                                   'timeout' if self.stop['status'] == 'timeout' else 'accepted')
                             self._stop_event()
                 self.rx_buffer.clear()
                 self.rx_dropping = False
@@ -321,6 +327,7 @@ class SerialBridge:
                     self._event('system', 'Oversize serial line discarded')
 
     def _close_serial(self, error=None):
+        self.stop_reply_active = False
         self._clear_preparation('Preparation cancelled by serial disconnect')
         self._cancel_commands(error or 'serial disconnected')
         if self.serial is not None:
@@ -375,7 +382,6 @@ class SerialBridge:
                         if pending_stop and now >= self.stop_next_at:
                             if self.stop_attempts == 0:
                                 self._write(b'\x03', '<Ctrl+C 0x03>')
-                                self._write(b'chassis stop\r\n', 'chassis stop')
                             if self.stop_attempts < 3 and self.stop['status'] != 'accepted':
                                 command = f'chassis stop {self.stop["token"]}'
                                 self._write((command+'\r\n').encode('ascii'), command)
@@ -383,10 +389,10 @@ class SerialBridge:
                                     self.stop['status'] = 'sent'
                                     self._stop_event()
                                 self.stop_attempts += 1
-                                self.stop_next_at = now + .2
+                                self.stop_next_at = now + self.stop_interval
                             else:
                                 self._write(b'chassis stop-status\r\n', 'chassis stop-status')
-                                self.stop_next_at = now + .5
+                                self.stop_next_at = now + self.stop_interval
                         elif not pending_stop and not self.disconnecting and self.commands and now >= self.next_command_at:
                             request_id, command = self.commands.popleft()
                             try:
