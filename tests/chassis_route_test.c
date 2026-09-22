@@ -10,6 +10,8 @@ static ChassisLocalization_Status_t loc;
 static ChassisMotion_Status_t motion;
 static Mecanum_Status_t bus;
 static unsigned starts,stops;
+static float last_speed;
+static uint32_t last_timeout;
 static uint32_t tick;
 static bool accept=true;
 static char reply[400];
@@ -20,7 +22,7 @@ void Mecanum_StatusGet(Mecanum_Status_t *s){*s=bus;}
 bool ChassisMotion_IsBusy(void){return motion.state==CHASSIS_MOTION_RUNNING||motion.state==CHASSIS_MOTION_STOPPING;}
 bool ChassisMotion_MoveTo(float x,float y,float yaw,float speed,uint32_t timeout)
 {
-  assert(speed==50&&timeout==60000);assert(!ChassisRoute_IsBusy()||ChassisRoute_IsSubmitting());
+  assert(speed>=10&&speed<=100&&timeout>=60000&&timeout<=190000);last_speed=speed;last_timeout=timeout;assert(!ChassisRoute_IsBusy()||ChassisRoute_IsSubmitting());
   if(!accept){motion.reason="rejected";return false;}
   starts++;motion.action_id++;motion.state=CHASSIS_MOTION_RUNNING;motion.reason="running";
   motion.target_x_mm=x;motion.target_y_mm=y;motion.target_map_yaw_deg=yaw;motion.stop_confirmed=false;return true;
@@ -69,5 +71,13 @@ int main(void)
   setup();char *bad[]={"chassis","move","250","250"};assert(ChassisRoute_Command(4,bad));assert(starts==0&&strstr(reply,"ERR"));
   setup();assert(ChassisRoute_Start());char *query[]={"chassis","route","status"};assert(ChassisRoute_Command(3,query));assert(starts==1&&strstr(reply,"segment=1"));
   assert(ChassisRoute_Command(4,move));assert(starts==1);char *stop[]={"chassis","stop"};assert(ChassisRoute_Command(2,stop));assert(stops==1);
+  setup();char *fast[]={"chassis","route","start","100"};
+  assert(ChassisRoute_Command(4,fast));assert(starts==1 && last_speed==100 && strstr(reply,"speed_mm_s=100"));
+  fast[3]="20";assert(ChassisRoute_Command(4,fast));assert(starts==1 && strstr(reply,"ERR"));
+  arrive();assert(ChassisRoute_Next());assert(last_speed==100);
+  setup();fast[3]="10";assert(ChassisRoute_Command(4,fast));arrive();assert(ChassisRoute_Next());assert(last_speed==10 && last_timeout>=180000);
+  setup();fast[3]="101";assert(ChassisRoute_Command(4,fast));assert(!starts&&strstr(reply,"ERR"));
+  fast[3]="nan";assert(ChassisRoute_Command(4,fast));assert(!starts);
+  fast[3]="9";assert(ChassisRoute_Command(4,fast));assert(!starts);
   puts("chassis_route_test: PASS (manual advance, exact targets, task identity, loss, cancellation, wire)");return 0;
 }

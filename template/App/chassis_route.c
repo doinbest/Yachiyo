@@ -12,6 +12,7 @@
 static ChassisRoute_Status_t Route;
 static bool Submitting;
 static uint32_t Generation;
+static float RouteSpeed = CHASSIS_DISTANCE_SPEED_MM_S;
 static const float Points[4][2]={{2100,300},{2100,1200},{2100,2100},{1200,2100}};
 static ChassisLocalization_Status_t Position;
 static ChassisMotion_Status_t Motion;
@@ -32,9 +33,17 @@ bool ChassisRoute_IsSubmitting(void) { return Submitting; }
 static bool submit(unsigned index)
 {
   bool ok;
+  uint32_t timeout;
+  float distance;
+  ChassisLocalization_Get(&Position);
+  distance=hypotf(Points[index][0]-Position.observer.feedback.x_mm,
+                  Points[index][1]-Position.observer.feedback.y_mm);
+  /* Include integer-RPM quantization and final settling at low speed. */
+  timeout=(uint32_t)fminf(CHASSIS_DISTANCE_MAX_TIMEOUT_MS,
+      fmaxf(CHASSIS_DISTANCE_TIMEOUT_MS,2000.0f*distance/RouteSpeed+10000.0f));
   Submitting=true;
   ok=ChassisMotion_MoveTo(Points[index][0],Points[index][1],90.0f,
-                          CHASSIS_DISTANCE_SPEED_MM_S,CHASSIS_DISTANCE_TIMEOUT_MS);
+                          RouteSpeed,timeout);
   Submitting=false;
   ChassisMotion_StatusGet(&Motion);
   if(!ok) { Route.state="error";Route.reason=Motion.reason;return false; }
@@ -43,8 +52,9 @@ static bool submit(unsigned index)
   Route.state="running";Route.reason="running";Route.stop_confirmed=false;
   return true;
 }
-bool ChassisRoute_Start(void)
+static bool start_at_speed(float speed)
 {
+  if (!isfinite(speed) || speed < 10.0f || speed > CHASSIS_MOTION_MAX_LINEAR_MM_S) return false;
   if(ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return false;
   ChassisLocalization_Get(&Position);
   if(!Position.origin_valid || !Position.feedback_valid || !Position.speed_valid ||
@@ -54,9 +64,11 @@ bool ChassisRoute_Start(void)
      hypotf(Position.observer.feedback.x_mm-2250,Position.observer.feedback.y_mm-150)>CHASSIS_DISTANCE_TOLERANCE_MM ||
      fabsf(angle_error(Position.observer.feedback.yaw_rad*180/CHASSIS_MODEL_PI,90))>CHASSIS_DISTANCE_HEADING_DEG)
   { Route.state="error";Route.reason="start_origin_or_feedback";return false; }
+  RouteSpeed=speed;
   Generation=Position.generation;
   return submit(0);
 }
+bool ChassisRoute_Start(void) { return start_at_speed(CHASSIS_DISTANCE_SPEED_MM_S); }
 bool ChassisRoute_Next(void)
 {
   if(!Route.state || strcmp(Route.state,"waiting")) return false;
@@ -166,7 +178,8 @@ bool ChassisRoute_Command(unsigned n,char *t[])
   }
   else if(!strcmp(t[1],"route"))
   {
-    if(n==3)
+    if(n==4 && !strcmp(t[2],"start") && number(t[3],&dx)) ok=start_at_speed(dx);
+    else if(n==3)
     {
       if(!strcmp(t[2],"start")) ok=ChassisRoute_Start();
       else if(!strcmp(t[2],"next")) ok=ChassisRoute_Next();
@@ -176,9 +189,9 @@ bool ChassisRoute_Command(unsigned n,char *t[])
   }
   else return false;
   ChassisRoute_StatusGet(&Route);
-  length=snprintf(text,sizeof(text),"%s chassis route state=%s segment=%lu id=%lu reason=%s error_mm=%.1f,%.1f heading_error_deg=%.2f feedback_valid=%u stop_confirmed=%u\r\n",
+  length=snprintf(text,sizeof(text),"%s chassis route state=%s segment=%lu id=%lu reason=%s error_mm=%.1f,%.1f heading_error_deg=%.2f feedback_valid=%u stop_confirmed=%u speed_mm_s=%.1f\r\n",
       ok?"OK":"ERR",Route.state,(unsigned long)Route.segment,(unsigned long)Route.action_id,Route.reason,
-      (double)Route.error_x_mm,(double)Route.error_y_mm,(double)Route.error_heading_deg,Route.feedback_valid?1:0,Route.stop_confirmed?1:0);
+      (double)Route.error_x_mm,(double)Route.error_y_mm,(double)Route.error_heading_deg,Route.feedback_valid?1:0,Route.stop_confirmed?1:0,(double)RouteSpeed);
   if(length>0 && (size_t)length<sizeof(text)) (void)ConsoleTx_Write((const uint8_t*)text,(uint16_t)length);
   return true;
 }

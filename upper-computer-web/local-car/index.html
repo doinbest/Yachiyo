@@ -4,7 +4,7 @@
 <title>八千代·巡航｜智能搬运控制台</title>
 <meta name="description" content="本地智能搬运串口控制台">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23007d82'/%3E%3Ctext x='14' y='46' font-size='43' fill='white'%3E千%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="styles.css?v=compact-controls-1"><script type="module" src="app.mjs?v=boot-verify-1"></script>
+<link rel="stylesheet" href="styles.css?v=map-route-2"><script type="module" src="app.mjs?v=map-route-2"></script>
 </head><body>
 <div class="app-shell">
 <header class="topbar"><a class="brand" href="#system"><span class="brand-icon">千</span><span><strong>八千代<span>·</span>巡航</strong><small>INTELLIGENT MATERIAL HANDLING · 2027</small></span></a>
@@ -33,7 +33,7 @@
         </article>
         <aside class="map-sidebar">
           <article id="sim-controls" class="glass map-controls"><h2>模拟状态与设置</h2><details class="simulation-options"><summary>初始位姿、模型与播放速度</summary><form id="sim-form"><label class="map-select">计算模型<select id="sim-model"><option value="ideal">理想运动学</option><option value="integer">整数 RPM 命令近似</option></select></label><div id="sim-fields" class="fields"></div><label class="map-select">播放速度<select id="sim-rate"><option value="1">1 倍速</option><option value="4">4 倍速</option><option value="10">10 倍速</option></select></label></form></details><p id="sim-status" role="status">路线待运行 · 操作只作用于此页面</p><p class="map-note">默认行驶约154秒＋每段1秒占位停留＝约170秒；实际取放、加工和视觉对位时间未计入，不能据此判定三分钟完赛。停留时间可在路线表修改。</p><p id="route-progress" class="map-note"></p><ol id="route-results" class="route-results"></ol><p class="map-note">两种模型均先按 100 RPM 上限整组同比缩放，命令近似再取整数；仅比较运动学，不修改电机设置。半余弦起停，最大 20 ms 中点积分；播放速度只改变观看速度。隐藏或停顿超过 250 ms 时暂停。按300×300 mm外框检查边界、已画非行车区与转盘，发生干涉前停止并指出当前段；未包含展开机械臂、安装误差与随机黑色障碍。θ 用度输入，内部用弧度。</p></article>
-          <article id="online-controls" class="glass map-controls" hidden><h2>实车遥测</h2><p id="telemetry-status" role="status">遥测未开启</p><div class="map-buttons"><button id="stream-on" class="primary" disabled>开启遥测</button><button id="stream-off" disabled>关闭遥测</button></div><pre id="online-details"></pre><h3>实车当前段</h3><pre id="map-route-status" class="real-route-status"></pre><p class="map-note">仅订阅状态，不发送运动指令。反馈估计仍会受轮滑影响；设备重启或断流后须重新开启。在线参数来自固件配置。</p></article>
+          <article id="online-controls" class="glass map-controls" hidden><h2>实车遥测</h2><p id="telemetry-status" role="status">遥测未开启</p><div class="map-buttons"><button id="stream-on" class="primary" disabled>开启遥测</button><button id="stream-off" disabled>关闭遥测</button></div><pre id="online-details"></pre><h3>实车当前段</h3><pre id="map-route-status" class="real-route-status"></pre><p class="map-note">仅订阅状态，不发送运动指令。反馈估计仍会受轮滑影响；短时断流自动恢复，设备重启或断开连接后须重新开启。在线参数来自固件配置。</p></article>
           <article class="glass map-controls"><h2>四轮数据</h2><p id="map-body-speed" class="map-note"></p><div class="wheel-table-wrap"><table class="wheel-table"><thead><tr><th>轮子</th><th>目标 RPM</th><th id="wheel-approx-title">整数 RPM</th><th>位置原值</th></tr></thead><tbody id="wheel-body"></tbody></table></div><p class="map-note">轮序：左前 1、左后 2、右后 3、右前 4。正 RPM 表示该轮向车头方向滚动；反馈不可用时不以目标补齐。</p></article>
         </aside>
       </div>

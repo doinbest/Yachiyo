@@ -223,8 +223,8 @@ bool ChassisMotion_MoveTo(float x, float y, float yaw, float speed, uint32_t tim
   ChassisLocalization_Get(&Position);
   if (!isfinite(x) || !isfinite(y) || !isfinite(yaw) || !isfinite(speed) ||
       fabsf(x) > 10000 || fabsf(y) > 10000 || speed <= 0 ||
-      speed > CHASSIS_DISTANCE_SPEED_MM_S || timeout < CHASSIS_MOTION_PERIOD_MS ||
-      timeout > CHASSIS_DISTANCE_TIMEOUT_MS)
+      speed > CHASSIS_MOTION_MAX_LINEAR_MM_S || timeout < CHASSIS_MOTION_PERIOD_MS ||
+      timeout > CHASSIS_DISTANCE_MAX_TIMEOUT_MS)
   { Motion.reason = "invalid_target"; return false; }
   if (!Position.origin_valid || !Position.feedback_valid || !Position.speed_valid ||
       !Position.units_per_rev || (uint32_t)(HAL_GetTick()-Position.feedback_tick)>600U)

@@ -66,7 +66,7 @@ test('aligned is alignment only',()=>{assert.equal(describeReply('OK material st
 
 test('real route controls send one exact command and map displacement is nonzero up to 300 mm',()=>{
   for(const action of ['start','next','cancel','status']) {
-    assert.equal(buildCommand(`chassis-route-${action}`),`chassis route ${action}`);
+    assert.equal(buildCommand(`chassis-route-${action}`,action==='start'?{speed:50}:{}),`chassis route ${action}${action==='start'?' 50':''}`);
     assert.equal(moduleForWire(`chassis route ${action}`),'chassis');
   }
   for(const [dx,dy] of [[100,0],[-150,150],[0,-300],[180,240],[0.1,0]])
@@ -75,4 +75,10 @@ test('real route controls send one exact command and map displacement is nonzero
     assert.throws(()=>buildCommand('chassis-move',{dx,dy}));
   assert.equal(describeReply('OK chassis route state=waiting segment=1 reason=reached'),'收到设备回复');
   assert.doesNotMatch(describeReply('OK chassis route start accepted'),/已到位|完成/);
+});
+
+test('real route speed is explicit and bounded independently of simulation',()=>{
+ assert.equal(buildCommand('chassis-route-start',{speed:100}),'chassis route start 100');
+ assert.throws(()=>buildCommand('chassis-route-start',{speed:101}));
+ assert.throws(()=>buildCommand('chassis-route-start',{speed:0}));
 });

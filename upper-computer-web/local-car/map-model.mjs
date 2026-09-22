@@ -76,20 +76,21 @@ export class Telemetry {
   get timeoutMs(){return this.config?this.periodMs*3:8000;}
   get route(){return validRoute(this.state?.route)?this.state.route:null;}
   get distance(){return validDistance(this.state?.distance)?this.state.distance:null;}
-  stop(reason='遥测已关闭'){this.session=null;this.config=null;this.state=null;this.lastTime=null;this.traceSeq=null;this.receivedAt=null;this.startedAt=null;this.status=reason;this.command=null;this.feedback=null;this.paths={command:[],feedback:[]};}
+  stop(reason='遥测已关闭'){this.session=null;this.config=null;this.state=null;this.lastTime=null;this.traceSeq=null;this.receivedAt=null;this.startedAt=null;this.status=reason;this.stale=false;this.badFrames=0;this.lastCommand=null;this.lastFeedback=null;this.command=null;this.feedback=null;this.paths={command:[],feedback:[]};}
   begin(session,now){this.stop('等待配置帧');this.session=session;this.startedAt=now;}
   breakPaths(){for(const key of ['command','feedback']){const path=this.paths[key];if(path.length&&path.at(-1)!==null)path.push(null);}this.command=null;this.feedback=null;}
-  tick(now){if(this.session!==null && now-(this.receivedAt??this.startedAt)>this.timeoutMs)this.stop('遥测超时 · 请手动重新开启');}
+  markStale(reason){if(!this.stale)this.breakPaths();this.stale=true;this.state=null;this.status=reason;}
+  tick(now){if(this.session!==null && now-(this.receivedAt??this.startedAt)>this.timeoutMs)this.markStale('遥测超时 · 最后位置已过期，等待恢复');}
   pushPath(key,pose){const path=this.paths[key];if(pose)path.push(pose);else if(path.length&&path.at(-1)!==null)path.push(null);if(path.length>3000)path.splice(0,path.length-3000);}
   accept(line,now){
     if(!line.startsWith('@CHASSIS'))return false;
     this.tick(now);
-    let r;try{r=JSON.parse(line.slice(8).trim());}catch{this.state=null;this.breakPaths();this.status='遥测格式错误';return true;}
+    let r;try{r=JSON.parse(line.slice(8).trim());}catch{this.badFrames++;this.markStale('遥测格式错误 · 丢弃坏帧，等待恢复');return true;}
     if(!r||typeof r!=='object'||![1,2].includes(r.v)||this.session===null||r.session!==this.session)return true;
     if(r.v===2){
       if(r.kind!=='state')return true;
       r=expandCompact(r);
-      if(!r){this.state=null;this.breakPaths();this.status='状态字段无效';return true;}
+      if(!r){this.badFrames++;this.markStale('状态字段无效 · 等待恢复');return true;}
     }
     if(r.kind==='config'){
       if((r.telemetry_period_ms!==undefined&&(!Number.isInteger(r.telemetry_period_ms)||r.telemetry_period_ms<200||r.telemetry_period_ms>10000))||!validGeometry(r.geometry)||JSON.stringify(r.wheel_ids)!=='[1,2,3,4]'||!Array.isArray(r.forward_dir)||r.forward_dir.length!==4||!r.forward_dir.every(d=>d===0||d===1)||typeof r.rev!=='string'||!r.rev){this.breakPaths();this.config=null;this.state=null;this.status='配置不兼容';return true;}
@@ -97,16 +98,17 @@ export class Telemetry {
     }
     if(r.kind!=='state'||!this.config)return true;
     if(!u32(r.t_ms)||!vector(r.target?.body,3)||!vector(r.target?.rpm,4)||!vector(r.feedback?.rpm,4)||!vector(r.feedback?.pos,4)||!flags(r.feedback?.speed_valid)||!flags(r.feedback?.position_valid)||!Array.isArray(r.feedback?.speed_ms)||r.feedback.speed_ms.length!==4||!r.feedback.speed_ms.every(u32)||!Array.isArray(r.feedback?.position_ms)||r.feedback.position_ms.length!==4||!r.feedback.position_ms.every(u32)){
-      this.state=null;this.breakPaths();this.status='状态字段无效';return true;
+      this.badFrames++;this.markStale('状态字段无效 · 等待恢复');return true;
     }
     const delta=this.lastTime===null?null:(r.t_ms-this.lastTime)>>>0;
     if(delta!==null&&(delta===0||delta>=0x80000000))return true;
     if((delta!==null&&delta>Math.max(300,this.periodMs*1.5))||(this.traceSeq!==null&&this.traceSeq!==r.trace_seq))this.breakPaths();
     this.traceSeq=r.trace_seq??null;
-    this.lastTime=r.t_ms;this.receivedAt=now;this.state=r;
+    this.lastTime=r.t_ms;this.receivedAt=now;this.state=r;this.stale=false;
     this.command=validPose(r.pose?.command)?r.pose.command:null;
     const fresh=r.feedback.position_valid.every((v,i)=>v&&((r.t_ms-r.feedback.position_ms[i])>>>0)<=600);
     this.feedback=fresh&&r.yaw?.valid===true&&Number.isFinite(r.yaw.rad)&&validPose(r.pose?.feedback)?r.pose.feedback:null;
+    this.lastCommand=this.command;this.lastFeedback=this.feedback;
     this.pushPath('command',this.command);this.pushPath('feedback',this.feedback);
     this.status='遥测接收中';return true;
   }

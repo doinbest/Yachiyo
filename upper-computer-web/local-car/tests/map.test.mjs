@@ -92,18 +92,18 @@ test('paced wireless telemetry waits for config, follows reported period and kee
   assert.equal(m.paths.feedback.includes(null),false);
   const stale=state(6000);stale.feedback.position_ms[0]=5000;
   send(m,stale,7400);assert.equal(m.feedback,null);
-  m.tick(13401);assert.equal(m.session,null);
+  m.tick(13401);assert.equal(m.session,42);
   m.begin(42,14000);send(m,{...config,telemetry_period_ms:'2000'},14001);assert.equal(m.config,null);
 });
-test('session binding, config-first, timestamps, invalid feedback and timeout require explicit restart',()=>{
+test('session binding, config-first, timestamps, invalid feedback and timeout preserves session and resumes',()=>{
   const m=new Telemetry();m.begin(42,0);send(m,state(0),0);assert.equal(m.state,null);
   send(m,{...config,session:99},0);assert.equal(m.config,null);
   send(m,config,0);send(m,state(10),10);assert.equal(m.command.x_mm,10);assert.equal(m.feedback.x_mm,9);
   send(m,state(10),100);send(m,state(9),110);assert.equal(m.receivedAt,10);
   const bad=state(210);bad.feedback.position_valid[2]=false;send(m,bad,210);assert.equal(m.feedback,null);assert.ok(m.command);assert.equal(m.paths.feedback.at(-1),null);
   send(m,state(810),500);assert.equal(m.paths.command.at(-2),null);
-  m.tick(1101);assert.equal(m.session,null);assert.equal(m.command,null);assert.equal(m.state,null);
-  send(m,config,1102);send(m,state(1000),1102);assert.equal(m.command,null);
+  m.tick(1101);assert.equal(m.session,42);assert.equal(m.command,null);assert.equal(m.state,null);
+  send(m,config,1102);send(m,state(1000),1102);assert.equal(m.command.x_mm,1000);
   m.begin(43,1200);send(m,state(1200),1200);assert.equal(m.config,null);
 });
 test('stale wheel samples, malformed JSON and clock wrap cannot create live substituted feedback',()=>{
@@ -124,4 +124,15 @@ test('fragmented 2 KB telemetry reception retains CRLF; outgoing remains 63 byte
   const d=new LineDecoder();assert.deepEqual(d.push(line.slice(0,1000)),[]);assert.deepEqual(d.push(line.slice(1000)+'\r\n'),[line]);
   assert.throws(()=>frameCommand('x'.repeat(64)));assert.equal(frameCommand('chassis stream on 4294967295'),'chassis stream on 4294967295\r\n');
   assert.equal(commands.some(c=>c.id==='vision-ring'||c.id==='vision-calib'),false);
+});
+
+test('corrupt frames preserve only a stale display pose and recover without joining paths',()=>{
+ const m=new Telemetry();m.begin(42,0);send(m,{...config,telemetry_period_ms:2000},0);send(m,state(100),100);
+ m.accept('@CHASSIS {broken',200);assert.equal(m.state,null);assert.equal(m.feedback,null);
+ assert.equal(m.lastFeedback.x_mm,90);assert.equal(m.stale,true);assert.equal(m.badFrames,1);
+ m.tick(7000);assert.equal(m.session,42);assert.equal(m.state,null);
+ send(m,{...state(8000),session:99},8000);assert.equal(m.state,null);
+ send(m,state(8100),8100);assert.equal(m.stale,false);assert.equal(m.feedback.x_mm,7290);
+ assert.equal(m.paths.feedback.at(-2),null);
+ m.stop();assert.equal(m.lastFeedback,null);assert.equal(m.session,null);
 });

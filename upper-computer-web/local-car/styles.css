@@ -86,3 +86,6 @@ body.dark{--paper:#111312;--card:#1a1d1b;--input:#242825;--terminal:#151816;--li
 #field-map{height:auto;max-height:640px;object-fit:contain}
 
 .connection #connect,.connection #disconnect,.connection #device-reset{flex:1 1 0;min-width:0;padding:9px 4px;white-space:nowrap}
+
+/* Preparation and route controls share the map workspace. */
+#map-page .real-route-panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:0 0 14px}.route-workspace{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:18px}.route-workspace .control-form{padding:0}.route-workspace .form-note{font-size:12px}.route-workspace h3{margin:12px 0}.route-workspace .real-route-status{margin:8px 0}

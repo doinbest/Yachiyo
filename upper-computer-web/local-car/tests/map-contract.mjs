@@ -21,7 +21,7 @@ const m=new Telemetry();m.begin(12345,0);m.accept(state,0);assert.equal(m.state,
 m.accept(config,10);assert.ok(m.config);assert.equal(m.config.session,12345);assert.equal(m.config.rev,'geom-20260912-v1');assert.deepEqual(m.config.geometry,g);
 m.accept(state,20);assert.ok(m.state);assert.equal(m.state.dropped,7);assert.equal(m.state.feedback.pos[1],-4294967295);assert.equal(m.feedback,null);assert.equal(m.config.feedback_sign,'motor_raw');
 const receiveTime=m.receivedAt;m.accept(state,30);assert.equal(m.receivedAt,receiveTime);
-m.tick(6021);assert.equal(m.session,null);assert.equal(m.state,null);m.accept(state,6022);assert.equal(m.state,null);
+m.tick(6021);assert.equal(m.session,12345);assert.equal(m.state,null);m.accept(state,6022);assert.equal(m.state,null);
 console.log('C/browser model contract: PASS (7 velocity cases, scaling, quantization, matrix, pulse baselines)');
 console.log('Production C telemetry/browser contract: PASS (config-first, nonce, int64, invalid feedback, duplicate, timeout)');
 

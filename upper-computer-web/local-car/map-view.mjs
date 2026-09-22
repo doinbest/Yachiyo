@@ -1,5 +1,5 @@
 import {RouteRunner,defaultSegment,defaultRoute,bodyCorners,turntableGap,routeResultText} from './route-model.mjs?v=two-batch-1';
-import {DEFAULT_GEOMETRY,SIM_MAX_RPM,FIELD,inverse,forward,quantize,rotate,midpoint,wheelCenters,FixedStepper,Telemetry,motionDisplay} from './map-model.mjs?v=dma-1';
+import {DEFAULT_GEOMETRY,SIM_MAX_RPM,FIELD,inverse,forward,quantize,rotate,midpoint,wheelCenters,FixedStepper,Telemetry,motionDisplay} from './map-model.mjs?v=map-route-2';
 
 const $=id=>document.getElementById(id);
 const fmt=(v,n=1)=>Number.isFinite(v)?v.toFixed(n):'—';
@@ -100,8 +100,8 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
     const offline=mode==='offline';$('stream-on').disabled=!connected||isPreparing();$('stream-off').disabled=!connected||isPreparing();
     $('telemetry-status').textContent=telemetry.status;onStatus(telemetry.status);
     const g=offline?geometry:telemetry.config?.geometry;
-    const displayPose=offline?pose:mode==='command'?telemetry.command:telemetry.feedback;
-    $('map-pose').textContent=poseText(displayPose);
+    const displayPose=offline?pose:mode==='command'?(telemetry.command??(telemetry.stale?telemetry.lastCommand:null)):(telemetry.feedback??(telemetry.stale?telemetry.lastFeedback:null));
+    $('map-pose').textContent=poseText(displayPose)+(!offline&&telemetry.stale?' · 最后位置（已过期）':'');$('map-car').style.opacity=!offline&&telemetry.stale?'0.35':'1';
     $('map-source-label').textContent=offline?'simulated · 离线模拟':mode==='command'?'command_estimate · 指令推算':'feedback_estimate · 反馈估计';
     $('sim-start').disabled=running;
     $('sim-resume').disabled=running||runner?.state!=='running';
