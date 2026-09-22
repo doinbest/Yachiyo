@@ -87,6 +87,24 @@ int main(void)
     HWT101_Cal_Cancel(); assert(!HWT101_Cal_IsBusy());
   }
   route_busy = motion_busy = false;
+  setup(100); available=false; HWT101_Cal_BootVerifyArm();
+  HWT101_Cal_BootVerifyProcess(true); HWT101_Cal_Process();
+  assert(snapshot().busy && !writes);
+  available=true; HWT101_Cal_BootVerifyProcess(true);
+  advance(4500,0); assert(snapshot().busy && !snapshot().verified);
+  advance(1000,0); assert(snapshot().control_ready && snapshot().samples==51 && !saves);
+  HWT101_Cal_BootVerifyProcess(true); assert(snapshot().run_id==1 && zeros==1);
+  setup(100); HWT101_Cal_BootVerifyArm(); HWT101_Cal_Cancel();
+  HWT101_Cal_BootVerifyProcess(true); assert(!writes && !snapshot().busy);
+  setup(100); available=false; HWT101_Cal_BootVerifyArm(); tick+=5000;
+  HWT101_Cal_BootVerifyProcess(true); available=true; HWT101_Cal_BootVerifyProcess(true);
+  assert(!writes && !strcmp(snapshot().reason,"boot_imu_timeout"));
+  setup(100); HWT101_Cal_BootVerifyArm(); HWT101_Cal_BootVerifyProcess(false);
+  assert(!writes && !strcmp(snapshot().reason,"boot_motion_busy"));
+  setup(100); HWT101_Cal_BootVerifyArm(); HWT101_Cal_BootVerifyProcess(true);
+  advance(5500,0.1f); HWT101_Cal_BootVerifyProcess(true);
+  assert(!snapshot().control_ready && snapshot().run_id==1 && zeros==1);
+
   setup(100); assert(HWT101_Cal_ZeroStart());
   advance(100,0); assert(zeros==0);
   finish();
@@ -96,13 +114,13 @@ int main(void)
   setup(100); fail_write_reg=0x76; assert(HWT101_Cal_ZeroStart()); finish();
   assert(!strcmp(snapshot().reason,"yaw_zero_write") && !saves);
   setup(100); assert(HWT101_Cal_ZeroStart()); HWT101_Cal_Cancel(); finish(); assert(!zeros);
-  setup(100);assert(HWT101_Cal_VerifyStart(10000));
+  setup(100);assert(HWT101_Cal_VerifyStart(5000));
   advance(100,0);assert(zeros==0 && snapshot().samples==0);
   until_verify();assert(zeros==1 && saves==0 && starts==0 && exits==0);
   finish();assert(snapshot().verified && fabsf(angle.yaw)<0.001f);
-  setup(100);fail_write_reg=0x76;assert(HWT101_Cal_VerifyStart(10000));finish();
+  setup(100);fail_write_reg=0x76;assert(HWT101_Cal_VerifyStart(5000));finish();
   assert(!snapshot().verified && !strcmp(snapshot().reason,"yaw_zero_write") && saves==0);
-  setup(100);assert(HWT101_Cal_VerifyStart(10000));sample(10,0);
+  setup(100);assert(HWT101_Cal_VerifyStart(5000));sample(10,0);
   HWT101_Cal_Cancel();finish();assert(zeros==0 && saves==0);
   setup(100); assert(HWT101_Cal_Start()); advance(1000, 0);
   route_busy = true; HWT101_Cal_Cancel(); finish();
@@ -119,7 +137,7 @@ int main(void)
   setup(100);fail_read_reg=0x48;assert(HWT101_Cal_RefreshRegisters()==HAL_ERROR);
   fail_read_reg=-1;regs[0x48]=1;HWT101_Cal_Cancel();finish();assert(regs[0x48]==0 && exits==1);
   setup(100);fail_read_reg=0x4C;assert(!HWT101_Cal_Start() && writes==0);
-  setup(100);assert(!HWT101_Cal_VerifyStart(5000));
+  setup(100);assert(!HWT101_Cal_VerifyStart(10001));
 
   for(unsigned run=0;run<2;run++)
   {
@@ -137,13 +155,13 @@ int main(void)
     comm.i2c_error_count++;HWT101_Cal_Process();assert(!HWT101_Cal_ControlAngleGet(&output));
   }
 
-  /* Ten seconds is a short check, with unchanged drift/error limits. */
-  setup(100);assert(HWT101_Cal_VerifyStart(10000));advance(9500,0.005f);
+  /* Five seconds is a short check, with unchanged drift/error limits. */
+  setup(100);assert(HWT101_Cal_VerifyStart(5000));advance(4500,0.005f);
   assert(!snapshot().verified && HWT101_Cal_IsBusy());advance(1000,0.005f);
-  assert(snapshot().verified && snapshot().verify_ms==10000 && writes==2 && zeros==1 && saves==0);
-  setup(UINT32_MAX-3000);assert(HWT101_Cal_VerifyStart(10000));advance(10500,0.1f);
+  assert(snapshot().verified && snapshot().verify_ms==5000 && writes==2 && zeros==1 && saves==0);
+  setup(UINT32_MAX-3000);assert(HWT101_Cal_VerifyStart(5000));advance(5500,0.1f);
   assert(!snapshot().verified && !strcmp(snapshot().result,"FAIL") && writes==2 && zeros==1 && saves==0);
-  setup(100);assert(HWT101_Cal_VerifyStart(10000));until_verify();sample(10,0);sample(301,0);
+  setup(100);assert(HWT101_Cal_VerifyStart(5000));until_verify();sample(10,0);sample(301,0);
   assert(!snapshot().verified && !strcmp(snapshot().reason,"sample_gap"));
 
   /* Validation resets yaw once, but never changes bias or subtracts the slope. */

@@ -27,6 +27,10 @@ typedef struct
 
 /** @brief 初始化本次启动的状态，不写模块或外部Flash。主循环初始化时调用。 */
 void HWT101_Cal_Init(void);
+/** @brief 初始化结束后安排一次上电5秒静止验证；等待新鲜数据期间也阻止运动。 */
+void HWT101_Cal_BootVerifyArm(void);
+/** @brief HWT101_Process之后调用；motion_idle须覆盖所有运动任务，等待数据最多5秒。 */
+void HWT101_Cal_BootVerifyProcess(bool motion_idle);
 /** @brief 触发20秒原生标定、30秒验证，通过后请求模块内部保存。
  * @pre 调用者须确认所有运动任务空闲，用户保证整车静止；只在主循环调用。
  * @return 已开始为true；忙、无新鲜样本或寄存器读取异常为false。 */
@@ -36,7 +40,7 @@ bool HWT101_Cal_Start(void);
  * @return true仅表示流程开始；完成后检查zero_sample_received/zero_after_deg。 */
 bool HWT101_Cal_ZeroStart(void);
 /** @brief 先解锁并写CALIYAW归零，再验证；不修改零偏或发送SAVE。
- * duration_ms仅支持10000或30000（内部测试）；控制台固定10秒，为归零后的完整采样时间。
+ * duration_ms仅支持5000或30000（内部测试）；控制台固定5秒，为归零后的完整采样时间。
  * @pre 同Start；通过后仅授予本次启动的航向测试资格。 */
 bool HWT101_Cal_VerifyStart(uint32_t duration_ms);
 /** @brief 取消并清除RAM验证资格；必要时异步恢复正常模式，不擦除零偏。 */

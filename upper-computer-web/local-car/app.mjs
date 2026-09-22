@@ -1,7 +1,7 @@
 import {mountWheelFeedback} from './wheel-feedback.mjs';
 import {createAttemptTracker} from './command-attempt.mjs?v=terminal-3';
-import {mountPreparation} from './route-preparation.mjs?v=chassis-3';
-import {commands,buildCommand,frameCommand,describeReply,moduleForWire} from './protocol.mjs?v=reset-zero-1';
+import {mountPreparation} from './route-preparation.mjs?v=boot-verify-1';
+import {commands,buildCommand,frameCommand,describeReply,moduleForWire} from './protocol.mjs?v=boot-verify-1';
 import {BridgeLink,readOnlyCommand} from './bridge.mjs?v=dma-1';
 import {mountMap} from './map-view.mjs?v=dma-1';
 import {mountQr} from './qr-panel.mjs?v=bridge-1';
@@ -20,7 +20,7 @@ function receive(line){appendLog('RX',line);
   if(line==='STM32 mechanical arm console ready'){
     status.clear();
     for(const view of [wheelView,mapView,qrView,prepView]){view?.connection(false);view?.connection(bridge.connected);}
-    appendLog('SYS','已收到 STM32 启动信息；旧状态已清除，请重新验证 IMU、准备跑图并手动开启订阅。');renderStatus();
+    appendLog('SYS','已收到 STM32 启动信息；旧状态已清除，请保持静止，等待 IMU 自动验证 5 秒通过后准备跑图并手动开启订阅。');renderStatus();
   }
   if(/^OK imu zero started/.test(line)){
     mapView?.connection(bridge.connected);prepView?.connection(false);prepView?.connection(bridge.connected);
@@ -47,7 +47,7 @@ function showAttempt({wire,state,current}) {
 const attempts=createAttemptTracker(showAttempt);
 async function send(wire,fromPreparation=false){
   if(['chassis stop','wheel stop'].includes(wire))return requestStop();
-  if(/^system\s+reset$/.test(wire.trim())&&!window.confirm('重启 STM32？\n仅在整车静止、任务空闲时操作。主控将重新初始化，外部驱动器不会断电复位。重启后需重新验证 IMU 和准备跑图。'))return false;
+  if(/^system\s+reset$/.test(wire.trim())&&!window.confirm('重启 STM32？\n仅在整车静止、任务空闲时操作。主控将重新初始化，外部驱动器不会断电复位。重启后保持静止，等待 IMU 自动验证 5 秒通过后准备跑图。'))return false;
   return attempts.run(wire,()=>executeSend(wire,fromPreparation));
 }
 async function executeSend(wire,fromPreparation=false){
@@ -113,7 +113,7 @@ const recovery=node('details',undefined,'advanced');recovery.append(node('summar
 recovery.append(node('p','用于驱动器已实际复位后的总线恢复，不会复位硬件。先停止四轮采集并等待在途事务结束，再确认恢复。底部“解除停止锁定”仅解除网页软件停车锁，两者不同。','form-note'));
 actions(recovery,[['feedback-off','停止四轮采集'],['reset-confirmed','确认驱动已复位']]);ch.append(recovery);
 tabs(pages.vision,[['任务执行',body=>{body.append(node('p','Base 回零 → 内部请求识别 → 底盘搜索 → 底盘/X 对准。当前终点为对准完成。','form-note'));actions(body,[['material-status','读取任务状态'],['material-stop','停止物料任务']]);body.append(controlForm('material-auto'));}],['相机调试',body=>{body.append(node('p','仅识别，不主动驱动机构；停止识别请求不等于停止物料任务。','form-note'));actions(body,[['camera-status','读取相机状态'],['camera-stop','停止识别请求']]);body.append(controlForm('camera-material'));}],['标定与分步测试',body=>{actions(body,[['vision-status','读取 Base/X 状态'],['vision-stop','停止 Base/X 对准']]);advanced(body,'参考与两种标定路径',['vision-ref','vision-calib-material','vision-calib-chassis']);body.append(controlForm('vision-material',{label:'Base/X 独立对准'}));}]]);
-const sys=pages.system;actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','验证 10 秒'],['imu-cal-cancel','取消标定/验证']]);sys.append(node('p','Z 轴角度清零：把当前朝向设为 0°，不消除漂移、不标定零偏。保持静止操作；跑图前重新验证 IMU 并设置地图起点。','form-note'));
+const sys=pages.system;actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','上电后自动验证 5 秒，请保持整车静止；失败后可手动重新验证。原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','重新验证 5 秒'],['imu-cal-cancel','取消标定/验证']]);sys.append(node('p','Z 轴角度清零：把当前朝向设为 0°，不消除漂移、不标定零偏。保持静止操作；跑图前重新验证 IMU 并设置地图起点。','form-note'));
 actions(sys,[['imu-zero','Z 轴角度清零']]);
 advanced(sys,'IMU 连续角度输出',['imu-stream-on','imu-stream-off']);
 qrView=mountQr({root:pages.qr,send,notify:toast,canSend});}

@@ -69,17 +69,14 @@ export class RoutePreparation {
       case 'route':
         if(!line.startsWith('OK chassis route '))break;
         if(!idleRoute(f.state)){this.fail('已有路线占用底盘，请先取消并确认停车后重新准备。');break;}
-        this.request('profile','chassis profile '+this.config.profile,'1/5 应用 Emm 默认接收应答模式（仅 MCU RAM）…');break;
-      case 'profile':
-        if(line===accepted)this.request('units','chassis units 65536','1/5 应用 Emm 协议位置单位 65536/圈（仅 MCU RAM）…');
-        break;
+        this.request('units','chassis units 65536','1/5 应用 Emm 协议位置单位 65536/圈（仅 MCU RAM）…');break;
       case 'units':
         if(line===accepted)this.request('configured','chassis task','1/5 复查配置已生效且底盘空闲…');
         break;
       case 'configured':
         if(!line.startsWith('OK chassis task '))break;
         if(f.locked!=='0'||!['0','3','4'].includes(f.state)||!['0','5'].includes(f.stage)||
-          f.ack!==(this.config.profile==='receive'?'2':'1')||f.units!=='65536'){
+          f.ack!=='2'||f.units!=='65536'){
           this.fail('保存的配置未生效，或底盘已被占用。请检查任务中的应答模式与位置单位。');break;
         }
         this.request('select','chassis feedback 0','2/5 选择四轮反馈…');break;
@@ -111,15 +108,15 @@ export class RoutePreparation {
           this.pending=null;this.until=this.now()+120000;
           this.show('confirm','3/5 检查通过。请确认车体中心在右下起点 (2250,150)，车头朝上且整车静止。');break;
         }
-        if(this.verifiedNow){this.fail('10 秒验证未通过，请查看 IMU 结果；必要时执行原生标定。');break;}
+        if(this.verifiedNow){this.fail('5 秒验证未通过，请查看 IMU 结果；必要时执行原生标定。');break;}
         this.previousRun=cal.run_id;
-        this.request('verify','imu verify 10','3/5 请求 10 秒静止验证，请勿移动小车…');break;
+        this.request('verify','imu verify 5','3/5 请求 5 秒静止验证，请勿移动小车…');break;
       }
       case 'verify':
         if(!line.startsWith('OK imu verify started '))break;
-        if(f.verify_ms!=='10000'){this.fail('固件未执行 10 秒验证，请更新本轮固件。');break;}
-        this.verifiedNow=true;this.pending=null;this.until=this.now()+11500;
-        this.show('verify_wait','3/5 正在进行 10 秒静止验证，完成后自动读取结果…');break;
+        if(f.verify_ms!=='5000'){this.fail('固件未执行 5 秒验证，请更新本轮固件。');break;}
+        this.verifiedNow=true;this.pending=null;this.until=this.now()+6500;
+        this.show('verify_wait','3/5 正在进行 5 秒静止验证，完成后自动读取结果…');break;
       case 'origin':
         if(line!==accepted)break;
         this.session=this.nonce();this.beginTelemetry(this.session);

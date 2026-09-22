@@ -248,11 +248,11 @@ int main(void)
   command("vision status\r");assert(!strstr(output,"imu_busy"));
   command("chassis stop\r");assert(!strstr(output,"imu_busy"));
   command("imu cal cancel\r");assert(cal_cancels==1 && !cal_status.busy);
-  command("imu verify\r");assert(verify_duration==10000 && cal_status.busy);
+  command("imu verify\r");assert(verify_duration==5000 && cal_status.busy);
   command("imu cal clear\r");assert(cal_cancels==2 && !cal_status.busy);
   command("imu verify 120\r");assert(strstr(output,"ERR imu format") && !cal_status.busy);
   command("imu cal clear\r");assert(cal_cancels==3);
-  command("imu verify 10\r");assert(verify_duration==10000 && cal_status.busy);
+  command("imu verify 5\r");assert(verify_duration==5000 && cal_status.busy);
   command("imu cal clear\r");
   command("imu verify 30\r");assert(strstr(output,"ERR imu format") && !cal_status.busy);
   command("imu verify 121\r");assert(strstr(output,"ERR imu format") && !cal_status.busy);

@@ -311,9 +311,7 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
   }
   else if (!strcmp(t[1], "profile"))
   {
-    if (n == 3 && !strcmp(t[2], "none"))
-      ok = Mecanum_AckProfile_Set(MECANUM_ACK_NONE);
-    else if (n == 3 && !strcmp(t[2], "receive"))
+    if (n == 3 && !strcmp(t[2], "receive"))
       ok = Mecanum_AckProfile_Set(MECANUM_ACK_RECEIVE);
   }
   else if (!strcmp(t[1], "feedback"))

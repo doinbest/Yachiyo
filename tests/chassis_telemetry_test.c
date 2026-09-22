@@ -42,6 +42,9 @@ int main(void)
    assert(ChassisTelemetry_Command(6,run));assert(submitted.mode==CHASSIS_MOTION_HOLD_CURRENT);
    run[4]="0.1";assert(ChassisTelemetry_Command(6,run));
    assert(submitted.mode==CHASSIS_MOTION_ANGULAR_VELOCITY && submitted.omega_rad_s>0);}
+  {char *profile[]={"chassis","profile","none"};
+   assert(ChassisTelemetry_Command(3,profile));assert(strstr(reply,"ERR"));
+   profile[2]="receive";assert(ChassisTelemetry_Command(3,profile));assert(strstr(reply,"OK"));}
   char *bad[]={"chassis","stream","on","-1"};
   ChassisTelemetry_Init();tick=200;ChassisTelemetry_Process();assert(!frame[0]);
   assert(!ChassisTelemetry_Stream(true,0));

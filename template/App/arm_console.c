@@ -538,7 +538,7 @@ static void ArmConsole_HelpShow(void)
       "  omega=0: hold starting IMU heading; verified fresh IMU required\r\n"
       "chassis heading <vx_mm_s> <vy_mm_s> <module_heading_deg> <hold_ms>\r\n"
       "chassis origin <map_x_mm> <map_y_mm> <map_heading_deg> (verified IMU, stationary)\r\n"
-      "chassis profile none|receive (confirm actual drive ACK first, RAM only)\r\n"
+      "chassis profile receive (compatibility only; Emm42 default)\r\n"
       "chassis feedback <0..4> (0=all, 1..4=single, polling stays off)\r\n"
       "chassis feedback on|off\r\n"
       "chassis feedback (read cached raw values, valid=speed,position,state)\r\n"
@@ -572,7 +572,7 @@ static void ArmConsole_HelpShow(void)
       "imu cal cancel  cancel and clear boot verification\r\n"
       "system reset  restart STM32 when motion and IMU tasks are idle\r\n"
       "imu zero  zero Z angle only; reverify and reset map origin afterwards\r\n"
-      "imu verify  zero yaw then verify for 10s\r\n"
+      "imu verify  zero yaw then verify for 5s\r\n"
       "imu stream on|off  continuous angle log (default off)\r\n"
       "screen status  readonly USART3 statistics\r\n"
       "qr status  UART4 bytes, accepted/rejected frames and event drops\r\n"
@@ -1687,12 +1687,12 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
       (((TokenCount == 3U) && !strcmp(Tokens[1], "cal") && !strcmp(Tokens[2], "start")) ||
        ((TokenCount == 2U) && !strcmp(Tokens[1], "zero")) ||
        ((TokenCount == 2U) && !strcmp(Tokens[1], "verify")) ||
-       ((TokenCount == 3U) && !strcmp(Tokens[1], "verify") && !strcmp(Tokens[2], "10"))))
+       ((TokenCount == 3U) && !strcmp(Tokens[1], "verify") && !strcmp(Tokens[2], "5"))))
   {
     HWT101_CalStatus_t Cal;
     uint8_t Native = !strcmp(Tokens[1], "cal");
     uint8_t ZeroOnly = !strcmp(Tokens[1], "zero");
-    uint32_t VerifyMs = Native ? 30000U : ZeroOnly ? 0U : 10000U;
+    uint32_t VerifyMs = Native ? 30000U : ZeroOnly ? 0U : 5000U;
     bool Started;
     if (HWT101_Cal_IsBusy())
     {
@@ -2205,7 +2205,7 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   memset(ArmConsole_RingBuffer, 0, sizeof(ArmConsole_RingBuffer));
   memset(ArmConsole_LineBuffer, 0, sizeof(ArmConsole_LineBuffer));
   ArmConsole_Write("\r\nSTM32 mechanical arm console ready\r\n");
-  ArmConsole_Write("IMU stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
+  ArmConsole_Write("IMU boot verify=5s; keep still; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
   ArmConsole_PromptShow();
   return HAL_OK;
 }

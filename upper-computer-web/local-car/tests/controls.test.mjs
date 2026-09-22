@@ -15,13 +15,11 @@ test('finite velocity controls convert seconds to integer milliseconds once', ()
 
 test('module heading and map origin remain separate commands; confirmation fields start empty', () => {
   assert.equal(buildCommand('chassis-origin',{x:1200,y:400,heading:90}), 'chassis origin 1200 400 90');
-  for (const id of ['chassis-heading','chassis-origin','profile','units']) {
+  for (const id of ['chassis-heading','chassis-origin','units']) {
     const definition=commands.find(c=>c.id===id);
     assert.equal(definition.requiresInput,true);
     assert.throws(()=>buildCommand(id,Object.fromEntries(definition.fields.map(f=>[f.key,f.value]))));
   }
-  assert.equal(buildCommand('profile',{mode:'none'}),'chassis profile none');
-  assert.equal(buildCommand('profile',{mode:'receive'}),'chassis profile receive');
   assert.equal(buildCommand('units',{units:'0'}),'chassis units 0');
   assert.equal(buildCommand('units',{units:'65536'}),'chassis units 65536');
   for (const units of ['16384','3200','65535']) assert.throws(()=>buildCommand('units',{units}));

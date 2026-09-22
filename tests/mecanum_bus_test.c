@@ -65,7 +65,7 @@ int main(void)
 {
   Mecanum_Status_t s;
   MotorBus_Init(&uart);
-  assert(!Mecanum_Velocity_Request(100, 0, 0, 0));
+  Mecanum_StatusGet(&s); assert(s.ack_profile == MECANUM_ACK_RECEIVE);
   assert(Mecanum_AckProfile_Set(MECANUM_ACK_NONE));
   assert(Mecanum_Velocity_Request(100, 0, 0, 0));
   Mecanum_StatusGet(&s);assert(s.motion_sequence == 1 && s.stop_sequence == 0);

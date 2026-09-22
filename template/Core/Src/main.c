@@ -568,6 +568,7 @@ int main(void)
     Error_Handler();
   }
   ContestScreen_Init();
+  HWT101_Cal_BootVerifyArm();
 
   /* USER CODE END 2 */
 
@@ -608,6 +609,9 @@ int main(void)
     ImuTiming_Mark(IMU_TIME_MATERIAL);
     HWT101_Process(); /* 独立采集；关闭日志不会停止传感器轮询。 */
     ImuTiming_Mark(IMU_TIME_READ);
+    HWT101_Cal_BootVerifyProcess(!Mecanum_IsBusy() && !MechanicalArm_IsBusy() &&
+        !ArmVision_IsBusy() && !MaterialVision_IsBusy() &&
+        !ChassisRoute_IsBusy() && !ChassisMotion_IsBusy());
     HWT101_Cal_Process();
     ImuTiming_Mark(IMU_TIME_CAL);
     ChassisMotion_HeadingProcess();

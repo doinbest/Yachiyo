@@ -29,6 +29,7 @@ static uint32_t error_baseline, last_sample_tick, last_sample_count;
 static uint32_t control_tick, control_count;
 static bool native_run, start_attempted, aborting, cancelled, control_valid;
 static unsigned exit_attempts;
+static bool boot_pending;
 static float previous_yaw, unwrapped;
 static double sum_t, sum_y, sum_tt, sum_ty, sum_yy;
 
@@ -86,7 +87,7 @@ void HWT101_Cal_Init(void)
   cal.result = "NONE";
   cal.save_state = "NOT_REQUESTED";
   step = STEP_IDLE;
-  start_attempted = control_valid = native_run = aborting = cancelled = false;
+  start_attempted = control_valid = native_run = aborting = cancelled = boot_pending = false;
 }
 
 HAL_StatusTypeDef HWT101_Cal_RefreshRegisters(void)
@@ -189,12 +190,47 @@ bool HWT101_Cal_ZeroStart(void) { return StartRun(false, 0U); }
 
 bool HWT101_Cal_VerifyStart(uint32_t duration_ms)
 {
-  if (duration_ms != 10000U && duration_ms != 30000U) return false;
+  if (duration_ms != 5000U && duration_ms != 30000U) return false;
   return StartRun(false, duration_ms);
+}
+
+void HWT101_Cal_BootVerifyArm(void)
+{
+  if (cal.busy || cal.run_id != 0U) return;
+  boot_pending = true;
+  run_tick = HAL_GetTick();
+  cal.reason = "boot_wait_imu";
+  cal.result = "PENDING";
+  cal.verify_ms = cal.total_ms = 5000U;
+  SetState(HWT101_CAL_PREPARING);
+}
+
+void HWT101_Cal_BootVerifyProcess(bool motion_idle)
+{
+  HWT101_Angle_t angle;
+  if (!boot_pending) return;
+  if (!motion_idle || (uint32_t)(HAL_GetTick() - run_tick) >= 5000U)
+  {
+    boot_pending = false;
+    cal.reason = motion_idle ? "boot_imu_timeout" : "boot_motion_busy";
+    Finish(HWT101_CAL_FAILED);
+    return;
+  }
+  if (!FreshAngle(&angle)) return;
+  boot_pending = false;
+  SetState(HWT101_CAL_IDLE);
+  (void)StartRun(false, 5000U);
 }
 
 void HWT101_Cal_Cancel(void)
 {
+  if (boot_pending)
+  {
+    boot_pending = false;
+    cal.reason = "cancelled";
+    Finish(HWT101_CAL_CANCELLED);
+    return;
+  }
   if (cal.state == HWT101_CAL_RESTORING && cancelled) return;
   control_valid = cal.verified = false;
   cal.reason = "cancelled";
@@ -312,6 +348,7 @@ void HWT101_Cal_Process(void)
   HWT101_Angle_t angle;
   uint16_t value;
   uint32_t now = HAL_GetTick();
+  if (boot_pending) { cal.elapsed_ms = (uint32_t)(now - run_tick); return; }
   (void)HWT101_Status_Get(&comm);
   if (cal.busy) cal.elapsed_ms = (uint32_t)(now - run_tick);
   if (cal.busy) cal.i2c_errors = (uint32_t)(comm.i2c_error_count - error_baseline);

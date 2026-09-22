@@ -50,7 +50,8 @@ static Mecanum_Batch_t Batch, NextBatch;
 static bool BatchActive, NextValid, BatchWaiting, BatchStarted, LastBatchValid;
 static uint8_t BatchIndex, StopIndex;
 static uint32_t LastBatchMs;
-static Mecanum_Status_t BusStatus;
+/* Confirmed Emm42 factory configuration: receive acknowledgement. */
+static Mecanum_Status_t BusStatus = {.ack_profile = MECANUM_ACK_RECEIVE};
 static Mecanum_Feedback_t Feedback[4];
 static bool FeedbackEnabled;
 static uint8_t FeedbackIndex;

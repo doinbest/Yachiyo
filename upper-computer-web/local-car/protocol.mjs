@@ -50,12 +50,11 @@ export const commands = [
   command('feedback-select','chassis','选择反馈对象','chassis feedback {wheel}',[choice('wheel','反馈对象',[['0','全部车轮'],['1','左前 · 地址 1'],['2','左后 · 地址 2'],['3','右后 · 地址 3'],['4','右前 · 地址 4']])],'选择对象后轮询保持关闭，需显式开启。'),
   command('feedback-on','chassis','开启反馈轮询','chassis feedback on'),
   command('feedback-off','chassis','关闭反馈轮询','chassis feedback off'),
-  command('profile','chassis','确认驱动应答模式','chassis profile {mode}',[choice('mode','已核对的驱动应答模式',[['none','无应答 · none'],['receive','接收应答 · receive']],'')],'仅在核对实际驱动配置后选择，设置只保存在 MCU RAM。'),
   command('units','chassis','确认协议位置单位','chassis units {units}',[choice('units','每圈协议位置单位',[['0','尚未确认 · 0'],['65536','实测一圈为 65536 单位']],'')],'先测量一圈反馈；不是命令脉冲数或物理编码器分辨率。'),
   command('reset-confirmed','chassis','确认驱动已实际复位','chassis reset-confirmed',[],'仅在实物驱动器已复位后执行；此按钮不会复位驱动器。'),
   command('imu-status','system','读取 IMU 状态','imu status'),
   command('imu-cal-start','system','原生零偏标定','imu cal start',[],'整车静止约 20 秒标定 + 30 秒验证；验证通过后请求模块内部保存。'),
-  command('imu-verify','system','静止验证 10 秒','imu verify'),
+  command('imu-verify','system','重新验证 5 秒','imu verify'),
   command('imu-cal-cancel','system','取消标定或验证','imu cal cancel',[],'尝试恢复正常模式并清除本次航向控制验证资格。'),
   command('imu-stream-on','system','开启模块角度输出','imu stream on'),
   command('imu-stream-off','system','关闭模块角度输出','imu stream off'),
@@ -67,7 +66,7 @@ export const commands = [
 
 // Keep stable command groups/IDs; owner is the six-page UI module.
 const debugIds = new Set(['position','grip-idle','grip-duty','move','velocity','wheel','wheel-stop','chassis-hold','chassis-status','feedback-read','feedback-select','feedback-on','feedback-off','camera-material','camera-status','camera-stop','vision-material','imu-stream-on','imu-stream-off']);
-const calibrationIds = new Set(['home','origin','zero','config-get','config-set','vision-ref','vision-calib-material','vision-calib-chassis','profile','units','reset-confirmed','chassis-origin','imu-cal-start','imu-verify','imu-cal-cancel']);
+const calibrationIds = new Set(['home','origin','zero','config-get','config-set','vision-ref','vision-calib-material','vision-calib-chassis','units','reset-confirmed','chassis-origin','imu-cal-start','imu-verify','imu-cal-cancel']);
 for (const definition of commands) {
   definition.owner = definition.group === 'grip' ? 'arm' : definition.group;
   definition.section = calibrationIds.has(definition.id) ? 'calibration' : debugIds.has(definition.id) ? 'debug' : 'common';
