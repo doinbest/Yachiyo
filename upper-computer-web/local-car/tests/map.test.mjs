@@ -138,3 +138,9 @@ test('corrupt frames preserve only a stale display pose and recover without join
  assert.equal(m.paths.feedback.at(-2),null);
  m.stop();assert.equal(m.lastFeedback,null);assert.equal(m.session,null);
 });
+
+test('stopped off-target is distinct from missing stop evidence',()=>{
+ const r={state:'error',reason:'position_not_reached',segment:1,action_id:1,target:[0,0,90],error:[15,0,0],feedback_valid:true,stop_confirmed:true};
+ assert.match(model.routeStatusText(r),/已确认停止.*已停稳，但位置或航向未到位/);
+ assert.match(model.routeStatusText({...r,state:'running',reason:'position_correcting',stop_confirmed:false}),/低速修正位置/);
+});

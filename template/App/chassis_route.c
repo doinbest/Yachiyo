@@ -134,7 +134,7 @@ void ChassisRoute_Process(void)
   if(Motion.action_id!=Route.action_id)
   { (void)ChassisMotion_Stop(0);Route.state="error";Route.reason="action_mismatch";return; }
   if(Motion.state==CHASSIS_MOTION_ERROR)
-  { Route.state="error";Route.reason=Motion.reason;return; }
+  { Route.state="error";Route.reason=Motion.reason;Route.stop_confirmed=Motion.stop_confirmed;return; }
   if(Motion.state==CHASSIS_MOTION_DONE)
   {
     Route.stop_confirmed=Motion.stop_confirmed;
@@ -144,7 +144,11 @@ void ChassisRoute_Process(void)
     Route.state=Route.segment==ROUTE_COUNT&&!Automatic?"done":"waiting";
     Route.reason=Automatic?"auto_dwell":Route.segment==ROUTE_COUNT?"route_complete":"operator_next_required";
   }
-  else Route.state=Motion.state==CHASSIS_MOTION_STOPPING?"stopping":"running";
+  else
+  {
+    Route.state=Motion.state==CHASSIS_MOTION_STOPPING?"stopping":"running";
+    if(!strcmp(Motion.reason,"position_correcting")) Route.reason="position_correcting";
+  }
 }
 void ChassisRoute_StatusGet(ChassisRoute_Status_t *out)
 {

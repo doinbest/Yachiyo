@@ -22,6 +22,7 @@ static uint32_t DistanceGeneration, DistanceTimeout, DistanceStopTick, StopSeque
 static uint32_t StopSpeedTime[4];
 static int64_t StopPositions[4];
 static float DistanceMaxSpeed, MapVx, MapVy;
+static unsigned DistanceCorrections;
 static ChassisLocalization_Status_t Position; /* Main-loop snapshot; avoid large stack use. */
 static ChassisStop_Status_t StopStatus;
 static bool StopMonitoring, StopHaveGroup;
@@ -248,7 +249,7 @@ bool ChassisMotion_MoveTo(float x, float y, float yaw, float speed, uint32_t tim
   Motion.error_y_mm = y - Position.observer.feedback.y_mm;
   Motion.error_heading_deg = wrap_deg(yaw - Motion.map_yaw_rad*180.0f/CHASSIS_MODEL_PI);
   DistanceGeneration = Position.generation; DistanceTimeout = timeout; DistanceMaxSpeed = speed;
-  MapVx = MapVy = 0; StableGroups = 0;
+  MapVx = MapVy = 0; StableGroups = 0; DistanceCorrections = 0;
   return true;
 }
 static bool request_stop(const char *reason, bool error)
@@ -486,7 +487,7 @@ static bool in_target(void)
 static bool stopped_feedback(uint32_t now)
 {
   unsigned i;
-  bool quiet = in_target();
+  bool quiet = true; /* Physical stop evidence is independent of target accuracy. */
   if (Position.feedback_sequence == StopSequence) return false;
   StopSequence = Position.feedback_sequence;
   for(i=0;i<4;i++)
@@ -510,7 +511,36 @@ static bool distance_command(uint32_t dt, ChassisModel_Velocity_t *command)
 {
   float vx=Motion.error_x_mm*CHASSIS_DISTANCE_KP, vy=Motion.error_y_mm*CHASSIS_DISTANCE_KP;
   float norm=hypotf(vx,vy), dx,dy,step=CHASSIS_DISTANCE_ACCEL_MM_S2*dt/1000.0f;
-  if(norm>DistanceMaxSpeed) { vx*=DistanceMaxSpeed/norm; vy*=DistanceMaxSpeed/norm; }
+  static const uint8_t directions[4]={CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR,
+      CHASSIS_MOTOR_REAR_LEFT_FORWARD_DIR,CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR,
+      CHASSIS_MOTOR_FRONT_RIGHT_FORWARD_DIR};
+  float distance=hypotf(Motion.error_x_mm,Motion.error_y_mm);
+  float delay=CHASSIS_DISTANCE_RESPONSE_S;
+  float rpm[4], measured=0, available, brake_speed, limit;
+  ChassisModel_Velocity_t feedback;
+  unsigned i;
+  uint32_t age=0, now=HAL_GetTick();
+  for(i=0;i<4;i++)
+  {
+    uint32_t speed_age=(uint32_t)(now-Position.wheels[i].speed_ms);
+    uint32_t position_age=(uint32_t)(now-Position.wheels[i].position_ms);
+    if(speed_age>age) age=speed_age;
+    if(position_age>age) age=position_age;
+    rpm[i]=(directions[i]?-1.0f:1.0f)*(float)Position.wheels[i].speed_rpm;
+  }
+  delay+=age/1000.0f;
+  if(ChassisModel_Forward(&Geometry,rpm,&feedback))
+    measured=hypotf(feedback.vx_mm_s,feedback.vy_mm_s);
+  /* v*delay + v^2/(2*a) <= remaining distance. Account for drive lag
+     when measured speed exceeds our commanded ramp state. */
+  available=fmaxf(0,distance-CHASSIS_DISTANCE_TOLERANCE_MM*0.5f-
+      fmaxf(0,measured-hypotf(MapVx,MapVy))*delay);
+  brake_speed=sqrtf(CHASSIS_DISTANCE_ACCEL_MM_S2*CHASSIS_DISTANCE_ACCEL_MM_S2*delay*delay+
+      2*CHASSIS_DISTANCE_ACCEL_MM_S2*available)-CHASSIS_DISTANCE_ACCEL_MM_S2*delay;
+  limit=fminf(DistanceMaxSpeed,brake_speed);
+  if(distance<=CHASSIS_DISTANCE_CREEP_MM || DistanceCorrections)
+    limit=fminf(limit,CHASSIS_DISTANCE_CREEP_MM_S);
+  if(norm>limit) { vx*=limit/norm; vy*=limit/norm; }
   if(hypotf(Motion.error_x_mm,Motion.error_y_mm)<=CHASSIS_DISTANCE_TOLERANCE_MM) vx=vy=0;
   dx=vx-MapVx; dy=vy-MapVy; norm=hypotf(dx,dy);
   if(norm>step) { dx*=step/norm;dy*=step/norm; }
@@ -603,6 +633,24 @@ void ChassisMotion_Process(void)
       {
         if (!stopped_feedback(now)) return;
         Motion.stop_confirmed = true;
+        if(!in_target())
+        {
+          /* Keep the action ID, original deadline and normal motion guards.
+             Corrections begin only after fresh physical stop evidence. */
+          if(DistanceCorrections<CHASSIS_DISTANCE_CORRECTIONS &&
+             hypotf(Motion.error_x_mm,Motion.error_y_mm)<=CHASSIS_DISTANCE_CORRECTION_MM &&
+             fabsf(Motion.error_heading_deg)<=CHASSIS_DISTANCE_HEADING_DEG &&
+             (uint32_t)(now-Motion.start_tick)<DistanceTimeout && !bus.locked)
+          {
+            DistanceCorrections++;MapVx=MapVy=0;HeadingPid.output_rad_s=0;
+            WaitingForStop=false;Motion.stop_confirmed=false;
+            LastControlTick=now;PidSampleTick=Motion.heading_sample_tick;PidSampleCount=LastYawCount;
+            Motion.state=CHASSIS_MOTION_RUNNING;Motion.reason="position_correcting";
+            return;
+          }
+          Motion.state=CHASSIS_MOTION_ERROR;Motion.reason="position_not_reached";
+          WaitingForStop=false;return;
+        }
         Motion.reason = "feedback_arrived";
       }
       Motion.state = FinishAsError ? CHASSIS_MOTION_ERROR : CHASSIS_MOTION_DONE;

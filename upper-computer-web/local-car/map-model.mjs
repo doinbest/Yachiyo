@@ -59,7 +59,8 @@ function expandCompact(r){
 function motionDetails(motion){
   const [x,y,heading]=motion.target;
   const error=motion.feedback_valid?`误差 ΔX ${motion.error[0].toFixed(1)} · ΔY ${motion.error[1].toFixed(1)} mm · 航向 ${motion.error[2].toFixed(1)}°`:'反馈无效 · 误差不可用';
-  return `目标 X ${x.toFixed(1)} · Y ${y.toFixed(1)} mm · θ ${heading.toFixed(1)}°\n${error}\n${motion.stop_confirmed?'已确认停止':'未确认停止'} · 原因 ${motion.reason} · 编码器反馈估计，非视觉精对准`;
+  const reason=({position_correcting:'低速修正位置',position_not_reached:'已停稳，但位置或航向未到位',stop_unconfirmed:'停车反馈未在规定时间内确认'})[motion.reason]??motion.reason;
+  return `目标 X ${x.toFixed(1)} · Y ${y.toFixed(1)} mm · θ ${heading.toFixed(1)}°\n${error}\n${motion.stop_confirmed?'已确认停止':'未确认停止'} · 原因 ${reason} · 编码器反馈估计，非视觉精对准`;
 }
 export function routeStatusText(route){
   if(!validRoute(route))return '实车路线状态不可用 · 请在地图页手动开启遥测；查询回复见收发记录。';

@@ -106,7 +106,12 @@
 
 /* Initial low-speed feedback-distance tuning; verify on the actual chassis. */
 #define CHASSIS_DISTANCE_SPEED_MM_S       50.0f
-#define CHASSIS_DISTANCE_KP               1.0f
+#define CHASSIS_DISTANCE_KP               1.5f
+#define CHASSIS_DISTANCE_RESPONSE_S       0.25f
+#define CHASSIS_DISTANCE_CREEP_MM         50.0f
+#define CHASSIS_DISTANCE_CREEP_MM_S       20.0f
+#define CHASSIS_DISTANCE_CORRECTION_MM   100.0f
+#define CHASSIS_DISTANCE_CORRECTIONS       2U
 #define CHASSIS_DISTANCE_ACCEL_MM_S2      100.0f
 #define CHASSIS_DISTANCE_TOLERANCE_MM     10.0f
 #define CHASSIS_DISTANCE_HEADING_DEG      2.0f

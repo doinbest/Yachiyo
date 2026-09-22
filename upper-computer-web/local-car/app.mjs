@@ -1,9 +1,9 @@
 import {mountWheelFeedback} from './wheel-feedback.mjs';
 import {createAttemptTracker} from './command-attempt.mjs?v=terminal-3';
-import {mountPreparation} from './route-preparation.mjs?v=full-route-4';
-import {commands,buildCommand,frameCommand,describeReply,moduleForWire} from './protocol.mjs?v=full-route-4';
+import {mountPreparation} from './route-preparation.mjs?v=braking-5';
+import {commands,buildCommand,frameCommand,describeReply,moduleForWire} from './protocol.mjs?v=braking-5';
 import {BridgeLink,readOnlyCommand} from './bridge.mjs?v=dma-1';
-import {mountMap} from './map-view.mjs?v=full-route-4';
+import {mountMap} from './map-view.mjs?v=braking-5';
 import {mountQr} from './qr-panel.mjs?v=bridge-1';
 const $=id=>document.getElementById(id);
 const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};

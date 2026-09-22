@@ -92,5 +92,10 @@ int main(void)
   setup();assert(ChassisRoute_Command(4,auto_run));arrive();assert(ChassisRoute_Cancel());
   motion.state=CHASSIS_MOTION_DONE;tick+=1500;loc.feedback_tick=tick;ChassisRoute_Process();assert(starts==1);
   setup();assert(ChassisRoute_Command(4,auto_run));arrive();tick+=1000;loc.feedback_valid=false;ChassisRoute_Process();assert(starts==1&&stops==1);
+  setup();assert(ChassisRoute_Command(4,auto_run));
+  motion.state=CHASSIS_MOTION_RUNNING;motion.reason="position_correcting";ChassisRoute_Process();
+  assert(starts==1 && !strcmp(status().reason,"position_correcting") && !status().stop_confirmed);
+  motion.state=CHASSIS_MOTION_ERROR;motion.reason="position_not_reached";motion.stop_confirmed=true;
+  ChassisRoute_Process();assert(starts==1 && status().stop_confirmed && !strcmp(status().state,"error"));
   puts("chassis_route_test: PASS (manual advance, exact targets, task identity, loss, cancellation, wire)");return 0;
 }
