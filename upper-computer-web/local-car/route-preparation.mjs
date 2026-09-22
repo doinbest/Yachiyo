@@ -11,7 +11,7 @@ export class RoutePreparation {
     this.phase='idle';this.message='连接后准备跑图 · 全程保持静止，不会启动电机。';
     this.connected=false;this.serial=0;this.pending=null;
   }
-  get busy(){return !['idle','failed','cancelled','ready'].includes(this.phase);}
+  get busy(){return !['idle','failed','cancelled','ready','consumed'].includes(this.phase);}
   show(phase,message){this.phase=phase;this.message=message;this.changed();if(!this.busy)this.finished();}
   connection(value){
     this.connected=value;
@@ -45,6 +45,9 @@ export class RoutePreparation {
     return true;
   }
   receive(raw){
+    if(this.phase==='ready' && /^OK chassis route state=(running|waiting) .*segment=(?:[1-9]|1[0-6])\b/.test(String(raw).trim())){
+      this.show('consumed','已进入实车路线 · 起点检查已完成，请查看当前段状态。');return;
+    }
     const p=this.pending;
     if(!this.busy||!p)return;
     if(this.now()>p.deadline){this.tick();return;}
@@ -139,6 +142,10 @@ export class RoutePreparation {
   }
   tick(){
     if(this.phase==='ready'){
+      const t=this.telemetry(),r=t?.state?.route;
+      if(t?.session===this.session && ['running','stopping','waiting'].includes(r?.state) && r.segment>=1){
+        this.show('consumed','已进入实车路线 · 起点检查已完成，请查看当前段状态。');return;
+      }
       if(!this.validStartSnapshot())this.cancel('起点反馈已变化或遥测失效；开始前请重新检查，运动中以实车任务状态为准。');
       return;
     }

@@ -34,9 +34,9 @@ int main(void)
   assert(!status().stop_confirmed); /* numerical position never implies physical stop */
   route_busy=true;ChassisMotion_Stop(0);complete_stop();assert(!ChassisMotion_MoveTo(1100,1300,90,50,60000));
   setup();location.feedback_valid=false;assert(!ChassisMotion_MoveTo(1100,1300,90,50,60000));
-  setup();assert(ChassisMotion_MoveTo(1100,1300,90,10,190000));
-  setup();assert(!ChassisMotion_MoveTo(1100,1300,90,10,190001));
-  setup();assert(!ChassisMotion_MoveTo(NAN,1300,90,50,60000));assert(!ChassisMotion_MoveTo(1100,1300,90,101,60000));
+  setup();assert(ChassisMotion_MoveTo(1100,1300,90,10,400000));
+  setup();assert(!ChassisMotion_MoveTo(1100,1300,90,10,400001));
+  setup();assert(!ChassisMotion_MoveTo(NAN,1300,90,50,60000));assert(!ChassisMotion_MoveTo(1100,1300,90,1001,60000));
   setup();assert(ChassisMotion_MoveTo(1300,1200,90,50,60000));location.generation++;
   sample(120);ChassisMotion_Process();assert(stops==1);complete_stop();assert(status().state==CHASSIS_MOTION_ERROR);
   setup();assert(ChassisMotion_MoveTo(1300,1200,90,50,60000));sample(201);ChassisMotion_Process();assert(stops==1);complete_stop();assert(!strcmp(status().reason,"control_gap"));

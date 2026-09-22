@@ -10,7 +10,7 @@ for(const f of fixtures.model){
     const result=scaleWheels(inverse(f.body,g),f.max_rpm);
     vectorNear(result.rpm,f.rpm);vectorNear(inverse(f.body,g,f.max_rpm),f.rpm);near(result.scale,f.scale,1e-6);
     assert.deepEqual(quantize(result.rpm),f.command);vectorNear(forward(result.rpm,g),f.forward);vectorNear(forward(f.command,g),f.quantized_forward);
-    if(f.name==='combined_scaled'){assert.ok(result.scale<1);assert.ok(Math.max(...result.rpm.map(Math.abs))<=100);forward(result.rpm,g).forEach((v,i)=>near(v,f.body[i]*result.scale));}
+    if(f.name==='combined_scaled'){assert.ok(result.scale<1);assert.ok(Math.max(...result.rpm.map(Math.abs))<=f.max_rpm);forward(result.rpm,g).forEach((v,i)=>near(v,f.body[i]*result.scale));}
   }else if(f.kind==='rotation90'){vectorNear(rotate([100,0],Math.PI/2),f.map);vectorNear(rotate([100,0],-Math.PI/2),f.body);}
   else if(f.kind==='pulses'){assert.equal(f.forward100,1273);assert.equal(f.rotation90,4500);assert.equal(distancePulses(100,g,f.pulses_per_rev),f.forward100);assert.equal(distancePulses((g.wheelbase_mm+g.track_mm)/2*Math.PI/2,g,f.pulses_per_rev),f.rotation90);}
 }

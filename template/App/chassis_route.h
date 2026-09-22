@@ -1,5 +1,5 @@
 /** @file chassis_route.h
- * @brief Four fixed map stops, each advanced by an explicit operator request.
+ * @brief Sixteen fixed map stops, each advanced by an explicit operator request.
  */
 #ifndef CHASSIS_ROUTE_H
 #define CHASSIS_ROUTE_H

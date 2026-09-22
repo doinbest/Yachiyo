@@ -94,3 +94,25 @@ test('failed or wrong verification and stale telemetry cannot mark ready',()=>{
   r.session=42;r.state.feedback.rpm[2]=2;g.p.tick();assert.notEqual(g.p.phase,'ready');
   g.setSnapshot(goodSnapshot());g.p.tick();assert.equal(g.p.phase,'ready');g.setSnapshot(null);g.p.tick();assert.notEqual(g.p.phase,'ready');
 });
+
+test('accepted route consumes start qualification; normal departure is not preparation failure',()=>{
+ for(const fromReply of [false,true]){
+  const f=fixture();f.throughFeedback();f.imu(1);f.p.confirmOrigin();
+  f.reply('OK chassis request accepted (not motion/ACK confirmation)');
+  f.reply('OK chassis request accepted (not motion/ACK confirmation)');f.setSnapshot(goodSnapshot());f.p.tick();
+  assert.equal(f.p.phase,'ready');
+  if(fromReply)f.p.receive('OK chassis route state=running segment=1 id=7 reason=running');
+  const moving=goodSnapshot();moving.state.route={state:'running',segment:1};moving.feedback.x_mm=2200;
+  f.setSnapshot(moving);f.p.tick();assert.equal(f.p.phase,'consumed');assert.equal(f.p.busy,false);
+  moving.state.route={state:'waiting',segment:1};moving.feedback={x_mm:2100,y_mm:300,yaw_rad:Math.PI/2};
+  f.p.tick();assert.equal(f.p.phase,'consumed');
+  f.p.connection(false);assert.equal(f.p.phase,'cancelled');
+ }
+});
+
+test('an old completed route does not consume a newly prepared start',()=>{
+ const f=fixture();f.throughFeedback();f.imu(1);f.p.confirmOrigin();
+ f.reply('OK chassis request accepted (not motion/ACK confirmation)');f.reply('OK chassis request accepted (not motion/ACK confirmation)');
+ const snapshot=goodSnapshot();snapshot.state.route={state:'done',segment:16};f.setSnapshot(snapshot);
+ f.p.tick();f.p.tick();assert.equal(f.p.phase,'ready');snapshot.feedback.x_mm=2100;f.p.tick();assert.equal(f.p.phase,'cancelled');
+});

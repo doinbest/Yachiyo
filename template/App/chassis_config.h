@@ -99,9 +99,9 @@
 #define CHASSIS_MOTION_PERIOD_MS           20U
 #define CHASSIS_MOTION_MAX_GAP_MS          100U
 #define CHASSIS_MOTION_DEFAULT_RAMP_MS     500U
-#define CHASSIS_MOTION_MAX_LINEAR_MM_S     100.0f
+#define CHASSIS_MOTION_MAX_LINEAR_MM_S     1000.0f
 #define CHASSIS_MOTION_MAX_OMEGA_RAD_S     0.15f
-#define CHASSIS_MOTION_MAX_WHEEL_RPM        100.0f
+#define CHASSIS_MOTION_MAX_WHEEL_RPM        400.0f
 #define CHASSIS_MOTION_MAX_DURATION_MS     60000U
 
 /* Initial low-speed feedback-distance tuning; verify on the actual chassis. */
@@ -111,7 +111,7 @@
 #define CHASSIS_DISTANCE_TOLERANCE_MM     10.0f
 #define CHASSIS_DISTANCE_HEADING_DEG      2.0f
 #define CHASSIS_DISTANCE_TIMEOUT_MS      60000U
-#define CHASSIS_DISTANCE_MAX_TIMEOUT_MS  190000U /* 900 mm at 10 mm/s, 2x travel + 10s. */
+#define CHASSIS_DISTANCE_MAX_TIMEOUT_MS  400000U /* Full route: up to 1750 mm at 10 mm/s plus settling. */
 #define CHASSIS_DISTANCE_STOP_TIMEOUT_MS 3000U
 #define CHASSIS_DISTANCE_STOP_STABLE_MS   500U
 #define CHASSIS_DISTANCE_STOP_GROUPS      3U

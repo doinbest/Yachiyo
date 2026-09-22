@@ -25,10 +25,10 @@ const vector=(v,n)=>Array.isArray(v)&&v.length===n&&v.every(Number.isFinite);
 const flags=v=>Array.isArray(v)&&v.length===4&&v.every(x=>typeof x==='boolean');
 const u32=v=>Number.isInteger(v)&&v>=0&&v<=0xffffffff;
 const validPose=p=>p?.valid===true&&['x_mm','y_mm','yaw_rad'].every(k=>Number.isFinite(p[k]));
-const routeStates={idle:'待命',running:'当前段运行中',stopping:'正在停车',waiting:'等待手动下一段',done:'前四段结束',error:'执行错误',cancelled:'已取消'};
+const routeStates={idle:'待命',running:'当前段运行中',stopping:'正在停车',waiting:'等待手动下一段',done:'完整路线结束',error:'执行错误',cancelled:'已取消'};
 const distanceStates={idle:'待命',running:'运行中',stopping:'正在停车',done:'结束',error:'执行错误'};
 const validMotion=r=>!!r&&typeof r.reason==='string'&&u32(r.action_id)&&vector(r.target,3)&&vector(r.error,3)&&typeof r.feedback_valid==='boolean'&&typeof r.stop_confirmed==='boolean';
-const validRoute=r=>validMotion(r)&&typeof r.state==='string'&&Object.hasOwn(routeStates,r.state)&&Number.isInteger(r.segment)&&r.segment>=0&&r.segment<=4;
+const validRoute=r=>validMotion(r)&&typeof r.state==='string'&&Object.hasOwn(routeStates,r.state)&&Number.isInteger(r.segment)&&r.segment>=0&&r.segment<=16;
 const validDistance=r=>validMotion(r)&&typeof r.active==='boolean'&&typeof r.state==='string'&&Object.hasOwn(distanceStates,r.state);
 // v2 uses positional arrays on the wire only. The UI retains named fields and
 // the same freshness/stop checks as v1; malformed arrays are never defaulted.
@@ -63,7 +63,7 @@ function motionDetails(motion){
 }
 export function routeStatusText(route){
   if(!validRoute(route))return '实车路线状态不可用 · 请在地图页手动开启遥测；查询回复见收发记录。';
-  return `${routeStates[route.state]} · 第 ${route.segment} / 4 段 · 动作 ${route.action_id}\n${motionDetails(route)}`;
+  return `${route.reason==='auto_dwell'?'停稳后等待1秒，自动继续':routeStates[route.state]} · 第 ${route.segment} / 16 段 · 动作 ${route.action_id}\n${motionDetails(route)}`;
 }
 export function motionDisplay(route,distance){
   if(validRoute(route)&&route.segment>0)return {text:routeStatusText(route),target:route.target,label:`实车目标 ${route.segment}`};

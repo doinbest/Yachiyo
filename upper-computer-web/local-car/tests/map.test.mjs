@@ -16,7 +16,7 @@ test('standalone distance diagnostics share subscribed freshness, with active ro
   let display=model.motionDisplay(m.route,m.distance);
   assert.deepEqual(display.target,[2250,250,90]);assert.match(display.text,/单段位移/);assert.match(display.text,/未确认停止/);
   const activeRoute={...route,state:'running',segment:2,target:[2100,1200,90]};
-  display=model.motionDisplay(activeRoute,m.distance);assert.deepEqual(display.target,[2100,1200,90]);assert.match(display.text,/第 2 \/ 4 段/);
+  display=model.motionDisplay(activeRoute,m.distance);assert.deepEqual(display.target,[2100,1200,90]);assert.match(display.text,/第 2 \/ 16 段/);
   for(const patch of [{active:1},{state:'waiting'},{state:['running']},{action_id:-1},{target:[1,2]},{error:[0,null,0]},{feedback_valid:1},{stop_confirmed:1}]){
     send(m,{...packet(m.lastTime+1),distance:{...distance,...patch}},20);assert.equal(m.distance,null);
     assert.equal(model.motionDisplay(m.route,m.distance).target,null);
@@ -37,10 +37,12 @@ test('optional real route telemetry requires current subscribed state and clears
   send(m,packet(10),10);assert.equal(m.route,null);
   m.begin(42,10);send(m,packet(20),20);assert.equal(m.route,null);
   send(m,config,20);send(m,packet(30),30);assert.deepEqual(m.route,route);
-  assert.match(model.routeStatusText(m.route),/第 1 \/ 4 段/);
+  assert.match(model.routeStatusText(m.route),/第 1 \/ 16 段/);
   assert.match(model.routeStatusText(m.route),/已确认停止/);
   assert.match(model.routeStatusText(m.route),/误差 ΔX 1.0/);
-  for(const patch of [{segment:5},{segment:-1},{action_id:-1},{action_id:4294967296},{state:'arrived'},{state:['waiting']},{feedback_valid:1},{stop_confirmed:'yes'},{target:[0,0]},{error:[0,null,0]},{reason:null}]){
+  send(m,packet(40,{segment:16,reason:'auto_dwell'}),40);
+  assert.match(model.routeStatusText(m.route),/停稳后等待1秒，自动继续.*第 16/);
+  for(const patch of [{segment:17},{segment:-1},{action_id:-1},{action_id:4294967296},{state:'arrived'},{state:['waiting']},{feedback_valid:1},{stop_confirmed:'yes'},{target:[0,0]},{error:[0,null,0]},{reason:null}]){
     send(m,packet(m.lastTime+10,patch),100);assert.equal(m.route,null);assert.ok(m.state);
   }
   send(m,packet(m.lastTime+10,{feedback_valid:false,stop_confirmed:false}),200);

@@ -78,7 +78,12 @@ test('real route controls send one exact command and map displacement is nonzero
 });
 
 test('real route speed is explicit and bounded independently of simulation',()=>{
- assert.equal(buildCommand('chassis-route-start',{speed:100}),'chassis route start 100');
- assert.throws(()=>buildCommand('chassis-route-start',{speed:101}));
+ assert.equal(buildCommand('chassis-route-start',{speed:1000}),'chassis route start 1000');
+ assert.throws(()=>buildCommand('chassis-route-start',{speed:1001}));
  assert.throws(()=>buildCommand('chassis-route-start',{speed:0}));
+});
+
+test('full automatic route is an explicit command with bounded speed',()=>{
+ assert.equal(buildCommand('chassis-route-auto',{speed:1000}),'chassis route auto 1000');
+ assert.throws(()=>buildCommand('chassis-route-auto',{speed:1001}));
 });

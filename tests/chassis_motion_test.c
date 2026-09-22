@@ -75,7 +75,9 @@ int main(void)
   assert(status().state==CHASSIS_MOTION_STOPPING&&stops==1);assert(ChassisMotion_IsBusy());
   complete_stop();assert(status().state==CHASSIS_MOTION_DONE);assert(!strcmp(status().reason,"timed_complete"));
   assert(!ChassisMotion_IsBusy());
-  reset();t.vx_mm_s=80;t.vy_mm_s=80;assert(!ChassisMotion_Start(&t));t.vy_mm_s=0;t.vx_mm_s=NAN;assert(!ChassisMotion_Start(&t));
+  reset();ChassisMotion_TargetDefaults(&t);t.vx_mm_s=1000;t.transition_ms=0;
+  assert(ChassisMotion_Start(&t));tick=20;ChassisMotion_Process();assert(fabsf(sent_vx-1000)<.01f);
+  reset();t.vx_mm_s=800;t.vy_mm_s=800;assert(!ChassisMotion_Start(&t));t.vy_mm_s=0;t.vx_mm_s=NAN;assert(!ChassisMotion_Start(&t));
   t.vx_mm_s=50;t.omega_rad_s=.16f;assert(!ChassisMotion_Start(&t));t.omega_rad_s=0;
   vision_busy=true;assert(!ChassisMotion_Start(&t));vision_busy=false;
   material_busy=true;assert(!ChassisMotion_Start(&t));material_busy=false;
