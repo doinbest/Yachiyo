@@ -33,6 +33,7 @@
 .embeddedskills/logs/
 .embeddedskills/migration/
 .embeddedskills/tests/
+.embeddedskills/turntable/
 .embeddedskills/chassis-v1/
 .embeddedskills/state.json
 .embeddedskills/local-car.json
