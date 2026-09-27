@@ -66,7 +66,7 @@ test('aligned is alignment only',()=>{assert.equal(describeReply('OK material st
 
 test('real route controls send one exact command and map displacement is nonzero up to 300 mm',()=>{
   for(const action of ['start','next','cancel','status']) {
-    assert.equal(buildCommand(`chassis-route-${action}`,action==='start'?{speed:50}:{}),`chassis route ${action}${action==='start'?' 50':''}`);
+    assert.equal(buildCommand(`chassis-route-${action}`,action==='start'?{speed:5000}:{}),`chassis route ${action}${action==='start'?' 5000':''}`);
     assert.equal(moduleForWire(`chassis route ${action}`),'chassis');
   }
   for(const [dx,dy] of [[100,0],[-150,150],[0,-300],[180,240],[0.1,0]])
@@ -78,12 +78,12 @@ test('real route controls send one exact command and map displacement is nonzero
 });
 
 test('real route speed is explicit and bounded independently of simulation',()=>{
- assert.equal(buildCommand('chassis-route-start',{speed:1000}),'chassis route start 1000');
- assert.throws(()=>buildCommand('chassis-route-start',{speed:1001}));
+ assert.equal(buildCommand('chassis-route-start',{speed:5000}),'chassis route start 5000');
+ assert.throws(()=>buildCommand('chassis-route-start',{speed:5001}));
  assert.throws(()=>buildCommand('chassis-route-start',{speed:0}));
 });
 
 test('full automatic route is an explicit command with bounded speed',()=>{
- assert.equal(buildCommand('chassis-route-auto',{speed:1000}),'chassis route auto 1000');
- assert.throws(()=>buildCommand('chassis-route-auto',{speed:1001}));
+ assert.equal(buildCommand('chassis-route-auto',{speed:5000}),'chassis route auto 5000');
+ assert.throws(()=>buildCommand('chassis-route-auto',{speed:5001}));
 });

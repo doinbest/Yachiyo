@@ -189,5 +189,9 @@ int main(void)
   tick = 391;
   MotorBus_Process();
   assert(MotorBus_IsQuarantined());
+  MotorBus_Diagnostic_t diagnostic;
+  MotorBus_DiagnosticGet(&diagnostic);
+  assert(!strcmp(diagnostic.reason, "drain_timeout"));
+  assert(diagnostic.owner == MOTOR_BUS_FEEDBACK && diagnostic.address == 1 && diagnostic.function == 0x35);
   puts("motor_bus_test: cancellation drains read reply, Stop priority, fault isolation OK");
 }

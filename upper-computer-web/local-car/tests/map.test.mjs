@@ -41,7 +41,7 @@ test('optional real route telemetry requires current subscribed state and clears
   assert.match(model.routeStatusText(m.route),/已确认停止/);
   assert.match(model.routeStatusText(m.route),/误差 ΔX 1.0/);
   send(m,packet(40,{segment:16,reason:'auto_dwell'}),40);
-  assert.match(model.routeStatusText(m.route),/停稳后等待1秒，自动继续.*第 16/);
+  assert.match(model.routeStatusText(m.route),/停稳后等待0\.1秒，自动继续.*第 16/);
   for(const patch of [{segment:17},{segment:-1},{action_id:-1},{action_id:4294967296},{state:'arrived'},{state:['waiting']},{feedback_valid:1},{stop_confirmed:'yes'},{target:[0,0]},{error:[0,null,0]},{reason:null}]){
     send(m,packet(m.lastTime+10,patch),100);assert.equal(m.route,null);assert.ok(m.state);
   }

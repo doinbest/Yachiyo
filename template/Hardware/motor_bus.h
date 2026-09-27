@@ -30,6 +30,20 @@ typedef struct
   uint8_t data[MOTOR_BUS_FRAME_MAX], length;
   bool tx_completed;
 } MotorBus_Event_t;
+/** First quarantine cause, retained until explicit recovery. When active=false,
+ * owner/address/function identify the last dispatched transaction, not a cause. */
+typedef struct
+{
+  const char *reason;
+  uint32_t tick_ms, uart_error;
+  MotorBus_Owner_t owner;
+  uint8_t address, function;
+  bool locked, active, waiting_reply;
+} MotorBus_Diagnostic_t;
+/** @brief Read first fault without UART traffic, clearing it, or enabling motion.
+ * @param out Snapshot destination; NULL is ignored. Call from the main loop.
+ * tick_ms is milliseconds since MCU startup; uart_error is HAL_UART_ERROR_* bits. */
+void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out);
 /** Init once after UART/DMA setup; UART5 RX must use DMA_CIRCULAR.
  * Main loop is the sole submit/event consumer. */
 HAL_StatusTypeDef MotorBus_Init(UART_HandleTypeDef *uart);

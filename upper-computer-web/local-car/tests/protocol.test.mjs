@@ -7,6 +7,13 @@ test('old firmware uses ASCII lines with CRLF, never the newer # protocol', () =
   assert.equal(buildCommand('pos', {axis:'base', degree:'15'}), 'pos base 15');
   assert.equal(buildCommand('move', {direction:'backward', distance:'50'}), 'chassis backward 50');
 });
+test('gripper presets show the calibrated pulse widths and keep the wire commands', () => {
+  assert.equal(buildCommand('grip-open'), 'grip open');
+  assert.equal(buildCommand('grip-catch'), 'grip catch');
+  assert.match(commands.find(c => c.id === 'grip-open').label, /500 µs/);
+  assert.match(commands.find(c => c.id === 'grip-catch').label, /800 µs/);
+  assert.equal(commands.find(c => c.id === 'grip-duty').fields[0].value, 2.5);
+});
 test('reject missing distance, injection, too-long lines and non-finite values', () => {
   for (const value of ['', 'NaN', 'Infinity', '0', '201', '1.5'])
     assert.throws(() => buildCommand('move', {direction:'backward', distance:value}));

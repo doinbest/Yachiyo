@@ -65,7 +65,7 @@ static MechanicalArm_AxisConfigTypeDef MechanicalArm_AxisConfig[MECHANICAL_ARM_A
     {"z",
      MOTOR_ID_ARM_Z,
      MECHANICAL_ARM_Z_POSITIVE_DIR,
-     {2000U, 20U, 0U}}, /* Z加速度按新调试要求设为20，需单独上板确认运动效果。 */
+     {500U, 120U, 0U}}, /* Z普通运动默认等效于config z 500 120 0；回零使用驱动器参数。 */
     {"x",
      MOTOR_ID_ARM_X,
      MECHANICAL_ARM_X_POSITIVE_DIR,

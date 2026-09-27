@@ -4,7 +4,7 @@
 <title>八千代·巡航｜智能搬运控制台</title>
 <meta name="description" content="本地智能搬运串口控制台">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23007d82'/%3E%3Ctext x='14' y='46' font-size='43' fill='white'%3E千%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="styles.css?v=braking-5"><script type="module" src="app.mjs?v=braking-5"></script>
+<link rel="stylesheet" href="styles.css?v=map-left-20260925"><script type="module" src="app.mjs?v=map-left-20260925"></script>
 </head><body>
 <div class="app-shell">
 <header class="topbar"><a class="brand" href="#system"><span class="brand-icon">千</span><span><strong>八千代<span>·</span>巡航</strong><small>INTELLIGENT MATERIAL HANDLING · 2027</small></span></a>
@@ -21,6 +21,7 @@
         <p class="map-note">速度为车体坐标：前向 vx、左向 vy（mm/s），逆时针 ω（rad/s）；所有时间用秒。每段减速到零后显示停车状态并停留，再进入下一段。单段从当前位姿开始，整条路线从初始位姿开始。默认16段保持车头朝上：扫码 → 第一批取料、粗加工后重新装仓、暂存平放 → 第二批取料、粗加工后重新装仓、同色码垛 → 返回原启停区。跨区采用车载仓运输；取放与码垛仅为到站任务示意，不模拟机械臂或确认作业成功。</p>
         <div class="route-table-wrap"><table class="route-table"><thead><tr><th>段</th><th>停车状态</th><th>vx</th><th>vy</th><th>ω</th><th>起步 / s</th><th>运行 / s</th><th>停车 / s</th><th>停留 / s</th><th>操作</th></tr></thead><tbody id="route-rows"></tbody></table></div><p id="route-live" class="map-note"></p>
       </details>
+      <p id="speed-lab-note" class="map-note"><a href="speed-lab.html" target="_blank" rel="noopener">打开速度曲线实验：在同一地图对比三角／梯形与半余弦加减速 ↗</a> · 独立离线演示，可拖动时间查看速度、加速度与假设牵引上限。</p>
       <div class="map-layout">
         <article class="glass map-stage"><div class="map-readout"><strong id="map-pose"></strong><span>地图 +X 向右，+Y 向上；θ 从 +X 逆时针</span></div>
           <svg id="field-map" viewBox="-320 -370 3170 2990" role="img" aria-label="2400毫米正方形比赛地图，坐标原点左下，车辆轮心及分来源轨迹">

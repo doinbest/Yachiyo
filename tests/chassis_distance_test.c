@@ -25,8 +25,7 @@ static void zero_dispatched(uint32_t now)
   bus.sent_ms=now;memset(bus.sent_rpm,0,sizeof(bus.sent_rpm));ChassisMotion_Process();
   assert(stops==previous_stops+1);bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;
 }
-/* Delayed wheel feedback and first-order motor response, no endpoint snapping.
-   A long software-only move is needed to actually reach 1 m/s at 100 mm/s^2. */
+/* Delayed wheel feedback and first-order motor response, no endpoint snapping. */
 static void delayed_plant(float length, float speed, unsigned delay_steps, bool disturb)
 {
   const unsigned directions[4]={CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR,
@@ -73,7 +72,7 @@ static void delayed_plant(float length, float speed, unsigned delay_steps, bool 
     else bus.stage=MECANUM_STAGE_SENT;
     ChassisMotion_Process();step_index++;
   }
-  printf("delayed plant length=%.0f speed=%.0f peak=%.1f overshoot=%.2f reverse=%.2f final=%.2f reason=%s\n",length,speed,peak,overshoot,reverse,position-length,status().reason);
+  printf("delayed plant length=%.0f speed=%.0f time=%.2f peak=%.1f overshoot=%.2f reverse=%.2f final=%.2f reason=%s\n",length,speed,step_index*.02f,peak,overshoot,reverse,position-length,status().reason);
   fflush(stdout);
   assert(status().state==CHASSIS_MOTION_DONE && status().stop_confirmed);
   assert(fabsf(position-length)<=10 && overshoot<=(disturb?30:10) && reverse<=20);
@@ -84,6 +83,7 @@ int main(void)
 {
   delayed_plant(14000,1000,5,false);
   delayed_plant(1750,1000,10,false);
+  delayed_plant(1750,5000,10,false);
   delayed_plant(900,500,10,false);
   delayed_plant(212,1000,10,false);
   delayed_plant(212,1000,10,true);
@@ -91,15 +91,15 @@ int main(void)
   setup();assert(ChassisMotion_MoveTo(1100,1300,90,50,60000));
   assert(fabsf(status().requested.heading_deg-30)<.01f); /* map90 = currentmodule30 */
   sample(120);ChassisMotion_Process();
-  assert(fabsf(status().body_target.vx_mm_s-1.414214f)<.001f);
-  assert(fabsf(status().body_target.vy_mm_s-1.414214f)<.001f);
+  assert(fabsf(status().body_target.vx_mm_s-14.142136f)<.001f);
+  assert(fabsf(status().body_target.vy_mm_s-14.142136f)<.001f);
   assert(fabsf(status().body_target.omega_rad_s+.04f)<.001f);
   assert(!status().stop_confirmed); /* numerical position never implies physical stop */
   route_busy=true;ChassisMotion_Stop(0);complete_stop();assert(!ChassisMotion_MoveTo(1100,1300,90,50,60000));
   setup();location.feedback_valid=false;assert(!ChassisMotion_MoveTo(1100,1300,90,50,60000));
   setup();assert(ChassisMotion_MoveTo(1100,1300,90,10,400000));
   setup();assert(!ChassisMotion_MoveTo(1100,1300,90,10,400001));
-  setup();assert(!ChassisMotion_MoveTo(NAN,1300,90,50,60000));assert(!ChassisMotion_MoveTo(1100,1300,90,1001,60000));
+  setup();assert(!ChassisMotion_MoveTo(NAN,1300,90,50,60000));assert(!ChassisMotion_MoveTo(1100,1300,90,5001,60000));
   setup();assert(ChassisMotion_MoveTo(1300,1200,90,50,60000));location.generation++;
   sample(120);ChassisMotion_Process();assert(stops==1);complete_stop();assert(status().state==CHASSIS_MOTION_ERROR);
   setup();assert(ChassisMotion_MoveTo(1300,1200,90,50,60000));sample(201);ChassisMotion_Process();assert(stops==1);complete_stop();assert(!strcmp(status().reason,"control_gap"));

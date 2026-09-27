@@ -2,15 +2,15 @@
 
 #include "Steer.h"
 
-static const float Arm_GripperIdleDuty = 7.50f;
-static const float Arm_GripperOpenDuty = 7.50f;
-static const float Arm_GripperCatchDuty = 7.50f;
+static const float Arm_GripperIdleDuty = 2.50f;  /* 500 us：待机时松开。 */
+static const float Arm_GripperOpenDuty = 2.50f;  /* 500 us：完全松开。 */
+static const float Arm_GripperCatchDuty = 4.00f; /* 800 us：完全抓紧。 */
 
 /*
  *函数简介:夹爪状态设置
  *参数说明:Status  夹爪目标状态
  *返回类型:无
- *备注:三个安全占空比当前均为7.5%，实物标定后分别修改上方常量
+ *备注:50Hz PWM下，待机/松开为500us，抓紧为800us
  */
 void Arm_GripperSet(Arm_GripperStatusTypeDef Status)
 {
@@ -42,4 +42,15 @@ void Arm_GripperSet(Arm_GripperStatusTypeDef Status)
 void Arm_GripperDutySet(float Duty)
 {
   Steer_SetDuty(Duty);
+}
+
+/*
+ *函数简介:停止夹爪舵机的有效控制脉冲
+ *参数说明:无
+ *返回类型:无
+ *备注:用于退出OLED舵机测试页，不切断舵机电源
+ */
+void Arm_GripperSignalOff(void)
+{
+  Steer_SignalOff();
 }

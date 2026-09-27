@@ -13,8 +13,8 @@
 #define MECHANICAL_ARM_BASE_POSITIVE_DIR  1U
 /* Base位置输入正值时，底座从上往下俯视应顺时针旋转。 */
 
-#define MECHANICAL_ARM_Z_POSITIVE_DIR     1U
-/* Z位置输入正值时，机械臂应向上移动。 */
+#define MECHANICAL_ARM_Z_POSITIVE_DIR     0U
+/* 2026-09-27实测当前安装：CCW向下，因此正值上升使用CW；负值下降。 */
 
 #define MECHANICAL_ARM_X_POSITIVE_DIR     1U
 /* X位置输入正值时，机械臂应向外伸出；输入负值时向内收回。 */

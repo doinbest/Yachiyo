@@ -17,6 +17,13 @@ static uint8_t arm_busy, material_busy, motor_busy;
 static bool motion_busy;
 static bool bus_locked;
 bool MotorBus_IsQuarantined(void) { return bus_locked; }
+void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out)
+{
+  memset(out,0,sizeof(*out));out->locked=bus_locked;
+  out->reason=bus_locked?"uart_error":"none";
+  out->tick_ms=12345;out->uart_error=4;
+  out->owner=MOTOR_BUS_ARM;out->address=7;out->function=0x3a;
+}
 static MaterialVision_StateTypeDef material_state;
 static MaterialVision_ErrorTypeDef material_error;
 static float forward_value, left_value, yaw_value, grip_duty;
@@ -343,6 +350,8 @@ int main(void)
   cal_status.busy=false;
   bus_locked=true;motor_result=MECHANICAL_ARM_RESULT_TX_ERROR;
   command("enable base\r");assert(strstr(output,"ERR motor tx bus_locked=1"));
+  assert(strstr(output,"[MOTOR BUS] locked=1 reason=uart_error fault_ms=12345"));
+  assert(strstr(output,"addr=7 func=0x3A active=0 wait=0 uart_error=0x00000004"));
   output[0]=0;memset(&event,0,sizeof(event));
   event.Axis=event.FailureAxis=MECHANICAL_ARM_AXIS_BASE;
   event.Action=MECHANICAL_ARM_ACTION_DISABLE;event.Result=MECHANICAL_ARM_RESULT_TX_ERROR;
@@ -356,6 +365,9 @@ int main(void)
   before=motor_calls;command("enable ");ArmConsole_ReceiveFault();
   command("base\r");assert(motor_calls==before);
   command("info\r");assert(strstr(output,"STM32F407"));
+  assert(strstr(output,"BUILD motorbus_diag=1"));
+  assert(strstr(output,"arm positive_dir base=1 z=0 x=1 (0=CW 1=CCW)"));
+  assert(strstr(output,"[MOTOR BUS] locked=0 reason=none"));
   for(unsigned j=0;j<600;j++)ArmConsole_ReceiveData('x');
   ArmConsole_ReceiveData(3);command("chassis stop 99\r");assert(strstr(output,"token=99"));
   chassis_busy=false; heading_status.active=false; motor_busy=arm_busy=material_busy=0;

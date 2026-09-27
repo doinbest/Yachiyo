@@ -634,7 +634,6 @@ int main(void)
     {
       (void)ContestScreen_TaskCodeSet(QR_TaskCode);
       (void)ContestScreen_ProgressSet(0U, 0U);
-      ContestScreen_StateSet(CONTEST_SCREEN_RUNNING);
       Camera_ColorTaskReady = 1U;
       Camera_ColorDigitIndex = 0U;
       OledUi_TaskCodeSet(QR_TaskCode, Camera_ColorDigitIndex);
@@ -642,7 +641,9 @@ int main(void)
 
     Key_Scan();
     Key = Key_Get_Press_Event(); /* 每圈只消费一次按键事件。 */
-    if (!ChassisMotion_IsBusy() && !ChassisRoute_IsBusy() && OledUi_KeyHandle(Key) == 0U)
+    if ((Key == KEY_EVENT_PE4 || Key == KEY_EVENT_PE5 ||
+         (!ChassisMotion_IsBusy() && !ChassisRoute_IsBusy())) &&
+        OledUi_KeyHandle(Key) == 0U)
     {
       switch (Key)
       {

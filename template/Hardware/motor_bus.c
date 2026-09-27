@@ -16,6 +16,9 @@ static bool running, waiting_reply, cancelled, quarantined, gap_valid;
 static bool active_tx_completed;
 static uint32_t started_ms, gap_ms;
 static volatile bool tx_done, io_error;
+static volatile bool io_overflow;
+static volatile uint32_t io_uart_error, io_tick_ms;
+static MotorBus_Diagnostic_t first_fault;
 static volatile uint32_t tx_done_ms;
 static uint8_t dma_rx[64], rx_ring[256], parse[32];
 static uint32_t rx_time[256];
@@ -29,6 +32,23 @@ static bool drain_pending;
 static bool diagnostic_reads;
 static uint8_t drain_address, drain_function, drain_length;
 static uint32_t drain_started_ms;
+
+/* Main-loop only. Preserve the first cause across subsequent rejected requests. */
+static void Quarantine(const char *reason, uint32_t tick_ms, uint32_t uart_error)
+{
+  if (!quarantined)
+  {
+    first_fault.reason = reason;
+    first_fault.tick_ms = tick_ms;
+    first_fault.uart_error = uart_error;
+    first_fault.owner = active.length ? active_owner : MOTOR_BUS_OWNER_COUNT;
+    first_fault.address = active.length ? active.data[0] : 0U;
+    first_fault.function = active.length ? active.data[1] : 0U;
+    first_fault.active = running;
+    first_fault.waiting_reply = waiting_reply;
+  }
+  quarantined = true;
+}
 
 static bool FeedbackRead(MotorBus_Owner_t owner, const uint8_t *data,
                          uint8_t length, uint8_t reply_length)
@@ -169,7 +189,7 @@ void MotorBus_Cancel(MotorBus_Owner_t owner)
           diagnostic_reads = true;
         else if (owner != MOTOR_BUS_CHASSIS)
           diagnostic_reads = false;
-        quarantined = true;
+        Quarantine("cancelled_reply", HAL_GetTick(), 0U);
       }
     }
     if (waiting_reply)
@@ -184,7 +204,13 @@ void MotorBus_RxBytes(const uint8_t *data, uint16_t length)
     next = (uint16_t)((rx_write + 1U) & 255U);
     if (next == rx_read)
     {
-      io_error = true;
+      if (!io_error)
+      {
+        io_overflow = true;
+        io_uart_error = 0U;
+        io_tick_ms = HAL_GetTick();
+        io_error = true;
+      }
       break;
     }
     rx_ring[rx_write] = data[i];
@@ -257,9 +283,12 @@ void MotorBus_Process(void)
     return;
   if (io_error)
   {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    Quarantine(io_overflow ? "rx_overflow" : "uart_error", io_tick_ms, io_uart_error);
     io_error = false;
+    __set_PRIMASK(primask);
     diagnostic_reads = false;
-    quarantined = true;
     (void)HAL_UART_DMAStop(bus_uart);
     (void)ReceiveStart();
     if (running)
@@ -293,12 +322,18 @@ void MotorBus_Process(void)
   {
     drain_pending = false;
     diagnostic_reads = false;
-    quarantined = true;
+    if (!quarantined)
+    {
+      Quarantine("drain_timeout", now, 0U);
+      first_fault.owner = MOTOR_BUS_FEEDBACK;
+      first_fault.address = drain_address;
+      first_fault.function = drain_function;
+    }
   }
   if (running && (uint32_t)(now - started_ms) >= MOTOR_BUS_TIMEOUT_MS)
   {
     diagnostic_reads = false;
-    quarantined = true;
+    Quarantine(waiting_reply ? "reply_timeout" : "tx_timeout", now, 0U);
     if (!waiting_reply)
     {
       (void)HAL_UART_DMAStop(bus_uart);
@@ -391,8 +426,22 @@ void MotorBus_TxCpltCallback(UART_HandleTypeDef *uart)
 }
 void MotorBus_ErrorCallback(UART_HandleTypeDef *uart)
 {
-  if (uart == bus_uart)
+  if (uart && uart == bus_uart && !io_error)
+  {
+    io_overflow = false;
+    io_uart_error = uart->ErrorCode; /* ReceiveStart clears this HAL field. */
+    io_tick_ms = HAL_GetTick();
     io_error = true;
+  }
+}
+void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out)
+{
+  if (!out)
+    return;
+  *out = first_fault;
+  out->locked = quarantined;
+  if (!out->reason)
+    out->reason = "none";
 }
 bool MotorBus_IsQuarantined(void)
 {
@@ -415,5 +464,6 @@ bool MotorBus_RecoverAfterReset(void)
   drain_pending = false;
   diagnostic_reads = false;
   quarantined = false;
+  memset(&first_fault, 0, sizeof(first_fault));
   return true;
 }

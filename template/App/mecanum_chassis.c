@@ -13,7 +13,6 @@
 #include <math.h>
 
 #define MECANUM_PI 3.14159265358979323846f
-#define MECANUM_MAX_MOTOR_RPM 5000U
 
 /* 轮号0~3依次映射电机地址1~4。 */
 static const uint8_t motor_address[MECANUM_WHEEL_COUNT] = {
@@ -782,8 +781,8 @@ bool Mecanum_Velocity_Request(float forward_mm_s, float left_mm_s, float yaw_rad
     if (fabsf(rpm[i]) > largest)
       largest = fabsf(rpm[i]);
   }
-  if (largest > MECANUM_MAX_MOTOR_RPM)
-    scale = MECANUM_MAX_MOTOR_RPM / largest;
+  if (largest > CHASSIS_EMM_MAX_COMMAND_RPM)
+    scale = CHASSIS_EMM_MAX_COMMAND_RPM / largest;
   for (i = 0; i < 4; i++)
   {
     float value = rpm[i] * scale;

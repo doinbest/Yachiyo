@@ -87,17 +87,42 @@ int main(void)
   MotorBus_Process();
   MechanicalArm_Process();
   assert(MechanicalArm_ResultGet(&e) && e.Result == MECHANICAL_ARM_RESULT_OK);
+  /* Installed Z: protocol CCW moves down; positive/up must transmit CW.
+   * Exercise console and explicit-speed paths with both signs. */
+  for (unsigned explicit_speed = 0; explicit_speed < 2; explicit_speed++)
+  {
+    for (unsigned negative = 0; negative < 2; negative++)
+    {
+      const int32_t pulses = negative ? -89 : 89;
+      const uint8_t position_ack[] = {6, 0xfd, 2, 0x6b};
+      assert((explicit_speed ? MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_Z,
+                 pulses, 10, 20, MECHANICAL_ARM_POSITION_RELATIVE_CURRENT)
+               : MechanicalArm_Position(MECHANICAL_ARM_AXIS_Z, pulses)) == MECHANICAL_ARM_RESULT_NONE);
+      tick += 10;
+      MotorBus_Process();
+      assert(frame[0] == 6 && frame[1] == 0xfd && frame[2] == negative);
+      /* Default motion must carry the selected speed/acceleration on wire;
+       * explicit-speed callers retain their own parameters. */
+      assert((((unsigned)frame[3] << 8) | frame[4]) == (explicit_speed ? 10U : 500U));
+      assert(frame[5] == (explicit_speed ? 20U : 120U));
+      assert(frame[6] == 0 && frame[7] == 0 && frame[8] == 0 && frame[9] == 89);
+      MotorBus_TxCpltCallback(&uart);
+      MotorBus_RxBytes(position_ack, sizeof(position_ack));
+      MotorBus_Process(); MechanicalArm_Process();
+      assert(MechanicalArm_ResultGet(&e) && e.Result == MECHANICAL_ARM_RESULT_OK);
+    }
+  }
   assert(MechanicalArm_Enable(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);
-  tick = 20;
+  tick += 10;
   MotorBus_Process();
   MotorBus_TxCpltCallback(&uart);
   MotorBus_Process();
-  tick = 120;
+  tick += 100;
   MotorBus_Process();
   MechanicalArm_Process();
   assert(MechanicalArm_ResultGet(&e) && e.Result == MECHANICAL_ARM_RESULT_ACK_TIMEOUT);
   assert(MechanicalArm_Stop(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);
-  tick = 130;
+  tick += 10;
   MotorBus_Process();
   assert(frame[1] == 0xfe);
   MotorBus_TxCpltCallback(&uart);

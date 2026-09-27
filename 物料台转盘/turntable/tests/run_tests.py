@@ -14,7 +14,12 @@ with (OUT/'host-tests.log').open('w', encoding='utf-8') as log:
                 '-I'+str(ROOT/'tests/stubs'), '-I'+str(ROOT/'App'),
                 str(ROOT/'tests/boot_test.c'), str(ROOT/'App/turntable_boot.c'),
                 '-o', str(OUT/'boot_test.exe')]
-    for args in [cmd, [str(OUT/'turntable_test.exe')], boot_cmd, [str(OUT/'boot_test.exe')]]:
+    direct_cmd = ['gcc', '-std=c99', '-Wall', '-Wextra', '-Werror',
+                  '-I'+str(ROOT/'tests/stubs'), '-I'+str(ROOT/'App'), '-I'+str(ROOT/'Hardware'),
+                  str(ROOT/'tests/direct_test.c'), str(ROOT/'App/turntable_direct.c'),
+                  str(ROOT/'Hardware/turntable_key.c'), '-o', str(OUT/'direct_test.exe')]
+    for args in [cmd, [str(OUT/'turntable_test.exe')], boot_cmd, [str(OUT/'boot_test.exe')],
+                 direct_cmd, [str(OUT/'direct_test.exe')]]:
         result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
         print(result.stdout + result.stderr, end='')
         log.write(result.stdout + result.stderr)

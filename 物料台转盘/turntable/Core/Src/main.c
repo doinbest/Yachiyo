@@ -23,7 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "turntable_boot.h"
+#include "turntable_direct.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -89,7 +89,7 @@ int main(void)
   MX_GPIO_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  Turntable_BootInit(&huart1);
+  Turntable_DirectInit(&huart1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -99,7 +99,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    Turntable_BootProcess();
+    Turntable_DirectProcess();
   }
   /* USER CODE END 3 */
 }

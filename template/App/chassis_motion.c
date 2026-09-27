@@ -538,7 +538,9 @@ static bool distance_command(uint32_t dt, ChassisModel_Velocity_t *command)
   brake_speed=sqrtf(CHASSIS_DISTANCE_ACCEL_MM_S2*CHASSIS_DISTANCE_ACCEL_MM_S2*delay*delay+
       2*CHASSIS_DISTANCE_ACCEL_MM_S2*available)-CHASSIS_DISTANCE_ACCEL_MM_S2*delay;
   limit=fminf(DistanceMaxSpeed,brake_speed);
-  if(distance<=CHASSIS_DISTANCE_CREEP_MM || DistanceCorrections)
+  if(DistanceCorrections)
+    limit=fminf(limit,CHASSIS_DISTANCE_CORRECTION_SPEED_MM_S);
+  else if(distance<=CHASSIS_DISTANCE_CREEP_MM)
     limit=fminf(limit,CHASSIS_DISTANCE_CREEP_MM_S);
   if(norm>limit) { vx*=limit/norm; vy*=limit/norm; }
   if(hypotf(Motion.error_x_mm,Motion.error_y_mm)<=CHASSIS_DISTANCE_TOLERANCE_MM) vx=vy=0;

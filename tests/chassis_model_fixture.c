@@ -26,7 +26,7 @@ int main(void)
   const float rotation_distance=(CHASSIS_WHEELBASE_MM+CHASSIS_TRACK_WIDTH_MM)*.5f*CHASSIS_MODEL_PI*.5f;
   const float pulses_per_mm=CHASSIS_MOTOR_TO_WHEEL_RATIO*CHASSIS_COMMAND_PULSES_PER_REV/(CHASSIS_MODEL_PI*CHASSIS_WHEEL_DIAMETER_MM);
   scenario("forward",100,0,0);scenario("left",0,100,0);scenario("yaw",0,0,.1f);
-  scenario("combined_scaled",1600,1200,.8f);scenario("low_8",8,0,0);scenario("low_15",15,0,0);scenario("negative_15",-15,0,0);
+  scenario("combined_scaled",16000,12000,.8f);scenario("low_8",8,0,0);scenario("low_15",15,0,0);scenario("negative_15",-15,0,0);
   assert(ChassisModel_BodyToMap(100,0,CHASSIS_MODEL_PI*.5f,&x,&y));
   assert(ChassisModel_MapToBody(100,0,CHASSIS_MODEL_PI*.5f,&bx,&by));
   printf("{\"kind\":\"rotation90\",\"map\":[%.9g,%.9g],\"body\":[%.9g,%.9g]}\n",(double)x,(double)y,(double)bx,(double)by);

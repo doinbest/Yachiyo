@@ -99,20 +99,25 @@
 #define CHASSIS_MOTION_PERIOD_MS           20U
 #define CHASSIS_MOTION_MAX_GAP_MS          100U
 #define CHASSIS_MOTION_DEFAULT_RAMP_MS     500U
-#define CHASSIS_MOTION_MAX_LINEAR_MM_S     1000.0f
+#define CHASSIS_MOTION_MAX_LINEAR_MM_S     5000.0f
 #define CHASSIS_MOTION_MAX_OMEGA_RAD_S     0.15f
-#define CHASSIS_MOTION_MAX_WHEEL_RPM        400.0f
+/* Emm F6/FD speed field is documented as 0..3000 RPM; loaded speed is unverified. */
+#define CHASSIS_EMM_MAX_COMMAND_RPM         3000U
+#define CHASSIS_MOTION_MAX_WHEEL_RPM        ((float)CHASSIS_EMM_MAX_COMMAND_RPM)
 #define CHASSIS_MOTION_MAX_DURATION_MS     60000U
 
-/* Initial low-speed feedback-distance tuning; verify on the actual chassis. */
+/* Route speed profile; verify acceleration and stopping distance on the chassis. */
 #define CHASSIS_DISTANCE_SPEED_MM_S       50.0f
-#define CHASSIS_DISTANCE_KP               1.5f
+#define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  5000.0f
+#define CHASSIS_ROUTE_AUTO_DWELL_MS       100U
+#define CHASSIS_DISTANCE_KP               2.5f
 #define CHASSIS_DISTANCE_RESPONSE_S       0.25f
-#define CHASSIS_DISTANCE_CREEP_MM         50.0f
-#define CHASSIS_DISTANCE_CREEP_MM_S       20.0f
+#define CHASSIS_DISTANCE_CREEP_MM         20.0f
+#define CHASSIS_DISTANCE_CREEP_MM_S       50.0f
+#define CHASSIS_DISTANCE_CORRECTION_SPEED_MM_S 20.0f
 #define CHASSIS_DISTANCE_CORRECTION_MM   100.0f
 #define CHASSIS_DISTANCE_CORRECTIONS       2U
-#define CHASSIS_DISTANCE_ACCEL_MM_S2      100.0f
+#define CHASSIS_DISTANCE_ACCEL_MM_S2      1000.0f
 #define CHASSIS_DISTANCE_TOLERANCE_MM     10.0f
 #define CHASSIS_DISTANCE_HEADING_DEG      2.0f
 #define CHASSIS_DISTANCE_TIMEOUT_MS      60000U

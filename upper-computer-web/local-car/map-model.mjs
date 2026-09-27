@@ -64,7 +64,7 @@ function motionDetails(motion){
 }
 export function routeStatusText(route){
   if(!validRoute(route))return '实车路线状态不可用 · 请在地图页手动开启遥测；查询回复见收发记录。';
-  return `${route.reason==='auto_dwell'?'停稳后等待1秒，自动继续':routeStates[route.state]} · 第 ${route.segment} / 16 段 · 动作 ${route.action_id}\n${motionDetails(route)}`;
+  return `${route.reason==='auto_dwell'?'停稳后等待0.1秒，自动继续':routeStates[route.state]} · 第 ${route.segment} / 16 段 · 动作 ${route.action_id}\n${motionDetails(route)}`;
 }
 export function motionDisplay(route,distance){
   if(validRoute(route)&&route.segment>0)return {text:routeStatusText(route),target:route.target,label:`实车目标 ${route.segment}`};

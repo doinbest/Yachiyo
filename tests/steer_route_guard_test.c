@@ -13,6 +13,7 @@ static bool route_busy, motion_busy;
 bool ChassisRoute_IsBusy(void) { return route_busy; }
 bool ChassisMotion_IsBusy(void) { return motion_busy; }
 #include "../template/Hardware/Steer.c"
+#include "../template/App/Arm.c"
 int main(void)
 {
   TIM_HandleTypeDef timer = {TIM1, 42};
@@ -21,5 +22,9 @@ int main(void)
   route_busy = true; Steer_SetDuty(8.0f); assert(timer.compare == 1500);
   route_busy = false; motion_busy = true; Steer_SetDuty(8.0f); assert(timer.compare == 1500);
   motion_busy = false; Steer_SetDuty(8.0f); assert(timer.compare == 1600);
+  Steer_SignalOff(); assert(timer.compare == 0);
+  Arm_GripperSet(ARM_GRIPPER_OPEN); assert(timer.compare == 500);
+  Arm_GripperSet(ARM_GRIPPER_CATCH); assert(timer.compare == 800);
+  Arm_GripperSet(ARM_GRIPPER_IDLE); assert(timer.compare == 500);
   puts("steer_route_guard_test: OK"); return 0;
 }

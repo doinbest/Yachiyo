@@ -13,7 +13,7 @@ static ChassisRoute_Status_t Route;
 static bool Submitting, Automatic;
 static uint32_t DwellTick;
 static uint32_t Generation;
-static float RouteSpeed = CHASSIS_DISTANCE_SPEED_MM_S;
+static float RouteSpeed = CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
 #define ROUTE_COUNT 16U
 static const float Points[ROUTE_COUNT][2]={
   {2100,300},{2100,1200},{2100,2100},{1200,2100},
@@ -74,7 +74,7 @@ static bool start_at_speed(float speed, bool automatic)
   Generation=Position.generation;
   return submit(0);
 }
-bool ChassisRoute_Start(void) { return start_at_speed(CHASSIS_DISTANCE_SPEED_MM_S,false); }
+bool ChassisRoute_Start(void) { return start_at_speed(CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,false); }
 bool ChassisRoute_Next(void)
 {
   if(Automatic || !Route.state || strcmp(Route.state,"waiting")) return false;
@@ -124,7 +124,7 @@ void ChassisRoute_Process(void)
       (void)ChassisMotion_Stop(0);Route.state="stopping";Route.reason="feedback_invalid";Route.stop_confirmed=false;
       Route.stop_confirmed=false;
     }
-    else if(Automatic && (uint32_t)(HAL_GetTick()-DwellTick)>=1000U)
+    else if(Automatic && (uint32_t)(HAL_GetTick()-DwellTick)>=CHASSIS_ROUTE_AUTO_DWELL_MS)
     {
       if(Route.segment==ROUTE_COUNT){Route.state="done";Route.reason="route_complete";}
       else (void)submit(Route.segment);
@@ -198,7 +198,7 @@ bool ChassisRoute_Command(unsigned n,char *t[])
     else if(n==3)
     {
       if(!strcmp(t[2],"start")) ok=ChassisRoute_Start();
-      else if(!strcmp(t[2],"auto")) ok=start_at_speed(CHASSIS_DISTANCE_SPEED_MM_S,true);
+      else if(!strcmp(t[2],"auto")) ok=start_at_speed(CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,true);
       else if(!strcmp(t[2],"next")) ok=ChassisRoute_Next();
       else if(!strcmp(t[2],"cancel")) ok=ChassisRoute_Cancel();
       else if(!strcmp(t[2],"status")) ok=true;
@@ -206,9 +206,9 @@ bool ChassisRoute_Command(unsigned n,char *t[])
   }
   else return false;
   ChassisRoute_StatusGet(&Route);
-  length=snprintf(text,sizeof(text),"%s chassis route state=%s segment=%lu id=%lu reason=%s error_mm=%.1f,%.1f heading_error_deg=%.2f feedback_valid=%u stop_confirmed=%u speed_mm_s=%.1f auto=%u total=16 dwell_ms=1000\r\n",
+  length=snprintf(text,sizeof(text),"%s chassis route state=%s segment=%lu id=%lu reason=%s error_mm=%.1f,%.1f heading_error_deg=%.2f feedback_valid=%u stop_confirmed=%u speed_mm_s=%.1f auto=%u total=16 dwell_ms=%lu\r\n",
       ok?"OK":"ERR",Route.state,(unsigned long)Route.segment,(unsigned long)Route.action_id,Route.reason,
-      (double)Route.error_x_mm,(double)Route.error_y_mm,(double)Route.error_heading_deg,Route.feedback_valid?1:0,Route.stop_confirmed?1:0,(double)RouteSpeed,Automatic?1:0);
+      (double)Route.error_x_mm,(double)Route.error_y_mm,(double)Route.error_heading_deg,Route.feedback_valid?1:0,Route.stop_confirmed?1:0,(double)RouteSpeed,Automatic?1:0,(unsigned long)CHASSIS_ROUTE_AUTO_DWELL_MS);
   if(length>0 && (size_t)length<sizeof(text)) (void)ConsoleTx_Write((const uint8_t*)text,(uint16_t)length);
   return true;
 }

@@ -7,8 +7,6 @@
 typedef enum
 {
   MATERIAL_VISION_STATE_IDLE = 0,
-  MATERIAL_VISION_STATE_HOME_ACK,
-  MATERIAL_VISION_STATE_HOME_WAIT,
   MATERIAL_VISION_STATE_SEARCH,
   MATERIAL_VISION_STATE_TARGET_LOCK,
   MATERIAL_VISION_STATE_COLLECT,
@@ -38,7 +36,6 @@ typedef enum
   MATERIAL_VISION_ERROR_CAMERA_FIRST_TIMEOUT,
   MATERIAL_VISION_ERROR_CAMERA_STALE,
   MATERIAL_VISION_ERROR_CAMERA_TX,
-  MATERIAL_VISION_ERROR_HOME_TIMEOUT,
   MATERIAL_VISION_ERROR_MOTOR_ACK_TIMEOUT,
   MATERIAL_VISION_ERROR_MOTOR_ARRIVAL_TIMEOUT,
   MATERIAL_VISION_ERROR_MOTOR_ERROR,
@@ -68,7 +65,7 @@ typedef struct
 
 /* 主循环先初始化Camera和机械臂；Process推进任务，查询接口不消费数据。 */
 void MaterialVision_Init(void);
-/** @brief 按Color(1~6)启动回零、搜索、对准；先初始化并确认机械参考。
+/** @brief 按Color(1~6)启动搜索和对准；Base保持当前位置，先确认机械参考。
  * @return OK表示已受理；BUSY不产生请求或运动，其他值表示参数/准备/发送错误。 */
 MaterialVision_ResultTypeDef MaterialVision_Start(Camera_ColorTypeDef Color);
 /** @brief 启动底盘前后/X响应标定；要求参考有效且两套视觉与电机空闲。 */

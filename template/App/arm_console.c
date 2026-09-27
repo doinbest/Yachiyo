@@ -533,7 +533,7 @@ static void ArmConsole_HelpShow(void)
   /* 按命令组入队，由USART1 DMA发送；不占用底盘控制周期等待串口。 */
   ArmConsole_Write(
       "chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n"
-      "chassis route start|auto [10..1000mm/s] | next | status | cancel (16 stops, auto dwell 1s)\r\n"
+      "chassis route start|auto [10..5000mm/s, default 5000] | next | status | cancel (auto dwell 100ms)\r\n"
       "chassis run <vx_mm_s> <vy_mm_s> <omega_rad_s> <hold_ms>\r\n"
       "  omega=0: hold starting IMU heading; verified fresh IMU required\r\n"
       "chassis heading <vx_mm_s> <vy_mm_s> <module_heading_deg> <hold_ms>\r\n"
@@ -635,11 +635,36 @@ static void ArmConsole_ConfigShow(MechanicalArm_AxisTypeDef Axis)
   * 返 回 值：无
   * 说    明：便于上位机确认USART1、UART5和电机ID配置
   */
+static void ArmConsole_BuildShow(void)
+{
+  ArmConsole_Write("BUILD motorbus_diag=1 date=" __DATE__ " time=" __TIME__ "\r\n");
+}
+
+/** 输出首次总线锁定原因；仅查询RAM，不访问驱动器、不解除锁定。 */
+static void ArmConsole_MotorBusShow(void)
+{
+  MotorBus_Diagnostic_t Diagnostic;
+  MotorBus_DiagnosticGet(&Diagnostic);
+  ArmConsole_Printf("[MOTOR BUS] locked=%u reason=%s fault_ms=%lu owner=%u "
+                   "addr=%u func=0x%02X active=%u wait=%u uart_error=0x%08lX\r\n",
+                   (unsigned)Diagnostic.locked, Diagnostic.reason,
+                   (unsigned long)Diagnostic.tick_ms, (unsigned)Diagnostic.owner,
+                   (unsigned)Diagnostic.address, (unsigned)Diagnostic.function,
+                   (unsigned)Diagnostic.active, (unsigned)Diagnostic.waiting_reply,
+                   (unsigned long)Diagnostic.uart_error);
+}
+
 static void ArmConsole_InfoShow(void)
 {
   ArmConsole_Write("ARM STM32F407 USART1=115200 UART5=115200\r\n");
+  ArmConsole_BuildShow();
+  ArmConsole_MotorBusShow();
   ArmConsole_Write("chassis FL=id1 RL=id2 RR=id3 FR=id4\r\n");
   ArmConsole_Write("arm base=id5 z=id6 x=id7 pos=relative unit=degree\r\n");
+  ArmConsole_Printf("arm positive_dir base=%u z=%u x=%u (0=CW 1=CCW)\r\n",
+                   (unsigned)MECHANICAL_ARM_BASE_POSITIVE_DIR,
+                   (unsigned)MECHANICAL_ARM_Z_POSITIVE_DIR,
+                   (unsigned)MECHANICAL_ARM_X_POSITIVE_DIR);
   ArmConsole_ConfigShow(MECHANICAL_ARM_AXIS_BASE);
   ArmConsole_ConfigShow(MECHANICAL_ARM_AXIS_Z);
   ArmConsole_ConfigShow(MECHANICAL_ARM_AXIS_X);
@@ -948,6 +973,7 @@ static void ArmConsole_EventShow(const MechanicalArm_EventTypeDef *Event)
                       MechanicalArm_AxisNameGet(Event->FailureAxis),
                       (unsigned int)MotorBus_IsQuarantined());
   }
+  ArmConsole_MotorBusShow();
 }
 
 /**
@@ -982,6 +1008,7 @@ static uint8_t ArmConsole_RequestResultShow(MechanicalArm_ResultTypeDef Result)
   {
     ArmConsole_Printf("ERR motor tx bus_locked=%u\r\n",
                       (unsigned int)MotorBus_IsQuarantined());
+    ArmConsole_MotorBusShow();
   }
   else
   {
@@ -2205,6 +2232,7 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   memset(ArmConsole_RingBuffer, 0, sizeof(ArmConsole_RingBuffer));
   memset(ArmConsole_LineBuffer, 0, sizeof(ArmConsole_LineBuffer));
   ArmConsole_Write("\r\nSTM32 mechanical arm console ready\r\n");
+  ArmConsole_BuildShow();
   ArmConsole_Write("IMU boot verify=5s; keep still; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
   ArmConsole_PromptShow();
   return HAL_OK;

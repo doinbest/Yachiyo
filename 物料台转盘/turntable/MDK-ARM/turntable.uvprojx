@@ -385,6 +385,11 @@
           <GroupName>Application/User/App</GroupName>
           <Files>
             <File>
+              <FileName>turntable_direct.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/turntable_direct.c</FilePath>
+            </File>
+            <File>
               <FileName>turntable_boot.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/turntable_boot.c</FilePath>

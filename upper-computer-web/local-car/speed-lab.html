@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>速度曲线实验 · 离线地图</title><link rel="stylesheet" href="speed-lab.css"><script type="module" src="speed-lab.mjs"></script></head>
+<body><main>
+  <header><a href="./#map">← 返回地图控制台</a><span>离线教学模拟 · 无设备连接</span><h1>同一段路，两种加速方式</h1><p>蓝色车每秒增加同样的速度；橙色车从轻柔加速开始，中间加得更快，再轻柔收尾。地图位置与下方曲线同步。</p></header>
+  <form id="settings">
+    <label class="route-select">原地图路段<select id="segment"></select></label>
+    <label>比较条件<select id="comparison"><option value="time">相同用时 · 相同峰值速度</option><option value="acceleration">相同最大加速度 · 相同速度上限</option></select></label>
+    <label>速度上限 / m/s<input id="speed" type="number" min="0.1" max="3" step="0.1" value="1" required></label>
+    <label>加速度基准 / m/s²<input id="acceleration" type="number" min="0.1" max="3" step="0.1" value="0.6" required></label>
+    <label>假设牵引上限 / m/s²<input id="traction" type="number" min="0.1" max="5" step="0.1" value="0.8" required></label>
+    <button type="submit">应用并复位</button>
+  </form>
+  <div class="presets"><span>试试看</span><button id="preset-time" type="button">同样快，谁更容易超限？</button><button id="preset-limit" type="button">限制相同，谁更平顺？</button><button id="preset-slow" type="button">把加速度基准降到0.1</button></div>
+  <p id="message" role="status" aria-live="polite"></p>
+  <div class="workspace">
+    <section aria-labelledby="map-title"><h2 id="map-title">原2400 × 2400 mm场地</h2><svg id="map" viewBox="-160 -300 2840 2980" role="img" aria-label="原离线地图，两辆车在同一路段对比运动"><g id="field" transform="translate(0 2400) scale(1 -1)"></g><g id="labels"></g></svg>
+      <div class="legend"><span class="linear">● 线性加减速</span><span class="cosine">◆ 半余弦加减速</span><span>灰线：原离线16段路线</span></div>
+      <div class="playback"><button id="play" type="button">播放</button><button id="reset" type="button">复位</button><label>播放<select id="rate"><option value="0.5">0.5倍</option><option value="1" selected>1倍</option><option value="2">2倍</option><option value="4">4倍</option></select></label><output id="clock"></output></div>
+      <label class="scrub-label">拖动观察任意时刻<input id="scrub" type="range" min="0" max="1" step="0.001" value="0"></label>
+      <p class="note">两车共用同一条路线和300 × 300 mm外框，不人为错开位置；重合时显示双色标记。每次比较一段，均从静止出发并停止，不包含工位停留时间。</p>
+    </section>
+    <section aria-label="速度与加速度曲线"><h2>看曲线，也看车怎样走</h2><div id="speed-chart" class="chart"></div><div id="acceleration-chart" class="chart"></div>
+      <div class="table-wrap"><table><caption>当前读数与整段指标</caption><thead><tr><th>指标</th><th class="linear">线性</th><th class="cosine">半余弦</th></tr></thead><tbody id="readouts"></tbody></table></div>
+    </section>
+  </div>
+  <section class="explain"><h2>像推着一杯水走路</h2><div class="explain-columns"><article><h3>三角速度：均匀加力，直接换成刹车</h3><p>速度线向上倾斜：每秒变快同样多；到了中点，改为每秒变慢同样多。因此速度连续，但加速度会从正值突然跳到负值。</p><p>如果先碰到速度上限，中间会多出一段匀速，形状从三角变成梯形。</p></article><article><h3>半余弦：轻轻推起，再逐渐收力</h3><p>每次加速过渡的两头变化慢、中间变化快。减速也逐渐加重、再逐渐收尾，减少突然“推一下”的感觉。</p><p>相同用时下，中间最大加速度是线性方式的π/2倍，约1.57倍。若限制相同最大加速度，就要给它更多时间。</p></article></div>
+    <h3>为什么平顺有时能减少打滑？</h3><p>轮胎靠地面摩擦拉动车身。加速度越大，需要的牵引力越大；突然改变加速度也容易带来冲击、晃动和跟踪误差。平滑过渡有助于减轻这些瞬态影响，但牵引需求仍不能超过地面能提供的能力。</p>
+    <p><strong>红色仅表示 |加速度| 超过你设定的假设牵引上限。</strong>地图按无滑移理想运动计算，超限时也不人为生成漂移。真实打滑还取决于地面、载荷、麦轮方向和电机响应；本演示不能预测打滑距离，也不能证明实车可达到所设速度。</p>
+    <p class="note">复用原离线默认路线，不读取路线编辑器的临时修改。未套用原模拟100 RPM限幅，便于单独比较曲线；不等同当前固件的距离反馈、延迟制动与停稳控制。</p>
+    <p class="note">依据：<a href="https://ocw.mit.edu/ans7870/2/2.086/S13/MIT2_086S13_Textbook.pdf" target="_blank" rel="noopener">MIT教材：移动机器人牵引力与静摩擦条件</a>；<a href="https://www.mathworks.com/help/robotics/trajectory-generation.html" target="_blank" rel="noopener">MathWorks：轨迹生成与速度、加速度约束</a>。</p>
+  </section>
+</main></body></html>

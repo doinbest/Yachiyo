@@ -43,3 +43,17 @@ void Steer_SetDuty(float Duty)
   Compare = (uint32_t)((float)STEER_PWM_PERIOD_COUNT * Duty / 100.0f);
   __HAL_TIM_SET_COMPARE(Steer_Timer, TIM_CHANNEL_1, Compare);
 }
+
+/*
+ *函数简介:停止向夹爪舵机发送有效控制脉冲
+ *参数说明:无
+ *返回类型:无
+ *备注:仅将CCR清零，不切断舵机供电
+ */
+void Steer_SignalOff(void)
+{
+  if (Steer_Timer != NULL)
+  {
+    __HAL_TIM_SET_COMPARE(Steer_Timer, TIM_CHANNEL_1, 0U);
+  }
+}

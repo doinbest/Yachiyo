@@ -67,7 +67,7 @@ int main(void)
   MotorBus_Init(&uart);
   Mecanum_StatusGet(&s); assert(s.ack_profile == MECANUM_ACK_RECEIVE);
   assert(Mecanum_AckProfile_Set(MECANUM_ACK_NONE));
-  assert(Mecanum_Velocity_Request(100, 0, 0, 0));
+  assert(Mecanum_Velocity_Request(20000, 0, 0, 0));
   Mecanum_StatusGet(&s);assert(s.motion_sequence == 1 && s.stop_sequence == 0);
   advance(15);
   assert(Mecanum_Velocity_Request(200, 0, 0, 0));
@@ -77,7 +77,7 @@ int main(void)
   for (unsigned i = 0; i < 4; i++)
   {
     assert(frame[i][0] == i + 1 && frame[i][1] == 0xf6 && frame[i][6] == 1);
-    assert(frame[i][4] == 24);
+    assert(frame[i][3] == 0x0b && frame[i][4] == 0xb8); /* Emm F6 maximum: 3000 RPM. */
   }
   assert(frame[4][0] == 0 && frame[4][1] == 0xff);
   advance(90);

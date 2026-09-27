@@ -20,6 +20,13 @@ static uint8_t arm_calibrated = 1;
 static uint8_t material_calibrated;
 static MaterialVision_StateTypeDef material_state;
 static ArmVision_ErrorTypeDef arm_error;
+static float servo_duty;
+static unsigned servo_sets, servo_offs;
+static uint8_t chassis_busy;
+bool ChassisMotion_IsBusy(void) { return chassis_busy != 0U; }
+bool ChassisRoute_IsBusy(void) { return false; }
+void Arm_GripperDutySet(float duty) { servo_duty = duty; servo_sets++; }
+void Arm_GripperSignalOff(void) { servo_duty = 0.0f; servo_offs++; }
 uint32_t HAL_GetTick(void) { return tick; }
 HAL_StatusTypeDef OLED_Init(I2C_HandleTypeDef *i2c) { (void)i2c; init_calls++; return oled_result; }
 HAL_StatusTypeDef OLED_Line_Show(uint8_t row, const char *text)
@@ -54,14 +61,14 @@ int main(void)
 {
   I2C_HandleTypeDef i2c = {0}; unsigned before;
   OledUi_Init(&i2c); refresh();
-  assert(!strcmp(rows[0], "1/3 Overview Test"));
+  assert(!strcmp(rows[0], "1/4 Overview Test"));
   assert(!strcmp(rows[1], "Code:Waiting"));
   assert(!OledUi_KeyHandle(KEY_EVENT_PE2));
   OledUi_TaskCodeSet("123+231+312+321", 1); refresh();
   assert(!strcmp(rows[1], "123+231+312+321"));
   assert(!strcmp(rows[2], "Item:2 Color:Blue"));
   OledUi_KeyHandle(KEY_EVENT_PE5); refresh();
-  assert(!strcmp(rows[0], "2/3 Vision Test"));
+  assert(!strcmp(rows[0], "2/4 Vision Test"));
   assert(OledUi_KeyHandle(KEY_EVENT_PE2) && OledUi_KeyHandle(KEY_EVENT_PE3));
   assert(!strcmp(rows[1], "Target:None"));
   camera.RequestActive = camera.UsbConfigured = camera.HasFrame = camera.HasValidData = camera.TargetValid = 1;
@@ -75,17 +82,37 @@ int main(void)
   OledUi_KeyHandle(KEY_EVENT_PE5);
   camera.RxByteCount = camera.ChecksumErrorCount = camera.OverflowCount = UINT32_MAX;
   screen.tx_count = screen.rx_frame_count = UINT32_MAX; imu.i2c_error_count = UINT32_MAX;
-  refresh(); assert(!strcmp(rows[0], "3/3 Link Test")); assert(strstr(rows[1], "9999+"));
+  refresh(); assert(!strcmp(rows[0], "3/4 Link Test")); assert(strstr(rows[1], "9999+"));
   arm_error = ARM_VISION_ERROR_MOTOR_ARRIVAL_TIMEOUT; refresh();
   assert(!strcmp(rows[6], "Err:Motor arrival"));
-  OledUi_KeyHandle(KEY_EVENT_PE5); refresh(); assert(!strcmp(rows[6], "Err:Motor arrival"));
+  OledUi_KeyHandle(KEY_EVENT_PE5); refresh();
+  assert(!strcmp(rows[0], "4/4 Servo Test"));
+  assert(!strcmp(rows[1], "Signal:Off") && servo_sets == 0);
+  assert(OledUi_KeyHandle(KEY_EVENT_PE2) && servo_sets == 0);
+  refresh(); assert(!strcmp(rows[2], "Set:500us"));
+  chassis_busy = 1U; OledUi_KeyHandle(KEY_EVENT_PE5); assert(servo_sets == 0);
+  chassis_busy = 0U; OledUi_KeyHandle(KEY_EVENT_PE5);
+  assert(servo_sets == 1 && servo_duty == 2.5f);
+  OledUi_KeyHandle(KEY_EVENT_PE3); assert(servo_duty == 4.0f);
+  OledUi_KeyHandle(KEY_EVENT_PE5); assert(servo_offs == 1 && servo_duty == 0.0f);
+  before = servo_sets;
+  OledUi_KeyHandle(KEY_EVENT_PE2);
+  refresh(); assert(!strcmp(rows[2], "Set:500us") && servo_sets == before);
+  OledUi_KeyHandle(KEY_EVENT_PE3);
+  refresh(); assert(!strcmp(rows[2], "Set:800us") && servo_sets == before);
+  OledUi_KeyHandle(KEY_EVENT_PE5); assert(servo_duty == 4.0f);
+  OledUi_KeyHandle(KEY_EVENT_PE4); assert(servo_offs == 2 && servo_duty == 0.0f);
+  OledUi_KeyHandle(KEY_EVENT_PE4);
+  OledUi_KeyHandle(KEY_EVENT_PE4);
+  refresh(); assert(!strcmp(rows[0], "1/4 Overview Test"));
+  assert(!strcmp(rows[6], "Err:Motor arrival"));
   OledUi_NoticeSet("Busy"); refresh(); assert(!strcmp(rows[6], "Err:Motor arrival"));
   arm_error = ARM_VISION_ERROR_NONE; arm_busy = 1; refresh(); assert(!strcmp(rows[6], "Err:None"));
   before = sends; refresh(); assert(sends == before); /* Unchanged rows are not sent. */
   oled_result = HAL_ERROR; OledUi_KeyHandle(KEY_EVENT_PE4); OledUi_Process(); before = sends;
   tick += 999; OledUi_Process(); assert(sends == before);
   tick++; OledUi_Process(); assert(sends == before + 1);
-  oled_result = HAL_OK; tick += 1000; refresh(); assert(!strcmp(rows[0], "3/3 Link Test"));
+  oled_result = HAL_OK; tick += 1000; refresh(); assert(!strcmp(rows[0], "4/4 Servo Test"));
   oled_result = HAL_ERROR; OledUi_Init(&i2c); before = init_calls;
   OledUi_Process(); assert(init_calls == before);
   tick += 1000; OledUi_Process(); assert(init_calls == before + 1);

@@ -6,6 +6,9 @@
 #include "MaterialVision.h"
 #include "hwt101_i2c.h"
 #include "tjc_screen.h"
+#include "Arm.h"
+#include "chassis_motion.h"
+#include "chassis_route.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -14,12 +17,15 @@
 #define OLED_UI_ROWS 8U
 #define OLED_UI_REFRESH_MS 200U
 #define OLED_UI_RETRY_MS 1000U
+#define OLED_UI_SERVO_OPEN_US 500U
+#define OLED_UI_SERVO_CATCH_US 800U
 
 typedef enum
 {
   OLED_UI_OVERVIEW = 0,
   OLED_UI_VISION,
   OLED_UI_LINK,
+  OLED_UI_SERVO,
   OLED_UI_PAGE_COUNT
 } OledUi_PageTypeDef;
 
@@ -43,6 +49,8 @@ static ArmVision_ErrorTypeDef OledUi_LastArmError;
 static MaterialVision_ErrorTypeDef OledUi_LastMaterialError;
 static uint32_t OledUi_LastRefreshTick;
 static uint32_t OledUi_LastFailureTick;
+static uint16_t OledUi_ServoPulseUs;
+static uint8_t OledUi_ServoActive;
 
 static const char *OledUi_ColorName(uint8_t Color)
 {
@@ -128,8 +136,6 @@ static const char *OledUi_TaskName(void)
     if (MaterialVision_IsCalibrating()) return "Calibrating";
     switch (MaterialVision_StateGet())
     {
-      case MATERIAL_VISION_STATE_HOME_ACK:
-      case MATERIAL_VISION_STATE_HOME_WAIT: return "Material Home";
       case MATERIAL_VISION_STATE_SEARCH: return "Material Search";
       default: return "Material Align";
     }
@@ -146,7 +152,7 @@ static void OledUi_OverviewBuild(const Camera_SnapshotTypeDef *Camera, const cha
   HWT101_Angle_t Angle;
   uint8_t Color = OledUi_CodeReady ? (uint8_t)(OledUi_TaskCode[4U + OledUi_SelectedIndex] - '0') : 0U;
 
-  (void)strcpy(OledUi_Lines[0], "1/3 Overview Test");
+  (void)strcpy(OledUi_Lines[0], "1/4 Overview Test");
   (void)strcpy(OledUi_Lines[1], OledUi_CodeReady ? OledUi_TaskCode : "Code:Waiting");
   if (OledUi_CodeReady)
     (void)snprintf(OledUi_Lines[2], sizeof(OledUi_Lines[2]), "Item:%u Color:%s",
@@ -169,7 +175,7 @@ static void OledUi_VisionBuild(const Camera_SnapshotTypeDef *Camera, Camera_Visu
 {
   uint8_t Calibrated = OledUi_LastTaskIsMaterial ? MaterialVision_IsCalibrated() : ArmVision_IsCalibrated();
 
-  (void)strcpy(OledUi_Lines[0], "2/3 Vision Test");
+  (void)strcpy(OledUi_Lines[0], "2/4 Vision Test");
   if (Camera->RequestActive)
     (void)snprintf(OledUi_Lines[1], sizeof(OledUi_Lines[1]), "Target:%u %s",
                    (unsigned)Camera->RequestTarget, OledUi_ColorName(Camera->RequestTarget));
@@ -200,7 +206,7 @@ static void OledUi_LinkBuild(const Camera_SnapshotTypeDef *Camera, const char *V
 
   (void)HWT101_Status_Get(&Imu);
   (void)TJC_Status_Get(&Screen);
-  (void)strcpy(OledUi_Lines[0], "3/3 Link Test");
+  (void)strcpy(OledUi_Lines[0], "3/4 Link Test");
   OledUi_CountText(First, Camera->RxByteCount);
   (void)snprintf(OledUi_Lines[1], sizeof(OledUi_Lines[1]), "Usb:%s Rx:%s", Camera->UsbConfigured ? "On" : "Off", First);
   (void)snprintf(OledUi_Lines[2], sizeof(OledUi_Lines[2]), "Vis:%s Age:%sms", Vision, Age);
@@ -214,6 +220,20 @@ static void OledUi_LinkBuild(const Camera_SnapshotTypeDef *Camera, const char *V
   /* T/R分别是发送完成/完整接收帧数。省掉x，保留两个9999+计数且不超21列。 */
   (void)snprintf(OledUi_Lines[5], sizeof(OledUi_Lines[5]), "Screen:T%s R%s", First, Second);
   (void)strcpy(OledUi_Lines[7], "4:Prev 5:Next");
+}
+
+static void OledUi_ServoBuild(void)
+{
+  (void)strcpy(OledUi_Lines[0], "4/4 Servo Test");
+  (void)snprintf(OledUi_Lines[1], sizeof(OledUi_Lines[1]), "Signal:%s",
+                 OledUi_ServoActive ? "On" : "Off");
+  (void)snprintf(OledUi_Lines[2], sizeof(OledUi_Lines[2]), "Set:%uus",
+                 (unsigned)OledUi_ServoPulseUs);
+  (void)strcpy(OledUi_Lines[3], "2:Open 3:Catch");
+  (void)strcpy(OledUi_Lines[4], "Open:500us");
+  (void)strcpy(OledUi_Lines[5], "Catch:800us");
+  (void)snprintf(OledUi_Lines[7], sizeof(OledUi_Lines[7]), "2:- 3:+ 4:Exit 5:%s",
+                 OledUi_ServoActive ? "Off" : "On");
 }
 
 static void OledUi_LinesBuild(uint32_t Now)
@@ -232,7 +252,8 @@ static void OledUi_LinesBuild(uint32_t Now)
   {
     case OLED_UI_OVERVIEW: OledUi_OverviewBuild(&Camera, Vision); break;
     case OLED_UI_VISION: OledUi_VisionBuild(&Camera, State, Vision, Age); break;
-    default: OledUi_LinkBuild(&Camera, Vision, Age); break;
+    case OLED_UI_LINK: OledUi_LinkBuild(&Camera, Vision, Age); break;
+    default: OledUi_ServoBuild(); break;
   }
   (void)snprintf(OledUi_Lines[6], sizeof(OledUi_Lines[6]), "Err:%s", OledUi_Error);
 }
@@ -241,6 +262,8 @@ void OledUi_Init(I2C_HandleTypeDef *I2c)
 {
   OledUi_I2c = I2c;
   OledUi_Page = OLED_UI_OVERVIEW;
+  OledUi_ServoPulseUs = OLED_UI_SERVO_OPEN_US;
+  OledUi_ServoActive = 0U;
   OledUi_CodeReady = OledUi_SelectedIndex = 0U;
   OledUi_LastArmBusy = OledUi_LastMaterialBusy = OledUi_TaskError = 0U;
   OledUi_LastTaskIsMaterial = 0U;
@@ -268,11 +291,37 @@ void OledUi_TaskCodeSet(const char *TaskCode, uint8_t SelectedIndex)
 
 uint8_t OledUi_KeyHandle(KeyEvent_t Key)
 {
+  if (OledUi_Page == OLED_UI_SERVO && Key == KEY_EVENT_PE5)
+  {
+    if (OledUi_ServoActive)
+      Arm_GripperSignalOff();
+    else if (!ChassisMotion_IsBusy() && !ChassisRoute_IsBusy())
+      Arm_GripperDutySet((float)OledUi_ServoPulseUs / 200.0f);
+    else return 1U;
+    OledUi_ServoActive = (uint8_t)!OledUi_ServoActive;
+    OledUi_Rebuild = 1U;
+    return 1U;
+  }
   if (Key == KEY_EVENT_PE4 || Key == KEY_EVENT_PE5)
   {
+    if (OledUi_Page == OLED_UI_SERVO && OledUi_ServoActive)
+    {
+      Arm_GripperSignalOff();
+      OledUi_ServoActive = 0U;
+    }
     OledUi_Page = (OledUi_PageTypeDef)((OledUi_Page +
                   ((Key == KEY_EVENT_PE5) ? 1U : OLED_UI_PAGE_COUNT - 1U)) % OLED_UI_PAGE_COUNT);
     OledUi_DirtyRows = 0xFFU;
+    OledUi_Rebuild = 1U;
+    return 1U;
+  }
+  if (OledUi_Page == OLED_UI_SERVO &&
+      (Key == KEY_EVENT_PE2 || Key == KEY_EVENT_PE3))
+  {
+    OledUi_ServoPulseUs = (Key == KEY_EVENT_PE2) ?
+                           OLED_UI_SERVO_OPEN_US : OLED_UI_SERVO_CATCH_US;
+    if (OledUi_ServoActive)
+      Arm_GripperDutySet((float)OledUi_ServoPulseUs / 200.0f);
     OledUi_Rebuild = 1U;
     return 1U;
   }

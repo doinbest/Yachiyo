@@ -1,4 +1,5 @@
 #include "chassis_route.h"
+#include "chassis_config.h"
 #include "chassis_motion.h"
 #include "chassis_localization.h"
 #include "console_tx.h"
@@ -22,7 +23,7 @@ void Mecanum_StatusGet(Mecanum_Status_t *s){*s=bus;}
 bool ChassisMotion_IsBusy(void){return motion.state==CHASSIS_MOTION_RUNNING||motion.state==CHASSIS_MOTION_STOPPING;}
 bool ChassisMotion_MoveTo(float x,float y,float yaw,float speed,uint32_t timeout)
 {
-  assert(speed>=10&&speed<=1000&&timeout>=60000&&timeout<=400000);last_speed=speed;last_timeout=timeout;assert(!ChassisRoute_IsBusy()||ChassisRoute_IsSubmitting());
+  assert(speed>=10&&speed<=5000&&timeout>=60000&&timeout<=400000);last_speed=speed;last_timeout=timeout;assert(!ChassisRoute_IsBusy()||ChassisRoute_IsSubmitting());
   if(!accept){motion.reason="rejected";return false;}
   starts++;motion.action_id++;motion.state=CHASSIS_MOTION_RUNNING;motion.reason="running";
   motion.target_x_mm=x;motion.target_y_mm=y;motion.target_map_yaw_deg=yaw;motion.stop_confirmed=false;return true;
@@ -46,7 +47,7 @@ static void arrive(void)
 int main(void)
 {
   const float points[16][2]={{2100,300},{2100,1200},{2100,2100},{1200,2100},{1200,350},{1200,1200},{350,1200},{1200,1200},{1200,2100},{1200,350},{1200,1200},{350,1200},{1200,1200},{2100,1200},{2100,300},{2250,150}};
-  setup();assert(!ChassisRoute_Next());assert(ChassisRoute_Start());assert(!ChassisRoute_Start());
+  setup();assert(!ChassisRoute_Next());assert(ChassisRoute_Start());assert(last_speed==CHASSIS_ROUTE_DEFAULT_SPEED_MM_S);assert(!ChassisRoute_Start());
   for(unsigned i=0;i<16;i++)
   {
     assert(status().segment==i+1);assert(motion.target_x_mm==points[i][0]&&motion.target_y_mm==points[i][1]);
@@ -67,26 +68,26 @@ int main(void)
   setup();assert(ChassisRoute_Start());arrive();loc.speed_valid=false;ChassisRoute_Process();assert(stops==1&&!status().stop_confirmed);
   setup();assert(ChassisRoute_Start());arrive();bus.locked=true;ChassisRoute_Process();assert(stops==1&&!status().stop_confirmed);
   setup();accept=false;assert(!ChassisRoute_Start());assert(!ChassisRoute_IsBusy());
-  setup();char *move[]={"chassis","move","-150","150"};assert(ChassisRoute_Command(4,move));assert(starts==1);assert(motion.target_x_mm==2100&&motion.target_y_mm==300);
+  setup();char *move[]={"chassis","move","-150","150"};assert(ChassisRoute_Command(4,move));assert(starts==1&&last_speed==CHASSIS_DISTANCE_SPEED_MM_S);assert(motion.target_x_mm==2100&&motion.target_y_mm==300);
   setup();char *bad[]={"chassis","move","250","250"};assert(ChassisRoute_Command(4,bad));assert(starts==0&&strstr(reply,"ERR"));
   setup();assert(ChassisRoute_Start());char *query[]={"chassis","route","status"};assert(ChassisRoute_Command(3,query));assert(starts==1&&strstr(reply,"segment=1"));
   assert(ChassisRoute_Command(4,move));assert(starts==1);char *stop[]={"chassis","stop"};assert(ChassisRoute_Command(2,stop));assert(stops==1);
-  setup();char *fast[]={"chassis","route","start","1000"};
-  assert(ChassisRoute_Command(4,fast));assert(starts==1 && last_speed==1000 && strstr(reply,"speed_mm_s=1000"));
+  setup();char *fast[]={"chassis","route","start","5000"};
+  assert(ChassisRoute_Command(4,fast));assert(starts==1 && last_speed==5000 && strstr(reply,"speed_mm_s=5000"));
   fast[3]="20";assert(ChassisRoute_Command(4,fast));assert(starts==1 && strstr(reply,"ERR"));
-  arrive();assert(ChassisRoute_Next());assert(last_speed==1000);
+  arrive();assert(ChassisRoute_Next());assert(last_speed==5000);
   setup();fast[3]="10";assert(ChassisRoute_Command(4,fast));arrive();assert(ChassisRoute_Next());assert(last_speed==10 && last_timeout>=180000);
-  setup();fast[3]="1001";assert(ChassisRoute_Command(4,fast));assert(!starts&&strstr(reply,"ERR"));
+  setup();fast[3]="5001";assert(ChassisRoute_Command(4,fast));assert(!starts&&strstr(reply,"ERR"));
   fast[3]="nan";assert(ChassisRoute_Command(4,fast));assert(!starts);
   fast[3]="9";assert(ChassisRoute_Command(4,fast));assert(!starts);
-  setup();char *auto_run[]={"chassis","route","auto","1000"};
-  assert(ChassisRoute_Command(4,auto_run));assert(strstr(reply,"auto=1") && starts==1);
+  setup();char *auto_run[]={"chassis","route","auto","5000"};
+  assert(ChassisRoute_Command(4,auto_run));assert(strstr(reply,"auto=1") && strstr(reply,"dwell_ms=100") && starts==1);
   for(unsigned i=0;i<16;i++){
     assert(motion.target_x_mm==points[i][0]&&motion.target_y_mm==points[i][1]);
     arrive();assert(!strcmp(status().reason,"auto_dwell"));assert(!ChassisRoute_Next());
-    tick+=999;loc.feedback_tick=tick;ChassisRoute_Process();assert(starts==i+1);
+    tick+=CHASSIS_ROUTE_AUTO_DWELL_MS-1;loc.feedback_tick=tick;ChassisRoute_Process();assert(starts==i+1);
     tick++;loc.feedback_tick=tick;ChassisRoute_Process();
-    assert(starts==(i<15?i+2:16));assert(last_speed==1000);
+    assert(starts==(i<15?i+2:16));assert(last_speed==5000);
   }
   assert(!ChassisRoute_IsBusy()&&!strcmp(status().reason,"route_complete"));
   setup();assert(ChassisRoute_Command(4,auto_run));arrive();assert(ChassisRoute_Cancel());
