@@ -102,7 +102,7 @@ export const commands = [
   command('system-reset','system','重启 STM32','system reset',[],'仅空闲时重启主控；会重新执行初始化，不能代替停车或电机驱动器复位。'),
   command('imu-zero','system','Z 轴角度清零','imu zero',[],'保持静止；只将当前模块角度设为零，不做零偏标定。之后重新验证 IMU 并设置地图起点。'),
   command('info','system','设备信息','info'),
-  command('bus-recover','system','一键恢复电机总线','bus recover',[],'停止任务并检查全部 7 台电机；成功后不会自动续跑。结果见终端，底盘同步缓存未确认时仍保持底盘锁定。'),
+  command('bus-recover','system','一键恢复电机总线','bus recover',[],'停止任务并检查全部 8 台电机（含车载转盘 ID 8）；成功后不会自动续跑。结果见终端，底盘同步缓存未确认时仍保持底盘锁定。'),
   command('bus-status','system','查看总线恢复结果','bus status'),
   command('help','system','固件指令帮助','help'),
   command('chassis-run','chassis','平移与转向测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-100,100,0.1),number('vy','左向速度 / mm·s⁻¹',0,-100,100,0.1),number('omega','逆时针角速度 / rad·s⁻¹',0,-0.15,0.15,0.01),number('seconds','保持时间 / s',1,0.1,59,0.1)],'角速度为 0 时自动保持起步航向，需要 IMU 验证通过；非 0 时执行给定转向。起步和停车各 500 ms；总时长为保持时间加 1 秒。'),

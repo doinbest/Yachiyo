@@ -5,14 +5,6 @@ import {BridgeLink,readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
 import {frameCommand,moduleForWire} from '../protocol.mjs';
 import {chineseTerminalLine} from '../terminal-format.mjs';
 
-test('view zoom preserves the pointer anchor and panning preserves the current map orientation',()=>{
-  const view={x:-320,y:-370,width:3170,height:2990},anchor={x:725,y:1600};
-  const next=radar.zoomView(view,anchor,.8);
-  assert.equal((anchor.x-next.x)/next.width,(anchor.x-view.x)/view.width);
-  assert.equal((anchor.y-next.y)/next.height,(anchor.y-view.y)/view.height);
-  assert.deepEqual(radar.panView(next,{x:20,y:-30}),{...next,x:next.x-20,y:next.y+30});
-});
-
 test('complete radar pages are assembled out of order without mixing maps or erasing history',()=>{
   const model=new radar.RadarModel(),base={v:1,k:'map',session:9,origin:2,scan:3,map:7,plan:0,pages:2,mask:4,pose:[2250,150,0]};
   model.accept('@RADAR '+JSON.stringify({...base,page:1,offset:5,counts:[6,7,8,9,10]}),100);

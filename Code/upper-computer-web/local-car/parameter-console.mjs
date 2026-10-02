@@ -26,8 +26,8 @@ export function parseTurntableConfig(line){
 }
 
 // Firmware prints grab values with %.6g; preserve an exact zero check for 0=disabled settings.
-export const sameNumber=(actual,expected)=>actual!==null&&
-  (expected===0?actual===0:Math.abs(actual-expected)<=Math.abs(expected)*0.000006);
+export const sameNumber=(actual,expected,roundingScale=Math.abs(expected))=>actual!==null&&
+  (expected===0?actual===0:Math.abs(actual-expected)<=roundingScale*0.000006);
 
 export function parameterError(line){
   const text=String(line).replace(/^ERR\s+/,'');

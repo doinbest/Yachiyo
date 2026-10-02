@@ -11,9 +11,9 @@ function surface(){
     replaceChildren(...children){this.children=children;}
     setAttribute(k,v){this.attributes[k]=String(v);}
     addEventListener(k,fn){this.events[k]=fn;}
+    dispatchEvent(event){this.events[event.type]?.(event);return !event.defaultPrevented;}
     querySelectorAll(selector){return this.children.flatMap(c=>[...(selector==='input'&&c.tag==='input'?[c]:[]),...c.querySelectorAll(selector)]);}
     getScreenCTM(){return {inverse:()=>this.world?{a:1,d:-1,e:-20,f:2430}:{a:1,d:1,e:-20,f:-30}};}
-    setPointerCapture(){} hasPointerCapture(){return true;} releasePointerCapture(){}
   }
   const nodes=new Map(),get=id=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);};
   for(const id of ['radar-show-obstacles','radar-show-path'])get(id).checked=true;
@@ -26,13 +26,18 @@ function surface(){
   return {get,Element,restore(){Object.assign(globalThis,saved);}};
 }
 
-test('radar workspace keeps viewport through tabs/data, reads world millimetres and starts nothing on mount',async()=>{
+test('radar workspace fits the full field without intercepting zoom or drag, keeps viewport through tabs/data and sends no motion',async()=>{
   const ui=surface(),wires=[],sources=[],requests=[],model=new RadarModel(),exchange=new RadarExchange({send:async wire=>{wires.push(wire);return true;}});
   try{
     const workspace=mountRadarWorkspace({model,exchange,send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource:value=>sources.push(value)},api:async(path,body)=>{requests.push({path,body});return requests.length===1?{valid:true,algorithm:'radar_map_c_v1',mask:0,points:[[2250,150,1,0]]}:{valid:false,failed_leg:2,algorithm:'radar_map_c_v1',mask:0,points:[]};}});
     assert.deepEqual(wires,[]);assert.deepEqual(sources,[]);
-    const map=ui.get('field-map');map.events.contextmenu({clientX:100,clientY:200,preventDefault(){}});
-    const view=map.attributes.viewBox;assert.equal(Number(view.split(' ')[2]),2536);
+    const map=ui.get('field-map'),view='-320 -370 3170 2990';
+    assert.equal(map.attributes.viewBox,view);
+    for(const type of ['wheel','contextmenu','pointerdown','pointerup','pointercancel']){
+      const event={type,deltaY:-100,button:0,pointerId:1,clientX:100,clientY:200,defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};
+      assert.equal(map.dispatchEvent(event),true,`${type} keeps its normal browser behavior`);
+      assert.equal(map.attributes.viewBox,view);
+    }
     map.events.pointermove({clientX:100,clientY:200});assert.equal(ui.get('map-cursor').textContent,'鼠标 X 80.0 · Y 2230.0 mm');
     workspace.selectTab('offline');workspace.receive('@RADAR '+JSON.stringify({v:1,k:'status',session:1,origin:1,scan:0,map:0,plan:0,page:0,pages:1,state:'idle',points_valid:false}));
     assert.deepEqual(sources,[]); // Navigation preserves the selected vehicle source.
@@ -51,7 +56,8 @@ test('radar workspace keeps viewport through tabs/data, reads world millimetres 
     await ui.get('radar-offline-plan').onclick();assert.equal(requests[0].path,'radar/plan');assert.equal(requests[0].body.points.length,0);assert.deepEqual(wires,[]);
     assert.equal(ui.get('radar-offline-path').attributes.d,'M2250,150');
     await ui.get('radar-offline-plan').onclick();assert.match(ui.get('radar-offline-status').textContent,/第 2 路段/);
-    ui.get('map-view-reset').onclick();assert.equal(map.attributes.viewBox,'-320 -370 3170 2990');
+    workspace.connection(false);workspace.connection(true);workspace.selectTab('radar');
+    assert.equal(map.attributes.viewBox,view);assert.deepEqual(wires,[]);assert.deepEqual(sources,[]);
   }finally{ui.restore();}
 });
 

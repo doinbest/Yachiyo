@@ -1,4 +1,4 @@
-import {RADAR_PARAMETERS,INITIAL_VIEW,STATIONS,radarStateText,radarReasonText,zoomView,panView,importSnapshot} from './radar-model.mjs';
+import {RADAR_PARAMETERS,INITIAL_VIEW,STATIONS,radarStateText,radarReasonText,importSnapshot} from './radar-model.mjs';
 const $=id=>document.getElementById(id),ns='http://www.w3.org/2000/svg';
 const element=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
 const svg=(tag,attrs)=>{const e=document.createElementNS(ns,tag);for(const[k,v]of Object.entries(attrs))e.setAttribute(k,v);return e;};
@@ -22,17 +22,10 @@ export function mountRadarParameters({root,exchange,model,canSend,onBusy}){
 }
 
 export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onBusy=()=>{}}){
-  let tab='monitor',offline=importSnapshot({mask:0x00050140,counts:Array(25).fill(0),coordinate_frame:'current'}),offlinePath=null,view={...INITIAL_VIEW},pan=null;
+  let tab='monitor',offline=importSnapshot({mask:0x00050140,counts:Array(25).fill(0),coordinate_frame:'current'}),offlinePath=null;
   const map=$('field-map'),world=$('map-world');
-  const asPoint=(event,node=map)=>new DOMPoint(event.clientX,event.clientY).matrixTransform(node.getScreenCTM().inverse());
-  const applyView=()=>map.setAttribute('viewBox',`${view.x} ${view.y} ${view.width} ${view.height}`);
-  const zoom=(event,ratio)=>{view=zoomView(view,asPoint(event),ratio);applyView();};
-  map.addEventListener('contextmenu',e=>{e.preventDefault();zoom(e,.8);});
-  map.addEventListener('wheel',e=>{if(e.deltaY){e.preventDefault();zoom(e,e.deltaY<0?.8:1.25);}},{passive:false});
-  map.addEventListener('pointerdown',e=>{if(e.button!==0)return;pan={id:e.pointerId,start:{x:e.clientX,y:e.clientY},view:{...view},matrix:map.getScreenCTM().inverse()};map.setPointerCapture(e.pointerId);e.preventDefault();});
-  map.addEventListener('pointermove',e=>{if(pan){const start=new DOMPoint(pan.start.x,pan.start.y).matrixTransform(pan.matrix),current=new DOMPoint(e.clientX,e.clientY).matrixTransform(pan.matrix);view=panView(pan.view,{x:current.x-start.x,y:current.y-start.y});applyView();}const p=asPoint(e,world);$('map-cursor').textContent=`鼠标 X ${p.x.toFixed(1)} · Y ${p.y.toFixed(1)} mm`;});
-  const finish=e=>{if(pan&&map.hasPointerCapture(e.pointerId))map.releasePointerCapture(e.pointerId);pan=null;};map.addEventListener('pointerup',finish);map.addEventListener('pointercancel',finish);
-  $('map-view-reset').onclick=()=>{view={...INITIAL_VIEW};applyView();};
+  map.setAttribute('viewBox',`${INITIAL_VIEW.x} ${INITIAL_VIEW.y} ${INITIAL_VIEW.width} ${INITIAL_VIEW.height}`);
+  map.addEventListener('pointermove',e=>{const p=new DOMPoint(e.clientX,e.clientY).matrixTransform(world.getScreenCTM().inverse());$('map-cursor').textContent=`鼠标 X ${p.x.toFixed(1)} · Y ${p.y.toFixed(1)} mm`;});
   function selectTab(value){
     tab=value;for(const b of $('map-tabs').children){const active=b.dataset.mapTab===tab;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));}
     $('radar-build-panel').hidden=tab!=='radar';$('radar-offline-panel').hidden=tab!=='offline';$('radar-monitor-panel').hidden=tab!=='monitor';

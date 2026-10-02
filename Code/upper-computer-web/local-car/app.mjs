@@ -133,10 +133,22 @@ function controlForm(id,{sharedAxis=false,label,idPrefix=''}={}){const c=definit
 async function copyText(text){try{await navigator.clipboard.writeText(text);toast('已复制。');}catch{toast('无法复制，请手动选择文本。');}}
 function advanced(container,title,ids){const details=node('details',undefined,'advanced');details.append(node('summary',title));const selector=node('select');selector.setAttribute('aria-label',title);const placeholder=node('option','选择调试操作');placeholder.value='';selector.append(placeholder);for(const id of ids){const c=definition(id),o=node('option',c.label);o.value=id;selector.append(o);}const target=node('div');selector.onchange=()=>{target.replaceChildren();if(selector.value){const c=definition(selector.value);if(c.fields.length)target.append(controlForm(c.id,{sharedAxis:c.fields.some(f=>f.key==='axis')}));else actions(target,[c.id]);}updateControls();};details.append(selector,target);container.append(details);}
 function tabs(container,items){
-  const nav=node('div',undefined,'mode-tabs'),bodies=[],buttons=[],ids=['grab','legacy','camera','calibration'];
-  const select=value=>{const selected=Math.max(0,ids.indexOf(value));buttons.forEach((b,i)=>{b.classList.toggle('active',i===selected);b.setAttribute('aria-pressed',String(i===selected));bodies[i].hidden=i!==selected;});updateControls();};
-  for(const [i,[title,render]]of items.entries()){const b=node('button',title),body=node('div');b.type='button';b.onclick=()=>{select(ids[i]);location.hash='vision/'+ids[i];};render(body);buttons.push(b);bodies.push(body);nav.append(b);}
+  const nav=node('div',undefined,'mode-tabs'),bodies=[],buttons=[],ids=items.map(([id])=>id);
+  const select=value=>{const selected=value==='history'?-1:Math.max(0,ids.indexOf(value));buttons.forEach((b,i)=>{b.classList.toggle('active',i===selected);b.setAttribute('aria-pressed',String(i===selected));bodies[i].hidden=i!==selected;});updateControls();};
+  for(const [i,[id,title,render]]of items.entries()){const b=node('button',title),body=node('div');b.type='button';b.onclick=()=>{select(id);location.hash='vision/'+id;};render(body);buttons.push(b);bodies.push(body);nav.append(b);}
   container.append(nav,...bodies);select('grab');return {select};
+}
+function buildVisualHistory(container){
+  const history=node('details',undefined,'advanced');history.id='vision-history';
+  history.append(node('summary','历史视觉诊断'),node('p','以下入口使用旧版独立对准和标定模型，不属于当前单件取放的准备步骤；旧标定结果不会更新参数调试中的抓取响应矩阵。','form-note'));
+  const material=node('section',undefined,'grab-preparation');material.id='vision-history-legacy';
+  material.append(node('h3','旧底盘 / X 搜索与对准 · MaterialVision'),node('p','保持 Base 当前位置 → 请求识别 → 底盘搜索 → 底盘/X 对准。终点为对准完成，不执行单件入仓。','form-note'));
+  actions(material,[['material-status','读取旧任务状态'],['material-stop','停止旧物料对准']]);material.append(controlForm('material-auto'));
+  const calibration=node('section',undefined,'grab-preparation');calibration.id='vision-history-calibration';
+  calibration.append(node('h3','旧视觉参考、标定与 Base / X 对准'),node('p','保留机械臂 Base/X 与底盘/X 两种历史标定路径，用于比较和诊断；当前协同对准使用 GrabTask 的准心与响应矩阵。','form-note'));
+  actions(calibration,[['vision-status','读取旧 Base/X 状态'],['vision-stop','停止旧 Base/X 对准']]);
+  advanced(calibration,'旧参考与两种标定路径',['vision-ref','vision-calib-material','vision-calib-chassis']);calibration.append(controlForm('vision-material',{label:'旧 Base/X 独立对准'}));
+  history.append(material,calibration);container.append(history);
 }
 
 function buildGrabPreparation(body){
@@ -202,7 +214,7 @@ function renderGrabStatus(){
 }
 
 function buildPages(){for(const key of Object.keys(titles).filter(x=>x!=='map')){pages[key]=node('div');pages[key].dataset.page=key;pages[key].hidden=true;$('module-content').append(pages[key]);}
-const arm=pages.arm;arm.append(node('p','先选择电机轴，再使能并执行相对运动。夹爪独立控制。','form-note'));arm.append(node('small','当前对象'));const picker=node('div',undefined,'axis-picker');for(const [value,label] of [['base','底座 Base'],['z','升降 Z'],['x','伸缩 X'],['all','全部轴']]){const b=node('button',label);b.classList.toggle('active',value===axis);b.setAttribute('aria-pressed',String(value===axis));b.onclick=()=>{axis=value;picker.querySelectorAll('button').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b));});updateControls();};picker.append(b);}arm.append(picker);actions(arm,[['enable','使能',{},true],['disable','失能',{},true],['state','读取状态',{},true],['stop','停止所选轴',{},true]]);arm.append(controlForm('pos',{sharedAxis:true}));const grip=node('div',undefined,'grip-row');grip.append(node('h3','夹爪'));actions(grip,[['grip-open','打开 · 500 µs'],['grip-catch','夹取 · 700 µs']]);arm.append(grip);advanced(arm,'回零、零点与运动参数',['home','origin','zero','config-get','config-set']);
+const arm=pages.arm;arm.append(node('p','先选择电机轴，再使能并执行相对运动。夹爪独立控制。','form-note'));arm.append(node('small','当前对象'));const picker=node('div',undefined,'axis-picker');for(const [value,label] of [['base','底座 Base'],['z','升降 Z'],['x','伸缩 X'],['all','全部轴']]){const b=node('button',label);b.classList.toggle('active',value===axis);b.setAttribute('aria-pressed',String(value===axis));b.onclick=()=>{axis=value;picker.querySelectorAll('button').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b));});updateControls();};picker.append(b);}arm.append(picker);actions(arm,[['enable','使能',{},true],['disable','失能',{},true],['state','读取状态',{},true],['stop','停止所选轴',{},true]]);arm.append(controlForm('pos',{sharedAxis:true}));const grip=node('div',undefined,'grip-row');grip.append(node('h3','夹爪'));actions(grip,[['grip-open','打开 · 500 µs'],['grip-catch','夹取 · 700 µs']]);arm.append(grip);arm.append(parameterLink('调整运动参数','motion','base_rpm','机械臂与夹爪'));advanced(arm,'回零与零点',['home','origin','zero']);
 const ch=pages.chassis;
 ch.append(node('p','先做整车运动测试；需要按地图走路线时，前往“地图与遥测”准备跑图。停止按钮始终在底部。','form-note'));
 actions(ch,[['chassis-task','查看底盘状态']]);
@@ -226,7 +238,8 @@ advancedMotion.append(controlForm('chassis-heading',{label:'保持指定模块�
 const recovery=node('details',undefined,'advanced');recovery.append(node('summary','故障恢复 · 实物驱动已复位后使用'));
 recovery.append(node('p','用于驱动器已实际复位后的总线恢复，不会复位硬件。先停止四轮采集并等待在途事务结束，再确认恢复。底部“解除停止锁定”仅解除网页软件停车锁，两者不同。','form-note'));
 actions(recovery,[['feedback-off','停止四轮采集'],['reset-confirmed','确认驱动已复位']]);ch.append(recovery);
-visionTabs=tabs(pages.vision,[['单件抓取',buildGrabPanel],['旧版对准调试',body=>{body.append(node('p','保持 Base 当前位置 → 内部请求识别 → 底盘搜索 → 底盘/X 对准。当前终点为对准完成。','form-note'));actions(body,[['material-status','读取任务状态'],['material-stop','停止物料任务']]);body.append(controlForm('material-auto'));}],['相机调试',body=>{body.append(node('p','仅识别，不主动驱动机构；停止识别请求不等于停止物料任务。','form-note'));actions(body,[['camera-status','读取相机状态'],['camera-stop','停止识别请求']]);body.append(controlForm('camera-material'));}],['标定与分步测试',body=>{actions(body,[['vision-status','读取 Base/X 状态'],['vision-stop','停止 Base/X 对准']]);advanced(body,'参考与两种标定路径',['vision-ref','vision-calib-material','vision-calib-chassis']);body.append(controlForm('vision-material',{label:'Base/X 独立对准'}));}]]);
+visionTabs=tabs(pages.vision,[['grab','单件抓取',buildGrabPanel],['camera','相机调试',body=>{body.append(node('p','仅识别，不主动驱动机构；停止识别请求不等于停止物料任务。','form-note'));actions(body,[['camera-status','读取相机状态'],['camera-stop','停止识别请求']]);body.append(controlForm('camera-material'));}]]);
+buildVisualHistory(pages.vision);
 const sys=pages.system;const bootNote=node('p',bootStage||'启动状态：尚未收到本次启动报告','form-note');bootNote.id='boot-status';sys.append(bootNote);actions(sys,[['bus-recover','一键恢复电机总线'],['bus-status','查看恢复结果']]);sys.append(node('p','误操作或通信错误后使用：停止任务、检查全部电机，成功后由你重新启动。不会重启主控、自动归零或续跑；恢复结果见终端。','form-note'));actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','上电先完成 Z/X/Base 回零，再静止验证 5 秒；失败后可手动重新验证。原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','重新验证 5 秒'],['imu-cal-cancel','取消标定/验证']]);sys.append(node('p','Z 轴角度清零：把当前朝向设为 0°，不消除漂移、不标定零偏。保持静止操作；跑图前重新验证 IMU 并设置地图起点。','form-note'));
 actions(sys,[['imu-zero','Z 轴角度清零']]);
 advanced(sys,'IMU 连续角度输出',['imu-stream-on','imu-stream-off']);
@@ -256,7 +269,12 @@ function route(){
   document.querySelectorAll('#navigation a').forEach(a=>a.setAttribute('aria-current',a.hash===`#${active}`?'page':'false'));
   $('module-title').textContent=titles[active];$('module-badge').textContent=active==='qr'?'任务码接收':active==='params'?'仅 RAM · 上电恢复默认 · 空白请读取':'手动操作';
   $('module-badge').classList.toggle('parameter-header-note',active==='params');$('module-badge').title=active==='params'?'设备参数仅存 STM32 RAM，重新上电恢复固件默认值；输入留空表示未读取。路线速度属于浏览器本地设置。':'';
-  content.scrollTop=navigationMemory.restore(location.hash);if(active==='vision'&&next.key==='status')grabPanel?.scrollIntoView({block:'start'});previousHash=location.hash;updateControls();renderStatus();renderLogs();
+  content.scrollTop=navigationMemory.restore(location.hash);
+  if(active==='vision'){
+    if(next.tab==='history'){$('vision-history').open=true;($('vision-history-'+next.key)||$('vision-history')).scrollIntoView({block:'start'});}
+    else if(next.key==='status')grabPanel?.scrollIntoView({block:'start'});
+  }
+  previousHash=location.hash;updateControls();renderStatus();renderLogs();
 }
 document.addEventListener('click',event=>{
   const link=event.target.closest('a[href^="#params"]');if(!link)return;

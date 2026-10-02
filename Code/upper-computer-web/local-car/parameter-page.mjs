@@ -15,27 +15,40 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
   const progress=el('span','尚未读取设备参数','parameter-progress');toolbar.append(back,readAll,apply,progress);root.append(toolbar);
   const nav=el('div',undefined,'parameter-tabs');nav.setAttribute('role','tablist');root.append(nav);
   const resultBar=el('div',undefined,'parameter-result-bar');resultBar.setAttribute('role','status');
-  const resultLine=el('div','尚未读取 · 修改后点击应用'),detailLine=el('div','原始通信记录仍可在其他页面查看和导出');resultBar.append(resultLine,detailLine);
+  const resultLine=el('div','读取后可修改参数'),detailLine=el('div','原始通信记录仍可在其他页面查看和导出');resultBar.append(resultLine,detailLine);
   const rowFor=(kind,key)=>rows.get(kind+':'+key),device=field=>field.kind==='local'?{route_speed:routeSpeed}:values[field.kind];
+  function fieldState(row,text,kind='read'){
+    row.state.textContent=text;row.state.title=text;row.state.dataset.state=kind;row.root.dataset.state=kind;
+    row.state.hidden=!['draft','failed','unset'].includes(kind);
+  }
+  function fieldMatches(row){
+    if(row.input.value==='')return false;
+    const current=device(row.field),shown=displayValue(row.field,current);
+    // A relative lift subtracts two %.6g absolute coordinates, each with its own rounding.
+    const scale=row.field.conversion==='rise'?Math.abs(current[row.field.down])+Math.abs(current[row.field.key]):undefined;
+    return sameNumber(shown,Number(row.input.value),scale);
+  }
   function repaint(row,preserve=false,updateState=true){
     const value=displayValue(row.field,device(row.field)),known=Object.hasOwn(device(row.field),row.field.key),formatted=value===null?'未设置':String(Number(value.toPrecision(8)));
     const history=historicalValues.has(row.field.kind+':'+row.field.key)||row.field.down&&historicalValues.has(row.field.kind+':'+row.field.down);
-    row.current.textContent=known?(history?'历史设备值':'设备值')+'：'+formatted+(value!==null&&row.field.unit?' '+row.field.unit:''):'设备值：未读取';
-    row.current.title=row.current.textContent;
-    if(known&&!preserve){row.input.value=value===null?'':String(Number(value.toPrecision(8)));row.dirty=false;row.state.textContent=value===null?'未设置':'已读取';}
-    if(known&&preserve&&updateState)row.state.textContent=value!==null&&row.input.value!==''&&sameNumber(value,Number(row.input.value))?'读回一致':'待应用';
-    if(updateState){row.state.dataset.state=row.state.textContent==='读回一致'?'confirmed':row.dirty?'draft':'read';row.state.title=row.state.textContent;}
+    row.input.title=known?(history?'历史设备值':'设备值')+'：'+formatted+(value!==null&&row.field.unit?' '+row.field.unit:''):'尚未读取设备参数';
+    if(known&&!preserve){row.input.value=value===null?'':String(Number(value.toPrecision(8)));row.dirty=false;fieldState(row,value===null?'未设置':'',value===null?'unset':'read');}
+    if(known&&preserve&&updateState){
+      const matches=fieldMatches(row);
+      fieldState(row,row.dirty&&!matches?'待应用':value===null?'未设置':'',row.dirty&&!matches?'draft':value===null?'unset':'read');
+    }
   }
   function createField(field,shortLabel){
-    const row=el('div',undefined,'parameter-field'),label=el('label',shortLabel??field.label),input=el('input'),control=el('div',undefined,'parameter-input-control'),current=el('small','设备值：未读取','parameter-device-value'),state=el('span','未读取','parameter-field-state');label.title=field.label;
+    const row=el('div',undefined,'parameter-field'),label=el('label',shortLabel??field.label),input=el('input'),control=el('div',undefined,'parameter-input-control'),state=el('span','','parameter-field-state');label.title=field.label;
     Object.assign(input,{type:'number',min:field.min,max:field.max,step:field.step??'any',id:'parameter-'+field.kind+'-'+field.key,readOnly:!!field.readOnly});label.htmlFor=input.id;input.dataset.parameterKey=field.key;
     input.setAttribute('aria-label',field.label+(field.unit?'（'+field.unit+'）':''));
     const unit=el('span',field.unit||'—','parameter-unit');unit.setAttribute('aria-hidden','true');control.append(input,unit);
     if(field.readOnly){input.setAttribute('aria-readonly','true');input.placeholder=field.key==='z_limit'?'固定不限脉冲':'参考 0°';}
-    const entry={field,input,current,state,dirty:false,root:row};rows.set(field.kind+':'+field.key,entry);
-    input.oninput=()=>{entry.dirty=true;state.textContent='待应用';state.title=state.textContent;state.dataset.state='draft';update();};
-    row.id='parameter-row-'+field.kind+'-'+field.key;row.append(label,control,current,state);
-    if(field.kind==='local'){input.value=String(routeSpeed);current.textContent='浏览器本地：'+routeSpeed+' mm/s';state.textContent='本地设置';}
+    const entry={field,input,state,dirty:false,root:row};rows.set(field.kind+':'+field.key,entry);
+    input.oninput=()=>{entry.dirty=true;fieldState(entry,'待应用','draft');update();};
+    row.id='parameter-row-'+field.kind+'-'+field.key;row.append(label,control,state);fieldState(entry,'');
+    input.title=field.kind==='local'?'浏览器本地：'+routeSpeed+' mm/s':'尚未读取设备参数';
+    if(field.kind==='local')input.value=String(routeSpeed);
     return row;
   }
   function cardHeading(card,title,note){
@@ -117,13 +130,13 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
       else if(row.field.down===key)repaint(row,true,false); // A related read updates the device display, never this field's draft or result.
     }
   }
-  function showError(kind,key,error){const affected=[...rows.values()].filter(row=>row.field.kind===kind&&(row.field.key===key||kind==='arm'&&row.field.axis===key||kind==='radar'&&key==='all'));for(const row of affected){row.state.textContent=/unknown|unsupported|invalid_key|not_found|unknown_key|未支持/.test(error.message)?'未支持':error.message;row.state.title=error.message;row.state.dataset.state='failed';}}
-  async function run(work,localOnly=false){
+  function showError(kind,key,error){const affected=[...rows.values()].filter(row=>row.field.kind===kind&&(row.field.key===key||kind==='arm'&&row.field.axis===key||kind==='radar'&&key==='all'));for(const row of affected){fieldState(row,/unknown|unsupported|invalid_key|not_found|unknown_key|未支持/.test(error.message)?'未支持':error.message,'failed');row.state.title=error.message;}}
+  async function run(work,localOnly=false,operation='读取完成'){
     if(busy||(!localOnly&&!canSend('grab get z_grab')))return;
     busy=true;successes=failures=0;const token=revision;onBusy(true);update();
-    try{await work(token);resultLine.textContent='完成 · 成功 '+successes+' 项'+(failures?'，失败 '+failures+' 项':'');}
+    try{await work(token);resultLine.textContent=(failures?'部分完成':operation)+' · 成功 '+successes+' 项'+(failures?'，失败 '+failures+' 项':'');}
     catch(error){resultLine.textContent=error.message;}
-    finally{busy=false;progress.textContent=successes+' 项成功'+(failures?' · '+failures+' 项失败':'');onBusy(false);update();}
+    finally{busy=false;if(token===revision)progress.textContent=successes+' 项成功'+(failures?' · '+failures+' 项失败':'')+(historicalValues.size?' · '+historicalValues.size+' 项历史值':'');onBusy(false);update();}
   }
   async function readRequest(request,preserve=false){
     if(request.kind==='arm'){const result=await exchange.readArm(request.key);for(const part of ['rpm','acc','limit'])accept('arm',request.key+'_'+part,result[part],preserve);return 3;}
@@ -156,18 +169,19 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
         check(token);progress.textContent='应用 '+(++index)+'/'+writes.size+' · '+item.kind+' '+item.key;resultLine.textContent='等待受理 → 主动读回 → 比较';detailLine.textContent=progress.textContent;
         try{
           let result;
-          if(item.kind==='local'){onRouteSpeed(item.value);routeSpeed=item.value;result={confirmed:true};const row=rowFor('local',item.key);row.current.textContent='浏览器本地：'+routeSpeed+' mm/s';row.dirty=false;row.state.textContent='本地已保存';}
+          if(item.kind==='local'){onRouteSpeed(item.value);routeSpeed=item.value;result={confirmed:true};const row=rowFor('local',item.key);row.input.title='浏览器本地：'+routeSpeed+' mm/s';row.dirty=false;fieldState(row,'');}
           else if(item.kind==='arm'){const parts=['rpm','acc','limit'].map(part=>rowFor('arm',item.key+'_'+part).input.value);result=await exchange.setArm(item.key,...parts);for(const part of ['rpm','acc','limit'])accept('arm',item.key+'_'+part,result[part],true);}
           else{result=await (item.kind==='grab'?exchange.setGrab(item.key,item.value):item.kind==='turntable'?exchange.setTurntable(item.key,item.value):radarExchange.set(item.key,item.value));accept(item.kind,item.key,result.value,true);}
-          if(!result.confirmed)throw new Error('读回与输入不一致');successes++;
+          if(!result.confirmed)throw new Error('读回与输入不一致');
+          let matches=true;
           for(const row of rows.values())if(row.field.kind===item.kind&&(row.field.key===item.key||item.kind==='arm'&&row.field.axis===item.key)){
-            const shown=displayValue(row.field,device(row.field));
-            row.dirty=item.kind!=='local'&&(row.input.value===''||!sameNumber(shown,Number(row.input.value)));
-            if(item.kind!=='local')row.state.textContent=row.dirty?'读回与界面距离不一致':'读回一致';
+            row.dirty=item.kind!=='local'&&!fieldMatches(row);if(row.dirty)matches=false;
+            if(item.kind!=='local')fieldState(row,row.dirty?'读回与界面距离不一致':'',row.dirty?'failed':'read');
           }
+          if(!matches)throw new Error('读回与界面距离不一致');successes++;
         }catch(error){check(token);failures++;showError(item.kind,item.key,error);detailLine.textContent=error.message;}
       }
-    },localOnly);
+    },localOnly,localOnly?'本地设置已保存':'已应用并读回一致');
   };
   function update(){
     const changed=[...rows.values()].filter(row=>row.field.tab===tab&&row.dirty);
@@ -178,10 +192,12 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
     revision++;exchange.cancel(reason);radarExchange?.cancel(reason);
     if(markHistorical){
       for(const row of rows.values())if(row.field.kind!=='local'&&Object.hasOwn(device(row.field),row.field.key))historicalValues.add(row.field.kind+':'+row.field.key);
-      for(const row of rows.values())if(row.field.kind!=='local'){repaint(row,true);if(Object.hasOwn(device(row.field),row.field.key))row.state.textContent=row.dirty?'待应用 · 历史设备值':'历史值 · 请重新读取';}
+      for(const row of rows.values())if(row.field.kind!=='local')repaint(row,true);
+      progress.textContent=historicalValues.size?'设备值已标为历史 · 请重新读取':'尚未读取设备参数';
       for(const id of ['turntable-readout','turntable-inventory-readout']){const item=panels.get('turntable').querySelector?.('#'+id);if(item&&!item.textContent.startsWith('历史'))item.textContent='历史 · '+item.textContent+' · 请重新读取';}
     }
-    if(busy)resultLine.textContent=reason;update();
+    if(busy||markHistorical)resultLine.textContent=reason;
+    if(busy&&!markHistorical)progress.textContent='已取消 · 已读值和草稿保留';update();
   }
   function receive(line){
     const consumed=exchange.receive(line);
