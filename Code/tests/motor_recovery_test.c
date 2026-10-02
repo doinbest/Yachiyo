@@ -23,7 +23,7 @@ static void step(void)
     else if(sent[1]==0x3a || sent[1]==0x3b) {
       r[2]=sent[1]==0x3a?state_flags:home_flags;r[3]=0x6b;if(!missing)MotorBus_RxBytes(r,4);
     } else {
-      assert(sent[0]>=1 && sent[0]<=7);
+      assert(sent[0]>=1 && sent[0]<=8);
       assert(sent[1]==0xfe || sent[1]==0x9c); /* Never replays motion. */
       if(sent[1]==0xfe)stop_mask|=1U<<(sent[0]-1);
       else abort_mask|=1U<<(sent[0]-1);
@@ -46,8 +46,8 @@ int main(void)
   assert(MotorBus_RecoveryStart());
   assert(!MotorBus_Submit(MOTOR_BUS_ARM,move,3,4,0,false));
   s=run();assert(s.success && !MotorBus_IsQuarantined());
-  assert(s.checked_mask==0x7f && tick>=500);
-  assert(stop_mask==0x7f && abort_mask==0x7f);
+  assert(s.checked_mask==0xff && tick>=500);
+  assert(stop_mask==0xff && abort_mask==0xff);
   moving=1;assert(MotorBus_RecoveryStart());s=run();
   assert(!s.success && MotorBus_IsQuarantined());assert(!strcmp(s.reason,"motor_moving"));
   moving=0;missing=1;assert(MotorBus_RecoveryStart());s=run();

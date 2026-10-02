@@ -181,7 +181,8 @@ void MotorBus_Cancel(MotorBus_Owner_t owner)
     cancelled = true;
     if (active.reply_length)
     {
-      if ((owner == MOTOR_BUS_FEEDBACK || owner == MOTOR_BUS_ARM || owner == MOTOR_BUS_GUARD) &&
+      if ((owner == MOTOR_BUS_FEEDBACK || owner == MOTOR_BUS_ARM || owner == MOTOR_BUS_GUARD ||
+           owner == MOTOR_BUS_TURNTABLE) &&
           active.length == 3U && (active.data[1] == 0x35 || active.data[1] == 0x36 ||
                                  active.data[1] == 0x3a || active.data[1] == 0x3b))
       {
@@ -256,7 +257,7 @@ static void ParseByte(uint8_t value, uint32_t arrival_ms)
   parse[parse_length++] = value;
   while (parse_length >= 2)
   {
-    if (parse[0] == 0 || parse[0] > 7)
+    if (parse[0] == 0 || parse[0] > 8)
     {
       memmove(parse, parse + 1, --parse_length);
       continue;
@@ -559,7 +560,7 @@ static void RecoveryProcess(void)
       recovery_kind=0;
       recovery.checked_mask|=(uint8_t)(1U<<(recovery.address-1U));
     }
-    if (++recovery.address>7) {
+    if (++recovery.address>8) {
       recovery.address=1;
       if (recovery_step==1) { recovery_step=2;recovery.reason="aborting_home"; }
       else if (recovery_step==2) {

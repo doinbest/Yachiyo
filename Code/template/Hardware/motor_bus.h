@@ -15,6 +15,7 @@ typedef enum
   MOTOR_BUS_FEEDBACK,
   MOTOR_BUS_RECOVERY,
   MOTOR_BUS_GUARD,
+  MOTOR_BUS_TURNTABLE,
   MOTOR_BUS_OWNER_COUNT
 } MotorBus_Owner_t;
 typedef enum
@@ -81,7 +82,7 @@ typedef struct
   const char *reason;
 } MotorBus_Recovery_t;
 /** @brief Start explicit recovery after all producers have stopped and drained.
- * Keeps normal traffic locked; stops/aborts IDs 1..7, drains old replies, then
+ * Keeps normal traffic locked; stops/aborts IDs 1..8, drains old replies, then
  * checks three rounds of speed/state/home flags. Never enables, homes or resumes.
  * Returns false if another transaction, event or reservation remains. */
 bool MotorBus_RecoveryStart(void);

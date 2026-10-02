@@ -15,6 +15,16 @@ bool ConsoleTx_UrgentIdle(void) { return urgent_idle; }
 static unsigned camera_calls, motor_calls, stop_calls, notice_clears;
 static uint8_t arm_busy, material_busy, motor_busy;
 static bool grab_busy, grab_route_busy;
+static bool turntable_busy;
+static unsigned turntable_stops, turntable_commands;
+bool Turntable_IsBusy(void){return turntable_busy;}
+void Turntable_Stop(void){turntable_stops++;turntable_busy=false;}
+bool Turntable_Command(unsigned n,char *t[])
+{
+  if(n<2 || strcmp(t[0],"turntable"))return false;
+  turntable_commands++;
+  ArmConsole_Write("OK turntable fake\r\n");return true;
+}
 bool RadarConsole_Command(unsigned n,char *t[]){(void)n;(void)t;return false;}
 bool RadarConsole_ScanBusy(void){return false;}
 static unsigned grab_stops;
@@ -474,5 +484,19 @@ int main(void)
   output[0]=0;ArmConsole_StopProcess();assert(!output[0]); /* no repeated report */
   stop_status.wheels_stopped=true;stop_status.reason="stopped";
   ArmConsole_StopProcess();assert(strstr(output,"wheels_stopped=1 reason=stopped"));
+  /* ID 8 queries never wait for task ownership; motion cannot enter another task. */
+  grab_busy=true;
+  before=turntable_commands;command("turntable status\r");
+  assert(turntable_commands==before+1 && strstr(output,"OK turntable"));
+  command("turntable index 1\r");assert(turntable_commands==before+1 && strstr(output,"grab_busy"));
+  grab_busy=false;motion_busy=true;
+  command("turntable origin\r");assert(turntable_commands==before+1 && strstr(output,"other_task_busy"));
+  motion_busy=false;command("turntable index 1\r");assert(turntable_commands==before+2);
+  turntable_busy=true;before=motor_calls;
+  command("pos x 10\r");assert(motor_calls==before && strstr(output,"turntable_busy"));
+  command("system reset\r");assert(!ArmConsole_ResetPending() && strstr(output,"busy"));
+  before=turntable_stops;command("stop all\r");assert(!turntable_busy && turntable_stops>before);
+  turntable_busy=true;before=turntable_stops;
+  ArmConsole_ReceiveData(3);ArmConsole_StopProcess();assert(!turntable_busy && turntable_stops>before);
   puts("arm_console_host_test: commands, units, busy, status, CRLF and async prompts OK");return 0;
 }

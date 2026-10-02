@@ -8,6 +8,7 @@
 #include "MaterialVision.h"
 #include "GrabTask.h"
 #include "GrabRoute.h"
+#include "turntable.h"
 #include "mecanum_chassis.h"
 #include "Camera.h"
 #include "QR.h"
@@ -85,7 +86,7 @@ static bool ArmConsole_RadarMotionGuard(unsigned n,char *t[])
   unsigned i;
   if(!RadarConsole_ScanBusy() || n<2U) return false;
   if(!strcmp(t[0],"wheel") && strcmp(t[1],"status") && strcmp(t[1],"stop")) return true;
-  if(!strcmp(t[0],"grab") && (!strcmp(t[1],"start") || !strcmp(t[1],"route"))) return true;
+  if(!strcmp(t[0],"grab") && (!strcmp(t[1],"start") || !strcmp(t[1],"route") || !strcmp(t[1],"store") || !strcmp(t[1],"take") || !strcmp(t[1],"return"))) return true;
   if(strcmp(t[0],"chassis")) return false;
   for(i=0;i<sizeof(moves)/sizeof(moves[0]);i++) if(!strcmp(t[1],moves[i])) return true;
   return n>=3U && !strcmp(t[1],"route") && (!strcmp(t[2],"start") || !strcmp(t[2],"auto") || !strcmp(t[2],"next"));
@@ -558,6 +559,8 @@ static void ArmConsole_HelpShow(void)
 {
   ArmConsole_Write("console status | chassis snapshot (read-only diagnostics)\r\n");
   ArmConsole_Write("bus recover (stop tasks, verify motors, never resume) | bus status\r\n");
+  ArmConsole_Write("turntable get/set <key> [value] | origin | index <slot> | jog <degree> | stop | status\r\n");
+  ArmConsole_Write("grab store proc <slot> <color> | grab take <slot> rough|temp1|temp2 | grab return\r\n");
   /* 按命令组入队，由USART1 DMA发送；不占用底盘控制周期等待串口。 */
   ArmConsole_Write(
       "chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n"
@@ -2030,6 +2033,7 @@ static void ArmConsole_StopRequest(uint32_t token)
   ArmConsole_ResetCancel();
   /* Cancel every automatic producer before requesting the shared UART5 stop. */
   GrabRoute_Stop();
+  Turntable_Stop();
   (void)ChassisRoute_Cancel();
   ArmVision_Stop();
   MaterialVision_Stop();
@@ -2056,7 +2060,7 @@ static void ArmConsole_BusRecoveryProcess(void)
       BusRecoveryPending=0;
       ArmConsole_Write("ERR bus recover tasks_not_idle; inspect grab status and info\r\n");return;
     }
-    if (GrabTask_IsBusy() || GrabRoute_IsBusy() || MechanicalArm_IsBusy() ||
+    if (GrabTask_IsBusy() || GrabRoute_IsBusy() || Turntable_IsBusy() || MechanicalArm_IsBusy() ||
         ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || ArmVision_IsBusy() || MaterialVision_IsBusy()) return;
     /* A stopping task may have re-enabled its feedback before exiting. */
     Mecanum_Feedback_Enable(false);
@@ -2223,7 +2227,7 @@ static uint8_t ArmConsole_SystemCommandHandle(uint8_t count, char *tokens[])
     ArmConsole_Write("ERR format: system reset\r\n");
   else if (ChassisMotion_IsBusy() || ChassisRoute_IsBusy() || Mecanum_IsBusy() ||
            MechanicalArm_IsBusy() || ArmVision_IsBusy() || MaterialVision_IsBusy() || HWT101_Cal_IsBusy() ||
-           GrabTask_IsBusy() || GrabRoute_IsBusy())
+           GrabTask_IsBusy() || GrabRoute_IsBusy() || Turntable_IsBusy())
     ArmConsole_Write("ERR system reset busy stop motion and finish/cancel calibration first\r\n");
   else
   {
@@ -2234,6 +2238,49 @@ static uint8_t ArmConsole_SystemCommandHandle(uint8_t count, char *tokens[])
     else { ResetPending = 1U; ResetAckDrained = 0U; ResetStarted = HAL_GetTick(); }
   }
   return 1U;
+}
+
+static uint8_t ArmConsole_BusCommandHandle(unsigned count,char *tokens[])
+{
+  if (count==2 && !strcmp(tokens[0],"bus")) {
+    if (!strcmp(tokens[1],"status")) ArmConsole_BusStatusShow();
+    else if (!strcmp(tokens[1],"recover")) {
+      if (BusRecoveryPending) ArmConsole_Write("ERR bus recovery_busy\r\n");
+      else {
+        ArmConsole_StopRequest(0);
+        Mecanum_Feedback_Enable(false);
+        (void)MechanicalArm_Stop(MECHANICAL_ARM_AXIS_ALL);
+        BusRecoveryPending=1;BusRecoveryStarted=HAL_GetTick();
+        ArmConsole_Write("OK bus recover requested tasks_resumed=0\r\n");
+      }
+    } else ArmConsole_Write("ERR format: bus recover | bus status\r\n");
+    return 1;
+  }
+  return 0U;
+}
+
+static uint8_t ArmConsole_TurntableCommandHandle(unsigned count,char *tokens[])
+{
+  if (!strcmp(tokens[0],"turntable"))
+  {
+    if (count==2U && !strcmp(tokens[1],"stop")) ArmConsole_ResetCancel();
+    else if (ArmVision_IsBusy() || MaterialVision_IsBusy() || MechanicalArm_IsBusy() ||
+             Mecanum_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy())
+    { ArmConsole_Write("ERR turntable other_task_busy\r\n");return 1U; }
+    return Turntable_Command(count,tokens) ? 1U : 0U;
+  }
+  return 0U;
+}
+
+static uint8_t ArmConsole_TurntableBusyGuard(unsigned count,char *tokens[])
+{
+  if (Turntable_IsBusy() && strcmp(tokens[0],"turntable") &&
+      strcmp(tokens[0],"stop") &&
+      !(count==1U && (!strcmp(tokens[0],"help") || !strcmp(tokens[0],"info"))) &&
+      !(count==2U && (!strcmp(tokens[1],"status") || !strcmp(tokens[1],"stop") ||
+        !strcmp(tokens[0],"config") || !strcmp(tokens[0],"state") || !strcmp(tokens[0],"position"))))
+  { ArmConsole_Write("ERR turntable_busy use turntable status or turntable stop\r\n");return 1U; }
+  return 0U;
 }
 
 static uint8_t ArmConsole_CommandExecute(char *Line)
@@ -2250,23 +2297,15 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   }
   /* Queries and log subscription never operate actuators and bypass motion guards. */
   if (ArmConsole_StopCommandHandle(TokenCount, Tokens)) return 1U;
-  if (TokenCount==2 && !strcmp(Tokens[0],"bus")) {
-    if (!strcmp(Tokens[1],"status")) ArmConsole_BusStatusShow();
-    else if (!strcmp(Tokens[1],"recover")) {
-      if (BusRecoveryPending) ArmConsole_Write("ERR bus recovery_busy\r\n");
-      else {
-        ArmConsole_StopRequest(0);
-        Mecanum_Feedback_Enable(false);
-        (void)MechanicalArm_Stop(MECHANICAL_ARM_AXIS_ALL);
-        BusRecoveryPending=1;BusRecoveryStarted=HAL_GetTick();
-        ArmConsole_Write("OK bus recover requested tasks_resumed=0\r\n");
-      }
-    } else ArmConsole_Write("ERR format: bus recover | bus status\r\n");
-    return 1;
-  }
+  if (!strcmp(Tokens[0],"turntable") &&
+      ((TokenCount==2U && (!strcmp(Tokens[1],"status") || !strcmp(Tokens[1],"inventory"))) ||
+       (TokenCount==3U && !strcmp(Tokens[1],"get"))))
+    return Turntable_Command(TokenCount,Tokens) ? 1U : 0U;
+  if (ArmConsole_BusCommandHandle(TokenCount,Tokens)) return 1U;
   if (TokenCount==2 && (!strcmp(Tokens[0],"stop") || !strcmp(Tokens[1],"stop"))) {
     ArmConsole_ManualGuardCancel();
     BusRecoveryPending=0;MotorBus_RecoveryCancel();
+    if (!strcmp(Tokens[0],"stop") && !strcmp(Tokens[1],"all")) Turntable_Stop();
   }
   if ((BusRecoveryPending || ManualGuardActive) &&
       !(TokenCount==1 && (!strcmp(Tokens[0],"info") || !strcmp(Tokens[0],"help"))) &&
@@ -2280,10 +2319,10 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
        ((TokenCount==2U && ((!strcmp(Tokens[0],"stop") &&
           MechanicalArm_AxisGet(Tokens[1])!=MECHANICAL_ARM_AXIS_INVALID) ||
          (!strcmp(Tokens[1],"stop") && (!strcmp(Tokens[0],"vision") ||
-          !strcmp(Tokens[0],"material") || !strcmp(Tokens[0],"camera"))))) ||
+          !strcmp(Tokens[0],"material") || !strcmp(Tokens[0],"camera") || !strcmp(Tokens[0],"turntable"))))) ||
         (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"cancel")))))
   {
-    ArmConsole_ResetCancel();GrabRoute_Stop();
+    ArmConsole_ResetCancel();GrabRoute_Stop();Turntable_Stop();
     ArmConsole_Write("OK grab stop requested physical_stop=unconfirmed claw=held\r\n");
     return 1U;
   }
@@ -2293,7 +2332,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
     if (TokenCount == 2U &&
         ((!strcmp(Tokens[0], "stop") && MechanicalArm_AxisGet(Tokens[1]) != MECHANICAL_ARM_AXIS_INVALID) ||
          (!strcmp(Tokens[1], "stop") && (!strcmp(Tokens[0], "vision") ||
-          !strcmp(Tokens[0], "material") || !strcmp(Tokens[0], "camera")))))
+          !strcmp(Tokens[0], "material") || !strcmp(Tokens[0], "camera") || !strcmp(Tokens[0], "turntable")))))
       ArmConsole_ResetCancel();
     else { ArmConsole_Write("ERR system reset_pending\r\n"); return 1U; }
   }
@@ -2305,6 +2344,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
       ((TokenCount==2U && !strcmp(Tokens[1],"status")) ||
        (TokenCount==3U && !strcmp(Tokens[1],"get"))))
   { (void)GrabRoute_Command(TokenCount,Tokens);(void)GrabTask_Command(TokenCount,Tokens);return 1U; }
+  if (ArmConsole_TurntableBusyGuard(TokenCount,Tokens)) return 1U;
   if ((GrabTask_IsBusy() || GrabRoute_IsBusy()) &&
       !((TokenCount==1U && (!strcmp(Tokens[0],"help") || !strcmp(Tokens[0],"info"))) ||
         (TokenCount==2U && ((!strcmp(Tokens[1],"status") &&
@@ -2313,12 +2353,13 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
           (!strcmp(Tokens[0],"qr") && !strcmp(Tokens[1],"read")))) ||
         (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"status"))))
   { ArmConsole_Write("ERR grab_busy use grab status or grab stop\r\n");return 1U; }
+  if (ArmConsole_TurntableCommandHandle(TokenCount,Tokens)) return 1U;
   if (!strcmp(Tokens[0],"grab"))
   {
     if (ArmVision_IsBusy() || MaterialVision_IsBusy() || MechanicalArm_IsBusy() ||
         Mecanum_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy())
     { ArmConsole_Write("ERR grab other_task_busy\r\n");return 1U; }
-    if(TokenCount>=2U && (!strcmp(Tokens[1],"start") || !strcmp(Tokens[1],"route")))
+    if(TokenCount>=2U && (!strcmp(Tokens[1],"start") || !strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"store") || !strcmp(Tokens[1],"take") || !strcmp(Tokens[1],"return")))
       ArmConsole_CameraTraceStop(); /* Give the latest-only vision slot to grab progress. */
     if (GrabRoute_Command(TokenCount,Tokens)) return 1U;
     return GrabTask_Command(TokenCount,Tokens) ? 1U : 0U;

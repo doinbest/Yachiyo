@@ -179,16 +179,48 @@ int main(void)
   MotorBus_RxBytes(reply + 6, 6);
   MotorBus_Process();
   assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK, &e) && e.result == MOTOR_BUS_REPLY && e.token == 109);
-  /* Missing abandoned response remains a real fault, not automatic recovery. */
+  /* ID8 has its own owner; split/joined old ID7 traffic must not steal it. */
   tick = 290;
+  cmd[0] = 8;
+  assert(MotorBus_Submit(MOTOR_BUS_TURNTABLE, cmd, 3, 6, 111, false));
+  MotorBus_Process();
+  assert(dma[0] == 8);
+  finish();
+  {
+    const uint8_t joined[] = {7,0x35,0,0,9,0x6b,8,0x35,0,0,8,0x6b};
+    MotorBus_RxBytes(joined, 8);MotorBus_Process();
+    assert(!MotorBus_EventGet(MOTOR_BUS_TURNTABLE, &e));
+    assert(!MotorBus_EventGet(MOTOR_BUS_ARM, &e));
+    MotorBus_RxBytes(joined+8, 4);MotorBus_Process();
+    assert(MotorBus_EventGet(MOTOR_BUS_TURNTABLE, &e) && e.result==MOTOR_BUS_REPLY &&
+           e.token==111 && e.data[4]==8);
+    assert(!MotorBus_EventGet(MOTOR_BUS_FEEDBACK, &e));
+  }
+  tick = 310;
+  assert(MotorBus_Submit(MOTOR_BUS_TURNTABLE, cmd, 3, 6, 112, false));
+  MotorBus_Process();finish();
+  MotorBus_Cancel(MOTOR_BUS_TURNTABLE);
+  assert(MotorBus_EventGet(MOTOR_BUS_TURNTABLE, &e) && e.result==MOTOR_BUS_CANCELLED);
+  cmd[0] = 1;
+  assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK, cmd, 3, 6, 113, false));
+  saved = tx_count;tick = 330;MotorBus_Process();assert(tx_count==saved);
+  {
+    const uint8_t late[] = {8,0x35,0,0,0,0x6b};
+    MotorBus_RxBytes(late,sizeof(late));MotorBus_Process();
+  }
+  assert(tx_count==saved+1 && dma[0]==1 && !MotorBus_IsQuarantined());
+  finish();MotorBus_RxBytes(reply+6,6);MotorBus_Process();
+  assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK, &e) && e.token==113);
+  /* Missing abandoned response remains a real fault, not automatic recovery. */
+  tick = 350;
   assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK, cmd, 3, 6, 110, false));
   MotorBus_Process();
   MotorBus_Cancel(MOTOR_BUS_FEEDBACK); /* Also cover cancellation during DMA. */
   assert(!MotorBus_IsQuarantined());
-  tick = 291;
+  tick = 351;
   finish();
   assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK, &e) && e.result == MOTOR_BUS_CANCELLED);
-  tick = 391;
+  tick = 451;
   MotorBus_Process();
   assert(MotorBus_IsQuarantined());
   MotorBus_Diagnostic_t diagnostic;

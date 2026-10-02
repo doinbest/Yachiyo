@@ -1729,6 +1729,16 @@
           <GroupName>App</GroupName>
           <Files>
             <File>
+              <FileName>turntable.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/turntable.c</FilePath>
+            </File>
+            <File>
+              <FileName>turntable.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../App/turntable.h</FilePath>
+            </File>
+            <File>
               <FileName>console_tx.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\console_tx.c</FilePath>

@@ -12,4 +12,7 @@
 #define MOTOR_ID_ARM_Z                6U  /* 机械臂Z轴升降。 */
 #define MOTOR_ID_ARM_X                7U  /* 机械臂X轴伸缩。 */
 
+/* 车载三仓转盘；独立业务模块，不扩展机械臂三轴枚举。 */
+#define MOTOR_ID_TURNTABLE            8U
+
 #endif /* __MOTOR_ID_CONFIG_H */

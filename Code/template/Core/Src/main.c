@@ -43,6 +43,7 @@
 #include "ArmVision.h"
 #include "MaterialVision.h"
 #include "GrabTask.h"
+#include "turntable.h"
 #include "GrabRoute.h"
 #include "Steer.h"
 #include "arm_console.h"
@@ -475,7 +476,7 @@ static bool OptionalDisplayReady(void)
   MotorBus_DiagnosticGet(&bus);
   MotorBus_RecoveryGet(&recovery);
   return !HWT101_Cal_IsBusy() && !ChassisMotion_IsBusy() && !ChassisRoute_IsBusy() &&
-         !GrabTask_IsBusy() && !GrabRoute_IsBusy() && !MechanicalArm_IsBusy() &&
+         !GrabTask_IsBusy() && !GrabRoute_IsBusy() && !Turntable_IsBusy() && !MechanicalArm_IsBusy() &&
          !ArmVision_IsBusy() && !MaterialVision_IsBusy() && !Mecanum_IsBusy() &&
          !ChassisMotion_StopPending() && !ArmConsole_OperationBusy() &&
          !bus.active && !recovery.active && !RadarConsole_ScanBusy();
@@ -569,6 +570,7 @@ int main(void)
   MaterialVision_Init();
   GrabTask_Init();
   GrabRoute_Init();
+  Turntable_Init();
 
   /* HWT101使用I2C2；设备仍在启动时，由轮询稍后重新探测。 */
   (void)HWT101_Init(&hi2c2);
@@ -626,6 +628,7 @@ int main(void)
     Camera_Process();
     ImuTiming_Mark(IMU_TIME_CAMERA);
     MechanicalArm_Process();
+    Turntable_Process(); /* Dedicated ID 8 owner; no arm-axis event consumption. */
     if (MechanicalArm_ResultGet(&MotorEvent) != 0U)
     {
       if ((GrabTask_MotorEventHandle(&MotorEvent) == 0U) &&
@@ -645,7 +648,7 @@ int main(void)
     HWT101_Cal_BootVerifyProcess(!Mecanum_IsBusy() && !MechanicalArm_IsBusy() &&
         !ArmVision_IsBusy() && !MaterialVision_IsBusy() &&
         !ChassisRoute_IsBusy() && !ChassisMotion_IsBusy() &&
-        !GrabTask_IsBusy() && !GrabRoute_IsBusy());
+        !GrabTask_IsBusy() && !GrabRoute_IsBusy() && !Turntable_IsBusy());
     HWT101_Cal_Process();
     ImuTiming_Mark(IMU_TIME_CAL);
     ChassisMotion_HeadingProcess();
@@ -678,7 +681,7 @@ int main(void)
 
     Key_Scan();
     Key = Key_Get_Press_Event(); /* 每圈只消费一次按键事件。 */
-    if (!ArmConsole_OperationBusy() && !GrabTask_IsBusy() && !GrabRoute_IsBusy() &&
+    if (!ArmConsole_OperationBusy() && !GrabTask_IsBusy() && !GrabRoute_IsBusy() && !Turntable_IsBusy() &&
         (Key == KEY_EVENT_PE4 || Key == KEY_EVENT_PE5 ||
          (!ChassisMotion_IsBusy() && !ChassisRoute_IsBusy())) &&
         OledUi_KeyHandle(Key) == 0U)

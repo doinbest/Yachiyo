@@ -64,6 +64,8 @@ if __name__ == "__main__":
     build_test("chassis_observer_test", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("chassis_telemetry_test", "template/App/chassis_telemetry.c", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("motor_bus_test", "template/Hardware/motor_bus.c")
+    build_test("turntable_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
+    build_test("turntable_bus_fairness_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
     build_test("motor_recovery_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_diagnostic_test", "template/Hardware/motor_bus.c")
     build_test("mecanum_bus_test", "template/App/mecanum_chassis.c", "template/Hardware/motor_bus.c")
