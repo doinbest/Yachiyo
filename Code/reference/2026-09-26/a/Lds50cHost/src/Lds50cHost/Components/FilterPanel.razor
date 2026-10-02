@@ -1,0 +1,95 @@
+<section class="panel-card settings-card">
+    <div class="panel-heading">
+        <div>
+            <span class="section-kicker">POINT FILTER</span>
+            <h2>点云筛选</h2>
+        </div>
+        <div class="segmented-control" aria-label="背景主题">
+            <button class="@(State.Theme == MapTheme.Dark ? "active" : "")" @onclick="() => State.SetTheme(MapTheme.Dark)">黑</button>
+            <button class="@(State.Theme == MapTheme.Light ? "active" : "")" @onclick="() => State.SetTheme(MapTheme.Light)">白</button>
+        </div>
+    </div>
+
+    <div class="range-block point-view-block">
+        <div class="range-title"><span>点云显示</span><small>同一完整扫描圈</small></div>
+        <div class="segmented-control point-view-control" aria-label="点云显示模式">
+            <button class="@(State.ViewMode == PointCloudViewMode.ReceivedRaw ? "active" : "")"
+                    @onclick="() => State.SetPointCloudViewMode(PointCloudViewMode.ReceivedRaw)">
+                接收原始
+            </button>
+            <button class="@(State.ViewMode == PointCloudViewMode.HostFiltered ? "active" : "")"
+                    @onclick="() => State.SetPointCloudViewMode(PointCloudViewMode.HostFiltered)">
+                上位机筛选
+            </button>
+        </div>
+        <p class="mode-help">只切换显示，不改变障碍格和路径。</p>
+    </div>
+
+    <div class="range-block">
+        <div class="range-title"><span>角度</span><small>支持 350° → 10° 跨零</small></div>
+        <div class="two-field-grid">
+            <label><span>最小 °</span><input type="number" min="0" max="360" step="0.1" @bind="_minAngle" /></label>
+            <label><span>最大 °</span><input type="number" min="0" max="360" step="0.1" @bind="_maxAngle" /></label>
+        </div>
+    </div>
+    <div class="range-block">
+        <div class="range-title"><span>距离</span><small>毫米</small></div>
+        <div class="two-field-grid">
+            <label><span>最小 mm</span><input type="number" min="0" max="65535" @bind="_minDistance" /></label>
+            <label><span>最大 mm</span><input type="number" min="0" max="65535" @bind="_maxDistance" /></label>
+        </div>
+    </div>
+    <div class="range-block">
+        <div class="range-title"><span>能量</span><small>0 – 255</small></div>
+        <div class="two-field-grid">
+            <label><span>最小</span><input type="number" min="0" max="255" @bind="_minEnergy" /></label>
+            <label><span>最大</span><input type="number" min="0" max="255" @bind="_maxEnergy" /></label>
+        </div>
+    </div>
+
+    <button class="button button-primary full-width" @onclick="Apply">应用筛选（不重新扫描）</button>
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="inline-error">@_error</div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public ApplicationState State { get; set; } = default!;
+    private double _minAngle;
+    private double _maxAngle;
+    private ushort _minDistance;
+    private ushort _maxDistance;
+    private byte _minEnergy;
+    private byte _maxEnergy;
+    private string _error = string.Empty;
+
+    protected override void OnParametersSet()
+    {
+        var filter = State.Configuration.Filter;
+        _minAngle = filter.MinAngleDeg;
+        _maxAngle = filter.MaxAngleDeg;
+        _minDistance = filter.MinDistanceMm;
+        _maxDistance = filter.MaxDistanceMm;
+        _minEnergy = filter.MinEnergy;
+        _maxEnergy = filter.MaxEnergy;
+    }
+
+    private void Apply()
+    {
+        try
+        {
+            State.UpdateFilter(new FilterSettings
+            {
+                MinAngleDeg = _minAngle,
+                MaxAngleDeg = _maxAngle,
+                MinDistanceMm = _minDistance,
+                MaxDistanceMm = _maxDistance,
+                MinEnergy = _minEnergy,
+                MaxEnergy = _maxEnergy
+            });
+            _error = string.Empty;
+        }
+        catch (ArgumentException exception) { _error = exception.Message; }
+    }
+}

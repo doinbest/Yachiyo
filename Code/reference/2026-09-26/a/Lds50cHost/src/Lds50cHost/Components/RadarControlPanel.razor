@@ -1,0 +1,240 @@
+@implements IAsyncDisposable
+@inject RadarCoordinator RadarCoordinator
+@inject Stm32Coordinator Stm32Coordinator
+@inject ConfigurationStore ConfigurationStore
+
+<section class="connection-bar panel-card">
+    <div class="connection-title">
+        <span class="section-kicker">SERIAL WORKFLOW</span>
+        <h2>设备与扫描</h2>
+    </div>
+
+    <label class="compact-field">
+        <span>工作模式</span>
+        <select value="@State.Mode" @onchange="ChangeMode" disabled="@(_busy || RadarCoordinator.IsContinuousScanning)">
+            <option value="@ApplicationMode.DirectRadar">雷达直连</option>
+            <option value="@ApplicationMode.Stm32Configuration">STM32 配置</option>
+        </select>
+    </label>
+
+    <label class="compact-field port-field">
+        <span>串口</span>
+        <div class="inline-control">
+            <select @bind="_selectedPort" disabled="@RadarCoordinator.IsOpen">
+                @if (_ports.Count == 0)
+                {
+                    <option value="">未发现串口</option>
+                }
+                @foreach (var port in _ports)
+                {
+                    <option value="@port">@port</option>
+                }
+            </select>
+            <button class="icon-button" title="刷新串口" @onclick="RefreshPorts" disabled="@RadarCoordinator.IsOpen">↻</button>
+        </div>
+    </label>
+
+    <label class="compact-field baud-field">
+        <span>波特率</span>
+        <select @bind="_baudRate" disabled="@RadarCoordinator.IsOpen">
+            @foreach (var baudRate in RadarSerialSettings.SupportedBaudRates)
+            {
+                <option value="@baudRate">@baudRate</option>
+            }
+        </select>
+    </label>
+
+    <div class="connection-actions">
+        <button class="button @(RadarCoordinator.IsOpen ? "button-ghost" : "button-primary")" @onclick="ToggleConnection" disabled="@_busy">
+            @(RadarCoordinator.IsOpen ? "断开" : "连接")
+        </button>
+        @if (State.Mode == ApplicationMode.DirectRadar)
+        {
+            <button class="button button-ghost" @onclick="StartRadar" disabled="@(!RadarCoordinator.IsOpen || _busy || RadarCoordinator.IsContinuousScanning)">启动旋转</button>
+            <button class="button button-ghost" @onclick="StopRadar" disabled="@(!RadarCoordinator.IsOpen || _busy || RadarCoordinator.IsContinuousScanning)">停止</button>
+            <button class="button button-accent" @onclick="CaptureScan" disabled="@(!RadarCoordinator.IsOpen || _busy || RadarCoordinator.IsContinuousScanning)">单次扫描</button>
+            <button class="button @(RadarCoordinator.IsContinuousScanning ? "button-ghost" : "button-accent")"
+                    @onclick="ToggleContinuousScan"
+                    disabled="@(!RadarCoordinator.IsOpen || _busy)">
+                @(RadarCoordinator.IsContinuousScanning ? "停止持续扫描" : "持续扫描")
+            </button>
+        }
+        else
+        {
+            <button class="button button-accent" @onclick="DownloadToStm32" disabled="@(!RadarCoordinator.IsOpen || _busy || !State.Path.Success)">下载、应用并校验</button>
+            <button class="button button-ghost" @onclick="SaveToStm32Flash" disabled="@(!RadarCoordinator.IsOpen || _busy)">保存到 STM32 Flash</button>
+        }
+        <button class="button button-ghost" @onclick="SaveConfiguration" disabled="@_busy">保存本机配置</button>
+    </div>
+
+    <div class="connection-feedback @(_isError ? "error" : "")">
+        <span class="mini-status @(RadarCoordinator.IsOpen ? "online" : "")"></span>
+        @(_busy ? "正在处理…" : RadarCoordinator.IsContinuousScanning ? $"持续扫描中：最新 {State.RawScan?.Points.Count ?? 0} 个原始点" : _message)
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public ApplicationState State { get; set; } = default!;
+
+    private IReadOnlyList<string> _ports = [];
+    private string _selectedPort = string.Empty;
+    private int _baudRate = RadarSerialSettings.DefaultBaudRate;
+    private bool _busy;
+    private bool _isError;
+    private bool _disposed;
+    private readonly ContinuousScanLeaseOwner _continuousLeaseOwner = new();
+    private string _message = "设备未连接";
+
+    protected override void OnInitialized()
+    {
+        RadarCoordinator.ContinuousStateChanged += OnContinuousStateChanged;
+        RefreshPorts();
+    }
+
+    private void RefreshPorts()
+    {
+        _ports = SerialByteTransport.GetPortNames();
+        if (!_ports.Contains(_selectedPort)) _selectedPort = _ports.FirstOrDefault() ?? string.Empty;
+        _message = _ports.Count == 0 ? "未发现可用串口" : $"发现 {_ports.Count} 个串口";
+    }
+
+    private void ChangeMode(ChangeEventArgs args)
+    {
+        if (Enum.TryParse<ApplicationMode>(args.Value?.ToString(), out var mode)) State.SetMode(mode);
+    }
+
+    private async Task ToggleConnection()
+    {
+        await RunAction(async () =>
+        {
+            if (RadarCoordinator.IsOpen)
+            {
+                await RadarCoordinator.DisconnectAsync();
+                _continuousLeaseOwner.Clear();
+                _message = "设备已断开";
+                State.AddLog(_message);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_selectedPort)) throw new InvalidOperationException("请先选择串口。");
+            await RadarCoordinator.ConnectAsync(_selectedPort, _baudRate);
+            _message = $"已连接 {_selectedPort} / {_baudRate}";
+            State.AddLog(_message);
+        });
+    }
+
+    private Task StartRadar() => SendRadarCommand("LSTARH", "雷达已启动旋转");
+    private Task StopRadar() => SendRadarCommand("LSTOPH", "已发送雷达停止命令");
+
+    private async Task SendRadarCommand(string command, string success)
+    {
+        await RunAction(async () =>
+        {
+            await RadarCoordinator.SendCommandAsync(command);
+            _message = success;
+            State.AddLog(success);
+        });
+    }
+
+    private async Task CaptureScan()
+    {
+        await RunAction(async () =>
+        {
+            var scan = await RadarCoordinator.CaptureSingleScanAsync(TimeSpan.FromSeconds(8), CancellationToken.None);
+            _message = $"扫描完成：{scan.Points.Count} 个原始点";
+            State.AddLog(_message);
+        });
+    }
+
+    private async Task ToggleContinuousScan()
+    {
+        await RunAction(async () =>
+        {
+            if (RadarCoordinator.IsContinuousScanning)
+            {
+                await RadarCoordinator.StopContinuousAsync();
+                _continuousLeaseOwner.Clear();
+                _message = $"持续扫描已停止：保留最后 {State.RawScan?.Points.Count ?? 0} 个原始点";
+                State.AddLog(_message);
+                return;
+            }
+
+            if (!RadarCoordinator.IsOpen) throw new InvalidOperationException("请先连接雷达串口。");
+            var lease = await RadarCoordinator.StartContinuousAsync();
+            if (!_continuousLeaseOwner.TryAdopt(lease))
+            {
+                await RadarCoordinator.StopContinuousAsync(lease);
+                return;
+            }
+            _message = "持续扫描已启动";
+            State.AddLog(_message);
+        });
+    }
+
+    private void OnContinuousStateChanged()
+    {
+        if (!RadarCoordinator.IsContinuousScanning && !string.IsNullOrWhiteSpace(RadarCoordinator.ContinuousError))
+        {
+            _isError = true;
+            _message = $"持续扫描失败：{RadarCoordinator.ContinuousError}";
+        }
+
+        if (!_disposed) _ = InvokeAsync(StateHasChanged);
+    }
+
+    private async Task DownloadToStm32()
+    {
+        await RunAction(async () =>
+        {
+            var result = await Stm32Coordinator.DownloadApplyAndVerifyAsync(State.Configuration, State.Path, CancellationToken.None);
+            if (!result.Success) throw new InvalidOperationException(result.Error);
+            _message = "STM32 配置与路径下载成功，读回一致";
+            State.AddLog(_message);
+        });
+    }
+
+    private async Task SaveToStm32Flash()
+    {
+        await RunAction(async () =>
+        {
+            var result = await Stm32Coordinator.SaveConfigurationToFlashAsync(CancellationToken.None);
+            if (!result.Success) throw new InvalidOperationException(result.Error);
+            _message = "STM32 已确认配置保存到 Flash";
+            State.AddLog(_message);
+        });
+    }
+
+    private async Task SaveConfiguration()
+    {
+        await RunAction(async () =>
+        {
+            await ConfigurationStore.SaveAsync(State.Configuration, CancellationToken.None);
+            _message = "本机配置已保存";
+            State.AddLog(_message);
+        });
+    }
+
+    private async Task RunAction(Func<Task> action)
+    {
+        if (_busy) return;
+        _busy = true;
+        _isError = false;
+        try { await action(); }
+        catch (Exception exception)
+        {
+            _isError = true;
+            _message = exception.Message;
+            State.AddLog($"操作失败：{exception.Message}");
+        }
+        finally { _busy = false; }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        RadarCoordinator.ContinuousStateChanged -= OnContinuousStateChanged;
+        if (_continuousLeaseOwner.DisposeAndTake() is not { } lease) return;
+        try { await RadarCoordinator.StopContinuousAsync(lease); }
+        catch { }
+    }
+}

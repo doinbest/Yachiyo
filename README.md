@@ -1,16 +1,43 @@
 # STM32F407VGT6 工训赛事搬运小车
 
-本项目包含搬运小车 STM32 固件、香橙派视觉程序和本地网页控制台。主控为 STM32F407VGT6（LQFP100，1 MB Flash），主要使用 STM32 HAL 裸机主循环。
+本项目包含搬运小车 STM32 固件、香橙派视觉代码、串口屏配置、本地网页控制台及独立物料台转盘固件。主车主控为 STM32F407VGT6（LQFP100，1 MB Flash），主要使用 STM32 HAL 裸机主循环；转盘使用独立 STM32F103C8T6。
 
 现有功能包括机械臂与夹爪、麦轮底盘、HWT101 航向验证与保持、B2 颜色搜索/对准、二维码任务码、串口屏、OLED、地图遥测和实车16段路线。视觉对准和路线到点不等于完整搬运任务完成；软件回归不替代实物验收。
 
-## 三个当前入口
+新增静止红色单件抓取：固定姿态动作验证、底盘/X协同对准（蓝色物料）、单件抓取（红色物料），以及前四段模拟扫码联动。通过网页视觉页或`grab`命令使用；配置缺项不运动，抓取提起后Base转−180°、下降放置、松爪并提起后等待人工验收；上电自动Z/X碰撞回零、Base就近回零。详见[实现与标定](docs/开发记录/2026-09-27-单件抓取实现与标定.md)。所有视觉任务统一使用原 B2 协议。2026-10-02 用户提供的最新视觉源码已保存为 `Code/orange_pi/vision.py`，旧视觉脚本已删除；本次仅更新本地源码，未部署香橙派。用户已确认 `align` 完整验证，本轮仅分析 `pick` 与其流程对齐及漏检容错，详见[分析记录](docs/开发记录/2026-10-02-视觉源码更新与align-pick容错分析.md)。协议约定见[ B2 恢复说明](docs/开发记录/2026-09-29-B2协议兼容恢复.md)。
+
+2026-10-02 后续修复了取放后参考缺项状态未及时更新的问题，并精简抓取终端中文摘要。普通停止和总线恢复保留配置，参考变化后使用“重新建立三轴参考”；本次未修改视觉对准和漏检恢复策略。详见[修复记录](docs/开发记录/2026-10-02-抓取参考诊断与终端精简.md)。
+
+## 项目目录与入口
+
+```text
+模版搭建/
+├─ Code/                    代码与软件工程
+│  ├─ template/             F407 主车固件
+│  ├─ orange_pi/            香橙派视觉代码
+│  ├─ HMI/                  串口屏工程与字库
+│  ├─ 物料台转盘/            独立 F103 固件与原始压缩包
+│  ├─ upper-computer-web/   本地控制台
+│  ├─ reference/            GongXun 与雷达参考代码
+│  ├─ tests/                F407 主机回归
+│  └─ tools/                共用工具位置，当前仅有旧缓存
+├─ docs/                    正式资料、协议与开发记录
+├─ .embeddedskills/         本地配置、日志与分析产物
+├─ tmp/                     临时分析文件
+├─ AGENTS.md                协作规则
+└─ README.md                项目入口
+```
 
 | 入口 | 用途 | 启动/使用 |
 |---|---|---|
-| [template/](template/) | STM32 固件 | Keil 打开 `template/MDK-ARM/template.uvprojx`，Target 为 `template` |
-| [orange_pi/change.py](orange_pi/change.py) | 香橙派 B2 颜色视觉 | 部署到具有对应相机、串口及运行依赖的香橙派，先核对程序内设备路径 |
-| [local-car](upper-computer-web/local-car/README.md) | 八千代·巡航本地控制台 | Windows 双击 `upper-computer-web/local-car/start.cmd` |
+| [Code/template/](Code/template) | STM32 固件 | Keil 打开 `Code/template/MDK-ARM/template.uvprojx`，Target 为 `template` |
+| [Code/orange_pi/](Code/orange_pi/README.md) | 香橙派本地视觉源码 | 最新入口 `vision.py`，使用 B2；本地源码更新与实机部署分别确认 |
+| [Code/HMI/](Code/HMI/README.md) | 串口屏配置 | 用对应串口屏编辑软件打开 `Code/HMI/display.HMI`，字库跟随工程 |
+| [Code/物料台转盘/](Code/物料台转盘/README.md) | 独立 F103 转盘固件 | Keil 打开 `Code/物料台转盘/turntable/MDK-ARM/turntable.uvprojx`，Target `turntable` |
+| [local-car](Code/upper-computer-web/local-car/README.md) | 八千代·巡航本地控制台 | Windows 双击 `Code/upper-computer-web/local-car/start.cmd` |
+| [Code/reference/](Code/reference/README.md) | 外部参考项目与验证样例 | 按目录索引阅读；不加入当前主车构建 |
+
+全部代码统一放入 `Code/`，模块内部入口与相对结构保持；代码索引见 [Code/README](Code/README.md)。`Code/reference/GongXun2025-main/` 保留原控制、视觉、机械与报告资料；雷达两份源码快照也在 `Code/reference/`。原根目录 `物料台转盘.zip` 移至 `Code/物料台转盘/archives/`，它是旧上电直发版本，不能替代当前双按键代码。
 
 控制台需要 Python 3、pyserial；缺少时执行 `python -m pip install pyserial`。服务启动后用桌面 Chrome/Edge 打开 `http://127.0.0.1:8765/`。无需 npm 安装、旧 React 页面或云部署。启动不会自动连接串口。
 
@@ -32,35 +59,37 @@
 | I2C2 | PB10/PB11 | HWT101 Z 轴角度，SDA=PB11 |
 | TIM1_CH1 | PE9 | 270°夹爪舵机控制信号，50 Hz PWM |
 
-CAN 工程配置保留，当前配置速率 875 kbit/s；实际使用前核对所有节点。SWD 调试器型号和参数以实际连接为准。
+CAN1/CAN2 当前停用，工程配置保留；将来启用时重新确认节点与速率。SWD 调试器型号和参数以实际连接为准。
 
-板载 PE4/PE5 可在 OLED 页面间翻页。进入 `4/4 Servo Test` 后保持 Off，PE2 选择松开 500 µs，PE3 选择抓紧 800 µs；PE5 开启/关闭输出，PE4 退出并清零输出。USART1 `grip open`、`grip catch` 与网页“打开”“夹取”使用相同的两个实测脉宽；`grip idle` 也取松开位置。上电与仅进入页面不会驱动舵机；信号消失后是否保持力由舵机型号及供电决定。800 µs 为用户确认的完全抓紧位置，不继续增加脉宽顶住机构。
+板载 PE4/PE5 可在 OLED 页面间翻页。进入 `4/4 Servo Test` 后保持 Off，PE2 选择松开 500 µs，PE3 选择抓紧 700 µs；PE5 开启/关闭输出，PE4 退出并清零输出。USART1 `grip open`、`grip catch` 与网页“打开”“夹取”使用相同的两个实测脉宽；`grip idle` 也取松开位置。上电与仅进入页面不会驱动舵机；信号消失后是否保持力由舵机型号及供电决定。700 µs 为用户确认的完全抓紧位置，不继续增加脉宽顶住机构。
 
 USART1 控制台、香橙派 USB B2 和 UART5 电机协议各自独立，不能混用。旧 `sys.ping#`、香橙派 CRC 帧和 B3 圆环编号实现已退出活动工程。
 
 ## 工程结构与构建
 
-- `template/Core`：主程序、外设初始化和中断入口。
-- `template/Hardware`：电机、Camera、二维码、HWT101、显示、按键及 Flash 驱动。
-- `template/App`：机械臂、底盘运动/定位/路线、视觉任务、控制台与显示业务。
-- `template/System`：公共时间功能；`Drivers` / `Middlewares`：第三方代码。
-- `tests`：固件主机回归；控制台测试在 `upper-computer-web/local-car/tests`。
+- `Code/template/Core`：主程序、外设初始化和中断入口。
+- `Code/template/Hardware`：电机、Camera、二维码、HWT101、显示、按键及 Flash 驱动。
+- `Code/template/App`：机械臂、底盘运动/定位/路线、视觉任务、控制台与显示业务。
+- `Code/template/System`：公共时间功能；`Drivers` / `Middlewares`：第三方代码。
+- `Code/tests`：固件主机回归；控制台测试在 `Code/upper-computer-web/local-car/tests`。
 
-主要构建环境为 Keil MDK-ARM，备用工程在 `template/MDK-ARM/eide`，配置名同为 `template`。CubeMX 工程为 `template/template.ioc`；只有修改外设配置时才重新生成，生成前检查 USER CODE 和差异。
+主要构建环境为 Keil MDK-ARM，备用工程在 `Code/template/MDK-ARM/eide`，配置名同为 `template`。CubeMX 工程为 `Code/template/template.ioc`；只有修改外设配置时才重新生成，生成前检查 USER CODE 和差异。
 
 在工程根目录运行软件回归：
 
 ```powershell
-python tests/run_firmware_tests.py
-node --test upper-computer-web/local-car/tests/*.test.mjs
-python -m unittest discover -s upper-computer-web/local-car/tests -p test_bridge.py
+python Code/tests/run_firmware_tests.py
+node --test Code/upper-computer-web/local-car/tests/*.test.mjs
+python -m unittest discover -s Code/upper-computer-web/local-car/tests -p test_bridge.py
 ```
 
-固件主机测试需要 Python 和 PATH 中的 GCC；网页测试需要 Node.js。上述测试使用主机模拟，不打开实车串口。日志和产物位于 `.embeddedskills/`，不提交到 Git。
+固件主机测试需要 Python 和 PATH 中的 GCC；网页测试需要 Node.js。上述测试使用主机模拟，不打开实车串口。日志集中保存到 `.embeddedskills/`，其中仅提交 `config.json`；Keil/EIDE 也会在各工程内生成被 Git 忽略的编译输出。
+
+转盘回归独立运行 `python Code/物料台转盘/turntable/tests/run_tests.py`；HMI 使用屏幕编辑软件编译。当前 F407 的默认构建和下载参数不用于转盘。
 
 ## 当前文档与历史
 
-- [控制台使用手册](upper-computer-web/local-car/README.md)
+- [控制台使用手册](Code/upper-computer-web/local-car/README.md)
 - [当前 USART1 协议](docs/上位机协议.md)
 - [资料索引](docs/README.md)：硬件资料、设计基线和历史开发记录。
 - [代码规范](docs/开发规范/张大头风格STM32代码规范与AI提示词.md)
@@ -72,3 +101,20 @@ python -m unittest discover -s upper-computer-web/local-car/tests -p test_bridge
 ## 协作方式
 
 采用需求驱动的 Vibe Coding：用户提出需求、修改建议、关键取舍和实物验收；Codex 负责设计、全部编码、集成、测试和文档。允许主动提出改进和参考适合本项目的优秀开源实现，核查来源、许可证及硬件适配条件。具体授权和硬件操作边界见 [AGENTS.md](AGENTS.md)。
+
+## 电机总线恢复入口（2026-09-27）
+
+误操作或通信锁定后，可在本地控制台“系统与标定”或“视觉任务 → 单件抓取”点击“一键恢复电机总线”（`bus recover`），用 `bus status` 查询结果。恢复先停止任务、逐台检查全部七台驱动器，成功后不自动续跑；底盘同步缓存仍不确定时保留底盘运动限制。详见 [电机总线恢复与手动操作检查](docs/开发记录/2026-09-27-电机总线恢复与手动操作检查.md)。
+
+
+## 近期开发记录
+
+以下记录保留修改原因、参数、当时验证和烧录状态；日期记录不自动代表当前实机版本。
+
+| 日期 | 内容与记录 |
+|---|---|
+| 2026-09-29 | [控制台中文化、停车确认与通信启动](docs/开发记录/2026-09-29-控制台中文化与通信启动改进.md) |
+| 2026-09-30 | [视觉对准提速依据与模型对比](docs/开发记录/2026-09-30-蓝色协同对准参数提速与对比.md)：默认 20mm/s、0.6s⁻¹、20mm/s²；模拟不能作为实车性能结论 |
+| 2026-09-30 | [蓝色对准短暂漏检容忍](docs/开发记录/2026-09-30-蓝色协同对准短暂漏检容忍.md)：250ms 容忍、连续 3 次有效坐标恢复、停稳后最多等待 1500ms 重新识别；保持香橙派程序 |
+| 2026-09-30 | [抓取 Z 轴默认 250RPM](docs/开发记录/2026-09-30-抓取Z轴默认250RPM.md)：按 480 命令脉冲/mm 换算为 27.777778mm/s，可使用 grab set/get 临时调速 |
+| 2026-10-02 | [项目目录整理](docs/开发记录/2026-10-02-项目目录整理.md)：参考工程归档、模块入口和协作规范 |

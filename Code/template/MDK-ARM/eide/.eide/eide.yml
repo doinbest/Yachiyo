@@ -1,0 +1,262 @@
+version: "4.1"
+name: template
+type: ARM
+deviceName: STM32F407VGTx
+packDir: .pack/Keil/STM32F4xx_DFP.2.14.0
+srcDirs: []
+virtualFolder:
+  name: <virtual_root>
+  files:
+    - path: ../startup_stm32f407xx.s
+    - path: ../../Core/Inc/headfile.h
+    - path: ../../Core/Src/main.c
+    - path: ../../Core/Src/gpio.c
+    - path: ../../Core/Src/dma.c
+    - path: ../../Core/Src/i2c.c
+    - path: ../../Core/Src/tim.c
+    - path: ../../Core/Src/usart.c
+    - path: ../../Core/Src/stm32f4xx_it.c
+    - path: ../../Core/Src/stm32f4xx_hal_msp.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pcd.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pcd_ex.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_ll_usb.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ex.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ramfunc.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma_ex.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr_ex.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_cortex.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_exti.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2c.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2c_ex.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim_ex.c
+    - path: ../../Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_uart.c
+    - path: ../../Core/Src/system_stm32f4xx.c
+    - path: ../../USB_DEVICE/App/usb_device.c
+    - path: ../../USB_DEVICE/App/usbd_desc.c
+    - path: ../../USB_DEVICE/App/usbd_cdc_if.c
+    - path: ../../USB_DEVICE/Target/usbd_conf.c
+    - path: ../../Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_core.c
+    - path: ../../Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ctlreq.c
+    - path: ../../Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ioreq.c
+    - path: ../../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Src/usbd_cdc.c
+    - path: ../../Hardware/motor_bus.c
+    - path: ../../Hardware/motor_bus.h
+    - path: ../../App/console_tx.c
+    - path: ../../App/console_tx.h
+    - path: ../../App/console_rx.c
+    - path: ../../App/console_rx.h
+    - path: ../../App/chassis_model.c
+    - path: ../../App/chassis_model.h
+    - path: ../../App/chassis_motion.c
+    - path: ../../App/chassis_motion.h
+    - path: ../../App/chassis_localization.c
+    - path: ../../App/chassis_localization.h
+    - path: ../../App/GrabTask.c
+    - path: ../../App/GrabTask.h
+    - path: ../../App/GrabRoute.c
+    - path: ../../App/GrabRoute.h
+    - path: ../../App/chassis_route.c
+    - path: ../../App/chassis_route.h
+    - path: ../../App/chassis_observer.c
+    - path: ../../App/chassis_observer.h
+    - path: ../../App/chassis_telemetry.c
+    - path: ../../App/chassis_telemetry.h
+    - path: ../../Hardware/Emm_V5.c
+    - path: ../../Hardware/Emm_V5.h
+    - path: ../../Hardware/key.c
+    - path: ../../Hardware/key.h
+    - path: ../../Hardware/led.c
+    - path: ../../Hardware/led.h
+    - path: ../../Hardware/hwt101_i2c.c
+    - path: ../../Hardware/hwt101_i2c.h
+    - path: ../../Hardware/oled.c
+    - path: ../../Hardware/oled.h
+    - path: ../../Hardware/oled_font.h
+    - path: ../../Hardware/Camera.c
+    - path: ../../Hardware/Camera.h
+    - path: ../../Hardware/Steer.c
+    - path: ../../Hardware/Steer.h
+    - path: ../../Hardware/QR.c
+    - path: ../../Hardware/QR.h
+    - path: ../../Hardware/tjc_screen.c
+    - path: ../../Hardware/tjc_screen.h
+    - path: ../../System/delay.c
+    - path: ../../System/delay.h
+    - path: ../../App/motor_id_config.h
+    - path: ../../App/mecanum_chassis.c
+    - path: ../../App/mecanum_chassis.h
+    - path: ../../App/chassis_config.h
+    - path: ../../App/contest_screen.c
+    - path: ../../App/contest_screen.h
+    - path: ../../App/hwt101_calibration.c
+    - path: ../../App/hwt101_calibration.h
+    - path: ../../App/mechanical_arm.c
+    - path: ../../App/mechanical_arm.h
+    - path: ../../App/arm_console.c
+    - path: ../../App/arm_console.h
+    - path: ../../App/Arm.c
+    - path: ../../App/Arm.h
+    - path: ../../App/ArmVision.c
+    - path: ../../App/ArmVision.h
+    - path: ../../App/oled_ui.c
+    - path: ../../App/oled_ui.h
+    - path: ../../App/MaterialVision.c
+    - path: ../../App/MaterialVision.h
+    - path: ../../App/mechanical_arm_config.h
+  folders: []
+dependenceList: []
+outDir: build
+miscInfo:
+  uid: ee748d6de41e8187b5b652814c571f42
+targets:
+  template:
+    cppPreprocessAttrs:
+      defineList:
+        - USE_HAL_DRIVER
+        - STM32F407xx
+      incList:
+        - ../../Core/Inc
+        - ../../Drivers/STM32F4xx_HAL_Driver/Inc
+        - ../../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
+        - ../../Drivers/CMSIS/Device/ST/STM32F4xx/Include
+        - ../../Drivers/CMSIS/Include
+        - ../../Middlewares/ST/STM32_USB_Device_Library/Core/Inc
+        - ../../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc
+        - ../../Hardware
+        - ../../System
+        - ../../App
+        - ../../USB_DEVICE/App
+        - ../../USB_DEVICE/Target
+      libList: []
+    excludeList: []
+    settings:
+      debugger: cortex-debug
+    toolchain: AC5
+    toolchainConfigMap:
+      AC5:
+        archExtensions: ""
+        cpuType: Cortex-M4
+        floatingPointHardware: single
+        options:
+          version: 4
+          afterBuildTasks: []
+          asm-compiler:
+            defines: []
+          beforeBuildTasks: []
+          c/cpp-compiler:
+            CXX_FLAGS: --cpp11
+            C_FLAGS: --cpp11
+            c99-mode: true
+            gnu-extensions: true
+            one-elf-section-per-function: true
+            optimization: level-3
+            warnings: all-warnings
+          global:
+            output-debug-info: enable
+            use-microLIB: false
+          linker:
+            $outputTaskExcludes:
+              - .bin
+            output-format: elf
+            ro-base: ""
+            rw-base: ""
+            xo-base: ""
+        scatterFilePath: ""
+        storageLayout:
+          RAM:
+            - id: 1
+              isChecked: false
+              mem:
+                size: "0x0"
+                startAddr: "0x0"
+              noInit: false
+              tag: RAM
+            - id: 2
+              isChecked: false
+              mem:
+                size: "0x0"
+                startAddr: "0x0"
+              noInit: false
+              tag: RAM
+            - id: 3
+              isChecked: false
+              mem:
+                size: "0x0"
+                startAddr: "0x0"
+              noInit: false
+              tag: RAM
+            - id: 1
+              isChecked: true
+              mem:
+                size: "0x1c000"
+                startAddr: "0x20000000"
+              noInit: false
+              tag: IRAM
+            - id: 2
+              isChecked: true
+              mem:
+                size: "0x4000"
+                startAddr: "0x2001c000"
+              noInit: false
+              tag: IRAM
+          ROM:
+            - id: 1
+              isChecked: false
+              isStartup: false
+              mem:
+                size: "0x0"
+                startAddr: "0x0"
+              tag: ROM
+            - id: 2
+              isChecked: false
+              isStartup: false
+              mem:
+                size: "0x0"
+                startAddr: "0x0"
+              tag: ROM
+            - id: 3
+              isChecked: false
+              isStartup: false
+              mem:
+                size: "0x0"
+                startAddr: "0x0"
+              tag: ROM
+            - id: 1
+              isChecked: true
+              isStartup: true
+              mem:
+                size: "0x100000"
+                startAddr: "0x8000000"
+              tag: IROM
+            - id: 2
+              isChecked: false
+              isStartup: false
+              mem:
+                size: "0x0"
+                startAddr: "0x0"
+              tag: IROM
+        useCustomScatterFile: false
+    uploadConfigMap:
+      JLink:
+        baseAddr: ""
+        bin: ""
+        cpuInfo:
+          cpuName: "null"
+          vendor: "null"
+        otherCmds: ""
+        proType: 1
+        speed: 8000
+      OpenOCD:
+        baseAddr: "0x08000000"
+        bin: ""
+        interface: cmsis-dap
+        target: stm32f4x
+    uploader: OpenOCD

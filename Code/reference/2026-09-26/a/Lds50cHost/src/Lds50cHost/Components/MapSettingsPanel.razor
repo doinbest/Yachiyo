@@ -1,0 +1,110 @@
+<section class="panel-card settings-card">
+    <div class="panel-heading">
+        <div>
+            <span class="section-kicker">FIELD CALIBRATION</span>
+            <h2>场地与分区</h2>
+        </div>
+        <span class="coordinate-badge">mm</span>
+    </div>
+
+    <div class="range-block">
+        <div class="range-title"><span>雷达旋转中心</span><small>相对场地左下角</small></div>
+        <div class="two-field-grid">
+            <label><span>X</span><input type="number" min="0" max="2400" step="1" @bind="_radarX" /></label>
+            <label><span>Y</span><input type="number" min="0" max="2400" step="1" @bind="_radarY" /></label>
+        </div>
+    </div>
+
+    <div class="range-block">
+        <div class="range-title"><span>内部竖线 X</span><small>也可在地图上拖动</small></div>
+        <div class="boundary-grid">
+            @for (var index = 0; index < 4; index++)
+            {
+                var captured = index;
+                <label><span>X@(index + 1)</span><input type="number" step="1" value="@_xInternal[index]" @onchange="args => ChangeXBoundary(captured, args)" /></label>
+            }
+        </div>
+    </div>
+
+    <div class="range-block">
+        <div class="range-title"><span>内部横线 Y</span><small>各线分别调节</small></div>
+        <div class="boundary-grid">
+            @for (var index = 0; index < 4; index++)
+            {
+                var captured = index;
+                <label><span>Y@(index + 1)</span><input type="number" step="1" value="@_yInternal[index]" @onchange="args => ChangeYBoundary(captured, args)" /></label>
+            }
+        </div>
+    </div>
+
+    <MissionRouteEditor State="State" />
+
+    <label class="single-field">
+        <span>判为扫描障碍的最少点数</span>
+        <input type="number" min="1" max="65535" @bind="_threshold" />
+    </label>
+
+    <button class="button button-primary full-width" @onclick="ApplyMapSettings">应用场地参数</button>
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="inline-error">@_error</div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public ApplicationState State { get; set; } = default!;
+
+    private double _radarX;
+    private double _radarY;
+    private int _threshold;
+    private double[] _xInternal = new double[4];
+    private double[] _yInternal = new double[4];
+    private string _error = string.Empty;
+
+    protected override void OnParametersSet()
+    {
+        var map = State.Configuration.Map;
+        _radarX = map.RadarXmm;
+        _radarY = map.RadarYmm;
+        _threshold = map.ObstaclePointThreshold;
+        _xInternal = map.XLines.Skip(1).Take(4).ToArray();
+        _yInternal = map.YLines.Skip(1).Take(4).ToArray();
+    }
+
+    private void ApplyMapSettings()
+    {
+        try
+        {
+            State.UpdateMapSettings(State.Configuration.Map with
+            {
+                RadarXmm = _radarX,
+                RadarYmm = _radarY,
+                ObstaclePointThreshold = _threshold,
+                XLines = new[] { MapSettings.ActiveMinimumMm }.Concat(_xInternal).Append(MapSettings.ActiveMaximumMm).ToArray(),
+                YLines = new[] { MapSettings.ActiveMinimumMm }.Concat(_yInternal).Append(MapSettings.ActiveMaximumMm).ToArray()
+            });
+            _error = string.Empty;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            _error = exception.Message;
+        }
+    }
+
+    private void ChangeBoundary(string axis, int internalIndex, ChangeEventArgs args)
+    {
+        if (!double.TryParse(args.Value?.ToString(), out var millimetres))
+        {
+            _error = "边界必须是数字。";
+            return;
+        }
+
+        if (!State.TryMoveBoundary(axis, internalIndex, millimetres, out _error)) return;
+        _error = string.Empty;
+    }
+
+    private void ChangeXBoundary(int internalIndex, ChangeEventArgs args) => ChangeBoundary("X", internalIndex, args);
+
+    private void ChangeYBoundary(int internalIndex, ChangeEventArgs args) => ChangeBoundary("Y", internalIndex, args);
+
+}

@@ -1,0 +1,122 @@
+<div class="planning-editor range-block">
+    <div class="range-title"><span>规划方式</span><small>任务路线可重复、可回退</small></div>
+    <label class="single-field planning-mode-field">
+        <span>当前模式</span>
+        <select value="@State.Configuration.PlanningMode" @onchange="ChangePlanningMode">
+            <option value="@PlanningMode.MissionRoute">编号任务路线</option>
+            <option value="@PlanningMode.PointToPoint">普通起点到终点</option>
+        </select>
+    </label>
+
+    @if (State.Configuration.PlanningMode == PlanningMode.MissionRoute)
+    {
+        <label class="single-field route-input-field">
+            <span>任务顺序（编号 1～5）</span>
+            <input value="@_routeText" @oninput="UpdateRouteText" aria-label="任务顺序" />
+        </label>
+        <div class="route-action-row">
+            <button class="button button-primary" @onclick="ApplyRoute">应用路线</button>
+            <button class="button button-ghost" @onclick="RestoreDefault">恢复默认</button>
+        </div>
+        @if (!string.IsNullOrEmpty(_routeError))
+        {
+            <div class="inline-error">@_routeError</div>
+        }
+
+        <div class="mission-coordinate-list" aria-label="任务点坐标">
+            @foreach (var point in MissionPoints)
+            {
+                <div>
+                    <strong>@point.Number</strong>
+                    <span>@($"R{point.Endpoint.Row} C{point.Endpoint.Column}")</span>
+                    <code>X @point.Xmm.ToString("0") · Y @point.Ymm.ToString("0") mm</code>
+                </div>
+            }
+        </div>
+        <p class="mode-help">点 1 跟随雷达中心；点 2～5 跟随分区中心，且这些格不能设为障碍。</p>
+    }
+    else
+    {
+        <div class="two-field-grid endpoint-fields">
+            <label>
+                <span>起点格</span>
+                <select value="@MapEndpointSelection.ToValue(State.Configuration.Start)" @onchange="args => ChangeEndpoint(true, args)">
+                    <option value="@MapEndpointSelection.StartZoneTwoValue">启停区 2（雷达中心）</option>
+                    @foreach (var option in CellOptions)
+                    {
+                        <option value="@option.Value">@option.Label</option>
+                    }
+                </select>
+            </label>
+            <label>
+                <span>终点格</span>
+                <select value="@MapEndpointSelection.ToValue(State.Configuration.Goal)" @onchange="args => ChangeEndpoint(false, args)">
+                    <option value="@MapEndpointSelection.GoalZoneOneValue">启停区 1（右下边界）</option>
+                    @foreach (var option in CellOptions)
+                    {
+                        <option value="@option.Value">@option.Label</option>
+                    }
+                </select>
+            </label>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ApplicationState State { get; set; } = default!;
+
+    private static readonly IReadOnlyList<(string Value, string Label)> CellOptions =
+        Enumerable.Range(0, 25)
+            .Select(index => ($"cell-{index}", $"R{index / 5 + 1} · C{index % 5 + 1}"))
+            .ToArray();
+
+    private string _routeText = string.Empty;
+    private string _routeError = string.Empty;
+
+    private IReadOnlyList<MissionPoint> MissionPoints => MissionPointCatalog.ResolveAll(
+        State.Grid,
+        State.Configuration.Map.RadarXmm,
+        State.Configuration.Map.RadarYmm);
+
+    protected override void OnParametersSet()
+    {
+        if (string.IsNullOrEmpty(_routeError))
+            _routeText = MissionRouteTextCodec.Format(State.Configuration.MissionRoute);
+    }
+
+    private void UpdateRouteText(ChangeEventArgs args)
+    {
+        _routeText = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private void ChangePlanningMode(ChangeEventArgs args)
+    {
+        if (!Enum.TryParse<PlanningMode>(args.Value?.ToString(), out var mode)) return;
+        State.UpdatePlanningMode(mode);
+        _routeError = string.Empty;
+    }
+
+    private void ApplyRoute()
+    {
+        if (!MissionRouteTextCodec.TryParse(_routeText, out var settings, out _routeError)) return;
+        State.UpdateMissionRoute(settings);
+        _routeText = MissionRouteTextCodec.Format(settings);
+        _routeError = string.Empty;
+    }
+
+    private void RestoreDefault()
+    {
+        var settings = MissionRouteSettings.CreateDefault();
+        State.UpdateMissionRoute(settings);
+        _routeText = MissionRouteTextCodec.Format(settings);
+        _routeError = string.Empty;
+    }
+
+    private void ChangeEndpoint(bool isStart, ChangeEventArgs args)
+    {
+        if (!MapEndpointSelection.TryParse(args.Value?.ToString(), isStart, out var endpoint)) return;
+        State.UpdateEndpoints(
+            isStart ? endpoint : State.Configuration.Start,
+            isStart ? State.Configuration.Goal : endpoint);
+    }
+}

@@ -1,16 +1,16 @@
 {
   "keil": {
-    "project": "template/MDK-ARM/template.uvprojx",
+    "project": "Code/template/MDK-ARM/template.uvprojx",
     "target": "template",
     "log_dir": ".embeddedskills/build"
   },
   "eide": {
-    "project": "template/MDK-ARM/eide",
+    "project": "Code/template/MDK-ARM/eide",
     "config": "template",
     "log_dir": ".embeddedskills/build"
   },
   "serial": {
-    "port": "COM38",
+    "port": "COM11",
     "baudrate": 115200,
     "bytesize": 8,
     "parity": "none",

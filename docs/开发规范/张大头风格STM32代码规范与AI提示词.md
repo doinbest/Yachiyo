@@ -41,7 +41,7 @@
 当前项目采用以下分层：
 
 ```text
-template/
+Code/template/
 ├─ Core/       CubeMX 生成的初始化、中断入口和 main.c
 ├─ Hardware/   电机、按键、传感器、通信模块等硬件功能
 ├─ App/        底盘、机械臂、视觉、控制台和显示业务

@@ -1,0 +1,62 @@
+@page "/"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject ApplicationState State
+
+<PageTitle>LDS-50C 雷达建图与路径规划</PageTitle>
+
+<div class="dashboard @(State.Theme == MapTheme.Dark ? "theme-dark" : "theme-light")">
+    <header class="hero-bar">
+        <div>
+            <div class="eyebrow">LDS-50C · ONE-SCAN MAPPING</div>
+            <h1>雷达建图与路径规划</h1>
+            <p>一次扫描冻结原始点云，实时重筛选、重分区并规划 5 × 5 场地路径。</p>
+        </div>
+        <div class="status-cluster">
+            <span class="status-dot @(State.RawScan is null ? "idle" : "ready")"></span>
+            <div>
+                <strong>@(State.RawScan is null ? "等待扫描" : "地图已冻结")</strong>
+                <small>@State.DisplayedPoints.Count 个显示点 / @(State.RawScan?.Points.Count ?? 0) 个接收点</small>
+            </div>
+        </div>
+    </header>
+
+    <RadarControlPanel State="State" />
+
+    <section class="workspace-grid">
+        <aside class="control-column">
+            <FilterPanel State="State" />
+            <MapSettingsPanel State="State" />
+        </aside>
+
+        <section class="map-stage panel-card">
+            <div class="panel-heading map-heading">
+                <div>
+                    <span class="section-kicker">PHYSICAL FIELD</span>
+                    <h2>2400 × 2400 mm 场地</h2>
+                </div>
+                <div class="map-legend" aria-label="地图图例">
+                    <span><i class="legend-fixed"></i>固定禁区</span>
+                    <span><i class="legend-manual"></i>手动禁区</span>
+                    <span><i class="legend-scan"></i>扫描障碍</span>
+                    <span><i class="legend-route"></i>规划路径</span>
+                    <span><i class="legend-mission"></i>任务点</span>
+                </div>
+            </div>
+            <FieldMap State="State" />
+            <div class="map-footnote">拖动四条内部横线或竖线；单击普通区块切换手动禁区。任务点 2～5 所在格受保护，不能设置为障碍。内部线两侧最小保留 50 mm。</div>
+        </section>
+
+        <aside class="diagnostics-column">
+            <DiagnosticsPanel State="State" />
+        </aside>
+    </section>
+</div>
+
+@code {
+    protected override void OnInitialized() => State.Changed += OnStateChanged;
+
+    private void OnStateChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => State.Changed -= OnStateChanged;
+}

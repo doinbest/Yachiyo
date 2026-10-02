@@ -1,0 +1,202 @@
+<section class="panel-card diagnostics-card">
+    <div class="panel-heading">
+        <div>
+            <span class="section-kicker">LIVE DIAGNOSTICS</span>
+            <h2>数据诊断</h2>
+        </div>
+        <span class="data-pulse"></span>
+    </div>
+
+    <div class="metric-grid">
+        <article><strong>@(State.RawScan?.Points.Count ?? 0)</strong><span>原始点</span></article>
+        <article><strong>@State.FilteredPoints.Count</strong><span>筛选点</span></article>
+        <article><strong>@ScannedCellCount</strong><span>障碍格</span></article>
+        <article><strong>@(State.Path.Success ? State.Path.TotalDistanceMm.ToString("0") : "—")</strong><span>路径 mm</span></article>
+    </div>
+
+    <div class="diagnostic-section">
+        <div class="range-title"><span>帧解析</span><small>累计计数</small></div>
+        <dl class="counter-list">
+            <div><dt>有效帧</dt><dd>@State.RadarValidFrames</dd></div>
+            <div><dt>校验错误</dt><dd>@State.RadarChecksumErrors</dd></div>
+            <div><dt>长度错误</dt><dd>@State.RadarLengthErrors</dd></div>
+            <div><dt>丢弃字节</dt><dd>@State.RadarDiscardedBytes</dd></div>
+        </dl>
+    </div>
+
+    <div class="diagnostic-section">
+        <div class="range-title">
+            <span>雷达实际状态</span>
+            <small>@StatusTimeText</small>
+        </div>
+        <dl class="counter-list radar-status-list">
+            <div class="@StatusClass(State.RadarStatus?.UsesMillimetres)">
+                <dt>距离单位</dt><dd>@UnitText</dd>
+            </div>
+            <div class="@StatusClass(State.RadarStatus?.EnergyEnabled)">
+                <dt>能量数据</dt><dd>@EnabledText(State.RadarStatus?.EnergyEnabled)</dd>
+            </div>
+            <div class="@StatusClass(State.RadarStatus?.TrailingPointRemovalEnabled)">
+                <dt>去拖点</dt><dd>@EnabledText(State.RadarStatus?.TrailingPointRemovalEnabled)</dd>
+            </div>
+            <div class="@StatusClass(State.RadarStatus?.FilterEnabled)">
+                <dt>雷达滤波</dt><dd>@EnabledText(State.RadarStatus?.FilterEnabled)</dd>
+            </div>
+        </dl>
+    </div>
+
+    <div class="diagnostic-section route-summary @(State.Path.Success ? "success" : "failure")">
+        <div class="range-title"><span>路径规划</span><small>@(State.Path.Success ? "可通行" : "无可用路径")</small></div>
+        @if (State.Configuration.PlanningMode == PlanningMode.MissionRoute)
+        {
+            <div class="mission-order"><span>任务顺序</span><strong>@MissionRouteTextCodec.Format(State.Configuration.MissionRoute)</strong></div>
+        }
+        @if (State.Path.Success)
+        {
+            <p>@State.Path.Cells.Count 个展开格，@State.Path.Waypoints.Count 个坐标点，总距离 @State.Path.TotalDistanceMm.ToString("0") mm</p>
+            <div class="turn-strip">
+                @foreach (var turn in State.Path.Turns)
+                {
+                    <span>@TurnText(turn)</span>
+                }
+            </div>
+        }
+        else
+        {
+            <p>@State.Path.FailureReason</p>
+        }
+    </div>
+
+    @if (State.Path.Success)
+    {
+        <div class="diagnostic-section route-points-section">
+            <div class="range-title">
+                <span>完整途径点</span>
+                <small>STM32 整包顺序 · @State.Path.Waypoints.Count 点</small>
+            </div>
+            <p class="route-points-help">下载时一次性发送全部数据；STM32 保存后按序号逐点执行。</p>
+            <div class="point-table-wrap route-point-table-wrap">
+                <table class="point-table route-point-table">
+                    <thead>
+                        <tr>
+                            <th>序号</th>
+                            <th>方格</th>
+                            <th>X mm</th>
+                            <th>Y mm</th>
+                            <th>下一段 mm</th>
+                            <th>方向</th>
+                            <th>动作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in PathWaypointTableBuilder.Build(State.Path))
+                        {
+                            <tr>
+                                <td>@row.Sequence</td>
+                                <td>@row.Cell</td>
+                                <td>@row.Xmm</td>
+                                <td>@row.Ymm</td>
+                                <td>@(row.NextDistanceMm?.ToString() ?? "—")</td>
+                                <td>@DirectionText(row.NextDirection)</td>
+                                <td>@ActionText(row.NextTurn)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+
+    <div class="diagnostic-section">
+        <div class="range-title"><span>@PreviewTitle</span><small>前 12 条</small></div>
+        <div class="point-table-wrap">
+            <table class="point-table">
+                <thead><tr><th>角度</th><th>距离</th><th>能量</th></tr></thead>
+                <tbody>
+                    @foreach (var point in State.DisplayedPoints.Take(12))
+                    {
+                        <tr><td>@point.AngleDeg.ToString("0.00")°</td><td>@point.DistanceMm</td><td>@point.Energy</td></tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="diagnostic-section export-section">
+        <div class="range-title"><span>原始圈导出</span><small>最近完整一圈</small></div>
+        @if (State.RawScan is null)
+        {
+            <button class="button button-ghost full-width" disabled>导出当前原始圈 CSV</button>
+        }
+        else
+        {
+            <a class="button button-primary full-width export-link"
+               href="/api/radar/latest-scan.csv"
+               download>导出当前原始圈 CSV</a>
+        }
+    </div>
+
+    <div class="diagnostic-section log-section">
+        <div class="range-title"><span>运行日志</span><small>最近 6 条</small></div>
+        <div class="log-list">
+            @if (State.Logs.Count == 0)
+            {
+                <p class="empty-copy">暂无日志</p>
+            }
+            @foreach (var line in State.Logs.TakeLast(6).Reverse())
+            {
+                <p>@line</p>
+            }
+        </div>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public ApplicationState State { get; set; } = default!;
+
+    private int ScannedCellCount => State.ObstacleMap.Cells.Count(cell => cell.IsBlocked);
+    private string PreviewTitle => State.ViewMode == PointCloudViewMode.ReceivedRaw
+        ? "接收原始点预览"
+        : "上位机筛选点预览";
+    private string StatusTimeText => State.RadarStatus is null
+        ? "等待雷达状态"
+        : $"更新 {State.RadarStatus.ReceivedAt.ToLocalTime():HH:mm:ss}";
+    private string UnitText => State.RadarStatus is null
+        ? "等待雷达状态"
+        : State.RadarStatus.UsesMillimetres
+            ? "毫米"
+            : "厘米（预期毫米）";
+
+    private static string EnabledText(bool? enabled) => enabled switch
+    {
+        true => "开启",
+        false => "关闭（预期开启）",
+        null => "等待雷达状态"
+    };
+
+    private static string StatusClass(bool? actual) => actual is false ? "status-warning" : string.Empty;
+
+    private static string TurnText(TurnInstruction turn) => turn switch
+    {
+        TurnInstruction.Start => "起步",
+        TurnInstruction.Straight => "直行",
+        TurnInstruction.Left => "左转",
+        TurnInstruction.Right => "右转",
+        TurnInstruction.Reverse => "掉头",
+        _ => "未知"
+    };
+
+    private static string DirectionText(CardinalDirection? direction) => direction switch
+    {
+        CardinalDirection.North => "向北",
+        CardinalDirection.East => "向东",
+        CardinalDirection.South => "向南",
+        CardinalDirection.West => "向西",
+        null => "—",
+        _ => "未知"
+    };
+
+    private static string ActionText(TurnInstruction? turn) => turn is null
+        ? "到达"
+        : TurnText(turn.Value);
+}

@@ -1,0 +1,122 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="field-map-shell">
+    <canvas @ref="_canvas" class="field-map" aria-label="可用滚轮缩放的四象限雷达点云与第一象限物理场地图"></canvas>
+    <div class="map-compass" aria-hidden="true"><span>Y+</span><i></i><b>X+</b></div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ApplicationState State { get; set; } = default!;
+
+    private ElementReference _canvas;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<FieldMap>? _self;
+    private bool _initialized;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/fieldMap.js");
+            _self = DotNetObjectReference.Create(this);
+            await _module.InvokeVoidAsync("initializeMap", _canvas, _self);
+            _initialized = true;
+        }
+
+        if (_initialized && _module is not null)
+        {
+            await _module.InvokeVoidAsync("setTheme", _canvas, State.Theme == MapTheme.Dark ? "dark" : "light");
+            await _module.InvokeVoidAsync("renderMap", _canvas, BuildModel());
+        }
+    }
+
+    [JSInvokable]
+    public Task OnBoundaryDragged(string axis, int internalIndex, double millimetres)
+    {
+        if (!State.TryMoveBoundary(axis, internalIndex, Math.Round(millimetres), out var error))
+            State.AddLog($"边界调整失败：{error}");
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnCellClicked(int row, int column)
+    {
+        if (!State.TryToggleCell(row, column, out var error))
+            State.AddLog($"不能修改 R{row}C{column}：{error}");
+        return Task.CompletedTask;
+    }
+
+    private object BuildModel()
+    {
+        var missionMode = State.Configuration.PlanningMode == PlanningMode.MissionRoute;
+        var startPoint = ResolveEndpoint(State.Configuration.Start);
+        var goalPoint = ResolveEndpoint(State.Configuration.Goal);
+        var missionPoints = missionMode
+            ? MissionPointCatalog.ResolveAll(
+                    State.Grid,
+                    State.Configuration.Map.RadarXmm,
+                    State.Configuration.Map.RadarYmm)
+                .Select(point => new
+                {
+                    number = point.Number,
+                    row = point.Endpoint.Row,
+                    column = point.Endpoint.Column,
+                    x = point.Xmm,
+                    y = point.Ymm
+                })
+                .ToArray()
+            : [];
+        return new
+        {
+            fieldSize = MapSettings.FieldSizeMm,
+            activeMin = MapSettings.ActiveMinimumMm,
+            activeMax = MapSettings.ActiveMaximumMm,
+            xLines = State.Grid.XLines,
+            yLines = State.Grid.YLines,
+            radar = new { x = State.Configuration.Map.RadarXmm, y = State.Configuration.Map.RadarYmm },
+            points = State.DisplayedFieldPoints.Select(point => new { x = point.Xmm, y = point.Ymm, energy = point.Source.Energy }),
+            cells = State.ObstacleMap.Cells.Select(item => new
+            {
+                row = item.Cell.Row,
+                column = item.Cell.Column,
+                minX = item.Cell.MinXmm,
+                maxX = item.Cell.MaxXmm,
+                minY = item.Cell.MinYmm,
+                maxY = item.Cell.MaxYmm,
+                flags = (byte)item.Flags,
+                count = item.ScannedPointCount,
+                isProtected = item.IsProtected
+            }),
+            path = State.Path.Success
+                ? State.Path.Waypoints.Select(point => new { x = point.Xmm, y = point.Ymm }).ToArray()
+                : [],
+            missionPoints,
+            start = missionMode ? null : new { row = State.Configuration.Start.Row, column = State.Configuration.Start.Column, x = startPoint.X, y = startPoint.Y },
+            goal = missionMode ? null : new { row = State.Configuration.Goal.Row, column = State.Configuration.Goal.Column, x = goalPoint.X, y = goalPoint.Y },
+            theme = State.Theme == MapTheme.Dark ? "dark" : "light"
+        };
+    }
+
+    private (double X, double Y) ResolveEndpoint(MapEndpoint endpoint)
+    {
+        if (endpoint.Anchor == EndpointAnchor.RadarOrigin)
+            return (State.Configuration.Map.RadarXmm, State.Configuration.Map.RadarYmm);
+        if (endpoint.Anchor == EndpointAnchor.GoalZoneOne)
+            return (MapSettings.ActiveMaximumMm, MapSettings.ActiveMinimumMm);
+        var cell = State.Grid.GetCell(endpoint.Row, endpoint.Column);
+        return (cell.CenterXmm, cell.CenterYmm);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_module is not null && _initialized)
+                await _module.InvokeVoidAsync("disposeMap", _canvas);
+            if (_module is not null) await _module.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+        finally { _self?.Dispose(); }
+    }
+}
