@@ -395,11 +395,6 @@
           <GroupName>Application/User/Core</GroupName>
           <Files>
             <File>
-              <FileName>headfile.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\Core\Inc\headfile.h</FilePath>
-            </File>
-            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/main.c</FilePath>
@@ -1841,16 +1836,6 @@
               <FilePath>..\Hardware\key.h</FilePath>
             </File>
             <File>
-              <FileName>led.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\Hardware\led.c</FilePath>
-            </File>
-            <File>
-              <FileName>led.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\Hardware\led.h</FilePath>
-            </File>
-            <File>
               <FileName>hwt101_i2c.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Hardware\hwt101_i2c.c</FilePath>
@@ -1920,16 +1905,6 @@
         <Group>
           <GroupName>System</GroupName>
           <Files>
-            <File>
-              <FileName>delay.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\System\delay.c</FilePath>
-            </File>
-            <File>
-              <FileName>delay.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\System\delay.h</FilePath>
-            </File>
           </Files>
         </Group>
         <Group>
