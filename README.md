@@ -70,10 +70,14 @@ USART1 控制台、香橙派 USB B2 和 UART5 电机协议各自独立，不能�
 - `Code/template/Core`：主程序、外设初始化和中断入口。
 - `Code/template/Hardware`：电机、Camera、二维码、HWT101、显示、按键及 Flash 驱动。
 - `Code/template/App`：机械臂、底盘运动/定位/路线、视觉任务、控制台与显示业务。
-- `Code/template/System`：公共时间功能；`Drivers` / `Middlewares`：第三方代码。
+- `System` 职责保留为无业务含义的公共功能，当前未使用的延时模块已删除；`Drivers` / `Middlewares`：第三方代码。
 - `Code/tests`：固件主机回归；控制台测试在 `Code/upper-computer-web/local-car/tests`。
 
 主要构建环境为 Keil MDK-ARM，备用工程在 `Code/template/MDK-ARM/eide`，配置名同为 `template`。CubeMX 工程为 `Code/template/template.ioc`；只有修改外设配置时才重新生成，生成前检查 USER CODE 和差异。
+
+2026-10-02 精简只更新 Keil 清单；EIDE 按用户要求暂不维护，仍有已删除模块的旧路径及原有 SPI 缺项，未验证可用。张大头 Emm 与 W25Q128 驱动完整保留，详见[固件精简记录](docs/开发记录/2026-10-02-STM32主车固件精简.md)。
+
+控制台的 `grab set` 和 `config <axis> ...` 修改 RAM 参数，受理后供后续控制使用；STM32 复位/重新上电恢复已烧录固件默认值。网页保存的路线速度只在浏览器本地保存，修改网页预填值不会改写固件默认值。当前没有这些参数的 Flash 保存与上电加载功能；保留 Flash 驱动不等于调参已经掉电保存。
 
 在工程根目录运行软件回归：
 
@@ -118,3 +122,4 @@ python -m unittest discover -s Code/upper-computer-web/local-car/tests -p test_b
 | 2026-09-30 | [蓝色对准短暂漏检容忍](docs/开发记录/2026-09-30-蓝色协同对准短暂漏检容忍.md)：250ms 容忍、连续 3 次有效坐标恢复、停稳后最多等待 1500ms 重新识别；保持香橙派程序 |
 | 2026-09-30 | [抓取 Z 轴默认 250RPM](docs/开发记录/2026-09-30-抓取Z轴默认250RPM.md)：按 480 命令脉冲/mm 换算为 27.777778mm/s，可使用 grab set/get 临时调速 |
 | 2026-10-02 | [项目目录整理](docs/开发记录/2026-10-02-项目目录整理.md)：参考工程归档、模块入口和协作规范 |
+| 2026-10-02 | [STM32 主车固件精简](docs/开发记录/2026-10-02-STM32主车固件精简.md)：Git 检查点、未使用模块与兼容接口清理、参数保存边界 |

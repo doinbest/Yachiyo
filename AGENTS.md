@@ -94,6 +94,7 @@
 
 - `App` 放业务、控制台和任务；`Hardware` 放硬件驱动；`System` 放无业务含义的公共功能；`Core` 保留 CubeMX 结构。
 - 已授权的模块增删或清理可以同步更新 Keil `.uvprojx` 和 EIDE `.eide/eide.yml` 文件清单；不得顺带改变芯片、地址、工具链、引脚或时钟。
+- 2026-10-02 固件精简边界：完整保留 `Emm_V5.c/.h`、W25Q128 驱动及默认关闭的读 ID 诊断；用户未授权后续修改前，不将它们作为冗余模块删除或重写。本次只维护 Keil 清单，EIDE 配置完全不改、不构建；其已删除模块的旧清单路径及原有 SPI 缺项留待单独处理。
 - 修改 `Code/template/template.ioc`、引脚/时钟配置或重新生成代码，须属于用户明确请求范围；生成前检查 USER CODE 和预期差异。
 - 删除历史实现依赖 Git 追溯，不在活动工程复制备份。历史开发记录保留当时事实，以状态提示说明替代关系。
 - 当前入口以 README、控制台手册和 `docs/上位机协议.md` 为准；有日期的开发记录不自动代表现状。
@@ -103,6 +104,8 @@
 
 - `keil` 为默认构建后端：`Code/template/MDK-ARM/template.uvprojx`，Target `template`。
 - `eide` 为备用后端：`Code/template/MDK-ARM/eide`，配置 `template`。模块清单应与 Keil 保持一致。
+- 用户要求本轮暂缓 EIDE 维护，当前精简结果只以 Keil 验证；不将备用工程描述为已同步或可用。
+- `grab set` 和 `config <axis> ...` 修改的是 STM32 RAM 参数，复位/重新上电恢复已烧录固件默认值；网页保存的路线速度属于浏览器本地设置。当前未实现这些参数的 Flash 保存与上电加载，不把保留 Flash 驱动或读 ID 诊断描述为已有参数持久化。
 - 固件主机回归：根目录运行 `python Code/tests/run_firmware_tests.py`，需要 Python 和 GCC。
 - 网页回归：根目录运行 `node --test Code/upper-computer-web/local-car/tests/*.test.mjs`。
 - 桥接回归：`python -m unittest discover -s Code/upper-computer-web/local-car/tests -p test_bridge.py`。
