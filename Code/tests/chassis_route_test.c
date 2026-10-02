@@ -70,7 +70,7 @@ int main(void)
   setup();accept=false;assert(!ChassisRoute_Start());assert(!ChassisRoute_IsBusy());
   setup();char *move[]={"chassis","move","-150","150"};assert(ChassisRoute_Command(4,move));assert(starts==1&&last_speed==CHASSIS_DISTANCE_SPEED_MM_S);assert(motion.target_x_mm==2100&&motion.target_y_mm==300);
   setup();char *bad[]={"chassis","move","250","250"};assert(ChassisRoute_Command(4,bad));assert(starts==0&&strstr(reply,"ERR"));
-  setup();assert(ChassisRoute_Start());char *query[]={"chassis","route","status"};assert(ChassisRoute_Command(3,query));assert(starts==1&&strstr(reply,"segment=1"));
+  setup();assert(ChassisRoute_Start());char *query[]={"chassis","route","status"};assert(ChassisRoute_Command(3,query));assert(starts==1&&strstr(reply,"segment=1")&&strstr(reply," total=16 "));
   assert(ChassisRoute_Command(4,move));assert(starts==1);char *stop[]={"chassis","stop"};assert(ChassisRoute_Command(2,stop));assert(stops==1);
   setup();char *fast[]={"chassis","route","start","5000"};
   assert(ChassisRoute_Command(4,fast));assert(starts==1 && last_speed==5000 && strstr(reply,"speed_mm_s=5000"));
@@ -112,5 +112,33 @@ int main(void)
   assert(!ChassisRoute_StationReserved());
   setup();assert(ChassisRoute_StationStart(50));arrive();tick+=100;loc.feedback_tick=tick;ChassisRoute_Process();arrive();
   assert(ChassisRoute_Cancel());assert(!ChassisRoute_StationResume());
-  puts("chassis_route_test: PASS (manual, automatic, station handoff, cancellation)");return 0;
+  /* Station handoff belongs to a semantic visit, even after obstacle detours
+   * change the number of intermediate waypoints. */
+  RadarPlan_t plan={0};plan.valid=true;plan.count=7;
+  const RadarPlan_Point_t planned[]={
+    {2250,150,1,0},{2100,350,0,0},{2100,800,0,0},
+    {2100,1200,5,1},{2100,2050,0,0},{1200,2050,0,0},{1200,2100,4,2}};
+  memcpy(plan.points,planned,sizeof(planned));
+  setup();assert(ChassisRoute_PlanStart(&plan,50,true));
+  plan.points[1].x_mm=999; /* execution owns a stable copy */
+  assert(motion.target_x_mm==2100 && motion.target_y_mm==350);
+  assert(status().planned && status().total==6);
+  assert(ChassisRoute_Command(3,query));
+  assert(starts==1 && strstr(reply,"segment=1") && strstr(reply," total=6 "));
+  for(unsigned i=0;i<3;i++){
+    arrive();if(i<2){tick+=100;loc.feedback_tick=tick;ChassisRoute_Process();}
+  }
+  assert(!strcmp(status().state,"station") && status().segment==3);
+  assert(status().station==5 && status().visit==1);
+  assert(ChassisRoute_StationResume());
+  for(unsigned i=0;i<3;i++){
+    arrive();if(i<2){tick+=100;loc.feedback_tick=tick;ChassisRoute_Process();}
+  }
+  assert(status().station==4 && status().visit==2 && status().segment==6);
+  assert(ChassisRoute_StationFinish());assert(starts==6);
+  setup();plan.valid=false;assert(!ChassisRoute_PlanStart(&plan,50,false));assert(!starts);
+  setup();plan.valid=true;assert(ChassisRoute_PlanStart(&plan,50,false));
+  assert(ChassisRoute_Cancel());motion.state=CHASSIS_MOTION_DONE;ChassisRoute_Process();
+  tick+=1000;loc.feedback_tick=tick;ChassisRoute_Process();assert(starts==1);
+  puts("chassis_route_test: PASS (fixed routes, radar detours, semantic station handoff, cancel)");return 0;
 }

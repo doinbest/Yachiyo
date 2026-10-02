@@ -19,11 +19,12 @@ typedef struct { bool active; } MotorBus_Diagnostic_t;
 typedef struct { bool active; } MotorBus_Recovery_t;
 void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *s){s->active=blocked&(1U<<11);}
 void MotorBus_RecoveryGet(MotorBus_Recovery_t *s){s->active=blocked&(1U<<12);}
+bool RadarConsole_ScanBusy(void){return blocked&(1U<<13);}
 '''
 fixture += ''.join(f'bool {name}(void){{return blocked&(1U<<{i});}}\n' for i,name in enumerate(names))
 fixture += match.group() + '''
 int main(void){assert(OptionalDisplayReady());
-for(unsigned i=0;i<13;i++){blocked=1U<<i;assert(!OptionalDisplayReady());}
+for(unsigned i=0;i<14;i++){blocked=1U<<i;assert(!OptionalDisplayReady());}
 blocked=0;assert(OptionalDisplayReady());return 0;}
 '''
 out = root.parent/'.embeddedskills/tests'
@@ -32,4 +33,4 @@ test.write_text(fixture, encoding='utf-8')
 exe = out/'display_schedule_test.exe'
 subprocess.run(['gcc','-std=c99','-Wall','-Wextra','-Werror',str(test),'-o',str(exe)],check=True)
 subprocess.run([str(exe)],check=True)
-print('display_schedule: all 13 control/transaction conditions defer optional OLED I/O PASS')
+print('display_schedule: all 14 control/transaction/capture conditions defer optional OLED I/O PASS')

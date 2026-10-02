@@ -126,7 +126,7 @@ commands.find(c => c.id === 'stop').note = 'stop all 会请求停止正在运行
 export function moduleForWire(text) {
   if (typeof text !== 'string') return 'manual';
   const line = text.trim().replace(/^(?:arm> )+/, '').replace(/^(?:OK|ERR)\s+/, '');
-  if (/^@CHASSIS\b/.test(line) || /^chassis stream\b/.test(line)) return 'map';
+  if (/^@(CHASSIS|RADAR)\b/.test(line) || /^(?:(?:OK|ERR|EVT) )?radar\b|^chassis stream\b/.test(line)) return 'map';
   if (/^(?:qr\b|@QR\b|EVT qr\b)/.test(line)) return 'qr';
   if (/^(?:chassis\b|wheel(?:\s|=)|\[CHASSIS\])/.test(line)) return 'chassis';
   if (/^(?:camera|material|vision|grab|VISION)\b/.test(line)) return 'vision';

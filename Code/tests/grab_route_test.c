@@ -19,6 +19,7 @@ bool GrabTask_IsBusy(void){return task_busy;}
 bool GrabTask_Start(const char *mode){assert(!strcmp(mode,"pick"));picks++;task_busy=1;return true;}
 void GrabTask_Stop(void){task_busy=0;}
 bool ChassisRoute_StationStart(float speed){assert(speed==50);starts++;route.segment=1;route.state="running";return true;}
+bool ChassisRoute_PlanStart(const RadarPlan_t *p,float speed,bool station_mode){assert(p->valid && speed==50 && station_mode);starts++;route.planned=true;route.segment=1;route.state="running";return true;}
 bool ChassisRoute_StationResume(void){resumes++;route.segment=3;route.state="running";return true;}
 bool ChassisRoute_StationFinish(void){finishes++;route.state="done";return true;}
 bool ChassisRoute_Cancel(void){cancels++;route.state="cancelled";return true;}
@@ -45,5 +46,11 @@ int main(void)
   GrabRoute_Process();assert(picks==1);
   setup();GrabRoute_Command(3,start);route.state="station";route.segment=2;route.stop_confirmed=true;GrabRoute_Process();tick=1000;GrabRoute_Process();screen_error=1;GrabRoute_Process();assert(!resumes&&!picks&&!GrabRoute_IsBusy()&&cancels);
   setup();GrabRoute_Command(3,start);GrabRoute_Stop();tick=9999;GrabRoute_Process();assert(!picks&&!resumes&&!GrabRoute_IsBusy());
-  puts("grab_route_test: PASS (missing config, 1000ms, TX gate, handoff, error, cancel)");
+  setup();RadarPlan_t plan={0};plan.valid=true;
+  assert(GrabRoute_StartPlanned(&plan,50));
+  route.state="station";route.segment=7;route.station=5;route.visit=1;route.stop_confirmed=true;
+  GrabRoute_Process();tick=1000;GrabRoute_Process();screen_done=1;GrabRoute_Process();
+  assert(resumes==1);route.state="station";route.segment=12;route.station=4;route.visit=2;
+  GrabRoute_Process();assert(finishes==1&&picks==1);
+  puts("grab_route_test: PASS (fixed/planned semantic visits, 1000ms, screen TX, pick, cancel)");
 }

@@ -5,7 +5,9 @@
 #define EVENT_SIZE 128U
 #define URGENT_SIZE 1024U
 #define DEBUG_SIZE 320U
-enum { TX_REPLY, TX_EVENT, TX_TELEMETRY, TX_URGENT, TX_DEBUG };
+enum { TX_REPLY, TX_EVENT, TX_TELEMETRY, TX_URGENT, TX_DEBUG, TX_BULK };
+static char bulk[256];
+static uint16_t bulk_size;
 static UART_HandleTypeDef *port;
 static uint8_t replies[REPLY_SIZE], active[FRAME_SIZE];
 static char telemetry[FRAME_SIZE];
@@ -43,6 +45,16 @@ void ConsoleTx_Init(UART_HandleTypeDef *uart)
   memset(debug_sent, 0, sizeof(debug_sent));
   debug_next = active_debug = 0;
   reply_continues = background_paused = false;
+  bulk_size=0;
+}
+bool ConsoleTx_BulkReady(void)
+{
+  return port && !background_paused && !bulk_size && !(active_size && active_kind==TX_BULK);
+}
+bool ConsoleTx_Bulk(const char *data,uint16_t size)
+{
+  if(!data || !size || size>sizeof(bulk) || !ConsoleTx_BulkReady()) return false;
+  memcpy(bulk,data,size);bulk_size=size;return true;
 }
 bool ConsoleTx_Write(const uint8_t *data, uint16_t size)
 {
@@ -138,10 +150,11 @@ void ConsoleTx_BackgroundPause(bool paused)
   background_paused = paused;
   if (!paused) return;
   ConsoleTx_TelemetryCancel();
+  bulk_size=0;
   for (i = 0; i < CONSOLE_DEBUG_COUNT; i++) ConsoleTx_DebugCancel(i);
   /* Unstarted selection after HAL_BUSY can be discarded; started frames drain intact. */
   if (!busy && active_offset == 0 &&
-      (active_kind == TX_TELEMETRY || active_kind == TX_DEBUG)) active_size = 0;
+      (active_kind == TX_TELEMETRY || active_kind == TX_DEBUG || active_kind==TX_BULK)) active_size = 0;
 }
 bool ConsoleTx_UrgentIdle(void)
 {
@@ -158,7 +171,7 @@ void ConsoleTx_EventCancel(void)
 }
 static void ConsoleTx_ActiveDropped(void)
 {
-  if (active_kind == TX_TELEMETRY) dropped++;
+  if (active_kind == TX_TELEMETRY || active_kind == TX_BULK) dropped++;
   else if (active_kind == TX_EVENT) event_dropped++;
   else if (active_kind == TX_URGENT) urgent_dropped++;
   else if (active_kind == TX_DEBUG) debug_dropped++;
@@ -229,6 +242,10 @@ void ConsoleTx_Process(void)
       active_size = telemetry_size;
       active_kind = TX_TELEMETRY;
     }
+    else if (bulk_size)
+    {
+      memcpy(active,bulk,bulk_size);active_size=bulk_size;active_kind=TX_BULK;
+    }
     else {
       for (i = 0; i < CONSOLE_DEBUG_COUNT; i++) {
         active_debug = (debug_next + i) % CONSOLE_DEBUG_COUNT;
@@ -258,6 +275,7 @@ void ConsoleTx_Process(void)
       used -= active_size;
     }
     else if (active_kind == TX_EVENT) event_size = 0;
+    else if (active_kind == TX_BULK) bulk_size=0;
     else if (active_kind == TX_URGENT) {
       urgent_read = (urgent_read + active_size) % URGENT_SIZE;
       urgent_used -= active_size;

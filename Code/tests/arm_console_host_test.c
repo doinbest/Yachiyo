@@ -15,6 +15,8 @@ bool ConsoleTx_UrgentIdle(void) { return urgent_idle; }
 static unsigned camera_calls, motor_calls, stop_calls, notice_clears;
 static uint8_t arm_busy, material_busy, motor_busy;
 static bool grab_busy, grab_route_busy;
+bool RadarConsole_Command(unsigned n,char *t[]){(void)n;(void)t;return false;}
+bool RadarConsole_ScanBusy(void){return false;}
 static unsigned grab_stops;
 bool GrabTask_IsBusy(void){return grab_busy;}
 bool GrabRoute_IsBusy(void){return grab_route_busy;}

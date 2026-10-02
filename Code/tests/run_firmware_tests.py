@@ -24,7 +24,8 @@ def run(args):
 
 def build_test(name, *sources):
     exe = OUT / (name + ".exe")
-    run(BASE + ["tests/" + name + ".c", *sources, "-lm", "-o", exe])
+    flags = [BASE[0], "-Itests/radar_stubs", *BASE[1:]] if name == "test_radar_scan" else BASE
+    run(flags + ["tests/" + name + ".c", *sources, "-lm", "-o", exe])
     run([exe])
 
 
@@ -49,6 +50,11 @@ if __name__ == "__main__":
     build_test("chassis_distance_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
     build_test("chassis_route_test", "template/App/chassis_route.c")
     build_test("grab_route_test", "template/App/GrabRoute.c", "template/Hardware/QR.c")
+    build_test("test_radar_parser", "template/Hardware/lds_parser.c")
+    build_test("test_radar_map", "template/App/radar_map.c")
+    build_test("test_radar_scan", "template/Hardware/lds_parser.c", "template/Hardware/radar_uart.c",
+               "template/App/radar_scan.c", "template/App/radar_map.c")
+    build_test("radar_console_test", "template/App/radar_console.c", "template/App/radar_map.c")
     build_test("grab_task_test")
     build_test("grab_grace_test")
     build_test("grab_command_sim_test", "template/App/console_tx.c")

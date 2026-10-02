@@ -20,6 +20,7 @@
 #include "chassis_motion.h"
 #include "chassis_route.h"
 #include "chassis_telemetry.h"
+#include "radar_console.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -78,6 +79,18 @@ static uint32_t BusRecoveryStarted;
 static uint8_t ManualGuardActive, ManualGuardExecuting, ManualGuardAddress, ManualGuardLast, ManualGuardKind;
 static uint32_t ManualGuardStarted;
 static char ManualGuardLine[ARM_CONSOLE_LINE_SIZE];
+static bool ArmConsole_RadarMotionGuard(unsigned n,char *t[])
+{
+  static const char *const moves[]={"run","heading","hold","move","velocity","forward","backward","left","right"};
+  unsigned i;
+  if(!RadarConsole_ScanBusy() || n<2U) return false;
+  if(!strcmp(t[0],"wheel") && strcmp(t[1],"status") && strcmp(t[1],"stop")) return true;
+  if(!strcmp(t[0],"grab") && (!strcmp(t[1],"start") || !strcmp(t[1],"route"))) return true;
+  if(strcmp(t[0],"chassis")) return false;
+  for(i=0;i<sizeof(moves)/sizeof(moves[0]);i++) if(!strcmp(t[1],moves[i])) return true;
+  return n>=3U && !strcmp(t[1],"route") && (!strcmp(t[2],"start") || !strcmp(t[2],"auto") || !strcmp(t[2],"next"));
+}
+
 static uint8_t ArmConsole_CommandExecute(char *Line);
 
 static void ArmConsole_ManualGuardCancel(void)
@@ -2285,6 +2298,9 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
     else { ArmConsole_Write("ERR system reset_pending\r\n"); return 1U; }
   }
   if (ArmConsole_SystemCommandHandle(TokenCount, Tokens)) return 1U;
+  if (RadarConsole_Command(TokenCount,Tokens)) return 1U;
+  if(ArmConsole_RadarMotionGuard(TokenCount,Tokens))
+  { ArmConsole_Write("ERR radar stationary capture active; radar stop before driving\r\n");return 1U; }
   if (!strcmp(Tokens[0],"grab") &&
       ((TokenCount==2U && !strcmp(Tokens[1],"status")) ||
        (TokenCount==3U && !strcmp(Tokens[1],"get"))))

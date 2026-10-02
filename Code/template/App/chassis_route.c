@@ -16,6 +16,8 @@ static uint32_t DwellTick;
 static uint32_t Generation;
 static float RouteSpeed = CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
 #define ROUTE_COUNT 16U
+static RadarPlan_Point_t Planned[RADAR_PLAN_MAX_POINTS-1U];
+static unsigned PlannedCount;
 static const float Points[ROUTE_COUNT][2]={
   {2100,300},{2100,1200},{2100,2100},{1200,2100},
   {1200,350},{1200,1200},{350,1200},{1200,1200},
@@ -30,7 +32,7 @@ static float angle_error(float a,float b)
 }
 void ChassisRoute_Init(void)
 {
-  memset(&Route,0,sizeof(Route));Route.state="idle";Route.reason="idle";Submitting=false;Automatic=false;Stations=false;DwellTick=0;
+  memset(&Route,0,sizeof(Route));Route.state="idle";Route.reason="idle";Route.total=ROUTE_COUNT;Submitting=false;Automatic=false;Stations=false;DwellTick=0;PlannedCount=0;
 }
 bool ChassisRoute_IsBusy(void)
 {
@@ -46,24 +48,27 @@ static bool submit(unsigned index)
   bool ok;
   uint32_t timeout;
   float distance;
+  float x=Route.planned?Planned[index].x_mm:Points[index][0];
+  float y=Route.planned?Planned[index].y_mm:Points[index][1];
   ChassisLocalization_Get(&Position);
-  distance=hypotf(Points[index][0]-Position.observer.feedback.x_mm,
-                  Points[index][1]-Position.observer.feedback.y_mm);
+  distance=hypotf(x-Position.observer.feedback.x_mm,y-Position.observer.feedback.y_mm);
   /* Include integer-RPM quantization and final settling at low speed. */
   timeout=(uint32_t)fminf(CHASSIS_DISTANCE_MAX_TIMEOUT_MS,
       fmaxf(CHASSIS_DISTANCE_TIMEOUT_MS,2000.0f*distance/RouteSpeed+10000.0f));
   Submitting=true;
-  ok=ChassisMotion_MoveTo(Points[index][0],Points[index][1],90.0f,
+  ok=ChassisMotion_MoveTo(x,y,90.0f,
                           RouteSpeed,timeout);
   Submitting=false;
   ChassisMotion_StatusGet(&Motion);
   if(!ok) { Route.state="error";Route.reason=Motion.reason;return false; }
   Route.segment=index+1;Route.action_id=Motion.action_id;
-  Route.target_x_mm=Points[index][0];Route.target_y_mm=Points[index][1];Route.target_yaw_deg=90;
+  Route.target_x_mm=x;Route.target_y_mm=y;Route.target_yaw_deg=90;
+  Route.station=Route.planned?Planned[index].station:0U;
+  Route.visit=Route.planned?Planned[index].visit:0U;
   Route.state="running";Route.reason="running";Route.stop_confirmed=false;
   return true;
 }
-static bool start_at_speed(float speed, bool automatic)
+static bool start_at_speed(float speed, bool automatic, bool planned)
 {
   if (!isfinite(speed) || speed < 10.0f || speed > CHASSIS_MOTION_MAX_LINEAR_MM_S) return false;
   if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved() || ChassisMotion_IsBusy()) return false;
@@ -76,26 +81,44 @@ static bool start_at_speed(float speed, bool automatic)
      fabsf(angle_error(Position.observer.feedback.yaw_rad*180/CHASSIS_MODEL_PI,90))>CHASSIS_DISTANCE_HEADING_DEG)
   { Route.state="error";Route.reason="start_origin_or_feedback";return false; }
   RouteSpeed=speed;Automatic=automatic;Stations=false;
+  Route.planned=planned;Route.total=planned?PlannedCount:ROUTE_COUNT;
   Generation=Position.generation;
   return submit(0);
 }
-bool ChassisRoute_Start(void) { return start_at_speed(CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,false); }
+bool ChassisRoute_Start(void) { return start_at_speed(CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,false,false); }
+bool ChassisRoute_PlanStart(const RadarPlan_t *plan, float speed, bool station_mode)
+{
+  unsigned i;
+  if(!plan || !plan->valid || plan->count<2U || plan->count>RADAR_PLAN_MAX_POINTS ||
+     ChassisRoute_IsBusy() || ChassisRoute_StationReserved() || ChassisMotion_IsBusy()) return false;
+  if(plan->points[0].x_mm!=2250 || plan->points[0].y_mm!=150) return false;
+  for(i=1;i<plan->count;i++)
+    if(plan->points[i].x_mm<0 || plan->points[i].x_mm>2400 ||
+       plan->points[i].y_mm<0 || plan->points[i].y_mm>2400) return false;
+  PlannedCount=plan->count-1U;
+  memcpy(Planned,plan->points+1,PlannedCount*sizeof(Planned[0]));
+  if(!start_at_speed(speed,true,true)) return false;
+  Stations=station_mode;
+  return true;
+}
 bool ChassisRoute_StationStart(float speed)
 {
-  if (!start_at_speed(speed,true)) return false;
+  if (!start_at_speed(speed,true,false)) return false;
   Stations=true;
   return true;
 }
 bool ChassisRoute_StationResume(void)
 {
-  if (!Stations || !Route.state || strcmp(Route.state,"station") || Route.segment!=2) return false;
+  if (!Stations || !Route.state || strcmp(Route.state,"station") ||
+      (Route.planned?(Route.station!=5U || Route.visit!=1U):Route.segment!=2U)) return false;
   ChassisRoute_Process();
   if (strcmp(Route.state,"station")) return false;
-  return submit(2);
+  return submit(Route.segment);
 }
 bool ChassisRoute_StationFinish(void)
 {
-  if (!Stations || !Route.state || strcmp(Route.state,"station") || Route.segment!=4) return false;
+  if (!Stations || !Route.state || strcmp(Route.state,"station") ||
+      (Route.planned?(Route.station!=4U || Route.visit!=2U):Route.segment!=4U)) return false;
   ChassisRoute_Process();
   if (strcmp(Route.state,"station")) return false;
   Route.state="done";Route.reason="station_handoff";Stations=false;
@@ -153,7 +176,7 @@ void ChassisRoute_Process(void)
     }
     else if(strcmp(Route.state,"station") && Automatic && (uint32_t)(HAL_GetTick()-DwellTick)>=CHASSIS_ROUTE_AUTO_DWELL_MS)
     {
-      if(Route.segment==ROUTE_COUNT){Route.state="done";Route.reason="route_complete";}
+      if(Route.segment==Route.total){Route.state="done";Route.reason="route_complete";}
       else (void)submit(Route.segment);
     }
     return;
@@ -168,9 +191,10 @@ void ChassisRoute_Process(void)
     if(!Motion.stop_confirmed || strcmp(Motion.reason,"feedback_arrived"))
     { Route.state="error";Route.reason="arrival_unconfirmed";return; }
     DwellTick=HAL_GetTick();
-    Route.state=Route.segment==ROUTE_COUNT&&!Automatic?"done":"waiting";
-    Route.reason=Automatic?"auto_dwell":Route.segment==ROUTE_COUNT?"route_complete":"operator_next_required";
-    if (Stations && (Route.segment==2 || Route.segment==4))
+    Route.state=Route.segment==Route.total&&!Automatic?"done":"waiting";
+    Route.reason=Automatic?"auto_dwell":Route.segment==Route.total?"route_complete":"operator_next_required";
+    if (Stations && (Route.planned?((Route.station==5U && Route.visit==1U) ||
+        (Route.station==4U && Route.visit==2U)):(Route.segment==2U || Route.segment==4U)))
     { Route.state="station";Route.reason="station_handoff"; }
   }
   else
@@ -223,11 +247,11 @@ bool ChassisRoute_Command(unsigned n,char *t[])
   }
   else if(!strcmp(t[1],"route"))
   {
-    if(n==4 && (!strcmp(t[2],"start") || !strcmp(t[2],"auto")) && number(t[3],&dx)) ok=start_at_speed(dx,!strcmp(t[2],"auto"));
+    if(n==4 && (!strcmp(t[2],"start") || !strcmp(t[2],"auto")) && number(t[3],&dx)) ok=start_at_speed(dx,!strcmp(t[2],"auto"),false);
     else if(n==3)
     {
       if(!strcmp(t[2],"start")) ok=ChassisRoute_Start();
-      else if(!strcmp(t[2],"auto")) ok=start_at_speed(CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,true);
+      else if(!strcmp(t[2],"auto")) ok=start_at_speed(CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,true,false);
       else if(!strcmp(t[2],"next")) ok=ChassisRoute_Next();
       else if(!strcmp(t[2],"cancel")) ok=ChassisRoute_Cancel();
       else if(!strcmp(t[2],"status")) ok=true;
@@ -235,9 +259,9 @@ bool ChassisRoute_Command(unsigned n,char *t[])
   }
   else return false;
   ChassisRoute_StatusGet(&Route);
-  length=snprintf(text,sizeof(text),"%s chassis route state=%s segment=%lu id=%lu reason=%s error_mm=%.1f,%.1f heading_error_deg=%.2f feedback_valid=%u stop_confirmed=%u speed_mm_s=%.1f auto=%u total=16 dwell_ms=%lu\r\n",
+  length=snprintf(text,sizeof(text),"%s chassis route state=%s segment=%lu id=%lu reason=%s error_mm=%.1f,%.1f heading_error_deg=%.2f feedback_valid=%u stop_confirmed=%u speed_mm_s=%.1f auto=%u total=%lu dwell_ms=%lu\r\n",
       ok?"OK":"ERR",Route.state,(unsigned long)Route.segment,(unsigned long)Route.action_id,Route.reason,
-      (double)Route.error_x_mm,(double)Route.error_y_mm,(double)Route.error_heading_deg,Route.feedback_valid?1:0,Route.stop_confirmed?1:0,(double)RouteSpeed,Automatic?1:0,(unsigned long)CHASSIS_ROUTE_AUTO_DWELL_MS);
+      (double)Route.error_x_mm,(double)Route.error_y_mm,(double)Route.error_heading_deg,Route.feedback_valid?1:0,Route.stop_confirmed?1:0,(double)RouteSpeed,Automatic?1:0,(unsigned long)Route.total,(unsigned long)CHASSIS_ROUTE_AUTO_DWELL_MS);
   if(length>0 && (size_t)length<sizeof(text)) (void)ConsoleTx_Write((const uint8_t*)text,(uint16_t)length);
   return true;
 }

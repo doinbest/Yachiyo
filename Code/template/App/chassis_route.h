@@ -5,12 +5,15 @@
 #define CHASSIS_ROUTE_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "radar_map.h"
 typedef struct {
   const char *state, *reason;
   uint32_t segment, action_id;
   float target_x_mm, target_y_mm, target_yaw_deg;
   float error_x_mm, error_y_mm, error_heading_deg;
   bool feedback_valid, stop_confirmed;
+  bool planned;
+  uint32_t total, station, visit;
 } ChassisRoute_Status_t;
 /** @brief Initialize RAM before commands are accepted; never stops motors. */
 void ChassisRoute_Init(void);
@@ -24,6 +27,9 @@ bool ChassisRoute_Next(void);
 bool ChassisRoute_Cancel(void);
 /** @brief 前四段组合测试：第2/4段到点停车后交接，speed单位mm/s。 */
 bool ChassisRoute_StationStart(float speed);
+/** @brief Copy a completed radar plan and execute it explicitly; station_mode
+ * pauses at QR visit1 and RAW visit2 for the existing first-pick test. */
+bool ChassisRoute_PlanStart(const RadarPlan_t *plan, float speed, bool station_mode);
 /** @brief 仅第2段station允许续跑；重新检查到点与反馈资格。 */
 bool ChassisRoute_StationResume(void);
 /** @brief 第4段station结束路线所有权，不提交第5段。 */

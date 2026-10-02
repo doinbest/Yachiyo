@@ -5,12 +5,70 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import secrets
+import math
+import shutil
+import subprocess
 import signal
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
 from serial_bridge import SerialBridge
+
+
+_planner_lock = threading.Lock()
+RADAR_DEFAULTS = dict(lidar_x_mm=2170, lidar_y_mm=230, zero_deg=180,
+                     distance_min_mm=100, distance_max_mm=40000, angle_min_tenths=0,
+                     angle_max_tenths=3600, threshold=3, energy_min=0, energy_max=255)
+
+
+def plan_radar_offline(body):
+    """Run the exact firmware C core locally. This never receives a serial bridge."""
+    mask = body.get('mask', 0)
+    if type(mask) is not int or not 0 <= mask < (1 << 25):
+        raise ValueError('mask must describe 25 cells')
+    params = {**RADAR_DEFAULTS, **body.get('params', {})}
+    if any(type(params[key]) not in (int, float) or not math.isfinite(params[key]) for key in RADAR_DEFAULTS):
+        raise ValueError('Radar parameters must be finite numbers')
+    for key in list(RADAR_DEFAULTS)[3:]:
+        if params[key] != int(params[key]):
+            raise ValueError('Radar filter parameters must be integers')
+        params[key] = int(params[key])
+    points = body.get('points', [])
+    if not isinstance(points, list) or len(points) > 4096:
+        raise ValueError('A cloud contains at most 4096 points')
+    for point in points:
+        if not isinstance(point, list) or len(point) != 3 or any(type(v) is not int for v in point):
+            raise ValueError('Points are integer [angle_tenths, distance_mm, energy]')
+        if not 0 <= point[0] <= 3599 or not 0 <= point[1] <= 65535 or not 0 <= point[2] <= 255:
+            raise ValueError('Point values exceed the radar protocol range')
+    workspace = Path(__file__).resolve().parents[3]
+    sources = [workspace/'Code/tools/radar_plan_cli.c', workspace/'Code/template/App/radar_map.c']
+    headers = [workspace/'Code/template/App/radar_map.h']
+    executable = workspace/'.embeddedskills/tests/radar_plan_cli.exe'
+    with _planner_lock:
+        if not all(path.is_file() for path in sources + headers):
+            raise OSError('Shared radar C planner source is missing')
+        if not executable.is_file() or any(path.stat().st_mtime > executable.stat().st_mtime for path in sources + headers):
+            compiler = shutil.which('gcc')
+            if not compiler:
+                raise OSError('Offline planning needs GCC; install the same GCC used by firmware host tests')
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            built = subprocess.run([compiler, '-std=c99', '-O2', '-Wall', '-Wextra', '-Werror',
+                                    '-I'+str(workspace/'Code/template/App'), *map(str, sources),
+                                    '-lm', '-o', str(executable)], capture_output=True, text=True, timeout=30)
+            if built.returncode:
+                raise OSError('Shared C planner build failed: '+built.stderr[-2000:])
+        request = f'RADAR1 {mask} {len(points)}\n'+' '.join(str(params[key]) for key in RADAR_DEFAULTS)+'\n'
+        request += ''.join(' '.join(map(str, point))+'\n' for point in points)
+        result = subprocess.run([str(executable)], input=request, capture_output=True, text=True, timeout=15)
+        try:
+            output = json.loads(result.stdout)
+        except ValueError as error:
+            raise OSError('C planner did not return JSON: '+result.stderr[-500:]) from error
+        if result.returncode or 'error' in output:
+            raise ValueError('C planner rejected input: '+str(output.get('error', result.returncode)))
+        return output
 
 
 def available_ports():
@@ -95,7 +153,8 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if not 0 <= length <= 8192:
+            limit = 262144 if urlsplit(self.path).path == '/api/radar/plan' else 8192
+            if not 0 <= length <= limit:
                 raise ValueError('Request body too large')
             self.connection.settimeout(3)
             body = json.loads(self.rfile.read(length) or b'{}')
@@ -103,7 +162,9 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
                 raise ValueError('JSON body must be an object')
             bridge = self.server.bridge
             path = urlsplit(self.path).path
-            if path == '/api/connect':
+            if path == '/api/radar/plan':
+                result = plan_radar_offline(body)
+            elif path == '/api/connect':
                 result = bridge.connect(body.get('port'), body.get('baudrate'))
             elif path == '/api/send':
                 result = bridge.send(body.get('command'), owner=body.get('owner'))
@@ -121,7 +182,7 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
                 self._json(404, {'error':'Unknown API'})
                 return
             self._json(200, result)
-        except (ValueError, TypeError, OSError) as error:
+        except (ValueError, TypeError, OSError, subprocess.TimeoutExpired) as error:
             self._json(400, {'error':str(error)})
 
 
@@ -144,7 +205,17 @@ def print_events(bridge, finished):
             if event['kind'] == 'raw':
                 continue
             text = event['text']
-            if event['kind'] == 'rx' and (text.startswith('{') or text.startswith('@CHASSIS ')):
+            if event['kind'] == 'tx' and text.startswith('radar fetch ') or text == 'OK radar page_pending':
+                continue
+            if event['kind'] in ('rx', 'radar') and text.startswith('@RADAR '):
+                try:
+                    radar = json.loads(text[7:])
+                    if radar.get('k') not in ('status', 'nav'):
+                        continue
+                    text = f'RADAR {radar.get("k")} {radar.get("state", "")} {radar.get("reason", "")} (snapshot data; raw RX capture available)'
+                except ValueError:
+                    text = 'RADAR malformed reply (full line in log)'
+            elif event['kind'] == 'rx' and (text.startswith('{') or text.startswith('@CHASSIS ')):
                 telemetry_count += 1
                 now = time.monotonic()
                 if now - last_telemetry < 1:

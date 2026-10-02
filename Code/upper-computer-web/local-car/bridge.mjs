@@ -1,8 +1,8 @@
 import {frameCommand} from './protocol.mjs?v=heading-hold-1';
 
-export const scopedStopCommand=wire=>/^(?:stop (?:all|base|z|x)|chassis route cancel|imu cal cancel|(?:vision|material|camera|grab) stop)$/.test(wire);
+export const scopedStopCommand=wire=>/^(?:stop (?:all|base|z|x)|chassis route cancel|radar (?:stop|nav cancel)|imu cal cancel|(?:vision|material|camera|grab) stop)$/.test(wire);
 
-export const readOnlyCommand=wire=>/^(?:info|help|bus status|console status|(?:state|position|config) (?:all|base|z|x)|chassis (?:task|status|snapshot|stop-status|feedback|route status)|imu status|qr (?:status|read)|(?:vision|material|camera|map|grab) status|grab get [a-z][a-z0-9_]*)$/.test(wire);
+export const readOnlyCommand=wire=>/^(?:info|help|bus status|console status|radar (?:status|get|nav status|fetch (?:map|path|points|cloud|params) \d+ \d+)|(?:state|position|config) (?:all|base|z|x)|chassis (?:task|status|snapshot|stop-status|feedback|route status)|imu status|qr (?:status|read)|(?:vision|material|camera|map|grab) status|grab get [a-z][a-z0-9_]*)$/.test(wire);
 
 /** Attach to the single host-owned port. Attaching and reconnecting never send commands. */
 export class BridgeLink {
@@ -53,7 +53,7 @@ export class BridgeLink {
       if(p){clearTimeout(p.timer);this.pending.delete(e.request_id);e.error?p.reject(new Error(e.error)):p.resolve(e);}
       else {this.completed.set(e.request_id,e);if(this.completed.size>100)this.completed.delete(this.completed.keys().next().value);}
     }
-    if(e.kind==='rx')this.receive(e.text);
+    if(e.kind==='rx'||e.kind==='radar')this.receive(e.text);
     this.event(e);
   }
   async connect(port,baudrate=115200){if(typeof port!=='string'||!/^COM[1-9]\d*$/i.test(port))throw new Error('请先选择串口。');port=port.toUpperCase();const revision=this.connectionRevision;this.displayState='connecting';this.state('connecting');try{await this.api('connect',{port,baudrate});if(revision===this.connectionRevision){this.port=port;this.setConnected(true);}}catch(error){this.setConnected(this.connected,this.disconnecting);throw error;}}

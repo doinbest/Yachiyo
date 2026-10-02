@@ -1,6 +1,7 @@
 import {buildCommand,grabParameters} from './protocol.mjs?v=grab-preset-20260930';
 import {createParameterExchange} from './parameter-console.mjs?v=parameter-page-20261001';
 import {GRAB_FORM_DEFAULTS} from './grab-params.mjs?v=grab-preset-20260930';
+import {mountRadarParameters} from './radar-view.mjs';
 
 const element=(tag,text,className)=>{
   const out=document.createElement(tag);
@@ -10,7 +11,7 @@ const element=(tag,text,className)=>{
 };
 
 /** Explicit, operator-driven RAM configuration page; mounting never sends a command. */
-export function mountParameterPage({root,send,canSend,onBusy,routeSpeed=5000,onRouteSpeed}){
+export function mountParameterPage({root,send,canSend,onBusy,routeSpeed=5000,onRouteSpeed,radarExchange,radarModel}){
   const exchange=createParameterExchange({send});
   const controls=[],readouts=[];
   root.append(element('p','这里修改 STM32 当前运行的参数。设备值来自主动读回；输入框是待设置值。连接或打开页面不会自动发送指令，应用后会再次读回核对。抓取任务运行时固件会拒绝 grab set。','form-note'));
@@ -79,6 +80,7 @@ export function mountParameterPage({root,send,canSend,onBusy,routeSpeed=5000,onR
     controls.push({read,apply,valid:()=>{try{buildCommand('config-set',{axis,rpm:inputs.rpm.value,acc:inputs.acc.value,limit:inputs.limit.value});return true;}catch{return false;}},readWire:`config ${axis}`,writeWire:`config ${axis} ${inputs.rpm.value} ${inputs.acc.value} ${inputs.limit.value}`});
   }
   root.append(arm);
+  const radar=radarExchange&&mountRadarParameters({root,exchange:radarExchange,model:radarModel,canSend,onBusy});
 
   const route=element('section',undefined,'parameter-group');route.append(element('h3','下次路线启动速度'));
   route.append(element('p','此处只保存网页待用速度，不会启动小车或改变正在运行的路线。真正启动请前往“地图与遥测”中的实车路线控件。','form-note'));
@@ -93,6 +95,7 @@ export function mountParameterPage({root,send,canSend,onBusy,routeSpeed=5000,onR
   route.lastChild.href='#map';root.append(route);
 
   function update(){
+    radar?.update();
     for(const item of controls){
       item.read.disabled=exchange.busy||!canSend(item.readWire);
       item.apply.disabled=exchange.busy||!item.valid()||!canSend(item.writeWire);
@@ -100,6 +103,7 @@ export function mountParameterPage({root,send,canSend,onBusy,routeSpeed=5000,onR
   }
   function cancel(reason='连接已变化'){
     exchange.cancel(reason);
+    radarExchange?.cancel(reason);radar?.cancel();
     for(const current of readouts)current.textContent='设备值：未读取';
     update();
   }

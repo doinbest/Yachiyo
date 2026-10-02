@@ -122,3 +122,43 @@ body.dark{--paper:#111312;--card:#1a1d1b;--input:#242825;--terminal:#151816;--li
 .grab-home-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)}.grab-home-row>strong{font-size:13px}.grab-home-row .actions{margin:0}.grab-preparation>.form-note{margin-top:10px}
 
 .parameter-group{border:1px solid var(--line);border-radius:10px;background:var(--card);padding:12px;margin:12px 0}.parameter-group summary{cursor:pointer;font-weight:700}.parameter-group h3{font-size:14px;margin:0 0 8px}.parameter-list{margin-top:10px}.parameter-row{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;border-top:1px solid var(--line);padding:10px 0;font-size:12px}.parameter-row>label:first-child,.parameter-row>strong{min-width:190px;flex:1 1 190px}.parameter-row label small{display:block;color:var(--muted);font-family:Consolas,monospace}.parameter-row>input{width:110px}.parameter-current{min-width:145px;flex:1 1 145px;font-variant-numeric:tabular-nums}.parameter-result{flex-basis:100%;color:var(--muted)}.parameter-arm-row>label{display:flex;flex-direction:column;gap:3px;min-width:100px}.parameter-arm-row>label input{width:100px}.parameter-group>input{width:130px;margin-right:10px}.parameter-group>a{display:inline-block;margin-left:12px;color:var(--accent)}
+
+/* Radar workspaces retain the field orientation and the always visible stop bar. */
+#map-log-toggle{display:none}
+.desk.map-focused{grid-template-rows:minmax(0,1fr) auto}
+.desk.map-focused .sidebar{grid-row:1 / 3}
+.desk.map-focused .terminal-panel{display:flex;grid-column:2 / 4;grid-row:2;max-height:300px}
+.desk.map-focused .terminal-header{min-height:36px;padding:5px 12px}
+.desk.map-focused .terminal-header strong{font-size:12px}
+.desk.map-focused #map-log-toggle{display:block}
+.desk.map-focused .terminal-header>:not(strong):not(#map-log-toggle){display:none}
+.desk.map-focused .terminal-body{display:none}
+.desk.map-focused .latest-command{min-height:44px;padding:6px 12px;flex-direction:row;align-items:center;gap:12px;border-bottom:0}
+.desk.map-focused.logs-open .terminal-body{display:flex;height:160px;flex:0 0 160px}
+.desk.map-focused.logs-open .terminal-header>:not(strong):not(#map-log-toggle){display:initial}
+.desk.map-focused.logs-open #log-filters{display:flex}
+.map-top .mode-tabs{margin:0;gap:5px;flex-wrap:wrap}
+.map-top .mode-tabs button{font-size:12px;padding:6px 9px}
+.map-top>label{width:100%;justify-content:space-between}
+.map-view-tools{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:9px;font-size:11px}
+.map-view-tools button{padding:5px 8px;font-size:11px}
+.map-view-tools label{white-space:nowrap}
+#field-map{touch-action:none;cursor:grab;user-select:none}
+#field-map:active{cursor:grabbing}
+.legend-device{color:#008e64}.legend-offline{color:#bb4b79}
+.radar-mask-cells{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;font-size:10px}
+.radar-mask-cells label{display:flex;align-items:center;gap:3px}
+.radar-mask-cells input{width:auto}
+#radar-offline-params input{font-size:11px}
+@media(max-width:1150px) and (min-width:761px){.desk.map-focused .terminal-panel{grid-column:2}}
+@media(max-width:760px){
+ .desk.map-focused{grid-template-rows:auto minmax(0,1fr) auto}
+ .desk.map-focused .sidebar{grid-row:1}
+ .desk.map-focused .terminal-panel{grid-column:1;grid-row:3}
+ .desk.map-focused .latest-command{align-items:flex-start;flex-direction:column;gap:3px}
+ .desk.map-focused.logs-open .terminal-body{height:120px;flex-basis:120px}
+}
+
+#map-recent-result{display:none}.desk.map-focused #map-recent-result{display:block;color:var(--accent);overflow-wrap:anywhere}.desk.map-focused .latest-command{flex-wrap:wrap}
+
+#radar-diagnostics{font:11px/1.6 Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto}

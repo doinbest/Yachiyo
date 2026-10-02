@@ -14,6 +14,13 @@ static GrabRoute_State State;
 static uint32_t StartTick, WaitTick, CodeSequence;
 static const char *Reason;
 static const char TestCode[] = "156+123+516+231";
+bool GrabRoute_StartPlanned(const RadarPlan_t *plan,float speed)
+{
+  if(GrabRoute_IsBusy() || GrabTask_IsBusy() || !GrabTask_ConfigReady("pick")) return false;
+  if(!ChassisRoute_PlanStart(plan,speed,true)) return false;
+  StartTick=HAL_GetTick();CodeSequence=0U;State=GR_DRIVING;Reason="to_scan";
+  return true;
+}
 
 static void Report(uint8_t Error)
 {
@@ -75,9 +82,9 @@ void GrabRoute_Process(void)
   {
     if(strcmp(Route.state,"station")) return;
     if(!Route.stop_confirmed) { Fail("station_stop_unconfirmed");return; }
-    if(Route.segment==2U)
+    if(Route.planned?(Route.station==5U && Route.visit==1U):Route.segment==2U)
     { State=GR_SCAN_WAIT;WaitTick=HAL_GetTick();Reason="simulated_scan_wait";Report(0U); }
-    else if(Route.segment==4U)
+    else if(Route.planned?(Route.station==4U && Route.visit==2U):Route.segment==4U)
     {
       if(!ChassisRoute_StationFinish()) { Fail("handoff_failed");return; }
       if(!GrabTask_Start("pick")) { Fail("grab_start_failed");return; }
@@ -85,7 +92,8 @@ void GrabRoute_Process(void)
     }
     return;
   }
-  if(strcmp(Route.state,"station") || Route.segment!=2U || !Route.stop_confirmed)
+  if(strcmp(Route.state,"station") ||
+     (Route.planned?(Route.station!=5U || Route.visit!=1U):Route.segment!=2U) || !Route.stop_confirmed)
   { Fail("station_lost");return; }
   if(State==GR_SCAN_WAIT && HAL_GetTick()-WaitTick>=1000U)
   {

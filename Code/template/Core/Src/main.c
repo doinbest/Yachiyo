@@ -63,6 +63,8 @@
 #include "chassis_localization.h"
 #include "chassis_route.h"
 #include "chassis_telemetry.h"
+#include "radar_scan.h"
+#include "radar_console.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -476,7 +478,7 @@ static bool OptionalDisplayReady(void)
          !GrabTask_IsBusy() && !GrabRoute_IsBusy() && !MechanicalArm_IsBusy() &&
          !ArmVision_IsBusy() && !MaterialVision_IsBusy() && !Mecanum_IsBusy() &&
          !ChassisMotion_StopPending() && !ArmConsole_OperationBusy() &&
-         !bus.active && !recovery.active;
+         !bus.active && !recovery.active && !RadarConsole_ScanBusy();
 }
 
 /* USER CODE END 0 */
@@ -583,6 +585,8 @@ int main(void)
   ChassisRoute_Init();
   ChassisMotion_Init();
   ChassisTelemetry_Init();
+  (void)RadarScan_Init(&huart2); /* RX only; scanning requires an explicit command. */
+  RadarConsole_Init();
   if (MechanicalArm_Init(&huart5) != HAL_OK)
   {
     Error_Handler();
@@ -618,6 +622,7 @@ int main(void)
       if (ArmConsole_ResetProcess()) continue;
     }
     MotorBus_Process();
+    RadarScan_Process(); /* Bounded parsing, no delay or motor submission. */
     Camera_Process();
     ImuTiming_Mark(IMU_TIME_CAMERA);
     MechanicalArm_Process();
@@ -652,6 +657,7 @@ int main(void)
     Mecanum_Velocity_Process(); /* 航向控制使用本圈已检查的模块角度。 */
     ImuTiming_Mark(IMU_TIME_CHASSIS);
     ChassisTelemetry_Process();
+    RadarConsole_Process();
     HWT101_Upload_Process();
     ImuTiming_Mark(IMU_TIME_LOG);
     ArmConsole_Process();
@@ -785,6 +791,10 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
   {
     ConsoleRx_RxEventCallback(huart);
   }
+  else if (huart->Instance == USART2)
+  {
+    RadarUart_RxEventCallback(huart,Size);
+  }
 }
 
 /**
@@ -805,6 +815,10 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   else if (huart->Instance == USART3)
   {
     TJC_Tx_Callback(huart);
+  }
+  else if (huart->Instance == USART2)
+  {
+    RadarUart_TxCpltCallback(huart);
   }
 }
 
@@ -830,6 +844,10 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     __HAL_UART_CLEAR_OREFLAG(huart);
     QR_ErrorCallback();
     (void)HAL_UART_Receive_IT(&huart4, &QR_RxByte, 1U);
+  }
+  else if (huart->Instance == USART2)
+  {
+    RadarUart_ErrorCallback(huart);
   }
 
 

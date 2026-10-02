@@ -43,8 +43,10 @@ int main(void)
   assert(ConsoleTx_Write((const uint8_t *)"reply\r\n",7));
   assert(ConsoleTx_Urgent("STOP\r\n",6));
   assert(ConsoleTx_Telemetry("map\r\n",5));
+  assert(ConsoleTx_Bulk("radar page\r\n",12));
+  assert(!ConsoleTx_Bulk("overwrite\r\n",11));
   ConsoleTx_Process();pump(1000);
-  assert(!strcmp(wire,"STOP\r\nreply\r\nmap\r\nlatest imu\r\nlatest vision\r\n"));
+  assert(!strcmp(wire,"STOP\r\nreply\r\nmap\r\nradar page\r\nlatest imu\r\nlatest vision\r\n"));
   ConsoleTx_GetStats(&stats);
   assert(stats.reply_peak==7 && stats.reply_dropped==0 && stats.debug_dropped==400);
   assert(stats.bytes_sent==length);

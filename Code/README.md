@@ -11,6 +11,6 @@
 | [upper-computer-web/](upper-computer-web/README.md) | 本地控制台；`local-car/start.cmd` 或启动快捷方式 |
 | [reference/](reference/README.md) | GongXun、F1 雷达及 C# 雷达上位机参考代码 |
 | `tests/` | F407 主机回归；在仓库根运行 `python Code/tests/run_firmware_tests.py` |
-| `tools/` | 共用开发工具位置，目前仅保留旧缓存 |
+| `tools/` | 共用开发工具；`radar_plan_cli.c` 在主机调用固件同一份建图与规划核心 |
 
 各模块内部目录与相互邻接关系保持。构建与软件测试日志统一保存在仓库根 `.embeddedskills/`；参考工程不自动参加活动固件构建。

@@ -4,6 +4,8 @@
 
 现有功能包括机械臂与夹爪、麦轮底盘、HWT101 航向验证与保持、B2 颜色搜索/对准、二维码任务码、串口屏、OLED、地图遥测和实车16段路线。视觉对准和路线到点不等于完整搬运任务完成；软件回归不替代实物验收。
 
+LDS50C 已接入 USART2：F407 静止采一整圈、筛选建图并规划工位路线；网页“地图与规划”沿用当前二维地图，提供雷达图层、右键放大、设备参数与同一 C 算法的离线对照。扫描与计算不会自动运动，运行路线须显式启动；原实车16段路线继续可用。坐标对照、分页协议及上板顺序见[雷达融合实现与联调](docs/开发记录/2026-10-02-雷达融合实现与联调.md)。
+
 新增静止红色单件抓取：固定姿态动作验证、底盘/X协同对准（蓝色物料）、单件抓取（红色物料），以及前四段模拟扫码联动。通过网页视觉页或`grab`命令使用；配置缺项不运动，抓取提起后Base转−180°、下降放置、松爪并提起后等待人工验收；上电自动Z/X碰撞回零、Base就近回零。详见[实现与标定](docs/开发记录/2026-09-27-单件抓取实现与标定.md)。所有视觉任务统一使用原 B2 协议。2026-10-02 用户提供的最新视觉源码已保存为 `Code/orange_pi/vision.py`，旧视觉脚本已删除；本次仅更新本地源码，未部署香橙派。用户已确认 `align` 完整验证，本轮仅分析 `pick` 与其流程对齐及漏检容错，详见[分析记录](docs/开发记录/2026-10-02-视觉源码更新与align-pick容错分析.md)。协议约定见[ B2 恢复说明](docs/开发记录/2026-09-29-B2协议兼容恢复.md)。
 
 2026-10-02 后续修复了取放后参考缺项状态未及时更新的问题，并精简抓取终端中文摘要。普通停止和总线恢复保留配置，参考变化后使用“重新建立三轴参考”；本次未修改视觉对准和漏检恢复策略。详见[修复记录](docs/开发记录/2026-10-02-抓取参考诊断与终端精简.md)。
@@ -20,7 +22,7 @@
 │  ├─ upper-computer-web/   本地控制台
 │  ├─ reference/            GongXun 与雷达参考代码
 │  ├─ tests/                F407 主机回归
-│  └─ tools/                共用工具位置，当前仅有旧缓存
+│  └─ tools/                共用工具，含雷达C规划离线入口
 ├─ docs/                    正式资料、协议与开发记录
 ├─ .embeddedskills/         本地配置、日志与分析产物
 ├─ tmp/                     临时分析文件
@@ -50,7 +52,7 @@
 | 接口 | 引脚 | 当前用途 |
 |---|---|---|
 | USART1 | PA9/PA10 | 无线文本控制台，ASCII/CRLF |
-| USART2 | PA2/PA3 | 预留雷达 |
+| USART2 | PA2/PA3 | LDS50C，921600/8N1，循环RX DMA |
 | USART3 | PD8/PD9 | 串口屏 |
 | UART4 | PC10/PC11 | 二维码 |
 | UART5 | PC12/PD2 | 步进电机共享总线 |
@@ -84,7 +86,8 @@ USART1 控制台、香橙派 USB B2 和 UART5 电机协议各自独立，不能�
 ```powershell
 python Code/tests/run_firmware_tests.py
 node --test Code/upper-computer-web/local-car/tests/*.test.mjs
-python -m unittest discover -s Code/upper-computer-web/local-car/tests -p test_bridge.py
+python -m unittest discover -s Code/upper-computer-web/local-car/tests -p 'test*.py'
+python Code/tests/radar_wire_contract_test.py
 ```
 
 固件主机测试需要 Python 和 PATH 中的 GCC；网页测试需要 Node.js。上述测试使用主机模拟，不打开实车串口。日志集中保存到 `.embeddedskills/`，其中仅提交 `config.json`；Keil/EIDE 也会在各工程内生成被 Git 忽略的编译输出。
@@ -123,3 +126,4 @@ python -m unittest discover -s Code/upper-computer-web/local-car/tests -p test_b
 | 2026-09-30 | [抓取 Z 轴默认 250RPM](docs/开发记录/2026-09-30-抓取Z轴默认250RPM.md)：按 480 命令脉冲/mm 换算为 27.777778mm/s，可使用 grab set/get 临时调速 |
 | 2026-10-02 | [项目目录整理](docs/开发记录/2026-10-02-项目目录整理.md)：参考工程归档、模块入口和协作规范 |
 | 2026-10-02 | [STM32 主车固件精简](docs/开发记录/2026-10-02-STM32主车固件精简.md)：Git 检查点、未使用模块与兼容接口清理、参数保存边界 |
+| 2026-10-02 | [雷达融合实现与联调](docs/开发记录/2026-10-02-雷达融合实现与联调.md)：USART2、整圈建图、当前坐标规划、网页图层与同 C 核心离线对照 |

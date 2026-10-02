@@ -28,6 +28,10 @@ bool ConsoleTx_Telemetry(const char *data, uint16_t size);
 void ConsoleTx_TelemetryCancel(void);
 /** Whether a new telemetry snapshot can be prepared without a TX backlog. */
 bool ConsoleTx_TelemetryReady(void);
+/** @brief Independent low-priority radar page, <=256 bytes. Never overwrites
+ * chassis telemetry; urgent replies win at the next complete page boundary. */
+bool ConsoleTx_Bulk(const char *data, uint16_t size);
+bool ConsoleTx_BulkReady(void);
 /** @brief Copy latest QR event into its independent pending slot.
  * @return Accepted into RAM, not transmitted. Reply > event > telemetry.
  */

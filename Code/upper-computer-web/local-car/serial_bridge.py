@@ -19,12 +19,13 @@ STOP_REPLY = re.compile(
 READ_COMMAND = re.compile(
     r'(?:info|help|bus status|console status|(?:state|position|config) (?:base|z|x|all)|'
     r'(?:vision|camera|material|imu|qr|grab) status|qr read|grab get [a-z][a-z0-9_]*|'
-    r'chassis (?:task|status|snapshot|feedback|stop-status|route status)|map status)')
+    r'chassis (?:task|status|snapshot|feedback|stop-status|route status)|'
+    r'radar (?:status|get|nav status|fetch (?:map|path|points|cloud|params) \d+ \d+)|map status)')
 PREPARATION_COMMAND = re.compile(
     r'(?:chassis (?:units 65536|feedback (?:0|on)|'
     r'origin 2250 150 90|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')
-CANCEL_COMMAND = re.compile(r'(?:bus recover|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|(?:vision|material|camera|grab) stop)')
-PRIORITY_STOP = re.compile(r'(?:chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|(?:vision|material|camera|grab) stop)')
+CANCEL_COMMAND = re.compile(r'(?:bus recover|radar (?:stop|nav cancel)|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|(?:vision|material|camera|grab) stop)')
+PRIORITY_STOP = re.compile(r'(?:radar (?:stop|nav cancel)|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|(?:vision|material|camera|grab) stop)')
 TERMINAL_STOP = {'confirmed', 'timeout', 'disconnected'}
 
 
@@ -113,13 +114,14 @@ class SerialBridge:
             self._event('system', 'Local confirmed configuration saved; no driver settings sent')
             return dict(config)
 
-    def _event(self, kind, text, **fields):
+    def _event(self, kind, text, *, record=True, **fields):
         with self.cv:
             self.last_event_id += 1
             event = {'id':self.last_event_id, 'kind':kind, 'text':text,
                      'time':datetime.now(timezone.utc).isoformat(), **fields}
             self.events.append(event)
-            self.event_file.write(json.dumps(event, ensure_ascii=False)+'\n')
+            if record and kind != 'radar':
+                self.event_file.write(json.dumps(event, ensure_ascii=False)+'\n')
             self.cv.notify_all()
             return event
 
@@ -314,12 +316,15 @@ class SerialBridge:
     def _handle_rx(self, data):
         self.rx_file.write(data)
         # Raw chunks preserve all bytes and timing, including invalid/partial lines.
-        self._event('raw', '', hex=data.hex())
+        radar_chunk = self.rx_buffer.startswith(b'@RADAR ') or b'@RADAR ' in data
+        self._event('raw', '', record=not radar_chunk, hex=data.hex())
         for byte in data:
             if byte == 10:
                 if not self.rx_dropping:
                     line = self.rx_buffer.rstrip(b'\r').decode('utf-8', errors='replace')
-                    self._event('rx', line)
+                    # Paged radar data is transport, not terminal history. Raw RX
+                    # remains available in the binary capture for diagnostics.
+                    self._event('radar' if line.startswith('@RADAR ') else 'rx', line)
                     match = STOP_REPLY.fullmatch(line)
                     if match and self.stop_latched and self.stop_reply_active and self.stop['status'] != 'confirmed':
                         ident, token, requested, complete, stopped, reason = match.groups()

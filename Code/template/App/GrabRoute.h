@@ -2,11 +2,15 @@
 #ifndef GRAB_ROUTE_H
 #define GRAB_ROUTE_H
 #include <stdbool.h>
+#include "radar_map.h"
 void GrabRoute_Init(void);
 /** @brief 主循环在路线处理后调用。扫码计时从第2段停车确认开始。 */
 void GrabRoute_Process(void);
 /** @brief 仅表示组合路线仍在调度；抓取阶段由GrabTask_IsBusy表示。 */
 bool GrabRoute_IsBusy(void);
+/** @brief Explicitly start the QR→RAW→single pick test using a completed map
+ * plan. Keeps the current simulated test code and existing pick controller. */
+bool GrabRoute_StartPlanned(const RadarPlan_t *plan,float speed);
 /** @brief 取消自动推进；请求路线/抓取停止，不松开夹爪。 */
 void GrabRoute_Stop(void);
 /** @brief 处理grab route <mm/s>；grab status附加路线状态后返回false。 */
