@@ -222,7 +222,7 @@ ch.append(controlForm('chassis-run',{label:'整车平移与转向'}));
 ch.append(node('p','前向速度：正数前进，负数后退；左向速度：正数左移，负数右移。角速度：正数逆时针。角速度为 0 时保持起步朝向，需 IMU 验证通过。','form-note'));
 const wheelSection=node('details',undefined,'advanced');wheelSection.append(node('summary','四轮状态 · 查看反馈快照'));
 actions(wheelSection,[['feedback-read','刷新四轮快照']]);wheelView=mountWheelFeedback(wheelSection);ch.append(wheelSection);
-const realRoute=node('details',undefined,'real-route-panel');realRoute.id='real-route-panel';realRoute.open=true;realRoute.append(node('summary','准备跑图 · 实车完整路线 · 16段'));
+const realRoute=node('details',undefined,'glass map-controls map-details real-route-panel');realRoute.id='real-route-panel';realRoute.append(node('summary','16 段实车路线 · 准备与执行'));
 prepView=mountPreparation({root:realRoute,send:wire=>send(wire,true),beginTelemetry:nonce=>mapView.beginPreparedTelemetry(nonce),telemetry:()=>mapView?.snapshot(),getConfig:()=>bridge.config,saveConfig:c=>bridge.saveConfig(c),configAvailable:()=>bridge.available,isStopped:stopped,acquire:()=>bridge.acquirePreparation(),release:()=>bridge.releasePreparation(),changed:updateControls});
 realRoute.append(node('p','从 (2250,150,90°) 出发，按地图默认16个站点经过扫码位、原料区、粗加工区、暂存区，最终返回起点。选择手动逐段或自动停稳0.1秒后继续；不自动执行扫码与抓放。','form-note'));
 realRoute.append(controlForm('chassis-route-start',{label:'手动分段运行'}));
@@ -231,7 +231,8 @@ actions(realRoute,[['chassis-route-next','手动下一段'],['chassis-route-canc
 const realStatus=node('pre','实车路线状态不可用 · 请在地图页手动开启遥测；查询回复见收发记录。','real-route-status');realStatus.id='real-route-status';realStatus.setAttribute('role','status');realRoute.append(realStatus);
 
 realRoute.append(node('p','需先完成驱动反馈配置、IMU 验证与地图锚点设置。路线到点表示编码器反馈估计进入容差，不能替代视觉精对准、扫码或抓取确认。刷新、重连和切换页面不会开始或进入下一段；取消请求与实际停止分别看设备状态。','form-note'));
-const routeWorkspace=node('div',undefined,'route-workspace'),routeOps=node('div',undefined,'route-operations');const prepSection=realRoute.querySelector('.route-preparation');for(const child of [...realRoute.children])if(child.tagName!=='SUMMARY'&&child!==prepSection)routeOps.append(child);routeWorkspace.append(prepSection,routeOps);realRoute.append(routeWorkspace);$('map-page').querySelector('.map-sidebar').prepend(realRoute,$('simulation-actions'),$('route-editor'),$('speed-lab-note'));
+const routeWorkspace=node('div',undefined,'route-workspace'),routeOps=node('div',undefined,'route-operations');const prepSection=realRoute.querySelector('.route-preparation');for(const child of [...realRoute.children])if(child.tagName!=='SUMMARY'&&child!==prepSection)routeOps.append(child);routeWorkspace.append(prepSection,routeOps);realRoute.append(routeWorkspace);for(const row of realRoute.querySelectorAll('.actions'))row.classList.add('map-action-grid');for(const form of realRoute.querySelectorAll('.control-form'))form.classList.add('map-compact-form');$('online-controls').after(realRoute);
+$('simulation-actions').classList.add('map-action-grid');$('sim-controls').querySelector('.simulation-options').before($('simulation-actions'));$('route-editor').classList.add('map-details');$('sim-controls').append($('route-editor'));const speedLab=node('details',undefined,'map-details');speedLab.append(node('summary','速度曲线与模拟说明'),$('speed-lab-note'));$('sim-controls').append(speedLab);
 const advancedMotion=node('details',undefined,'advanced');advancedMotion.append(node('summary','高级运动 · 指定航向与地图位移'));
 advancedMotion.append(node('p','指定航向使用 HWT101 模块角度；地图位移使用场地坐标。先完成准备跑图，再使用这些操作。','form-note'));
 advancedMotion.append(controlForm('chassis-heading',{label:'保持指定模块航向'}),controlForm('chassis-move',{label:'地图相对位移 · 最长 300 mm'}),controlForm('chassis-origin',{label:'手动设置地图位姿 · 不移动小车'}));ch.append(advancedMotion);

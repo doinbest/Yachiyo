@@ -22,11 +22,35 @@ function fieldDrawing(){
   for(const [x,y,text]of [[0,0,'O (0,0)'],[2450,0,'X →'],[0,2500,'Y ↑'],[1200,2690,'原料区 · 中心 (1200,2470) · Ø300'],[2680,1200,'二维码'],[2400,1020,'(2400,1200)'],[2240,2250,'300'],[2240,150,'返回启停区'],[1200,-140,'粗加工区'],[-160,1360,'暂存区'],[775,775,'450 × 450'],[1625,1625,'450 × 450']])labels.append(svg('text',{x,y:2400-y,'text-anchor':x===0?'start':'middle','font-size':x===2680?44:42,fill:'#294457'},text));
   for(let i=600;i<=2400;i+=600){labels.append(svg('text',{x:i,y:2490,'text-anchor':'middle','font-size':38,fill:'#496277'},String(i)));labels.append(svg('text',{x:-50,y:2410-i,'text-anchor':'end','font-size':38,fill:'#496277'},String(i)));}
 }
+function observeFieldLabels(){
+  if(typeof ResizeObserver!=='function')return;
+  const map=$('field-map'),labels=[...$('field-labels').children].map(node=>({node,x:Number(node.getAttribute('x')),y:Number(node.getAttribute('y')),size:Number(node.getAttribute('font-size'))}));
+  const fit=()=>{
+    const rect=map.getBoundingClientRect(),matrix=map.getScreenCTM();
+    if(!rect.width||!rect.height||!matrix)return;
+    const scale=Math.hypot(matrix.a,matrix.b);
+    if(!Number.isFinite(scale)||scale<=0)return;
+    map.style.setProperty('--map-label-size',`${Math.max(42,11/scale)}px`);
+    map.style.setProperty('--map-count-size',`${Math.max(48,10/scale)}px`);
+    const view=map.viewBox.baseVal,padding=2/scale;
+    for(const {node,x,y,size} of labels){
+      // Keep names and ticks readable without changing map coordinates or scale.
+      node.setAttribute('font-size',Math.max(size,(size===38?10:11)/scale));
+      node.setAttribute('x',x);node.setAttribute('y',y);
+      const box=node.getBBox();
+      const dx=Math.max(0,view.x+padding-box.x)-Math.max(0,box.x+box.width-(view.x+view.width-padding));
+      const dy=Math.max(0,view.y+padding-box.y)-Math.max(0,box.y+box.height-(view.y+view.height-padding));
+      if(dx)node.setAttribute('x',x+dx);
+      if(dy)node.setAttribute('y',y+dy);
+    }
+  };
+  new ResizeObserver(fit).observe(map);fit();
+}
 export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
-  const telemetry=new Telemetry();let connected=false,running=false,mode='offline',runner=null,activeRows=[],wholeRoute=true;
+  const telemetry=new Telemetry();let connected=false,running=false,mode=$('map-source').value||'offline',runner=null,activeRows=[],wholeRoute=true;
   let pose={x_mm:2250,y_mm:150,yaw_rad:Math.PI/2},path=[pose];let body=[0,0,0],geometry={...DEFAULT_GEOMETRY};
   const stepper=new FixedStepper();let last=performance.now(),lastRender=0;
-  fieldDrawing();
+  fieldDrawing();observeFieldLabels();
   const offlineFields=[['start-x','初始 X / mm',2250,-5000,5000,1],['start-y','初始 Y / mm',150,-5000,5000,1],['start-theta','初始 θ / °',90,-3600,3600,1],['geom-l','轴距 L / mm · 估计',210,1,2000,1],['geom-w','轮距 W / mm · 估计',240,1,2000,1],['geom-d','轮径 D / mm · 假设',80,1,1000,.1],['geom-g','减速比 G · 假设',1,.01,100,.01]];
   for(const [id,text,value,min,max,step]of offlineFields){const label=document.createElement('label');label.textContent=text;const input=document.createElement('input');Object.assign(input,{id,type:'number',value,min,max,step,required:true});label.append(input);$('sim-fields').append(label);}
   function readInputs(){
@@ -53,7 +77,8 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
       tr.append(td);return tr;
     }));
   }
-  function reset(){if(!readInputs())return;pose={x_mm:Number($('start-x').value),y_mm:Number($('start-y').value),yaw_rad:Number($('start-theta').value)*Math.PI/180};invalidate('模拟已复位 · 从初始位姿开始');}
+  function showSimulation(){mode='offline';$('map-source').value=mode;}
+  function reset(){if(!readInputs())return;showSimulation();pose={x_mm:Number($('start-x').value),y_mm:Number($('start-y').value),yaw_rad:Number($('start-theta').value)*Math.PI/180};invalidate('模拟已复位 · 从初始位姿开始');}
   function startRoute(rowIndex=null){
     if(!readInputs())return;
     const relevant=rowIndex===null?[...$('route-rows').querySelectorAll('input')]:[...$('route-rows').children[rowIndex].querySelectorAll('input')];
@@ -61,6 +86,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
     try {
       const rows=readRows(),initial=rowIndex===null?{x_mm:Number($('start-x').value),y_mm:Number($('start-y').value),yaw_rad:Number($('start-theta').value)*Math.PI/180}:pose;
       const next=new RouteRunner(rowIndex===null?rows:[rows[rowIndex]],initial,{geometry,integer:$('sim-model').value==='integer'});
+      showSimulation();
       runner=next;wholeRoute=rowIndex===null;activeRows=rowIndex===null?rows.map((_,i)=>i):[rowIndex];pose=runner.pose;path=runner.path;body=[0,0,0];running=true;stepper.reset();last=performance.now();$('sim-status').textContent='路线模拟运行中';render();
     }catch(error){$('sim-status').textContent=error.message;}
   }
@@ -76,7 +102,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   });
   $('route-add').addEventListener('click',()=>{const rows=readRows();if(rows.length>=50)return;rows.push(defaultSegment());drawRows(rows);invalidate('已添加一段 · 请设置参数');});
   $('sim-form').addEventListener('submit',e=>{e.preventDefault();startRoute();});
-  $('sim-resume').addEventListener('click',()=>{if(runner?.state!=='running')return;running=true;stepper.reset();last=performance.now();$('sim-status').textContent='路线模拟运行中';render();});
+  $('sim-resume').addEventListener('click',()=>{if(runner?.state!=='running')return;showSimulation();running=true;stepper.reset();last=performance.now();$('sim-status').textContent='路线模拟运行中';render();});
   function pauseSimulation(message){
     if(!running)return;
     running=false;stepper.reset();$('sim-status').textContent=message;render();
@@ -85,7 +111,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   $('sim-reset').addEventListener('click',reset);
   $('sim-fields').addEventListener('input',()=>invalidate('参数已编辑 · 整条路线将使用新初始位姿；单段使用当前位姿'));
   $('sim-model').addEventListener('change',()=>invalidate('模型已切换 · 请重新运行路线'));
-  $('map-source').addEventListener('change',e=>{pauseSimulation('已切换数据来源 · 模拟暂停，可继续');mode=e.target.value;$('sim-controls').hidden=mode!=='offline';$('route-editor').hidden=mode!=='offline';$('simulation-actions').hidden=mode!=='offline';$('online-controls').hidden=mode==='offline';render();});
+  $('map-source').addEventListener('change',e=>{pauseSimulation('已切换数据来源 · 模拟暂停，可继续');mode=e.target.value;render();});
   $('stream-on').addEventListener('click',async()=>{
     if(isPreparing())return;
     let nonce=0;while(!nonce)nonce=crypto.getRandomValues(new Uint32Array(1))[0];

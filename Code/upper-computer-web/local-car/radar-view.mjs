@@ -28,6 +28,7 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
   map.addEventListener('pointermove',e=>{const p=new DOMPoint(e.clientX,e.clientY).matrixTransform(world.getScreenCTM().inverse());$('map-cursor').textContent=`鼠标 X ${p.x.toFixed(1)} · Y ${p.y.toFixed(1)} mm`;});
   function selectTab(value){
     tab=value;for(const b of $('map-tabs').children){const active=b.dataset.mapTab===tab;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));}
+    $('map-workspace-title').textContent=({monitor:'实车监控',radar:'雷达建图',offline:'离线对照'})[tab];
     $('radar-build-panel').hidden=tab!=='radar';$('radar-offline-panel').hidden=tab!=='offline';$('radar-monitor-panel').hidden=tab!=='monitor';
     const offlineTab=tab==='offline';
     for(const id of ['real-route-panel','online-controls'])$(id).hidden=tab!=='monitor';for(const id of ['sim-controls','simulation-actions','route-editor','speed-lab-note'])$(id).hidden=!offlineTab;render();
