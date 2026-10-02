@@ -1,6 +1,6 @@
 import {buildCommand} from './protocol.mjs';
 import {createParameterExchange,sameNumber} from './parameter-console.mjs';
-import {parameterTabs,parameterFields,displayValue,fieldWrites,deviceRequests} from './parameter-schema.mjs';
+import {parameterTabs,parameterFields,materialScenarios,displayValue,fieldWrites,deviceRequests} from './parameter-schema.mjs';
 import {GRAB_TEST_PRESET} from './grab-params.mjs';
 const el=(tag,text,cls)=>{const out=document.createElement(tag);if(text!==undefined)out.textContent=text;if(cls)out.className=cls;return out;};
 const notes={material:'最高处为 Z=0。下降距离为正数；抬升距离从夹取位置向上计算。只需标定当前取放场景。',turntable:'ID 8 · 3 个仓位 · 电机与转盘 1∶1 直连。先人工对齐第一仓位再建立参考；不会自动回零或清零。第二、第三仓位角度待标定。',vision:'准心、像素响应与协同对准参数。普通停止保留参数；参考姿态改变后按设备状态恢复适用性。',motion:'尺度与实际行程需要标定。普通手动轴配置与自动取放速度独立；Z 普通运动脉冲限制固定为不限。',radar:'雷达参数用于下次扫描。路线速度是浏览器本地设置，不参加 STM32 读取，也不会立即改变实车速度。'};
@@ -22,33 +22,53 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
     const value=displayValue(row.field,device(row.field)),known=Object.hasOwn(device(row.field),row.field.key),formatted=value===null?'未设置':String(Number(value.toPrecision(8)));
     const history=historicalValues.has(row.field.kind+':'+row.field.key)||row.field.down&&historicalValues.has(row.field.kind+':'+row.field.down);
     row.current.textContent=known?(history?'历史设备值':'设备值')+'：'+formatted+(value!==null&&row.field.unit?' '+row.field.unit:''):'设备值：未读取';
+    row.current.title=row.current.textContent;
     if(known&&!preserve){row.input.value=value===null?'':String(Number(value.toPrecision(8)));row.dirty=false;row.state.textContent=value===null?'未设置':'已读取';}
     if(known&&preserve&&updateState)row.state.textContent=value!==null&&row.input.value!==''&&sameNumber(value,Number(row.input.value))?'读回一致':'待应用';
-    if(updateState)row.state.dataset.state=row.state.textContent==='读回一致'?'confirmed':row.dirty?'draft':'read';
+    if(updateState){row.state.dataset.state=row.state.textContent==='读回一致'?'confirmed':row.dirty?'draft':'read';row.state.title=row.state.textContent;}
+  }
+  function createField(field,shortLabel){
+    const row=el('div',undefined,'parameter-field'),label=el('label',shortLabel??field.label),input=el('input'),control=el('div',undefined,'parameter-input-control'),current=el('small','设备值：未读取','parameter-device-value'),state=el('span','未读取','parameter-field-state');
+    Object.assign(input,{type:'number',min:field.min,max:field.max,step:field.step??'any',id:'parameter-'+field.kind+'-'+field.key,readOnly:!!field.readOnly});label.htmlFor=input.id;input.dataset.parameterKey=field.key;
+    input.setAttribute('aria-label',field.label+(field.unit?'（'+field.unit+'）':''));
+    const unit=el('span',field.unit||'—','parameter-unit');unit.setAttribute('aria-hidden','true');control.append(input,unit);
+    if(field.readOnly){input.setAttribute('aria-readonly','true');input.placeholder=field.key==='z_limit'?'固定不限脉冲':'参考 0°';}
+    const entry={field,input,current,state,dirty:false,root:row};rows.set(field.kind+':'+field.key,entry);
+    input.oninput=()=>{entry.dirty=true;state.textContent='待应用';state.title=state.textContent;state.dataset.state='draft';update();};
+    row.id='parameter-row-'+field.kind+'-'+field.key;row.append(label,control,current,state);
+    if(field.kind==='local'){input.value=String(routeSpeed);current.textContent='浏览器本地：'+routeSpeed+' mm/s';state.textContent='本地设置';}
+    return row;
+  }
+  function mountMaterialScenarios(grid,fields){
+    const card=el('section',undefined,'parameter-card parameter-height-card');card.append(el('h3','Z 场景距离'));
+    const table=el('div',undefined,'parameter-height-table'),head=el('div',undefined,'parameter-height-head');
+    head.append(el('span','取放场景'),el('span','下降距离 / mm'),el('span','夹取或取出后抬升 / mm'));table.append(head);
+    for(const [name,down,lift]of materialScenarios){
+      const row=el('div',undefined,'parameter-height-row');row.append(el('strong',name));
+      row.append(createField(fields.find(field=>field.key===down),'下降距离'));
+      row.append(lift?createField(fields.find(field=>field.key===lift),'抬升距离'):el('div','—','parameter-empty-cell'));
+      table.append(row);
+    }
+    card.append(table,el('p','车载入仓与取出共用下降位置；取出后抬升独立设置，退出仓位后再分度。','form-note'),el('p','同姿态下：第二层下降距离 = 第一层下降距离 − 下层实际高度。按实物填写。','form-note'));grid.append(card);
   }
   for(const [key,label]of parameterTabs){
     const button=el('button',label);button.type='button';button.dataset.parameterTab=key;button.setAttribute('role','tab');button.onclick=()=>{selectTab(key);if(globalThis.location)location.hash='params/'+key;};buttons.set(key,button);nav.append(button);
     const panel=el('section',undefined,'parameter-tab-panel');panel.dataset.parameterPanel=key;panel.append(el('p',notes[key],'form-note'));
     const grid=el('div',undefined,'parameter-card-grid');panel.append(grid);panels.set(key,panel);root.append(panel);
     const fields=parameterFields.filter(f=>f.tab===key);
+    if(key==='material')mountMaterialScenarios(grid,fields);
     if(key==='vision'){
       const preset=el('section',undefined,'parameter-card'),button=el('button','填入现有调试预设');button.type='button';
       preset.append(el('h3','联调预设'),el('p','将 grab-params.mjs 中的现有调试值填入草稿。不会发送指令；逐标签应用并读回确认。','form-note'),button);grid.append(preset);
       button.onclick=()=>{for(const row of rows.values())if(row.field.kind==='grab'&&Object.hasOwn(GRAB_TEST_PRESET,row.field.key)){const value=displayValue(row.field,GRAB_TEST_PRESET);if(value!==null){row.input.value=String(value);row.input.oninput();}}resultLine.textContent='现有调试预设已填入草稿；尚未写入设备';};
     }
     for(const group of new Set(fields.map(f=>f.group))){
+      if(key==='material'&&group==='Z 场景距离')continue;
       const card=el('section',undefined,'parameter-card');card.append(el('h3',group));
-      for(const field of fields.filter(f=>f.group===group)){
-        const row=el('div',undefined,'parameter-field'),label=el('label',field.label+(field.unit?' / '+field.unit:'')),input=el('input'),current=el('small','设备值：未读取','parameter-device-value'),state=el('span','未读取','parameter-field-state');
-        Object.assign(input,{type:'number',min:field.min,max:field.max,step:field.step??'any',id:'parameter-'+field.kind+'-'+field.key,readOnly:!!field.readOnly});label.htmlFor=input.id;input.dataset.parameterKey=field.key;
-        if(field.readOnly){input.setAttribute('aria-readonly','true');input.placeholder=field.key==='z_limit'?'固定不限脉冲':'参考 0°';}
-        const entry={field,input,current,state,dirty:false,root:row};rows.set(field.kind+':'+field.key,entry);
-        input.oninput=()=>{entry.dirty=true;state.textContent='待应用';state.dataset.state='draft';update();};
-        row.id='parameter-row-'+field.kind+'-'+field.key;row.append(label,input,current,state);card.append(row);
-        if(field.kind==='local'){input.value=String(routeSpeed);current.textContent='浏览器本地：'+routeSpeed+' mm/s';state.textContent='本地设置';}
-      }
-      if(group==='暂存与码垛')card.append(el('p','同姿态下：第二层下降距离 = 第一层下降距离 − 下层实际高度。按实物填写，不代填名义高度。','form-note'));
-      if(group==='车载取放')card.append(el('p','入仓与取出共用下降位置；取出后抬升独立设置，退出仓位后才允许转盘分度。','form-note'));
+      const fieldGrid=el('div',undefined,'parameter-group-fields');
+      for(const field of fields.filter(f=>f.group===group))fieldGrid.append(createField(field));
+      card.append(fieldGrid);
+      for(const field of fields.filter(f=>f.group===group&&f.note))card.append(el('p',field.note,'form-note'));
       if(group==='雷达下次静止扫描')card.append(el('p','安装参考 2170 / 230 / 180 对应起点 2250 / 150 / 90；仍需实测。分页读取一次取得整组。','form-note'));
       grid.append(card);
     }
@@ -58,19 +78,23 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
   const inventory=new Map();
   function mountTurntableControls(panel){
     const section=el('section',undefined,'parameter-card turntable-operations');section.append(el('h3','参考、分度与库存'));
+    const grid=el('div',undefined,'turntable-operation-grid');section.append(grid);
+    const group=title=>{const card=el('div',undefined,'turntable-operation-group'),row=el('div',undefined,'turntable-operation-row');card.append(el('h4',title),row);grid.append(card);return row;};
+    const originRow=group('软件参考'),indexRow=group('仓位分度'),jogRow=group('相对点动'),inventoryRow=group('人工库存校正');
     const readout=el('p','转盘状态尚未读取','turntable-readout');readout.id='turntable-readout';
     const stock=el('p','三仓库存尚未读取','turntable-readout');stock.id='turntable-inventory-readout';
-    const act=(title,wire)=>{
+    const act=(title,wire,target)=>{
       const button=el('button',title);button.type='button';button.onclick=async()=>{
         try{const text=typeof wire==='function'?wire():wire;if(!canSend(text))return;detailLine.textContent=text;resultLine.textContent='已请求 · 等待设备回复';await send(text);}catch(error){resultLine.textContent=error.message;}
-      };actions.push({button,wire});section.append(button);return button;
+      };actions.push({button,wire});target.append(button);return button;
     };
-    const slot=el('select');for(const [value,name]of [['1','第一仓'],['2','第二仓'],['3','第三仓']]){const option=el('option',name);option.value=value;slot.append(option);}slot.value='1';section.append(el('label','仓位'),slot);
-    act('建立转盘参考','turntable origin');act('分度到选中仓位',()=> 'turntable index '+slot.value);
-    const jog=el('input');Object.assign(jog,{type:'number',min:-360,max:360,step:.1,placeholder:'点动角度 / °'});section.append(jog);
-    act('点动',()=>buildCommand('turntable-jog',{degree:jog.value}));act('停止转盘','turntable stop');act('读取状态','turntable status');act('读取库存','turntable inventory');
-    const content=el('select');for(const [value,name]of [['empty','空仓'],['unknown','待核对'],['1','红色'],['2','黄色'],['3','蓝色'],['4','绿色'],['5','黑色'],['6','浅蓝色']]){const option=el('option',name);option.value=value;content.append(option);}content.value='unknown';section.append(el('label','实际库存'),content);
-    act('校正选中仓库存',()=> 'turntable inventory '+slot.value+' '+content.value);act('确认三仓为空','turntable inventory empty');
+    const slot=el('select');slot.id='turntable-operation-slot';for(const [value,name]of [['1','第一仓'],['2','第二仓'],['3','第三仓']]){const option=el('option',name);option.value=value;slot.append(option);}slot.value='1';const slotLabel=el('label','仓位');slotLabel.htmlFor=slot.id;indexRow.append(slotLabel,slot);
+    act('建立转盘参考','turntable origin',originRow);originRow.append(el('p','人工对齐第一仓后建立参考。','form-note'));act('分度到选中仓位',()=> 'turntable index '+slot.value,indexRow);
+    const jog=el('input');Object.assign(jog,{type:'number',min:-360,max:360,step:.1,placeholder:'角度',id:'turntable-operation-jog'});const jogLabel=el('label','角度');jogLabel.htmlFor=jog.id;jogRow.append(jogLabel,jog,el('span','°','parameter-unit'));
+    act('点动',()=>buildCommand('turntable-jog',{degree:jog.value}),jogRow);act('停止转盘','turntable stop',jogRow);
+    const content=el('select');content.id='turntable-operation-inventory';for(const [value,name]of [['empty','空仓'],['unknown','待核对'],['1','红色'],['2','黄色'],['3','蓝色'],['4','绿色'],['5','黑色'],['6','浅蓝色']]){const option=el('option',name);option.value=value;content.append(option);}content.value='unknown';const contentLabel=el('label','实际库存');contentLabel.htmlFor=content.id;inventoryRow.append(contentLabel,content);
+    act('校正选中仓库存',()=> 'turntable inventory '+slot.value+' '+content.value,inventoryRow);act('确认三仓为空','turntable inventory empty',inventoryRow);inventoryRow.append(el('p','校正上方选中的仓位；三仓为空请单独确认。','form-note'));
+    const statusActions=el('div',undefined,'turntable-status-actions');act('读取状态','turntable status',statusActions);act('读取库存','turntable inventory',statusActions);section.append(statusActions);
     section.append(readout,stock,el('p','库存表示软件动作结果。请核对实际物料；停止保留记录，中断相关仓位可能标为待核对。','form-note'));panel.append(section);
   }
   function selectTab(key='material',parameter){
@@ -89,7 +113,7 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
       else if(row.field.down===key)repaint(row,true,false); // A related read updates the device display, never this field's draft or result.
     }
   }
-  function showError(kind,key,error){const affected=[...rows.values()].filter(row=>row.field.kind===kind&&(row.field.key===key||kind==='arm'&&row.field.axis===key||kind==='radar'&&key==='all'));for(const row of affected){row.state.textContent=/unknown|unsupported|invalid_key|not_found|unknown_key|未支持/.test(error.message)?'未支持':error.message;row.state.dataset.state='failed';}}
+  function showError(kind,key,error){const affected=[...rows.values()].filter(row=>row.field.kind===kind&&(row.field.key===key||kind==='arm'&&row.field.axis===key||kind==='radar'&&key==='all'));for(const row of affected){row.state.textContent=/unknown|unsupported|invalid_key|not_found|unknown_key|未支持/.test(error.message)?'未支持':error.message;row.state.title=error.message;row.state.dataset.state='failed';}}
   async function run(work,localOnly=false){
     if(busy||(!localOnly&&!canSend('grab get z_grab')))return;
     busy=true;successes=failures=0;const token=revision;onBusy(true);update();

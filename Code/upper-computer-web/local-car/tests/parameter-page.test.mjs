@@ -53,7 +53,7 @@ test('rejected apply retains draft, reports the reason and never reports readbac
   const ui=parameterSurface(),wires=[];let page;
   try{
     page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);queueMicrotask(()=>page.receive('ERR grab busy'));return true;}});
-    ui.input('grab','close_ms').value='700';ui.input('grab','close_ms').oninput();await page.apply();
+    page.selectTab('motion');ui.input('grab','close_ms').value='700';ui.input('grab','close_ms').oninput();await page.apply();
     assert.deepEqual(wires,['grab set close_ms 700']);assert.equal(ui.input('grab','close_ms').value,'700');
     assert.ok(ui.all().some(e=>e.textContent.includes('任务忙')&&e.textContent.includes('grab busy')));assert.equal(ui.all().some(e=>e.textContent==='读回一致'),false);
   }finally{ui.restore();}
@@ -92,5 +92,23 @@ test('a deep link for a shared key scrolls only the requested parameter category
     page.selectTab('turntable','stable_ms');
     assert.deepEqual(scrolled,['parameter-row-turntable-stable_ms']);
     assert.equal(new Set(ui.all().filter(e=>e.id).map(e=>e.id)).size,ui.all().filter(e=>e.id).length);
+  }finally{ui.restore();}
+});
+
+test('material height fields stay in six aligned scenarios with all parameter inputs intact',()=>{
+  const ui=parameterSurface();
+  try{
+    mountParameterPage({root:ui.root,canSend:()=>false,send:async()=>true});
+    const all=ui.all(),scenarios=all.filter(e=>e.className==='parameter-height-row');
+    assert.equal(scenarios.length,6);
+    assert.deepEqual(scenarios.map(e=>e.children[0].textContent),['原料夹取','粗加工夹取','车载取放','粗加工释放','暂存第一层','暂存第二层']);
+    assert.equal(all.filter(e=>e.className==='parameter-empty-cell').length,3);
+    assert.equal(all.filter(e=>e.dataset.parameterKey).length,parameterFields.length);
+    for(const row of all.filter(e=>e.className==='parameter-field')){
+      const label=row.children.find(e=>e.tag==='label');
+      assert.ok(all.some(e=>e.id===label.htmlFor));
+    }
+    assert.ok(all.some(e=>e.className==='parameter-unit'&&e.textContent==='ms'));
+    assert.ok(all.some(e=>e.textContent.includes('发出开合指令后')));
   }finally{ui.restore();}
 });

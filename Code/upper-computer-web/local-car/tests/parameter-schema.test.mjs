@@ -23,3 +23,13 @@ test('all device requests cover five tabs once and keep browser settings out of 
   assert.ok(requests.some(r=>r.key==='slot2_deg'));
   assert.equal(new Set(parameterFields.map(f=>f.tab)).size,5);
 });
+
+test('claw waiting is an optional motion timing field and units are separate from labels',()=>{
+  const wait=parameterFields.find(f=>f.key==='close_ms');
+  assert.equal(wait.tab,'motion');assert.equal(wait.group,'夹爪动作时序');
+  assert.equal(wait.label,'夹爪到位等待');assert.equal(wait.unit,'ms');
+  assert.match(wait.note,/下一步 Z 动作/);
+  for(const field of parameterFields)assert.doesNotMatch(field.label,/ \/ (?:mm|ms|RPM|px|°|0\.1°)/);
+  assert.equal(parameterFields.find(f=>f.key==='x_ppm').unit,'脉冲/mm');
+  assert.equal(parameterFields.find(f=>f.kind==='arm'&&f.key==='base_rpm').unit,'RPM');
+});
