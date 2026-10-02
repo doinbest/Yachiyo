@@ -3,7 +3,7 @@ import {createParameterExchange,sameNumber} from './parameter-console.mjs';
 import {parameterTabs,parameterFields,materialScenarios,displayValue,fieldWrites,deviceRequests} from './parameter-schema.mjs';
 import {GRAB_TEST_PRESET} from './grab-params.mjs';
 const el=(tag,text,cls)=>{const out=document.createElement(tag);if(text!==undefined)out.textContent=text;if(cls)out.className=cls;return out;};
-const notes={material:'最高处为 Z=0。下降距离为正数；抬升距离从夹取位置向上计算。只需标定当前取放场景。',turntable:'ID 8 · 3 个仓位 · 电机与转盘 1∶1 直连。先人工对齐第一仓位再建立参考；不会自动回零或清零。第二、第三仓位角度待标定。',vision:'准心、像素响应与协同对准参数。普通停止保留参数；参考姿态改变后按设备状态恢复适用性。',motion:'尺度与实际行程需要标定。普通手动轴配置与自动取放速度独立；Z 普通运动脉冲限制固定为不限。',radar:'雷达参数用于下次扫描。路线速度是浏览器本地设置，不参加 STM32 读取，也不会立即改变实车速度。'};
+const notes={material:'最高处 Z=0，下降为正、抬升从夹取处算；车载退出再分度；第二层下降=第一层下降−下层实高。',turntable:'ID 8 · 三仓 · 1∶1 直连；人工对齐首仓建立参考，二、三仓待标定。',vision:'普通停止保留参数；观察姿态改变后按设备状态恢复参考。',motion:'手动轴与自动取放速度独立；Z 手动脉冲限制固定不限。',radar:'雷达参数作用于下次扫描；路线速度仅存浏览器。'};
 
 /** Persistent drafts; mounting, tab changes and navigation never transmit. */
 export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5000,onRouteSpeed=()=>{},radarExchange,radarModel}){
@@ -14,7 +14,6 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
   const readAll=el('button','读取当前全部参数','primary'),apply=el('button','应用本页修改');readAll.type=apply.type='button';
   const progress=el('span','尚未读取设备参数','parameter-progress');toolbar.append(back,readAll,apply,progress);root.append(toolbar);
   const nav=el('div',undefined,'parameter-tabs');nav.setAttribute('role','tablist');root.append(nav);
-  root.append(el('p','设备参数只存 RAM，重新上电恢复固件默认值。输入留空表示未读取；请主动读取当前值。','form-note'));
   const resultBar=el('div',undefined,'parameter-result-bar');resultBar.setAttribute('role','status');
   const resultLine=el('div','尚未读取 · 修改后点击应用'),detailLine=el('div','原始通信记录仍可在其他页面查看和导出');resultBar.append(resultLine,detailLine);
   const rowFor=(kind,key)=>rows.get(kind+':'+key),device=field=>field.kind==='local'?{route_speed:routeSpeed}:values[field.kind];
@@ -28,7 +27,7 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
     if(updateState){row.state.dataset.state=row.state.textContent==='读回一致'?'confirmed':row.dirty?'draft':'read';row.state.title=row.state.textContent;}
   }
   function createField(field,shortLabel){
-    const row=el('div',undefined,'parameter-field'),label=el('label',shortLabel??field.label),input=el('input'),control=el('div',undefined,'parameter-input-control'),current=el('small','设备值：未读取','parameter-device-value'),state=el('span','未读取','parameter-field-state');
+    const row=el('div',undefined,'parameter-field'),label=el('label',shortLabel??field.label),input=el('input'),control=el('div',undefined,'parameter-input-control'),current=el('small','设备值：未读取','parameter-device-value'),state=el('span','未读取','parameter-field-state');label.title=field.label;
     Object.assign(input,{type:'number',min:field.min,max:field.max,step:field.step??'any',id:'parameter-'+field.kind+'-'+field.key,readOnly:!!field.readOnly});label.htmlFor=input.id;input.dataset.parameterKey=field.key;
     input.setAttribute('aria-label',field.label+(field.unit?'（'+field.unit+'）':''));
     const unit=el('span',field.unit||'—','parameter-unit');unit.setAttribute('aria-hidden','true');control.append(input,unit);
@@ -39,32 +38,37 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
     if(field.kind==='local'){input.value=String(routeSpeed);current.textContent='浏览器本地：'+routeSpeed+' mm/s';state.textContent='本地设置';}
     return row;
   }
+  function cardHeading(card,title,note){
+    const heading=el('div',undefined,'parameter-card-heading');heading.append(el('h3',title));
+    if(note){const helper=el('span',note,'parameter-card-note');helper.title=note;heading.append(helper);}card.append(heading);
+  }
   function mountMaterialScenarios(grid,fields){
-    const card=el('section',undefined,'parameter-card parameter-height-card');card.append(el('h3','Z 场景距离'));
-    const table=el('div',undefined,'parameter-height-table'),head=el('div',undefined,'parameter-height-head');
-    head.append(el('span','取放场景'),el('span','下降距离 / mm'),el('span','夹取或取出后抬升 / mm'));table.append(head);
+    const card=el('section',undefined,'parameter-card parameter-height-card');cardHeading(card,'Z 场景距离',notes.material);
+    const table=el('div',undefined,'parameter-height-table');
     for(const [name,down,lift]of materialScenarios){
       const row=el('div',undefined,'parameter-height-row');row.append(el('strong',name));
       row.append(createField(fields.find(field=>field.key===down),'下降距离'));
-      row.append(lift?createField(fields.find(field=>field.key===lift),'抬升距离'):el('div','—','parameter-empty-cell'));
+      const empty=el('div',undefined,'parameter-empty-cell');empty.append(el('span','抬升距离'),el('span','—'));
+      row.append(lift?createField(fields.find(field=>field.key===lift),'抬升距离'):empty);
       table.append(row);
     }
-    card.append(table,el('p','车载入仓与取出共用下降位置；取出后抬升独立设置，退出仓位后再分度。','form-note'),el('p','同姿态下：第二层下降距离 = 第一层下降距离 − 下层实际高度。按实物填写。','form-note'));grid.append(card);
+    card.append(table);grid.append(card);
   }
   for(const [key,label]of parameterTabs){
     const button=el('button',label);button.type='button';button.dataset.parameterTab=key;button.setAttribute('role','tab');button.onclick=()=>{selectTab(key);if(globalThis.location)location.hash='params/'+key;};buttons.set(key,button);nav.append(button);
-    const panel=el('section',undefined,'parameter-tab-panel');panel.dataset.parameterPanel=key;panel.append(el('p',notes[key],'form-note'));
-    const grid=el('div',undefined,'parameter-card-grid');panel.append(grid);panels.set(key,panel);root.append(panel);
+    const panel=el('section',undefined,'parameter-tab-panel');panel.dataset.parameterPanel=key;
+    const grid=el('div',undefined,'parameter-card-grid'+(key==='material'?' parameter-material-grid':''));panel.append(grid);panels.set(key,panel);root.append(panel);
     const fields=parameterFields.filter(f=>f.tab===key);
     if(key==='material')mountMaterialScenarios(grid,fields);
     if(key==='vision'){
-      const preset=el('section',undefined,'parameter-card'),button=el('button','填入现有调试预设');button.type='button';
-      preset.append(el('h3','联调预设'),el('p','将 grab-params.mjs 中的现有调试值填入草稿。不会发送指令；逐标签应用并读回确认。','form-note'),button);grid.append(preset);
+      const preset=el('div',undefined,'parameter-preset-row'),button=el('button','填入现有调试预设');button.type='button';
+      preset.append(button,el('span','仅填草稿，应用后读回确认。','parameter-card-note'));grid.append(preset);
       button.onclick=()=>{for(const row of rows.values())if(row.field.kind==='grab'&&Object.hasOwn(GRAB_TEST_PRESET,row.field.key)){const value=displayValue(row.field,GRAB_TEST_PRESET);if(value!==null){row.input.value=String(value);row.input.oninput();}}resultLine.textContent='现有调试预设已填入草稿；尚未写入设备';};
     }
+    let firstGroup=true;
     for(const group of new Set(fields.map(f=>f.group))){
       if(key==='material'&&group==='Z 场景距离')continue;
-      const card=el('section',undefined,'parameter-card');card.append(el('h3',group));
+      const card=el('section',undefined,'parameter-card');cardHeading(card,group,key!=='material'&&firstGroup?notes[key]:undefined);firstGroup=false;
       const fieldGrid=el('div',undefined,'parameter-group-fields');
       for(const field of fields.filter(f=>f.group===group))fieldGrid.append(createField(field));
       card.append(fieldGrid);
