@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createParameterExchange,parseGrabConfig,parseArmConfig} from '../parameter-console.mjs';
 import {mountParameterPage} from '../parameter-page.mjs';
+import {parameterSurface} from './parameter-surface.mjs';
 
 test('parameter replies parse only complete device readbacks',()=>{
   assert.deepEqual(parseGrabConfig('OK grab config key=travel_mm value=0'),{key:'travel_mm',value:0});
@@ -17,6 +18,7 @@ test('grab setting is applied only after a matching readback',async()=>{
   const wires=[];let exchange;
   exchange=createParameterExchange({send:async wire=>{
     wires.push(wire);
+    if(wire.startsWith('grab set '))queueMicrotask(()=>exchange.receive('OK grab set'));
     if(wire==='grab get travel_mm')queueMicrotask(()=>exchange.receive('OK grab config key=travel_mm value=0'));
     return true;
   }});
@@ -29,6 +31,7 @@ test('grab setting is applied only after a matching readback',async()=>{
 test('mismatched readback and unrelated telemetry do not claim success',async()=>{
   let exchange;
   exchange=createParameterExchange({send:async wire=>{
+    if(wire.startsWith('grab set '))queueMicrotask(()=>exchange.receive('OK grab set'));
     if(wire==='grab get body_speed')queueMicrotask(()=>{
       exchange.receive('OK grab state=idle mode=align reason=none');
       exchange.receive('OK grab config key=travel_mm value=0');
@@ -43,6 +46,7 @@ test('mismatched readback and unrelated telemetry do not claim success',async()=
 test('small nonzero readback cannot be mistaken for disabled travel limit',async()=>{
   let exchange;
   exchange=createParameterExchange({send:async wire=>{
+    if(wire.startsWith('grab set '))queueMicrotask(()=>exchange.receive('OK grab set'));
     if(wire==='grab get travel_mm')queueMicrotask(()=>exchange.receive('OK grab config key=travel_mm value=0.000000001'));
     return true;
   }});
@@ -52,6 +56,7 @@ test('small nonzero readback cannot be mistaken for disabled travel limit',async
 test('six-significant-digit firmware readback accepts normal rounding',async()=>{
   let exchange;
   exchange=createParameterExchange({send:async wire=>{
+    if(wire.startsWith('grab set '))queueMicrotask(()=>exchange.receive('OK grab set'));
     if(wire==='grab get body_speed')queueMicrotask(()=>exchange.receive('OK grab config key=body_speed value=1.23457'));
     return true;
   }});
@@ -62,11 +67,34 @@ test('arm configuration reads back all fields after set',async()=>{
   const wires=[];let exchange;
   exchange=createParameterExchange({send:async wire=>{
     wires.push(wire);
+    if(wire==='config z 500 120 0')queueMicrotask(()=>exchange.receive('OK config z rpm=500 acc=120 limit_pulses=unlimited'));
     if(wire==='config z')queueMicrotask(()=>exchange.receive('OK config z rpm=500 acc=120 limit_pulses=unlimited'));
     return true;
   }});
   assert.deepEqual(await exchange.setArm('z',500,120,0),{axis:'z',rpm:500,acc:120,limit:0,confirmed:true});
   assert.deepEqual(wires,['config z 500 120 0','config z']);
+});
+
+test('device rejection ends write without querying or reporting success',async()=>{
+  const wires=[];let exchange;
+  exchange=createParameterExchange({send:async wire=>{wires.push(wire);queueMicrotask(()=>exchange.receive('ERR grab busy task_running'));return true;},timeoutMs:25});
+  await assert.rejects(exchange.setGrab('body_speed',20),/busy task_running/);
+  assert.deepEqual(wires,['grab set body_speed 20']);
+});
+
+test('reply arriving before write completion does not release next request early',async()=>{
+  let exchange,finish;const wires=[];
+  exchange=createParameterExchange({send:wire=>{wires.push(wire);exchange.receive('OK grab config key=travel_mm value=0');return new Promise(resolve=>{finish=resolve;});}});
+  let resolved=false;const reading=exchange.readGrab('travel_mm').then(()=>{resolved=true;});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(resolved,false);assert.equal(exchange.busy,true);
+  finish(true);await reading;assert.equal(resolved,true);
+});
+
+test('turntable set awaits accepted response then explicit config readback',async()=>{
+  const wires=[];let exchange;
+  exchange=createParameterExchange({send:async wire=>{wires.push(wire);queueMicrotask(()=>exchange.receive(wire.startsWith('turntable set ')?'OK turntable set key=slot2_deg':'OK turntable config key=slot2_deg value=135'));return true;}});
+  assert.deepEqual(await exchange.setTurntable('slot2_deg',135),{key:'slot2_deg',value:135,confirmed:true});
+  assert.deepEqual(wires,['turntable set slot2_deg 135','turntable get slot2_deg']);
 });
 
 test('disconnect cancels a pending read and ignores late replies',async()=>{
@@ -79,26 +107,17 @@ test('disconnect cancels a pending read and ignores late replies',async()=>{
 });
 
 test('opening the parameter page sends nothing; route speed stays local until route start',()=>{
-  class Element{
-    constructor(tag){this.tag=tag;this.children=[];this.textContent='';this.value='';this.disabled=false;}
-    append(...children){this.children.push(...children);}
-    get lastChild(){return this.children.at(-1);}
-    setAttribute(){}
-  }
-  const original=globalThis.document;
-  globalThis.document={createElement:tag=>new Element(tag)};
+  const ui=parameterSurface();
   try{
-    const root=new Element('div'),wires=[],saved=[];
-    const page=mountParameterPage({root,send:wire=>{wires.push(wire);return Promise.resolve(true);},
+    const wires=[],saved=[];
+    const page=mountParameterPage({root:ui.root,send:wire=>{wires.push(wire);return Promise.resolve(true);},
       canSend:()=>false,onBusy:()=>{},onRouteSpeed:speed=>saved.push(speed)});
     assert.deepEqual(wires,[]);
-    const route=root.children.at(-1);
-    assert.equal(route.children[2].value,'5000');
-    route.children[2].value='250';
-    route.children[3].onclick();
-    assert.deepEqual(saved,[250]);
+    const input=ui.input('local','route_speed');
+    assert.equal(input.value,'5000');input.value='250';input.oninput();page.selectTab('radar');
+    page.apply();
     assert.deepEqual(wires,[]);
     page.cancel('串口已断开');
     assert.deepEqual(wires,[]);
-  }finally{globalThis.document=original;}
+  }finally{ui.restore();}
 });

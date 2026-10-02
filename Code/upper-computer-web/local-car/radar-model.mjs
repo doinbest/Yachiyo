@@ -69,16 +69,18 @@ export class RadarExchange{
   receive(line){
     const f=parseRadar(line),p=this.pending;
     if(p&&/^ERR radar\b/.test(line)){clearTimeout(p.timer);this.pending=null;p.reject(new Error(line));return true;}
+    if(p?.matchLine&&p.matchLine(line)){clearTimeout(p.timer);this.pending=null;p.resolve({accepted:true});return true;}
     if(!f||!p||!p.match(f))return false;
     clearTimeout(p.timer);this.pending=null;p.resolve(f);return true;
   }
   async run(work){if(this.busy)throw new Error('上一项雷达读取仍在进行');this.busy=true;const revision=this.revision;try{return await work(revision);}finally{this.busy=false;}}
-  read(wire,match,revision){
+  read(wire,match,revision,matchLine){
     frameCommand(wire);if(revision!==this.revision)return Promise.reject(new Error('读取已取消'));
-    return new Promise((resolve,reject)=>{
-      const item={match,resolve,reject,timer:setTimeout(()=>{if(this.pending===item){this.pending=null;reject(new Error('雷达页读回超时，已完成快照仍保留'));}},this.timeoutMs)};
-      this.pending=item;Promise.resolve().then(()=>this.send(wire)).then(ok=>{if(ok!==true&&this.pending===item){clearTimeout(item.timer);this.pending=null;reject(new Error('串口写出未确认'));}},error=>{if(this.pending===item){clearTimeout(item.timer);this.pending=null;reject(error);}});
+    const reply=new Promise((resolve,reject)=>{
+      const item={match,matchLine,resolve,reject,timer:setTimeout(()=>{if(this.pending===item){this.pending=null;reject(new Error('雷达页读回超时，已完成快照仍保留'));}},this.timeoutMs)};this.pending=item;
     });
+    const writing=Promise.resolve().then(()=>this.send(wire)).then(ok=>{if(ok!==true)throw new Error('串口写出未确认');if(revision!==this.revision)throw new Error('读取已取消');}).catch(error=>{if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(error);this.pending=null;}throw error;});
+    return Promise.all([reply,writing]).then(([result])=>result);
   }
   async pages(kind,id,revision,first=null){
     const result=[];let total=first?.pages??1;
@@ -96,8 +98,8 @@ export class RadarExchange{
   get(){return this.run(revision=>this.settings(revision));}
   set(key,value){return this.run(async revision=>{
     const p=RADAR_PARAMETERS.find(p=>p.key===key),number=Number(value);
-    if(!p||!Number.isFinite(number)||number<p.min||number>p.max)throw new Error('参数值超出范围');
-    if(await this.send(`radar set ${key} ${number}`)!==true)throw new Error('串口写出未确认');
+    if(!p||String(value).trim()===''||!Number.isFinite(number)||number<p.min||number>p.max)throw new Error('参数值超出范围');
+    await this.read(`radar set ${key} ${number}`,()=>false,revision,line=>line==='OK radar parameter_updated_ram');
     const pages=await this.settings(revision),readback=pages.find(p=>p.key===key);
     if(!readback)throw new Error('设备没有返回该参数');
     return {key,value:readback.value,confirmed:Math.abs(readback.value-number)<1e-5};

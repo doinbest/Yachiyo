@@ -36,10 +36,10 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
   function selectTab(value){
     tab=value;for(const b of $('map-tabs').children){const active=b.dataset.mapTab===tab;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));}
     $('radar-build-panel').hidden=tab!=='radar';$('radar-offline-panel').hidden=tab!=='offline';$('radar-monitor-panel').hidden=tab!=='monitor';
-    const offlineTab=tab==='offline';mapView.setSource(offlineTab?'offline':'feedback');
+    const offlineTab=tab==='offline';
     for(const id of ['real-route-panel','online-controls'])$(id).hidden=tab!=='monitor';for(const id of ['sim-controls','simulation-actions','route-editor','speed-lab-note'])$(id).hidden=!offlineTab;render();
   }
-  $('map-tabs').onclick=e=>{const b=e.target.closest('[data-map-tab]');if(b)selectTab(b.dataset.mapTab);};
+  $('map-tabs').onclick=e=>{const b=e.target.closest('[data-map-tab]');if(b){selectTab(b.dataset.mapTab);if(globalThis.location)location.hash='map/'+b.dataset.mapTab;}};
   async function operate(work){onBusy(true);try{await work();}catch(error){$('radar-transfer').textContent=error.message;}finally{onBusy(false);render();}}
   exchange.onProgress=({kind,page,pages})=>{$('radar-transfer').textContent=`读取 ${kind} · ${page}/${pages} 页 · 完整后显示`;};
   for(const b of document.querySelectorAll('[data-radar-wire]'))b.onclick=()=>void send(b.dataset.radarWire);

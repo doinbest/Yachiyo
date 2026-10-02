@@ -1,8 +1,8 @@
 import {frameCommand} from './protocol.mjs?v=heading-hold-1';
 
-export const scopedStopCommand=wire=>/^(?:stop (?:all|base|z|x)|chassis route cancel|radar (?:stop|nav cancel)|imu cal cancel|(?:vision|material|camera|grab) stop)$/.test(wire);
+export const scopedStopCommand=wire=>/^(?:stop (?:all|base|z|x)|chassis route cancel|radar (?:stop|nav cancel)|turntable stop|imu cal cancel|(?:vision|material|camera|grab) stop)$/.test(wire);
 
-export const readOnlyCommand=wire=>/^(?:info|help|bus status|console status|radar (?:status|get|nav status|fetch (?:map|path|points|cloud|params) \d+ \d+)|(?:state|position|config) (?:all|base|z|x)|chassis (?:task|status|snapshot|stop-status|feedback|route status)|imu status|qr (?:status|read)|(?:vision|material|camera|map|grab) status|grab get [a-z][a-z0-9_]*)$/.test(wire);
+export const readOnlyCommand=wire=>/^(?:info|help|bus status|console status|turntable (?:status|inventory|get [a-z][a-z0-9_]*)|radar (?:status|get|nav status|fetch (?:map|path|points|cloud|params) \d+ \d+)|(?:state|position|config) (?:all|base|z|x)|chassis (?:task|status|snapshot|stop-status|feedback|route status)|imu status|qr (?:status|read)|(?:vision|material|camera|map|grab) status|grab get [a-z][a-z0-9_]*)$/.test(wire);
 
 /** Attach to the single host-owned port. Attaching and reconnecting never send commands. */
 export class BridgeLink {

@@ -40,8 +40,29 @@ export const grabParameters = [
   {key:'lead_mm',label:'X 目标领先反馈上限 / mm',group:'控制与运动边界',min:0.0001,max:10000},
   {key:'lambda',label:'视觉收敛增益 / s⁻¹',group:'控制与运动边界',min:0.001,max:10},
   {key:'x_weight',label:'X 分配权重',group:'控制与运动边界',min:0.01,max:100},
+  ...['z_proc_grab','z_proc_lift','z_car_lift','z_proc_place','z_temp_place','z_stack_place','x_car','base_car_offset'].map(key=>({key,label:({z_proc_grab:'粗加工夹取Z',z_proc_lift:'粗加工提起Z',z_car_lift:'车载取出提起Z',z_proc_place:'粗加工释放Z',z_temp_place:'暂存第一层释放Z',z_stack_place:'暂存第二层释放Z',x_car:'车载取放口X',base_car_offset:'车载Base偏转角'})[key],group:'取放场景',min:-10000,max:10000})),
+];
+export const turntableParameters=[
+  ...[['slot1_deg','第一仓位 / °'],['slot2_deg','第二仓位 / °'],['slot3_deg','第三仓位 / °']].map(([key,label])=>({key,label,min:-360,max:360,readOnly:key==='slot1_deg'})),
+  {key:'speed_rpm',label:'分度速度 / RPM',min:1,max:5000,step:1},
+  {key:'acc',label:'加速度档位',min:0,max:255,step:1},
+  {key:'pos_tol_deg',label:'到位容差 / °',min:0.1125,max:180},
+  {key:'stable_ms',label:'停稳时间 / ms',min:0,max:60000,step:1},
+  {key:'feedback_ms',label:'反馈新鲜度 / ms',min:100,max:60000,step:1}
 ];
 export const commands = [
+  ...turntableParameters.map(p=>command(`turntable-get-${p.key}`,'vision',`读取 ${p.label}`,`turntable get ${p.key}`)),
+  ...turntableParameters.filter(p=>!p.readOnly).map(p=>command(`turntable-set-${p.key}`,'vision',p.label,`turntable set ${p.key} {value}`,[number('value',p.label,'',p.min,p.max,p.step??'any')])),
+  ...[['origin','建立转盘参考'],['stop','停止车载转盘'],['status','读取转盘状态'],['inventory','读取三仓库存']].map(([id,label])=>command(`turntable-${id}`,'vision',label,`turntable ${id}`)),
+  command('turntable-empty','vision','确认三仓为空','turntable inventory empty'),
+  command('turntable-index','vision','分度到仓位','turntable index {slot}',[choice('slot','仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']])]),
+  command('turntable-jog','vision','转盘点动','turntable jog {degree}',[number('degree','相对角度 / °','',-360,360,.1)]),
+  command('turntable-inventory-set','vision','校正仓位库存','turntable inventory {slot} {content}',[choice('slot','仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('content','实际库存',[['empty','空仓'],['unknown','待核对'],['1','红色'],['2','黄色'],['3','蓝色'],['4','绿色'],['5','黑色'],['6','浅蓝色']])]),
+  command('grab-fixed-slot','vision','指定仓位固定夹取','grab start fixed {slot} {color}',[choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('color','物料颜色',grabColorOptions,'3')]),
+  command('grab-pick-slot','vision','指定仓位视觉夹取','grab start pick {color} {slot}',[choice('color','物料颜色',grabColorOptions,'3'),choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']])]),
+  command('grab-store-proc','vision','粗加工取回入仓','grab store proc {slot} {color}',[choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('color','物料颜色',grabColorOptions,'3')]),
+  command('grab-take','vision','车载取出并释放','grab take {slot} {scene}',[choice('slot','取出仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('scene','释放场景',[['rough','粗加工'],['temp1','暂存第一层'],['temp2','暂存第二层']])]),
+  command('grab-return','vision','返回外侧观察姿态','grab return'),
   command('grab-base-pos','vision','手动 Base 转到转盘','pos base {degree}',[number('degree','Base 电机轴相对角度 / °',-180,-360,360,0.1)],'自动取放已包含转向，此处仅用于手动定位。默认相对转动 −180°，每次执行都会再转一次，已在转盘方向时无需重复。若抓取处于 hold，先结束本次抓取并确认停止，再操作 Base。'),
   ...[['fixed','固定位置抓取'],['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}`,'vision',label,`grab start ${mode}`)),
   ...[['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}-color`,'vision',label,`grab start ${mode} {color}`,[choice('color','物料颜色',grabColorOptions,'3')])),
@@ -129,7 +150,7 @@ export function moduleForWire(text) {
   if (/^@(CHASSIS|RADAR)\b/.test(line) || /^(?:(?:OK|ERR|EVT) )?radar\b|^chassis stream\b/.test(line)) return 'map';
   if (/^(?:qr\b|@QR\b|EVT qr\b)/.test(line)) return 'qr';
   if (/^(?:chassis\b|wheel(?:\s|=)|\[CHASSIS\])/.test(line)) return 'chassis';
-  if (/^(?:camera|material|vision|grab|VISION)\b/.test(line)) return 'vision';
+  if (/^(?:camera|material|vision|grab|turntable|VISION)\b/.test(line)) return 'vision';
   if (/^(?:pos|enable|disable|state|stop|position|home|origin|zero|config|grip)\b/.test(line)) return 'arm';
   if (/^(?:bus|system|console|imu|info|help|HWT101)\b/.test(line) || /^(?:\[IMU\b|\[MOTOR BUS\]|ARM STM32|BUILD |Boot:|STM32 mechanical)/.test(line)) return 'system';
   return 'manual';
@@ -221,7 +242,7 @@ export function parseGrabStatus(line) {
     result[match[1]]=match[2];
   }
   if (!/^[a-z_]+$/.test(result.state??'')) return null;
-  for (const key of ['x','xt','z','zt','b','bt','dx','dy','age','vf','vl','elapsed','rx_seq','color','recovery_used','recovery_count','recovery_left_ms','loss_ms','loss_max_ms','grace_count','stop_requested','stop_confirmed']) {
+  for (const key of ['x','xt','z','zt','b','bt','dx','dy','age','vf','vl','elapsed','rx_seq','color','slot','recovery_used','recovery_count','recovery_left_ms','loss_ms','loss_max_ms','grace_count','stop_requested','stop_confirmed']) {
     const raw=result[key];
     if (raw===undefined || /^(?:nan|na)$/i.test(raw)) {result[key]=null;continue;}
     if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(raw) || !Number.isFinite(Number(raw))) return null;

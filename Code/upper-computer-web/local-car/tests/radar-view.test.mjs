@@ -30,11 +30,12 @@ test('radar workspace keeps viewport through tabs/data, reads world millimetres 
   const ui=surface(),wires=[],sources=[],requests=[],model=new RadarModel(),exchange=new RadarExchange({send:async wire=>{wires.push(wire);return true;}});
   try{
     const workspace=mountRadarWorkspace({model,exchange,send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource:value=>sources.push(value)},api:async(path,body)=>{requests.push({path,body});return requests.length===1?{valid:true,algorithm:'radar_map_c_v1',mask:0,points:[[2250,150,1,0]]}:{valid:false,failed_leg:2,algorithm:'radar_map_c_v1',mask:0,points:[]};}});
-    assert.deepEqual(wires,[]);assert.deepEqual(sources,['feedback']);
+    assert.deepEqual(wires,[]);assert.deepEqual(sources,[]);
     const map=ui.get('field-map');map.events.contextmenu({clientX:100,clientY:200,preventDefault(){}});
     const view=map.attributes.viewBox;assert.equal(Number(view.split(' ')[2]),2536);
     map.events.pointermove({clientX:100,clientY:200});assert.equal(ui.get('map-cursor').textContent,'鼠标 X 80.0 · Y 2230.0 mm');
     workspace.selectTab('offline');workspace.receive('@RADAR '+JSON.stringify({v:1,k:'status',session:1,origin:1,scan:0,map:0,plan:0,page:0,pages:1,state:'idle',points_valid:false}));
+    assert.deepEqual(sources,[]); // Navigation preserves the selected vehicle source.
     assert.equal(map.attributes.viewBox,view);assert.equal(ui.get('real-route-panel').hidden,true);
     const base={v:1,session:1,origin:1,scan:1,map:1,plan:1};
     workspace.receive('@RADAR '+JSON.stringify({...base,k:'map',page:0,pages:6,mask:4,pose:[2170,230,180]}));

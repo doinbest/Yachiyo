@@ -1,112 +1,173 @@
-import {buildCommand,grabParameters} from './protocol.mjs?v=grab-preset-20260930';
-import {createParameterExchange} from './parameter-console.mjs?v=parameter-page-20261001';
-import {GRAB_FORM_DEFAULTS} from './grab-params.mjs?v=grab-preset-20260930';
-import {mountRadarParameters} from './radar-view.mjs';
+import {buildCommand} from './protocol.mjs';
+import {createParameterExchange,sameNumber} from './parameter-console.mjs';
+import {parameterTabs,parameterFields,displayValue,fieldWrites,deviceRequests} from './parameter-schema.mjs';
+import {GRAB_TEST_PRESET} from './grab-params.mjs';
+const el=(tag,text,cls)=>{const out=document.createElement(tag);if(text!==undefined)out.textContent=text;if(cls)out.className=cls;return out;};
+const notes={material:'最高处为 Z=0。下降距离为正数；抬升距离从夹取位置向上计算。只需标定当前取放场景。',turntable:'ID 8 · 3 个仓位 · 电机与转盘 1∶1 直连。先人工对齐第一仓位再建立参考；不会自动回零或清零。第二、第三仓位角度待标定。',vision:'准心、像素响应与协同对准参数。普通停止保留参数；参考姿态改变后按设备状态恢复适用性。',motion:'尺度与实际行程需要标定。普通手动轴配置与自动取放速度独立；Z 普通运动脉冲限制固定为不限。',radar:'雷达参数用于下次扫描。路线速度是浏览器本地设置，不参加 STM32 读取，也不会立即改变实车速度。'};
 
-const element=(tag,text,className)=>{
-  const out=document.createElement(tag);
-  if(text!==undefined)out.textContent=text;
-  if(className)out.className=className;
-  return out;
-};
-
-/** Explicit, operator-driven RAM configuration page; mounting never sends a command. */
-export function mountParameterPage({root,send,canSend,onBusy,routeSpeed=5000,onRouteSpeed,radarExchange,radarModel}){
-  const exchange=createParameterExchange({send});
-  const controls=[],readouts=[];
-  root.append(element('p','这里修改 STM32 当前运行的参数。设备值来自主动读回；输入框是待设置值。连接或打开页面不会自动发送指令，应用后会再次读回核对。抓取任务运行时固件会拒绝 grab set。','form-note'));
-
-  async function operate(status,work,show){
-    status.textContent='等待设备回复…';onBusy(true);update();
-    try{
-      const result=await work();
-      show(result);
-      status.textContent=result.confirmed===false?'读回与输入不一致，未确认生效':
-        result.confirmed===true?'设备读回与输入一致':'已读取设备当前值';
-    }catch(error){status.textContent=error.message;}
-    finally{onBusy(false);update();}
+/** Persistent drafts; mounting, tab changes and navigation never transmit. */
+export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5000,onRouteSpeed=()=>{},radarExchange,radarModel}){
+  const exchange=createParameterExchange({send}),rows=new Map(),values={grab:{},turntable:{},arm:{},radar:{}},panels=new Map(),buttons=new Map(),actions=[];
+  const historicalValues=new Set();let tab='material',busy=false,revision=0,successes=0,failures=0;
+  root.className='parameter-workspace';
+  const toolbar=el('div',undefined,'parameter-toolbar'),back=el('a','','parameter-back');back.hidden=true;
+  const readAll=el('button','读取当前全部参数','primary'),apply=el('button','应用本页修改');readAll.type=apply.type='button';
+  const progress=el('span','尚未读取设备参数','parameter-progress');toolbar.append(back,readAll,apply,progress);root.append(toolbar);
+  const nav=el('div',undefined,'parameter-tabs');nav.setAttribute('role','tablist');root.append(nav);
+  root.append(el('p','设备参数只存 RAM，重新上电恢复固件默认值。输入留空表示未读取；请主动读取当前值。','form-note'));
+  const resultBar=el('div',undefined,'parameter-result-bar');resultBar.setAttribute('role','status');
+  const resultLine=el('div','尚未读取 · 修改后点击应用'),detailLine=el('div','原始通信记录仍可在其他页面查看和导出');resultBar.append(resultLine,detailLine);
+  const rowFor=(kind,key)=>rows.get(kind+':'+key),device=field=>field.kind==='local'?{route_speed:routeSpeed}:values[field.kind];
+  function repaint(row,preserve=false,updateState=true){
+    const value=displayValue(row.field,device(row.field)),known=Object.hasOwn(device(row.field),row.field.key),formatted=value===null?'未设置':String(Number(value.toPrecision(8)));
+    const history=historicalValues.has(row.field.kind+':'+row.field.key)||row.field.down&&historicalValues.has(row.field.kind+':'+row.field.down);
+    row.current.textContent=known?(history?'历史设备值':'设备值')+'：'+formatted+(value!==null&&row.field.unit?' '+row.field.unit:''):'设备值：未读取';
+    if(known&&!preserve){row.input.value=value===null?'':String(Number(value.toPrecision(8)));row.dirty=false;row.state.textContent=value===null?'未设置':'已读取';}
+    if(known&&preserve&&updateState)row.state.textContent=value!==null&&row.input.value!==''&&sameNumber(value,Number(row.input.value))?'读回一致':'待应用';
+    if(updateState)row.state.dataset.state=row.state.textContent==='读回一致'?'confirmed':row.dirty?'draft':'read';
   }
-
-  for(const group of new Set(grabParameters.map(p=>p.group))){
-    const section=element('details',undefined,'parameter-group');
-    section.append(element('summary',group));
-    const list=element('div',undefined,'parameter-list');
-    for(const p of grabParameters.filter(x=>x.group===group)){
-      const row=element('div',undefined,'parameter-row');
-      const label=element('label',p.label);label.append(element('small',` ${p.key}`));
-      const input=element('input');input.type='number';input.min=p.min;input.max=p.max;input.step=p.step??'any';
-      input.value=GRAB_FORM_DEFAULTS[p.key]??'';
-      const current=element('span','设备值：未读取','parameter-current');readouts.push(current);
-      const read=element('button','读取'),apply=element('button','应用');
-      read.type=apply.type='button';
-      const status=element('span','','parameter-result');status.setAttribute('role','status');
-      read.onclick=()=>void operate(status,()=>exchange.readGrab(p.key),result=>{
-        current.textContent=`设备值：${result.value===null?'未设置':result.value}`;
-        if(input.value==='')input.value=result.value===null?'':String(result.value);
-      });
-      apply.onclick=()=>void operate(status,()=>exchange.setGrab(p.key,input.value),result=>{
-        current.textContent=`设备值：${result.value===null?'未设置':result.value}`;
-      });
-      input.oninput=update;
-      row.append(label,input,current,read,apply,status);list.append(row);
-      controls.push({read,apply,input,valid:()=>{try{buildCommand(`grab-set-${p.key}`,{value:input.value});return true;}catch{return false;}},readWire:`grab get ${p.key}`,writeWire:`grab set ${p.key} ${input.value}`});
+  for(const [key,label]of parameterTabs){
+    const button=el('button',label);button.type='button';button.dataset.parameterTab=key;button.setAttribute('role','tab');button.onclick=()=>{selectTab(key);if(globalThis.location)location.hash='params/'+key;};buttons.set(key,button);nav.append(button);
+    const panel=el('section',undefined,'parameter-tab-panel');panel.dataset.parameterPanel=key;panel.append(el('p',notes[key],'form-note'));
+    const grid=el('div',undefined,'parameter-card-grid');panel.append(grid);panels.set(key,panel);root.append(panel);
+    const fields=parameterFields.filter(f=>f.tab===key);
+    if(key==='vision'){
+      const preset=el('section',undefined,'parameter-card'),button=el('button','填入现有调试预设');button.type='button';
+      preset.append(el('h3','联调预设'),el('p','将 grab-params.mjs 中的现有调试值填入草稿。不会发送指令；逐标签应用并读回确认。','form-note'),button);grid.append(preset);
+      button.onclick=()=>{for(const row of rows.values())if(row.field.kind==='grab'&&Object.hasOwn(GRAB_TEST_PRESET,row.field.key)){const value=displayValue(row.field,GRAB_TEST_PRESET);if(value!==null){row.input.value=String(value);row.input.oninput();}}resultLine.textContent='现有调试预设已填入草稿；尚未写入设备';};
     }
-    section.append(list);root.append(section);
+    for(const group of new Set(fields.map(f=>f.group))){
+      const card=el('section',undefined,'parameter-card');card.append(el('h3',group));
+      for(const field of fields.filter(f=>f.group===group)){
+        const row=el('div',undefined,'parameter-field'),label=el('label',field.label+(field.unit?' / '+field.unit:'')),input=el('input'),current=el('small','设备值：未读取','parameter-device-value'),state=el('span','未读取','parameter-field-state');
+        Object.assign(input,{type:'number',min:field.min,max:field.max,step:field.step??'any',id:'parameter-'+field.kind+'-'+field.key,readOnly:!!field.readOnly});label.htmlFor=input.id;input.dataset.parameterKey=field.key;
+        if(field.readOnly){input.setAttribute('aria-readonly','true');input.placeholder=field.key==='z_limit'?'固定不限脉冲':'参考 0°';}
+        const entry={field,input,current,state,dirty:false,root:row};rows.set(field.kind+':'+field.key,entry);
+        input.oninput=()=>{entry.dirty=true;state.textContent='待应用';state.dataset.state='draft';update();};
+        row.id='parameter-row-'+field.kind+'-'+field.key;row.append(label,input,current,state);card.append(row);
+        if(field.kind==='local'){input.value=String(routeSpeed);current.textContent='浏览器本地：'+routeSpeed+' mm/s';state.textContent='本地设置';}
+      }
+      if(group==='暂存与码垛')card.append(el('p','同姿态下：第二层下降距离 = 第一层下降距离 − 下层实际高度。按实物填写，不代填名义高度。','form-note'));
+      if(group==='车载取放')card.append(el('p','入仓与取出共用下降位置；取出后抬升独立设置，退出仓位后才允许转盘分度。','form-note'));
+      if(group==='雷达下次静止扫描')card.append(el('p','安装参考 2170 / 230 / 180 对应起点 2250 / 150 / 90；仍需实测。分页读取一次取得整组。','form-note'));
+      grid.append(card);
+    }
+    if(key==='turntable')mountTurntableControls(panel);
   }
-
-  const arm=element('section',undefined,'parameter-group');arm.append(element('h3','Base / X / Z 运动配置'));
-  arm.append(element('p','配置只影响后续机械臂运动，保存在 STM32 RAM；回零速度由驱动器管理。先读取，再修改并应用。','form-note'));
-  for(const [axis,name] of [['base','Base 底座'],['x','X 伸缩'],['z','Z 升降']]){
-    const row=element('div',undefined,'parameter-row parameter-arm-row');
-    row.append(element('strong',name));
-    const inputs={};
-    for(const [key,label,min,max] of [['rpm','RPM',1,3000],['acc','加速度档位',1,255],['limit','脉冲限制',axis==='z'?0:1,3200]]){
-      const wrap=element('label',label),input=element('input');
-      input.type='number';input.min=min;input.max=max;input.step=1;input.placeholder=axis==='z'&&key==='limit'?'0 表示不限':'';
-      wrap.append(input);row.append(wrap);inputs[key]=input;input.oninput=update;
-    }
-    const current=element('span','设备值：未读取','parameter-current');readouts.push(current);
-    const read=element('button','读取'),apply=element('button','应用');read.type=apply.type='button';
-    const status=element('span','','parameter-result');status.setAttribute('role','status');
-    const show=result=>{
-      current.textContent=`设备值：${result.rpm} RPM / 加速度 ${result.acc} / 脉冲 ${result.limit===0?'不限':result.limit}`;
+  root.append(resultBar);
+  const inventory=new Map();
+  function mountTurntableControls(panel){
+    const section=el('section',undefined,'parameter-card turntable-operations');section.append(el('h3','参考、分度与库存'));
+    const readout=el('p','转盘状态尚未读取','turntable-readout');readout.id='turntable-readout';
+    const stock=el('p','三仓库存尚未读取','turntable-readout');stock.id='turntable-inventory-readout';
+    const act=(title,wire)=>{
+      const button=el('button',title);button.type='button';button.onclick=async()=>{
+        try{const text=typeof wire==='function'?wire():wire;if(!canSend(text))return;detailLine.textContent=text;resultLine.textContent='已请求 · 等待设备回复';await send(text);}catch(error){resultLine.textContent=error.message;}
+      };actions.push({button,wire});section.append(button);return button;
     };
-    read.onclick=()=>void operate(status,()=>exchange.readArm(axis),result=>{
-      show(result);
-      for(const key of ['rpm','acc','limit'])if(!inputs[key].value)inputs[key].value=String(result[key]);
-    });
-    apply.onclick=()=>void operate(status,()=>exchange.setArm(axis,inputs.rpm.value,inputs.acc.value,inputs.limit.value),show);
-    row.append(current,read,apply,status);arm.append(row);
-    controls.push({read,apply,valid:()=>{try{buildCommand('config-set',{axis,rpm:inputs.rpm.value,acc:inputs.acc.value,limit:inputs.limit.value});return true;}catch{return false;}},readWire:`config ${axis}`,writeWire:`config ${axis} ${inputs.rpm.value} ${inputs.acc.value} ${inputs.limit.value}`});
+    const slot=el('select');for(const [value,name]of [['1','第一仓'],['2','第二仓'],['3','第三仓']]){const option=el('option',name);option.value=value;slot.append(option);}slot.value='1';section.append(el('label','仓位'),slot);
+    act('建立转盘参考','turntable origin');act('分度到选中仓位',()=> 'turntable index '+slot.value);
+    const jog=el('input');Object.assign(jog,{type:'number',min:-360,max:360,step:.1,placeholder:'点动角度 / °'});section.append(jog);
+    act('点动',()=>buildCommand('turntable-jog',{degree:jog.value}));act('停止转盘','turntable stop');act('读取状态','turntable status');act('读取库存','turntable inventory');
+    const content=el('select');for(const [value,name]of [['empty','空仓'],['unknown','待核对'],['1','红色'],['2','黄色'],['3','蓝色'],['4','绿色'],['5','黑色'],['6','浅蓝色']]){const option=el('option',name);option.value=value;content.append(option);}content.value='unknown';section.append(el('label','实际库存'),content);
+    act('校正选中仓库存',()=> 'turntable inventory '+slot.value+' '+content.value);act('确认三仓为空','turntable inventory empty');
+    section.append(readout,stock,el('p','库存表示软件动作结果。请核对实际物料；停止保留记录，中断相关仓位可能标为待核对。','form-note'));panel.append(section);
   }
-  root.append(arm);
-  const radar=radarExchange&&mountRadarParameters({root,exchange:radarExchange,model:radarModel,canSend,onBusy});
-
-  const route=element('section',undefined,'parameter-group');route.append(element('h3','下次路线启动速度'));
-  route.append(element('p','此处只保存网页待用速度，不会启动小车或改变正在运行的路线。真正启动请前往“地图与遥测”中的实车路线控件。','form-note'));
-  const routeInput=element('input');routeInput.type='number';routeInput.min=10;routeInput.max=5000;routeInput.step=1;routeInput.value=String(routeSpeed);
-  const save=element('button','用于下次路线');save.type='button';
-  const routeStatus=element('span','','parameter-result');routeStatus.setAttribute('role','status');
-  save.onclick=()=>{
-    try{buildCommand('chassis-route-start',{speed:routeInput.value});onRouteSpeed(Number(routeInput.value));routeStatus.textContent='已更新网页待用速度；尚未发送运动指令。';}
-    catch(error){routeStatus.textContent=error.message;}
-  };
-  route.append(routeInput,save,routeStatus,element('a','前往地图与遥测 →'));
-  route.lastChild.href='#map';root.append(route);
-
-  function update(){
-    radar?.update();
-    for(const item of controls){
-      item.read.disabled=exchange.busy||!canSend(item.readWire);
-      item.apply.disabled=exchange.busy||!item.valid()||!canSend(item.writeWire);
-    }
-  }
-  function cancel(reason='连接已变化'){
-    exchange.cancel(reason);
-    radarExchange?.cancel(reason);radar?.cancel();
-    for(const current of readouts)current.textContent='设备值：未读取';
+  function selectTab(key='material',parameter){
+    if(!panels.has(key))key='material';tab=key;
+    for(const [name,panel]of panels)panel.hidden=name!==tab;
+    for(const [name,button]of buttons){button.setAttribute('aria-selected',String(name===tab));button.classList?.toggle('active',name===tab);}
+    if(parameter)rowFor(parameterFields.find(f=>f.tab===tab&&f.key===parameter)?.kind,parameter)?.root.scrollIntoView?.({block:'center'});
     update();
   }
-  update();
-  return {receive:line=>exchange.receive(line),cancel,update};
+  function setReturn(source){back.hidden=!source;if(source){back.href=source.hash;back.textContent='← 返回'+source.label;}}
+  const check=token=>{if(token!==revision)throw new Error('参数操作已取消；已读取值和输入已保留。');};
+  function accept(kind,key,value,preserve=false){
+    values[kind][key]=value;historicalValues.delete(kind+':'+key);
+    for(const row of rows.values())if(row.field.kind===kind){
+      if(row.field.key===key)repaint(row,preserve);
+      else if(row.field.down===key)repaint(row,true,false); // A related read updates the device display, never this field's draft or result.
+    }
+  }
+  function showError(kind,key,error){const affected=[...rows.values()].filter(row=>row.field.kind===kind&&(row.field.key===key||kind==='arm'&&row.field.axis===key||kind==='radar'&&key==='all'));for(const row of affected){row.state.textContent=/unknown|unsupported|invalid_key|not_found|unknown_key|未支持/.test(error.message)?'未支持':error.message;row.state.dataset.state='failed';}}
+  async function run(work,localOnly=false){
+    if(busy||(!localOnly&&!canSend('grab get z_grab')))return;
+    busy=true;successes=failures=0;const token=revision;onBusy(true);update();
+    try{await work(token);resultLine.textContent='完成 · 成功 '+successes+' 项'+(failures?'，失败 '+failures+' 项':'');}
+    catch(error){resultLine.textContent=error.message;}
+    finally{busy=false;progress.textContent=successes+' 项成功'+(failures?' · '+failures+' 项失败':'');onBusy(false);update();}
+  }
+  async function readRequest(request,preserve=false){
+    if(request.kind==='arm'){const result=await exchange.readArm(request.key);for(const part of ['rpm','acc','limit'])accept('arm',request.key+'_'+part,result[part],preserve);return 3;}
+    if(request.kind==='radar'){
+      if(!radarExchange)throw new Error('雷达参数尚未支持');
+      const previousProgress=radarExchange.onProgress;radarExchange.onProgress=({page,pages})=>{progress.textContent='读取雷达参数 · '+page+'/'+pages+' 页';detailLine.textContent=progress.textContent;previousProgress?.({kind:'params',page,pages});};
+      let pages;try{pages=await radarExchange.get();}finally{radarExchange.onProgress=previousProgress;}
+      const params=Object.assign({},...pages.filter(p=>p.key).map(p=>({[p.key]:p.value})));
+      let count=0;for(const row of rows.values())if(row.field.kind==='radar'){if(!Object.hasOwn(params,row.field.key)){showError('radar',row.field.key,new Error('设备未报告'));failures++;continue;}accept('radar',row.field.key,params[row.field.key],preserve);count++;}return count;
+    }
+    const result=await (request.kind==='grab'?exchange.readGrab(request.key):exchange.readTurntable(request.key));accept(request.kind,request.key,result.value,preserve);return 1;
+  }
+  readAll.onclick=()=>run(async token=>{
+    const requests=deviceRequests();
+    for(let i=0;i<requests.length;i++){
+      check(token);const request=requests[i];progress.textContent='读取 '+(i+1)+'/'+requests.length+' · '+request.kind+' '+request.key;resultLine.textContent='正在读取当前全部参数';detailLine.textContent=progress.textContent;
+      try{successes+=await readRequest(request);}catch(error){check(token);failures+=request.kind==='arm'?3:request.kind==='radar'?parameterFields.filter(p=>p.kind==='radar').length:1;showError(request.kind,request.key,error);detailLine.textContent=error.message;}
+    }
+  });
+  apply.onclick=()=>{
+    const changed=[...rows.values()].filter(row=>row.field.tab===tab&&row.dirty&&!row.field.readOnly),localOnly=changed.every(row=>row.field.kind==='local');
+    return run(async token=>{
+      const drafts=Object.fromEntries([...rows.values()].filter(row=>row.field.kind==='grab').map(row=>[row.field.key,row.input.value])),writes=new Map();
+      for(const row of changed){
+        if(row.field.kind==='arm')writes.set('arm:'+row.field.axis,{kind:'arm',key:row.field.axis});
+        else for(const [key,value]of fieldWrites(row.field,row.field.kind==='grab'?drafts:{[row.field.key]:row.input.value}))writes.set(row.field.kind+':'+key,{kind:row.field.kind,key,value});
+      }
+      if(!writes.size){detailLine.textContent='当前标签没有待应用的修改';return;}
+      let index=0;for(const item of writes.values()){
+        check(token);progress.textContent='应用 '+(++index)+'/'+writes.size+' · '+item.kind+' '+item.key;resultLine.textContent='等待受理 → 主动读回 → 比较';detailLine.textContent=progress.textContent;
+        try{
+          let result;
+          if(item.kind==='local'){onRouteSpeed(item.value);routeSpeed=item.value;result={confirmed:true};const row=rowFor('local',item.key);row.current.textContent='浏览器本地：'+routeSpeed+' mm/s';row.dirty=false;row.state.textContent='本地已保存';}
+          else if(item.kind==='arm'){const parts=['rpm','acc','limit'].map(part=>rowFor('arm',item.key+'_'+part).input.value);result=await exchange.setArm(item.key,...parts);for(const part of ['rpm','acc','limit'])accept('arm',item.key+'_'+part,result[part],true);}
+          else{result=await (item.kind==='grab'?exchange.setGrab(item.key,item.value):item.kind==='turntable'?exchange.setTurntable(item.key,item.value):radarExchange.set(item.key,item.value));accept(item.kind,item.key,result.value,true);}
+          if(!result.confirmed)throw new Error('读回与输入不一致');successes++;
+          for(const row of rows.values())if(row.field.kind===item.kind&&(row.field.key===item.key||item.kind==='arm'&&row.field.axis===item.key)){
+            const shown=displayValue(row.field,device(row.field));
+            row.dirty=item.kind!=='local'&&(row.input.value===''||!sameNumber(shown,Number(row.input.value)));
+            if(item.kind!=='local')row.state.textContent=row.dirty?'读回与界面距离不一致':'读回一致';
+          }
+        }catch(error){check(token);failures++;showError(item.kind,item.key,error);detailLine.textContent=error.message;}
+      }
+    },localOnly);
+  };
+  function update(){
+    const changed=[...rows.values()].filter(row=>row.field.tab===tab&&row.dirty);
+    readAll.disabled=busy||!canSend('grab get z_grab');apply.disabled=busy||!changed.length||(!changed.every(row=>row.field.kind==='local')&&!canSend('grab get z_grab'));
+    for(const {button,wire}of actions){try{button.disabled=busy||!canSend(typeof wire==='function'?wire():wire);}catch{button.disabled=true;}}
+  }
+  function cancel(reason='操作已取消',markHistorical=false){
+    revision++;exchange.cancel(reason);radarExchange?.cancel(reason);
+    if(markHistorical){
+      for(const row of rows.values())if(row.field.kind!=='local'&&Object.hasOwn(device(row.field),row.field.key))historicalValues.add(row.field.kind+':'+row.field.key);
+      for(const row of rows.values())if(row.field.kind!=='local'){repaint(row,true);if(Object.hasOwn(device(row.field),row.field.key))row.state.textContent=row.dirty?'待应用 · 历史设备值':'历史值 · 请重新读取';}
+      for(const id of ['turntable-readout','turntable-inventory-readout']){const item=panels.get('turntable').querySelector?.('#'+id);if(item&&!item.textContent.startsWith('历史'))item.textContent='历史 · '+item.textContent+' · 请重新读取';}
+    }
+    if(busy)resultLine.textContent=reason;update();
+  }
+  function receive(line){
+    const consumed=exchange.receive(line);
+    if(/^OK turntable (?:status state=|inventory )/.test(line)){
+      const match=line.match(/slot=(\d+) state=(\w+) color=(\d+)/);if(match)inventory.set(match[1],{state:match[2],color:match[3]});
+      const readout=panels.get('turntable').querySelector?.(match?'#turntable-inventory-readout':'#turntable-readout');
+      const status=Object.fromEntries(line.split(/\s+/).filter(token=>token.includes('=')).map(token=>token.split('=')));
+      const text=match?[1,2,3].map(slot=>{const item=inventory.get(String(slot));return slot+'仓：'+(item?({empty:'空仓',unknown:'待核对',occupied:'占用 · '+({1:'红色',2:'黄色',3:'蓝色',4:'绿色',5:'黑色',6:'浅蓝色'})[item.color]})[item.state]:'未读取');}).join('　'):
+        (status.ref==='1'?'参考已建立':'参考未建立')+' · '+({idle:'空闲',reading:'正在读取反馈',moving:'正在分度',stopping:'正在停车',arrived:'实际到位'})[status.state]+' · 当前 '+status.angle_deg+'° / 目标 '+status.target_deg+'°';
+      if(readout)readout.textContent=text;resultLine.textContent=text;detailLine.textContent=match?'库存已读回；以实际物料核对为准':'设备原因：'+status.reason;
+    }
+    if(/^OK turntable accepted\b/.test(line)){resultLine.textContent='转盘请求已受理 · 等待反馈确认';detailLine.textContent='点击读取状态查看参考建立或实际到位结果';}
+    if(/^ERR turntable\b/.test(line)){resultLine.textContent='设备拒绝：'+line.slice(4);detailLine.textContent='请按设备原因处理后再操作';}
+    return consumed;
+  }
+  selectTab();return {receive,cancel,update,selectTab,setReturn,readAll:()=>readAll.onclick(),apply:()=>apply.onclick(),get tab(){return tab;},get busy(){return busy;}};
 }

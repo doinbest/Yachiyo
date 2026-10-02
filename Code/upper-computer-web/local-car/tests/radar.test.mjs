@@ -41,10 +41,18 @@ test('serial page fetch waits for its exact reply and ignores unrelated and old 
   assert.deepEqual(wires,['radar fetch map 7 0','radar fetch map 7 1']);
 });
 
+test('radar write rejected before get preserves the device reason',async()=>{
+  const wires=[];let exchange;
+  exchange=new radar.RadarExchange({send:async wire=>{wires.push(wire);queueMicrotask(()=>exchange.receive('ERR radar busy'));return true;},timeoutMs:20});
+  await assert.rejects(exchange.set('energy_min',21),/ERR radar busy/);
+  assert.deepEqual(wires,['radar set energy_min 21']);
+});
+
 test('radar parameter set requires device readback and never treats TX as application',async()=>{
   const wires=[];let exchange;
   exchange=new radar.RadarExchange({send:async wire=>{
     wires.push(wire);
+    if(wire.startsWith('radar set '))queueMicrotask(()=>exchange.receive('OK radar parameter_updated_ram'));
     if(wire==='radar get')queueMicrotask(()=>exchange.receive('@RADAR '+JSON.stringify({v:1,k:'params',session:1,origin:1,scan:0,map:0,plan:0,page:0,pages:1,key:'energy_min',value:20})));
     return true;
   },intervalMs:0});
