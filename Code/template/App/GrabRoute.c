@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef enum { GR_IDLE, GR_DRIVING, GR_SCAN_WAIT, GR_DISPLAY_WAIT, GR_HANDOFF, GR_ERROR, GR_CANCELLED } GrabRoute_State;
+typedef enum { GR_IDLE, GR_DRIVING, GR_SCAN_WAIT, GR_DISPLAY_WAIT, GR_HANDOFF, GR_ERROR, GR_CANCELLED, GR_DONE } GrabRoute_State;
 static GrabRoute_State State;
 static uint32_t StartTick, WaitTick, CodeSequence;
 static const char *Reason;
@@ -24,7 +24,7 @@ bool GrabRoute_StartPlanned(const RadarPlan_t *plan,float speed)
 
 static void Report(uint8_t Error)
 {
-  static const char *Names[]={"idle","driving","scan_wait","display_wait","handoff","error","cancelled"};
+  static const char *Names[]={"idle","driving","scan_wait","display_wait","handoff","error","cancelled","done"};
   ChassisRoute_Status_t Route;
   char Text[240];
   int Length;
@@ -42,15 +42,15 @@ void GrabRoute_Init(void)
 
 bool GrabRoute_IsBusy(void)
 {
-  return State==GR_DRIVING || State==GR_SCAN_WAIT || State==GR_DISPLAY_WAIT;
+  return State==GR_DRIVING || State==GR_SCAN_WAIT || State==GR_DISPLAY_WAIT || State==GR_HANDOFF;
 }
 
 void GrabRoute_Stop(void)
 {
   if(GrabRoute_IsBusy())
   {
+    if(State!=GR_HANDOFF) (void)ChassisRoute_Cancel();
     State=GR_CANCELLED;Reason="operator_stop";
-    (void)ChassisRoute_Cancel();
   }
   if(GrabTask_IsBusy()) GrabTask_Stop();
 }
@@ -67,6 +67,16 @@ void GrabRoute_Process(void)
   ChassisRoute_Status_t Route;
   QR_SnapshotTypeDef Code;
   if(!GrabRoute_IsBusy()) return;
+  if(State==GR_HANDOFF)
+  {
+    GrabTask_Status_t Grab;
+    GrabTask_StatusGet(&Grab);
+    if(Grab.state==GRAB_COMPLETE && !strcmp(Grab.result,"stored"))
+    { State=GR_DONE;Reason="single_piece_stored";Report(0U); }
+    else if(Grab.state==GRAB_ERROR || (Grab.state==GRAB_IDLE && !strcmp(Grab.result,"cancelled")))
+    { State=GR_ERROR;Reason=Grab.reason;Report(1U); }
+    return; /* This scope ends after one storage action; it never starts a second piece. */
+  }
   ChassisRoute_StatusGet(&Route);
   if(!strcmp(Route.state,"error") || !strcmp(Route.state,"cancelled"))
   { Fail(Route.reason);return; }

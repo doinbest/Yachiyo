@@ -1,5 +1,5 @@
 /** @file GrabTask.h
- * @brief 蓝色物料仅协同对准、静止红色物料单件抓取；主循环独占底盘/Base/X/Z，抓取后转向放置。
+ * @brief B2协同对准及单件外部/车载仓位取放，主循环串行推进并确认实际反馈。
  */
 #ifndef GRAB_TASK_H
 #define GRAB_TASK_H
@@ -14,13 +14,17 @@
 typedef enum
 {
   GRAB_IDLE, GRAB_PREPARE, GRAB_ACQUIRE, GRAB_ALIGN, GRAB_SETTLE,
-  GRAB_DESCEND, GRAB_CLOSE, GRAB_LIFT, GRAB_TURN, GRAB_PLACE, GRAB_RELEASE, GRAB_RETRACT, GRAB_HOLD, GRAB_STOPPING, GRAB_ERROR, GRAB_HOMING, GRAB_VISION_PAUSE, GRAB_VISION_GRACE
+  GRAB_DESCEND, GRAB_CLOSE, GRAB_LIFT, GRAB_TURN, GRAB_PLACE, GRAB_RELEASE, GRAB_RETRACT, GRAB_HOLD, GRAB_STOPPING, GRAB_ERROR, GRAB_HOMING, GRAB_VISION_PAUSE, GRAB_VISION_GRACE,
+  GRAB_X_RETRACT, GRAB_INDEX, GRAB_CAR_EXTEND, GRAB_RETURN_TURN,
+  GRAB_EXTERNAL_EXTEND, GRAB_OBSERVE_Z, GRAB_OBSERVE_X, GRAB_COMPLETE
 } GrabTask_State_t;
 typedef struct
 {
   GrabTask_State_t state;
   const char *state_name, *mode, *reason, *missing;
   const char *reference_cause; /**< Latest cause that invalidated or verified pickup references. */
+  const char *operation, *scene, *result; /**< align/store/take/return; action scene; software result. */
+  uint8_t slot; /**< Onboard slot 1..3, or 0 for alignment/return. */
   bool busy, stop_requested, stop_confirmed;
   float x_mm, x_target_mm, z_mm, z_target_mm, forward_mm_s, left_mm_s;
   int16_t dx, dy;
@@ -42,8 +46,8 @@ void GrabTask_Init(void);
  * Base near-home does not imply numerical zero. Success arms IMU boot verification once.
  */
 void GrabTask_BootHomeStart(void);
-/** @brief 持续主循环调用；蓝色align短漏检默认容忍250 ms，停稳后恢复等待1500 ms。
- * 容忍期间只按上次速度减速，不沿旧误差加速或判定对准；仅align停稳后重发一次B2。
+/** @brief 持续主循环调用；align/pick共用短漏检容忍与停稳恢复。
+ * 容忍期间只按上次速度减速，不沿旧误差加速或判定对准；停稳后重发一次B2。
  */
 void GrabTask_Process(void);
 /** @brief fixed/align/pick；返回受理，不等于到位或抓持确认。必须先排除其他任务。 */
@@ -54,7 +58,7 @@ bool GrabTask_ConfigReady(const char *mode);
  * ALL仅清除X/Z，all home调用者另通知BASE；不自动重标定或改变硬件。
  */
 void GrabTask_ReferenceInvalidate(MechanicalArm_AxisTypeDef axis);
-/** @brief HOLD仍拥有机构；等待用户检查，不能据此自动计数。 */
+/** @brief align HOLD仍拥有机构；单件COMPLETE释放占用，可显式开始下一件。 */
 bool GrabTask_IsBusy(void);
 /** @brief 取消自动推进并请求停车；重复请求保留停稳证据，保持夹爪输出与Z使能，检查状态确认停车。 */
 void GrabTask_Stop(void);

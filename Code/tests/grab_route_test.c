@@ -11,13 +11,15 @@ static uint32_t tick;
 static ChassisRoute_Status_t route;
 static unsigned starts,resumes,finishes,picks,cancels;
 static int ready=1,screen_done,screen_error,task_busy;
+static GrabTask_Status_t grab_status;
 static char reply[600];
 uint32_t HAL_GetTick(void){return tick;}
 bool ConsoleTx_Write(const uint8_t *d,uint16_t n){assert(n<sizeof(reply));memcpy(reply,d,n);reply[n]=0;return true;}
 bool GrabTask_ConfigReady(const char *mode){assert(!strcmp(mode,"pick"));return ready;}
 bool GrabTask_IsBusy(void){return task_busy;}
-bool GrabTask_Start(const char *mode){assert(!strcmp(mode,"pick"));picks++;task_busy=1;return true;}
-void GrabTask_Stop(void){task_busy=0;}
+bool GrabTask_Start(const char *mode){assert(!strcmp(mode,"pick"));picks++;task_busy=1;grab_status.state=GRAB_PREPARE;grab_status.result="pending";grab_status.reason="running";return true;}
+void GrabTask_Stop(void){task_busy=0;grab_status.state=GRAB_IDLE;grab_status.result="cancelled";grab_status.reason="cancelled";}
+void GrabTask_StatusGet(GrabTask_Status_t *s){*s=grab_status;}
 bool ChassisRoute_StationStart(float speed){assert(speed==50);starts++;route.segment=1;route.state="running";return true;}
 bool ChassisRoute_PlanStart(const RadarPlan_t *p,float speed,bool station_mode){assert(p->valid && speed==50 && station_mode);starts++;route.planned=true;route.segment=1;route.state="running";return true;}
 bool ChassisRoute_StationResume(void){resumes++;route.segment=3;route.state="running";return true;}
@@ -29,7 +31,7 @@ uint8_t ContestScreen_TaskCodeRefresh(const char *s){assert(!strcmp(s,"156+123+5
 uint8_t ContestScreen_ProgressSet(uint8_t a,uint8_t b){assert(!a&&!b);return 1;}
 uint8_t ContestScreen_TaskCodeSent(void){return screen_done;}
 uint8_t ContestScreen_HasError(void){return screen_error;}
-static void setup(void){memset(&route,0,sizeof(route));route.state="idle";route.reason="none";tick=0;starts=resumes=finishes=picks=cancels=0;ready=1;screen_done=screen_error=task_busy=0;QR_Init();GrabRoute_Init();}
+static void setup(void){memset(&route,0,sizeof(route));memset(&grab_status,0,sizeof(grab_status));route.state="idle";route.reason="none";grab_status.reason="idle";grab_status.result="none";tick=0;starts=resumes=finishes=picks=cancels=0;ready=1;screen_done=screen_error=task_busy=0;QR_Init();GrabRoute_Init();}
 int main(void)
 {
   char *start[]={"grab","route","50"};QR_SnapshotTypeDef qr;
@@ -42,8 +44,10 @@ int main(void)
   tick=1000;GrabRoute_Process();QR_SnapshotGet(&qr);assert(qr.Valid&&qr.Source==QR_SOURCE_SIMULATED&&!qr.Received&&!qr.Accepted);
   assert(QR_ColorGet(0,0)==1&&!resumes);tick+=1000;GrabRoute_Process();assert(!resumes);
   screen_done=1;GrabRoute_Process();assert(resumes==1);
-  route.state="station";route.segment=4;GrabRoute_Process();assert(finishes==1&&picks==1&&!GrabRoute_IsBusy());
-  GrabRoute_Process();assert(picks==1);
+  route.state="station";route.segment=4;GrabRoute_Process();assert(finishes==1&&picks==1&&GrabRoute_IsBusy());
+  GrabRoute_Process();assert(picks==1&&GrabRoute_IsBusy());
+  grab_status.state=GRAB_COMPLETE;grab_status.result="stored";grab_status.reason="stored";task_busy=0;
+  GrabRoute_Process();assert(!GrabRoute_IsBusy()&&picks==1&&strstr(reply,"state=done")&&strstr(reply,"single_piece_stored"));
   setup();GrabRoute_Command(3,start);route.state="station";route.segment=2;route.stop_confirmed=true;GrabRoute_Process();tick=1000;GrabRoute_Process();screen_error=1;GrabRoute_Process();assert(!resumes&&!picks&&!GrabRoute_IsBusy()&&cancels);
   setup();GrabRoute_Command(3,start);GrabRoute_Stop();tick=9999;GrabRoute_Process();assert(!picks&&!resumes&&!GrabRoute_IsBusy());
   setup();RadarPlan_t plan={0};plan.valid=true;

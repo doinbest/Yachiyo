@@ -6,7 +6,7 @@
 void GrabRoute_Init(void);
 /** @brief 主循环在路线处理后调用。扫码计时从第2段停车确认开始。 */
 void GrabRoute_Process(void);
-/** @brief 仅表示组合路线仍在调度；抓取阶段由GrabTask_IsBusy表示。 */
+/** @brief 组合调度占用持续至首件反馈完成；不扩展后续赛事调度。 */
 bool GrabRoute_IsBusy(void);
 /** @brief Explicitly start the QR→RAW→single pick test using a completed map
  * plan. Keeps the current simulated test code and existing pick controller. */

@@ -10,6 +10,7 @@
 #include "mecanum_chassis.h"
 #include "mechanical_arm_config.h"
 #include "console_tx.h"
+#include "turntable.h"
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -25,17 +26,22 @@ enum
   C_LEAD, C_DX_TOL, C_DY_TOL, C_REF_U, C_REF_V,
   C_J00, C_J01, C_J02, C_J10, C_J11, C_J12,
   C_LAMBDA, C_BODY_SPEED, C_X_SPEED, C_Z_SPEED, C_STABLE_MS, C_FRAMES,
-  C_RETRIES, C_X_WEIGHT, C_Z_PLACE, C_LOSS_GRACE_MS, C_COUNT
+  C_RETRIES, C_X_WEIGHT, C_Z_PLACE, C_LOSS_GRACE_MS,
+  C_Z_PROC_GRAB, C_Z_PROC_LIFT, C_Z_CAR_LIFT, C_Z_PROC_PLACE,
+  C_Z_TEMP_PLACE, C_Z_STACK_PLACE, C_X_CAR, C_BASE_CAR_OFFSET, C_COUNT
 };
 static const char *const Keys[C_COUNT] = {
   "x_ppm","z_ppm","x_min","x_max","z_min","z_max","x_pre","z_observe",
   "z_grab","z_lift","pos_tol","stop_speed","close_ms","age_ms","feedback_ms",
   "accel","travel_mm","lead_mm","dx_tol","dy_tol","ref_u","ref_v",
   "j00","j01","j02","j10","j11","j12","lambda","body_speed","x_speed",
-  "z_speed","stable_ms","frames","retries","x_weight","z_place","loss_grace_ms"
+  "z_speed","stable_ms","frames","retries","x_weight","z_place","loss_grace_ms",
+  "z_proc_grab","z_proc_lift","z_car_lift","z_proc_place","z_temp_place",
+  "z_stack_place","x_car","base_car_offset"
 };
 static const char *const States[] = {"idle","prepare","acquire","align","settle",
-  "descend","close","lift","turn","place","release","retract","hold","stopping","error","homing","vision_pause","vision_grace"};
+  "descend","close","lift","turn","place","release","retract","hold","stopping","error","homing","vision_pause","vision_grace",
+  "x_retract","index","car_extend","return_turn","external_extend","observe_z","observe_x","complete"};
 typedef struct
 {
   float mm, speed, target;
@@ -86,6 +92,24 @@ static const MechanicalArm_AxisTypeDef BootAxes[3]={MECHANICAL_ARM_AXIS_Z,MECHAN
 static void boot_stop(const char *reason,bool failed);
 static void boot_process(uint32_t now);
 static uint8_t boot_event(const MechanicalArm_EventTypeDef *event);
+typedef enum { OP_ALIGN, OP_STORE, OP_TAKE, OP_RETURN } GrabOperation_t;
+typedef enum { SCENE_RAW, SCENE_PROC, SCENE_ROUGH, SCENE_TEMP1, SCENE_TEMP2 } GrabScene_t;
+static GrabOperation_t Operation;
+static GrabScene_t Scene;
+static bool OutsideReferenceValid, OutsidePose, ToCar, IndexSubmitted, InventoryTouched;
+static float OutsideBase, ObserveX, ObserveZ, ExternalX;
+static const char *const OperationNames[]={"align","store","take","return"};
+static const char *const SceneNames[]={"raw","proc","rough","temp1","temp2"};
+static unsigned grab_key(void) { return Scene==SCENE_PROC?C_Z_PROC_GRAB:C_Z_GRAB; }
+static unsigned lift_key(void) { return Scene==SCENE_PROC?C_Z_PROC_LIFT:C_Z_LIFT; }
+static unsigned release_key(void)
+{ return Scene==SCENE_TEMP1?C_Z_TEMP_PLACE:(Scene==SCENE_TEMP2?C_Z_STACK_PLACE:C_Z_PROC_PLACE); }
+static void invalidate_inventory(void)
+{
+  if(InventoryTouched && Status.slot)
+    (void)Turntable_InventorySet(Status.slot,TURNTABLE_UNKNOWN,0);
+  InventoryTouched=false;
+}
 
 static float clamp(float value, float low, float high)
 { return value < low ? low : (value > high ? high : value); }
@@ -154,43 +178,64 @@ static const char *visual_model_name(void)
   return VisualModelCustom?"custom":"initial";
 }
 
-static bool configuration_required(unsigned key,const char *mode)
+static bool configuration_required_for(unsigned key,const char *mode,GrabOperation_t op,GrabScene_t scene)
 {
-  if(key==C_Z_PPM || key==C_Z_MIN || key==C_Z_MAX || key==C_POS_TOL ||
-     key==C_STOP_SPEED || key==C_FEEDBACK_MS) return true;
-  if(strcmp(mode,"align") && (key==C_Z_GRAB || key==C_Z_LIFT ||
-     key==C_CLOSE_MS || key==C_Z_PLACE)) return true;
+  if(key==C_X_PPM || key==C_X_MIN || key==C_X_MAX || key==C_Z_PPM ||
+     key==C_Z_MIN || key==C_Z_MAX || key==C_POS_TOL || key==C_STOP_SPEED ||
+     key==C_FEEDBACK_MS) return true;
+  if(op!=OP_ALIGN)
+  {
+    if(key==C_Z_CAR_LIFT || (op!=OP_RETURN && (key==C_Z_PLACE || key==C_X_CAR ||
+       key==C_BASE_CAR_OFFSET || key==C_CLOSE_MS))) return true;
+    if(op==OP_STORE && (key==(scene==SCENE_PROC?C_Z_PROC_GRAB:C_Z_GRAB) ||
+       key==(scene==SCENE_PROC?C_Z_PROC_LIFT:C_Z_LIFT))) return true;
+    if(op==OP_TAKE && key==(scene==SCENE_TEMP1?C_Z_TEMP_PLACE:
+       (scene==SCENE_TEMP2?C_Z_STACK_PLACE:C_Z_PROC_PLACE))) return true;
+  }
   return strcmp(mode,"fixed") && key<=C_J12 && key!=C_Z_GRAB &&
     key!=C_Z_LIFT && key!=C_CLOSE_MS;
 }
-static const char *configuration_missing(const char *mode)
+static bool configuration_required(unsigned key,const char *mode)
+{ return configuration_required_for(key,mode,Operation,Scene); }
+static const char *configuration_missing_for(const char *mode,GrabOperation_t op,GrabScene_t scene)
 {
   unsigned i; float test[3];
-  if (!valid_mode(mode)) return "mode";
+  if(!valid_mode(mode)) return "mode";
   for(i=0;i<C_COUNT;i++)
-    if(configuration_required(i,mode) && !isfinite(Config[i])) return Keys[i];
+    if(configuration_required_for(i,mode,op,scene) && !isfinite(Config[i])) return Keys[i];
   if(Config[C_Z_MIN]>=Config[C_Z_MAX]) return "z_range";
-  if(strcmp(mode,"align") && (Config[C_Z_GRAB]<Config[C_Z_MIN] || Config[C_Z_GRAB]>Config[C_Z_MAX] ||
-    Config[C_Z_LIFT]<Config[C_Z_MIN] || Config[C_Z_LIFT]>Config[C_Z_MAX] ||
-    Config[C_Z_LIFT]<=Config[C_Z_GRAB] || Config[C_Z_PLACE]<Config[C_Z_MIN] ||
-    Config[C_Z_PLACE]>Config[C_Z_MAX] || Config[C_Z_LIFT]<=Config[C_Z_PLACE])) return "z_targets";
+  if(Config[C_X_MIN]>=Config[C_X_MAX]) return "x_range";
+  if(op!=OP_ALIGN)
+  {
+    unsigned pickup=scene==SCENE_PROC?C_Z_PROC_GRAB:C_Z_GRAB;
+    unsigned lifted=scene==SCENE_PROC?C_Z_PROC_LIFT:C_Z_LIFT;
+    unsigned released=scene==SCENE_TEMP1?C_Z_TEMP_PLACE:(scene==SCENE_TEMP2?C_Z_STACK_PLACE:C_Z_PROC_PLACE);
+    if(Config[C_Z_CAR_LIFT]<Config[C_Z_MIN] || Config[C_Z_CAR_LIFT]>Config[C_Z_MAX]) return "z_car_lift";
+    if(op!=OP_RETURN && (Config[C_Z_PLACE]<Config[C_Z_MIN] || Config[C_Z_PLACE]>Config[C_Z_MAX] ||
+       Config[C_Z_CAR_LIFT]<=Config[C_Z_PLACE])) return "z_car_targets";
+    if(op!=OP_RETURN && (Config[C_X_CAR]<Config[C_X_MIN] || Config[C_X_CAR]>Config[C_X_MAX])) return "x_car";
+    if(op==OP_STORE && (Config[pickup]<Config[C_Z_MIN] || Config[pickup]>Config[C_Z_MAX] ||
+       Config[lifted]<Config[C_Z_MIN] || Config[lifted]>Config[C_Z_MAX] || Config[lifted]<=Config[pickup])) return "z_targets";
+    if(op==OP_TAKE && (Config[released]<Config[C_Z_MIN] || Config[released]>Config[C_Z_MAX])) return Keys[released];
+  }
   if(fmaxf(fabsf(Config[C_Z_MIN]),fabsf(Config[C_Z_MAX]))*Config[C_Z_PPM]>2147483000.0f) return "z_pulses";
-  if(Config[C_Z_SPEED]*Config[C_Z_PPM]*60/3200<1 ||
-     Config[C_Z_SPEED]*Config[C_Z_PPM]*60/3200>3000) return "z_rpm";
+  if(fmaxf(fabsf(Config[C_X_MIN]),fabsf(Config[C_X_MAX]))*Config[C_X_PPM]>2147483000.0f) return "x_pulses";
+  if(Config[C_Z_SPEED]*Config[C_Z_PPM]*60/3200<1 || Config[C_Z_SPEED]*Config[C_Z_PPM]*60/3200>3000) return "z_rpm";
+  if(Config[C_X_SPEED]*Config[C_X_PPM]*60/3200<1 || Config[C_X_SPEED]*Config[C_X_PPM]*60/3200>3000) return "x_rpm";
+  if(op!=OP_RETURN && OutsideReferenceValid && !OutsidePose) return "outside_pose";
   if(!strcmp(mode,"fixed")) return NULL;
-  if(Config[C_X_MIN]>=Config[C_X_MAX] || Config[C_X_PRE]<Config[C_X_MIN] ||
-     Config[C_X_PRE]>Config[C_X_MAX]) return "x_range";
+  if(Config[C_X_PRE]<Config[C_X_MIN] || Config[C_X_PRE]>Config[C_X_MAX]) return "x_range";
   if(Config[C_Z_OBSERVE]<Config[C_Z_MIN] || Config[C_Z_OBSERVE]>Config[C_Z_MAX]) return "z_observe";
   if(Config[C_LEAD]>Config[C_X_MAX]-Config[C_X_MIN]) return "lead_mm";
-  if(fmaxf(fabsf(Config[C_X_MIN]),fabsf(Config[C_X_MAX]))*Config[C_X_PPM]>2147483000.0f) return "x_pulses";
-  if(Config[C_X_SPEED]*Config[C_X_PPM]*60/3200<1 ||
-     Config[C_X_SPEED]*Config[C_X_PPM]*60/3200>3000) return "x_rpm";
   if(!solve(1,1,Config[C_X_PRE],test)) return "matrix_rank";
   return NULL;
 }
-bool GrabTask_ConfigReady(const char *mode) { return configuration_missing(mode)==NULL; }
+static const char *configuration_missing(const char *mode)
+{ return configuration_missing_for(mode,Operation,Scene); }
+bool GrabTask_ConfigReady(const char *mode)
+{ return configuration_missing_for(mode,!strcmp(mode,"align")?OP_ALIGN:OP_STORE,SCENE_RAW)==NULL; }
 bool GrabTask_IsBusy(void)
-{ return Status.state!=GRAB_IDLE && Status.state!=GRAB_ERROR; }
+{ return Status.state!=GRAB_IDLE && Status.state!=GRAB_ERROR && Status.state!=GRAB_COMPLETE; }
 void GrabTask_Init(void)
 {
   unsigned i;
@@ -210,10 +255,14 @@ void GrabTask_Init(void)
   Config[C_AGE_MS]=1000; Config[C_ACCEL]=20; Config[C_TRAVEL]=0; Config[C_LEAD]=2;
   Config[C_DX_TOL]=5; Config[C_DY_TOL]=5;
   Config[C_LOSS_GRACE_MS]=250;
+  Config[C_Z_CAR_LIFT]=0; Config[C_BASE_CAR_OFFSET]=-180;
   visual_defaults_restore();
   memset(&Status,0,sizeof Status); memset(Axes,0,sizeof Axes);
   Status.mode="fixed"; Status.reason="idle"; Status.missing="z_ppm";
   Status.reference_cause="boot_pending";
+  Operation=OP_STORE; Scene=SCENE_RAW; Status.operation="store"; Status.scene="raw";
+  Status.result="none"; Status.slot=0; OutsideReferenceValid=false; OutsidePose=true;
+  ToCar=IndexSubmitted=InventoryTouched=false;
   ActiveColor=GRAB_PICK_COLOR;
   Status.x_mm=Status.x_target_mm=Status.z_mm=Status.z_target_mm=NAN;
   PendingAction=MECHANICAL_ARM_ACTION_NONE;
@@ -247,19 +296,21 @@ static void stop_begin(void)
   /* Let an in-flight feedback request drain without immediately replacing it;
    * normal stopping must reach a clean shared-bus boundary. */
   Mecanum_Feedback_Enable(false);
+  if(Status.state==GRAB_STOPPING) Turntable_Stop();
 }
 static void fault(const char *reason)
 {
   if(Status.state==GRAB_STOPPING || Status.state==GRAB_ERROR) return;
   loss_finish(HAL_GetTick());
   RecoveryWaiting=RecoveryRestartPending=false; RecoveryCount=0;
+  invalidate_inventory(); Status.result="failed";
   Status.reason=reason; FinishError=true; Camera_RequestStop(); HaveCapture=FreshVision=false;
   enter(GRAB_STOPPING); stop_begin();
 }
 void GrabTask_Stop(void)
 {
   if(BootActive) { boot_stop("home_cancelled",false); return; }
-  if(Status.state==GRAB_IDLE) return;
+  if(Status.state==GRAB_IDLE || Status.state==GRAB_COMPLETE) return;
   loss_finish(HAL_GetTick());
   RecoveryWaiting=RecoveryRestartPending=false; RecoveryCount=0;
   /* Repeated console stops must not reset fresh standstill evidence or resend
@@ -269,6 +320,7 @@ void GrabTask_Stop(void)
     if(FinishError) { Status.reason="cancelled"; FinishError=false; ReportPending=true; }
     return;
   }
+  invalidate_inventory(); Status.result="cancelled";
   Status.reason="cancelled"; FinishError=false;
   Camera_RequestStop(); HaveCapture=FreshVision=false;
   enter(GRAB_STOPPING); stop_begin();
@@ -277,13 +329,18 @@ void GrabTask_ReferenceInvalidate(MechanicalArm_AxisTypeDef axis)
 {
   unsigned i;
   if(GrabTask_IsBusy()) fault("reference_changed");
+  OutsideReferenceValid=false; OutsidePose=true;
   Status.reference_cause=axis==MECHANICAL_ARM_AXIS_X?"x_reference_changed":
     axis==MECHANICAL_ARM_AXIS_Z?"z_reference_changed":
     axis==MECHANICAL_ARM_AXIS_BASE?"base_reference_changed":"all_reference_changed";
   if(axis==MECHANICAL_ARM_AXIS_X || axis==MECHANICAL_ARM_AXIS_ALL)
-    Config[C_X_MIN]=Config[C_X_MAX]=Config[C_X_PRE]=NAN;
+    Config[C_X_MIN]=Config[C_X_MAX]=Config[C_X_PRE]=Config[C_X_CAR]=NAN;
   if(axis==MECHANICAL_ARM_AXIS_Z || axis==MECHANICAL_ARM_AXIS_ALL)
+  {
     Config[C_Z_MIN]=Config[C_Z_MAX]=Config[C_Z_OBSERVE]=Config[C_Z_GRAB]=Config[C_Z_LIFT]=Config[C_Z_PLACE]=NAN;
+    Config[C_Z_PROC_GRAB]=Config[C_Z_PROC_LIFT]=Config[C_Z_PROC_PLACE]=Config[C_Z_TEMP_PLACE]=Config[C_Z_STACK_PLACE]=NAN;
+    Config[C_Z_CAR_LIFT]=NAN;
+  }
   if(axis==MECHANICAL_ARM_AXIS_BASE)
   {
     Config[C_REF_U]=Config[C_REF_V]=NAN;
@@ -292,7 +349,7 @@ void GrabTask_ReferenceInvalidate(MechanicalArm_AxisTypeDef axis)
   Status.missing=configuration_missing(Status.mode);
   if(!Status.missing) Status.missing="none";
 }
-static bool start_with_color(const char *mode,Camera_ColorTypeDef color)
+static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOperation_t op,GrabScene_t scene,uint8_t slot)
 {
   HWT101_Angle_t angle; Mecanum_Status_t bus; const char *missing;
   if(GrabTask_IsBusy()) return false;
@@ -301,11 +358,32 @@ static bool start_with_color(const char *mode,Camera_ColorTypeDef color)
   if(color<CAMERA_COLOR_RED || color>CAMERA_COLOR_LIGHT_BLUE)
   { Status.reason="invalid_color"; Status.missing="color"; return false; }
   Status.mode=!strcmp(mode,"fixed")?"fixed":(!strcmp(mode,"align")?"align":"pick");
-  ActiveColor=color;
+  ActiveColor=color; Operation=op; Scene=scene;
+  Status.operation=OperationNames[op]; Status.scene=op==OP_ALIGN || op==OP_RETURN?"none":SceneNames[scene];
+  Status.result="none"; Status.slot=slot;
+  if(op==OP_RETURN && !OutsideReferenceValid)
+  { Status.reason="outside_reference_unavailable"; Status.missing="outside_reference"; return false; }
   missing=configuration_missing(mode);
   if(missing) { Status.reason="config_missing"; Status.missing=missing; return false; }
+  if(op==OP_STORE || op==OP_TAKE)
+  {
+    Turntable_Inventory_t inventory;
+    if(!slot && op==OP_STORE) slot=Turntable_FindEmpty();
+    Status.slot=slot;
+    if(!slot || slot>3)
+    { Status.reason=op==OP_STORE?"no_confirmed_empty_slot":"invalid_slot"; Status.missing="slot"; return false; }
+    if(!Turntable_ReferenceValid() || !Turntable_SlotConfigured(slot))
+    { Status.reason="turntable_reference_missing"; Status.missing="turntable_reference_or_angle"; return false; }
+    inventory=Turntable_InventoryGet(slot);
+    if(inventory.state==TURNTABLE_UNKNOWN)
+    { Status.reason="inventory_unconfirmed"; Status.missing="slot_inventory"; return false; }
+    if((op==OP_STORE && inventory.state!=TURNTABLE_EMPTY) ||
+       (op==OP_TAKE && inventory.state!=TURNTABLE_OCCUPIED))
+    { Status.reason=op==OP_STORE?"slot_occupied":"slot_empty"; Status.missing="slot_inventory"; return false; }
+    if(op==OP_TAKE) ActiveColor=(Camera_ColorTypeDef)inventory.color;
+  }
   if(ArmVision_IsBusy() || MaterialVision_IsBusy() || ChassisRoute_IsBusy() ||
-     ChassisMotion_IsBusy() || MechanicalArm_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy())
+     ChassisMotion_IsBusy() || MechanicalArm_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy())
   { Status.reason="busy"; return false; }
   Mecanum_StatusGet(&bus);
   if(bus.locked || bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)
@@ -315,7 +393,8 @@ static bool start_with_color(const char *mode,Camera_ColorTypeDef color)
   { Status.reason="imu_invalid"; return false; }
   Heading=!strcmp(mode,"fixed") ? 0 : angle.yaw*CHASSIS_HEADING_TEST_YAW_SIGN;
   Status.mode=!strcmp(mode,"fixed")?"fixed":(!strcmp(mode,"align")?"align":"pick");
-  Status.reason="running"; Status.missing="none";
+  Status.reason="running"; Status.missing="none"; Status.result="pending";
+  InventoryTouched=IndexSubmitted=false; ToCar=op!=OP_RETURN;
   memset(Axes,0,sizeof Axes); memset(WheelLastPositionTick,0,sizeof WheelLastPositionTick);
   Status.x_mm=Status.x_target_mm=Status.z_mm=Status.z_target_mm=NAN;
   RecoveryUsed=RecoveryCount=0; RecoveryWaiting=RecoveryRestartPending=false;
@@ -326,6 +405,8 @@ static bool start_with_color(const char *mode,Camera_ColorTypeDef color)
   enter(GRAB_PREPARE); stop_begin(); stable_reset();
   return true;
 }
+static bool start_with_color(const char *mode,Camera_ColorTypeDef color)
+{ return start_operation(mode,color,!strcmp(mode,"align")?OP_ALIGN:OP_STORE,SCENE_RAW,0); }
 bool GrabTask_Start(const char *mode)
 { return start_with_color(mode,default_color(mode)); }
 
@@ -355,25 +436,23 @@ static bool axis_move(unsigned i,float target)
   if(i==0) Status.x_target_mm=target; else Status.z_target_mm=target;
   return true;
 }
-/* Turn once relative to the measured pickup orientation, using the operator's
- * current Base RPM/acceleration. ACK is not arrival. */
-static bool base_turn(void)
+/* Use the measured outside multi-turn angle as the anchor for every owned turn.
+ * A near-home origin is not necessarily numerical zero. Keep calibration values:
+ * the camera model is unavailable only while its observation pose is suspended. */
+static bool base_move(float target)
 {
-  MechanicalArm_ConfigTypeDef config; unsigned i;
+  MechanicalArm_ConfigTypeDef config;
+  int32_t pulses;
   if(PendingAction!=MECHANICAL_ARM_ACTION_NONE || MechanicalArm_IsBusy()) return false;
+  if(!OutsideReferenceValid || !Axes[2].position_valid) { fault("outside_reference_unavailable"); return false; }
   if(!MechanicalArm_ConfigGet(MECHANICAL_ARM_AXIS_BASE,&config)) { fault("base_config"); return false; }
-  if(!result_accept(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_BASE,-1600,
+  pulses=(int32_t)lroundf((target-Axes[2].mm)*3200.0f/360.0f);
+  if(!result_accept(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_BASE,pulses,
     config.SpeedRpm,config.Acceleration,MECHANICAL_ARM_POSITION_RELATIVE_CURRENT),
     MECHANICAL_ARM_ACTION_POSITION,MECHANICAL_ARM_AXIS_BASE)) return false;
-  Axes[2].target=Axes[2].mm-180; Axes[2].command_tick=HAL_GetTick();
-  Axes[2].commanded=true; Axes[2].quiet=false;
-  /* Camera geometry no longer describes the pickup pose after this owned turn. */
-  Config[C_REF_U]=Config[C_REF_V]=NAN;
-  for(i=C_J00;i<=C_J12;i++) Config[i]=NAN;
-  Status.reference_cause="base_place_turn";
-  /* Report the next pickup's missing reference before another start is rejected. */
-  Status.missing=configuration_missing(Status.mode);
-  if(!Status.missing) Status.missing="none";
+  Axes[2].target=Axes[2].mm+(float)pulses*360.0f/3200.0f; Axes[2].command_tick=HAL_GetTick();
+  Axes[2].commanded=true; Axes[2].quiet=false; OutsidePose=false;
+  Status.reference_cause="transfer_off_pose";
   return true;
 }
 static bool axis_fresh(unsigned i,uint32_t now)
@@ -545,7 +624,7 @@ static void vision_pause_begin(void)
   if(RecoveryUsed>=GRAB_RECOVERY_LIMIT) { fault("vision_recover_limit"); return; }
   RecoveryWaiting=false; RecoveryCount=0; HaveCapture=FreshVision=false;
   /* Alignment can reacquire through the existing B2 command, without changing Pi code. */
-  RecoveryRestartPending=!strcmp(Status.mode,"align");
+  RecoveryRestartPending=true;
   Status.reason="vision_pause_stopping"; enter(GRAB_VISION_PAUSE); stop_begin();
 }
 static bool vision_near_window(int dx,int dy)
@@ -554,9 +633,9 @@ static void vision_loss_begin(uint32_t now)
 {
   if(!LossActive) { LossActive=true; LossTick=Vision.Tick; }
   stable_reset(); FreshVision=false;
-  /* Only blue alignment coasts briefly. Settle/pick and near-window motion
-   * still request a stop immediately; stale data never establishes arrival. */
-  if(Status.state!=GRAB_ALIGN || strcmp(Status.mode,"align") ||
+  /* Alignment in both align and pick can decelerate through a brief gap.
+   * Settle and near-window motion still stop; old data never confirms arrival. */
+  if(Status.state!=GRAB_ALIGN ||
      Config[C_LOSS_GRACE_MS]<=0 || now-LossTick>=Config[C_LOSS_GRACE_MS] ||
      vision_near_window(Status.dx,Status.dy)) { vision_pause_begin(); return; }
   GraceCount=0; GraceSequence=LastSequence;
@@ -674,7 +753,7 @@ static bool vision_read(uint32_t now)
   {
     /* Silence is also a gap: after one control period without a new sample,
      * enter tolerance using the old RX timestamp, not the polling time. */
-    if(!strcmp(Status.mode,"align") && Config[C_LOSS_GRACE_MS]>0 && now-Vision.Tick>=GRAB_CONTROL_PERIOD_MS)
+    if(Config[C_LOSS_GRACE_MS]>0 && now-Vision.Tick>=GRAB_CONTROL_PERIOD_MS)
     { vision_loss_begin(now); return false; }
     return true;
   }
@@ -744,6 +823,128 @@ static void align_control(uint32_t now)
     XIntegral=Axes[0].target;
 }
 
+static void enter_axis(GrabTask_State_t state,unsigned axis)
+{ Axes[axis].commanded=false; enter(state); }
+static void transfer_complete(void)
+{
+  OutsidePose=true;
+  Status.reference_cause="transfer_return_verified";
+  Status.missing=configuration_missing(Status.mode);
+  if(!Status.missing) Status.missing="none";
+  Status.result=Operation==OP_STORE?"stored":(Operation==OP_TAKE?"released":"returned");
+  Status.reason=Status.result; Status.stop_requested=false;
+  enter(GRAB_COMPLETE);
+}
+static void transfer_process(uint32_t now)
+{
+  if(Status.state==GRAB_DESCEND || Status.state==GRAB_LIFT ||
+     Status.state==GRAB_PLACE || Status.state==GRAB_RETRACT || Status.state==GRAB_OBSERVE_Z)
+  {
+    float target;
+    if(Status.state==GRAB_DESCEND) target=Config[Operation==OP_TAKE?release_key():grab_key()];
+    else if(Status.state==GRAB_LIFT) target=Config[Operation==OP_TAKE?C_Z_CAR_LIFT:lift_key()];
+    else if(Status.state==GRAB_PLACE) target=Config[C_Z_PLACE];
+    else if(Status.state==GRAB_OBSERVE_Z) target=ObserveZ;
+    else if(Operation==OP_TAKE && !ToCar) target=Config[C_Z_MAX]; /* Leave the external release vertically. */
+    else if(Operation==OP_RETURN || (Operation==OP_TAKE && ToCar))
+      target=fmaxf(Axes[1].mm,Config[C_Z_CAR_LIFT]);
+    else target=Config[C_Z_CAR_LIFT];
+    if(!Axes[1].commanded)
+    {
+      if(axis_move(1,target) && Status.state==GRAB_PLACE) InventoryTouched=true;
+    }
+    else if(arrived(1,now))
+    {
+      if(Status.state==GRAB_DESCEND)
+      {
+        if(Operation==OP_TAKE) { Arm_GripperSet(ARM_GRIPPER_OPEN); enter(GRAB_RELEASE); }
+        else { Arm_GripperSet(ARM_GRIPPER_CATCH); enter(GRAB_CLOSE); }
+      }
+      else if(Status.state==GRAB_LIFT)
+      {
+        Camera_RequestStop();
+        if(Operation==OP_TAKE)
+        {
+          if(!Turntable_InventorySet(Status.slot,TURNTABLE_EMPTY,0)) { fault("inventory_record_failed"); return; }
+          InventoryTouched=false; ToCar=false;
+        }
+        else ToCar=true;
+        enter_axis(GRAB_X_RETRACT,0);
+      }
+      else if(Status.state==GRAB_PLACE)
+      {
+        if(Operation==OP_TAKE) { Arm_GripperSet(ARM_GRIPPER_CATCH); enter(GRAB_CLOSE); }
+        else { Arm_GripperSet(ARM_GRIPPER_OPEN); enter(GRAB_RELEASE); }
+      }
+      else if(Status.state==GRAB_OBSERVE_Z) enter_axis(GRAB_OBSERVE_X,0);
+      else if(Operation==OP_TAKE && !ToCar) enter_axis(GRAB_OBSERVE_Z,1);
+      else enter_axis(GRAB_X_RETRACT,0);
+    }
+  }
+  else if(Status.state==GRAB_CLOSE && now-StateTick>=Config[C_CLOSE_MS]) enter_axis(GRAB_LIFT,1);
+  else if(Status.state==GRAB_RELEASE && now-StateTick>=Config[C_CLOSE_MS])
+  {
+    if(Operation==OP_STORE)
+    {
+      if(!Turntable_InventorySet(Status.slot,TURNTABLE_OCCUPIED,(uint8_t)ActiveColor)) { fault("inventory_record_failed"); return; }
+      InventoryTouched=false; ToCar=false;
+    }
+    enter_axis(GRAB_RETRACT,1);
+  }
+  else if(Status.state==GRAB_X_RETRACT || Status.state==GRAB_CAR_EXTEND ||
+          Status.state==GRAB_EXTERNAL_EXTEND || Status.state==GRAB_OBSERVE_X)
+  {
+    float target=Status.state==GRAB_X_RETRACT?Config[C_X_MIN]:
+      (Status.state==GRAB_CAR_EXTEND?Config[C_X_CAR]:(Status.state==GRAB_EXTERNAL_EXTEND?ExternalX:ObserveX));
+    if(!Axes[0].commanded) (void)axis_move(0,target);
+    else if(arrived(0,now))
+    {
+      if(Status.state==GRAB_X_RETRACT)
+      {
+        if(ToCar) { IndexSubmitted=false; enter(GRAB_INDEX); }
+        else enter_axis(GRAB_RETURN_TURN,2);
+      }
+      else if(Status.state==GRAB_CAR_EXTEND) enter_axis(GRAB_PLACE,1);
+      else if(Status.state==GRAB_EXTERNAL_EXTEND) enter_axis(GRAB_DESCEND,1);
+      else transfer_complete();
+    }
+  }
+  else if(Status.state==GRAB_INDEX)
+  {
+    Turntable_Status_t turntable;
+    if(!IndexSubmitted)
+    {
+      if(PendingAction==MECHANICAL_ARM_ACTION_NONE && !MechanicalArm_IsBusy())
+      {
+        if(Turntable_Index(Status.slot)) IndexSubmitted=true;
+        else
+        {
+          Turntable_StatusGet(&turntable);
+          if(strcmp(turntable.reason,"busy") && strcmp(turntable.reason,"bus_busy")) fault(turntable.reason);
+        }
+      }
+    }
+    else if(!Turntable_IsBusy())
+    {
+      Turntable_StatusGet(&turntable);
+      if(turntable.arrived && turntable.feedback_valid && !turntable.moving && turntable.slot==Status.slot) enter_axis(GRAB_TURN,2);
+      else if(turntable.arrived && (!turntable.feedback_valid || turntable.moving)) fault("turntable_feedback_stale");
+      else fault(turntable.reason);
+    }
+  }
+  else if(Status.state==GRAB_TURN || Status.state==GRAB_RETURN_TURN)
+  {
+    float target=OutsideBase+(Status.state==GRAB_TURN?Config[C_BASE_CAR_OFFSET]:0);
+    if(!Axes[2].commanded) (void)base_move(target);
+    else if(arrived(2,now))
+    {
+      if(Status.state==GRAB_TURN) enter_axis(GRAB_CAR_EXTEND,0);
+      else if(Operation==OP_TAKE) enter_axis(GRAB_EXTERNAL_EXTEND,0);
+      else enter_axis(GRAB_OBSERVE_Z,1);
+    }
+  }
+}
+
 void GrabTask_Process(void)
 {
   uint32_t now=HAL_GetTick(); bool feedback;
@@ -768,12 +969,27 @@ void GrabTask_Process(void)
      (!feedback || !axis_fresh(0,now) || !axis_fresh(1,now) || !axis_fresh(2,now))) fault("feedback_stale");
   if(Status.state!=GRAB_STOPPING && Status.state!=GRAB_PREPARE &&
      (Axes[1].mm<Config[C_Z_MIN]-Config[C_POS_TOL] || Axes[1].mm>Config[C_Z_MAX]+Config[C_POS_TOL] ||
-      (!fixed_mode() && (Axes[0].mm<Config[C_X_MIN]-Config[C_POS_TOL] ||
-                        Axes[0].mm>Config[C_X_MAX]+Config[C_POS_TOL])))) fault("axis_limit");
+      (Axes[0].mm<Config[C_X_MIN]-Config[C_POS_TOL] ||
+       Axes[0].mm>Config[C_X_MAX]+Config[C_POS_TOL]))) fault("axis_limit");
   if(Status.state==GRAB_STOPPING)
   {
-    stop_process(now,true); poll_axes(now);
-    if(Status.stop_confirmed) enter(FinishError?GRAB_ERROR:GRAB_IDLE);
+    Mecanum_Status_t bus; Turntable_Status_t turntable; bool tray_stopped;
+    stop_process(now,true);
+    Mecanum_StatusGet(&bus); Turntable_StatusGet(&turntable);
+    tray_stopped=!Turntable_IsBusy() && !turntable.moving && turntable.feedback_valid &&
+      strcmp(turntable.reason,"stopped_unverified");
+    if(Status.stop_confirmed && tray_stopped && PendingAction==MECHANICAL_ARM_ACTION_NONE && !MechanicalArm_IsBusy())
+      enter(FinishError?GRAB_ERROR:GRAB_IDLE);
+    else if((bus.locked && !MechanicalArm_IsBusy() && !Turntable_IsBusy()) ||
+      (now-StopTick>(uint32_t)fmaxf(5000,Config[C_FEEDBACK_MS]+Config[C_STABLE_MS]+1000) &&
+       (!feedback || !axis_fresh(0,now) || !axis_fresh(1,now) || !axis_fresh(2,now) || !tray_stopped)))
+    {
+      /* Missing fresh standstill evidence cannot indefinitely block explicit
+       * bus recovery. The task ends unconfirmed and never resumes itself. */
+      Status.stop_confirmed=false; Status.reason="stop_unconfirmed"; Status.result="failed";
+      PendingAction=MECHANICAL_ARM_ACTION_NONE; enter(GRAB_ERROR);
+    }
+    else poll_axes(now);
     return;
   }
   if(Status.state==GRAB_PREPARE)
@@ -784,11 +1000,20 @@ void GrabTask_Process(void)
       if(Status.stop_confirmed && feedback)
       {
         if(Axes[1].mm<Config[C_Z_MIN]-Config[C_POS_TOL] || Axes[1].mm>Config[C_Z_MAX]+Config[C_POS_TOL] ||
-          (!fixed_mode() && (Axes[0].mm<Config[C_X_MIN]-Config[C_POS_TOL] || Axes[0].mm>Config[C_X_MAX]+Config[C_POS_TOL])))
+          (Axes[0].mm<Config[C_X_MIN]-Config[C_POS_TOL] || Axes[0].mm>Config[C_X_MAX]+Config[C_POS_TOL]))
         { fault("initial_axis_limit"); return; }
-        Arm_GripperSet(ARM_GRIPPER_OPEN);
-        if(fixed_mode()) { enter(GRAB_DESCEND); Axes[1].commanded=false; }
-        else PrepareStep=1;
+        if(Operation!=OP_RETURN)
+        {
+          OutsideBase=Axes[2].mm; ObserveX=ExternalX=Axes[0].mm; ObserveZ=Axes[1].mm;
+          OutsideReferenceValid=true; OutsidePose=true;
+        }
+        if(Operation==OP_TAKE || Operation==OP_RETURN) enter_axis(GRAB_RETRACT,1);
+        else
+        {
+          Arm_GripperSet(ARM_GRIPPER_OPEN);
+          if(fixed_mode()) enter_axis(GRAB_DESCEND,1);
+          else PrepareStep=1;
+        }
       }
     }
     else if(PrepareStep==1) { if(axis_move(1,Config[C_Z_OBSERVE])) PrepareStep=2; }
@@ -796,7 +1021,9 @@ void GrabTask_Process(void)
     else if(PrepareStep==3) { if(axis_move(0,Config[C_X_PRE])) PrepareStep=4; }
     else if(PrepareStep==4 && arrived(0,now))
     {
-      HAL_StatusTypeDef result=Camera_MaterialStart(target_color());
+      HAL_StatusTypeDef result;
+      ObserveX=Axes[0].mm; ObserveZ=Axes[1].mm;
+      result=Camera_MaterialStart(target_color());
       if(result==HAL_OK) { RequestTick=now; LastControl=now; LastInvalidCount=0; stable_reset(); enter(GRAB_ACQUIRE); }
       else if(result!=HAL_BUSY) fault("camera_tx");
     }
@@ -827,33 +1054,12 @@ void GrabTask_Process(void)
       if(Status.state==GRAB_SETTLE && Status.stop_confirmed && VisualStable)
       {
         if(!strcmp(Status.mode,"align")) { Status.reason="aligned_wait_check"; enter(GRAB_HOLD); }
-        else { enter(GRAB_DESCEND); Axes[1].commanded=false; }
+        else { ExternalX=Axes[0].mm; enter_axis(GRAB_DESCEND,1); }
       }
     }
   }
-  else if(Status.state==GRAB_DESCEND || Status.state==GRAB_LIFT ||
-          Status.state==GRAB_PLACE || Status.state==GRAB_RETRACT)
-  {
-    /* Horizontal control is never updated once Z descent has started. */
-    if(!Axes[1].commanded) (void)axis_move(1,Config[Status.state==GRAB_DESCEND?C_Z_GRAB:(Status.state==GRAB_PLACE?C_Z_PLACE:C_Z_LIFT)]);
-    else if(arrived(1,now))
-    {
-      if(Status.state==GRAB_DESCEND) { Arm_GripperSet(ARM_GRIPPER_CATCH); enter(GRAB_CLOSE); }
-      else if(Status.state==GRAB_LIFT) { Camera_RequestStop(); Axes[2].commanded=false; enter(GRAB_TURN); }
-      else if(Status.state==GRAB_PLACE) { Arm_GripperSet(ARM_GRIPPER_OPEN); enter(GRAB_RELEASE); }
-      else { Status.reason="placed_wait_check"; enter(GRAB_HOLD); }
-    }
-  }
-  else if(Status.state==GRAB_CLOSE && now-StateTick>=Config[C_CLOSE_MS])
-  { Axes[1].commanded=false; enter(GRAB_LIFT); }
-  else if(Status.state==GRAB_TURN)
-  {
-    if(!Axes[2].commanded) (void)base_turn();
-    else if(arrived(2,now)) { Axes[1].commanded=false; enter(GRAB_PLACE); }
-  }
-  else if(Status.state==GRAB_RELEASE && now-StateTick>=Config[C_CLOSE_MS])
-  { Axes[1].commanded=false; enter(GRAB_RETRACT); }
-  poll_axes(now);
+  else transfer_process(now);
+  if(GrabTask_IsBusy()) poll_axes(now);
 }
 void GrabTask_StatusGet(GrabTask_Status_t *out)
 {
@@ -1003,7 +1209,7 @@ static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
       if(axis==MECHANICAL_ARM_AXIS_Z)
       {
         Config[C_Z_PPM]=480; Config[C_Z_MIN]=-80; Config[C_Z_MAX]=0;
-        Config[C_Z_GRAB]=-80; Config[C_Z_LIFT]=-40; Config[C_Z_PLACE]=-60;
+        Config[C_Z_GRAB]=-80; Config[C_Z_LIFT]=-40; Config[C_Z_PLACE]=-60; Config[C_Z_CAR_LIFT]=0;
         Config[C_Z_OBSERVE]=0;
       }
       else if(axis==MECHANICAL_ARM_AXIS_X)
@@ -1033,7 +1239,9 @@ static bool config_value_valid(unsigned key,float value)
 {
   if(!isfinite(value)) return false;
   if(key==C_X_PPM || key==C_Z_PPM) return value>0 && value<=100000;
-  if(key==C_Z_PLACE || (key>=C_X_MIN && key<=C_Z_LIFT)) return fabsf(value)<=10000;
+  if(key==C_Z_PLACE || (key>=C_X_MIN && key<=C_Z_LIFT) ||
+     (key>=C_Z_PROC_GRAB && key<=C_X_CAR)) return fabsf(value)<=10000;
+  if(key==C_BASE_CAR_OFFSET) return fabsf(value)<=360;
   if(key>=C_J00 && key<=C_J12) return fabsf(value)<=10000;
   if(key==C_REF_U || key==C_REF_V) return value>=0 && value<= (key==C_REF_U?639:479) && floorf(value)==value;
   if(key==C_RETRIES) return value>=0 && value<=10 && floorf(value)==value;
@@ -1106,8 +1314,8 @@ static void status_write(bool debug)
       (void)snprintf(missing,sizeof missing,"%s",invalid?invalid:"none");
     }
     (void)snprintf(line,sizeof line,
-      "OK grab state=%s mode=%s reason=%s missing=%s ref_cause=%s stop_requested=%u stop_confirmed=%u elapsed=%lu\r\n",
-      s.state_name,s.mode,s.reason,missing,s.reference_cause,s.stop_requested?1U:0U,s.stop_confirmed?1U:0U,(unsigned long)s.elapsed_ms);
+      "OK grab state=%s mode=%s reason=%s missing=%s ref_cause=%s operation=%s scene=%s slot=%u result=%s stop_requested=%u stop_confirmed=%u elapsed=%lu\r\n",
+      s.state_name,s.mode,s.reason,missing,s.reference_cause,s.operation,s.scene,(unsigned)s.slot,s.result,s.stop_requested?1U:0U,s.stop_confirmed?1U:0U,(unsigned long)s.elapsed_ms);
     reply(line); return;
   }
   if(s.state==GRAB_HOMING)
@@ -1126,8 +1334,8 @@ static void status_write(bool debug)
     return;
   }
   (void)snprintf(line,sizeof line,
-    "OK grab state=%s mode=%s reason=%s missing=%s ref_cause=%s x=%.3f xt=%.3f z=%.3f zt=%.3f b=%.2f bt=%.2f dx=%s dy=%s protocol=B2 age_source=rx rx_seq=%lu vision=%s color=%u model=%s age=%lu vf=%.3f vl=%.3f stop_requested=%u stop_confirmed=%u elapsed=%lu recovery_used=%lu recovery_count=%lu recovery_left_ms=%s loss_ms=%lu loss_max_ms=%lu grace_count=%lu\r\n",
-    s.state_name,s.mode,s.reason,s.missing,s.reference_cause,s.x_mm,s.x_target_mm,s.z_mm,s.z_target_mm,
+    "OK grab state=%s mode=%s reason=%s missing=%s ref_cause=%s operation=%s scene=%s slot=%u result=%s x=%.3f xt=%.3f z=%.3f zt=%.3f b=%.2f bt=%.2f dx=%s dy=%s protocol=B2 age_source=rx rx_seq=%lu vision=%s color=%u model=%s age=%lu vf=%.3f vl=%.3f stop_requested=%u stop_confirmed=%u elapsed=%lu recovery_used=%lu recovery_count=%lu recovery_left_ms=%s loss_ms=%lu loss_max_ms=%lu grace_count=%lu\r\n",
+    s.state_name,s.mode,s.reason,s.missing,s.reference_cause,s.operation,s.scene,(unsigned)s.slot,s.result,s.x_mm,s.x_target_mm,s.z_mm,s.z_target_mm,
     Axes[2].position_valid?Axes[2].mm:NAN,Axes[2].commanded?Axes[2].target:NAN,
     dx,dy,(unsigned long)s.rx_seq,s.vision_state,(unsigned)target_color(),visual_model_name(),(unsigned long)s.age_ms,s.forward_mm_s,s.left_mm_s,
     s.stop_requested?1U:0U,s.stop_confirmed?1U:0U,(unsigned long)s.elapsed_ms,
@@ -1141,10 +1349,16 @@ static void status_write(bool debug)
     if(length>319)
     {
       /* Preserve complete key/value tokens when the full snapshot exceeds the debug slot. */
-      (void)snprintf(line,sizeof line,"OK grab state=%s mode=%s reason=%s protocol=B2 age_source=rx rx_seq=%lu vision=%s dx=%s dy=%s color=%u stop_requested=%u stop_confirmed=%u recovery_used=%lu recovery_count=%lu recovery_left_ms=%s loss_ms=%lu loss_max_ms=%lu grace_count=%lu\r\n",
-        s.state_name,s.mode,s.reason,(unsigned long)s.rx_seq,s.vision_state,dx,dy,(unsigned)target_color(),
-        s.stop_requested?1U:0U,s.stop_confirmed?1U:0U,(unsigned long)s.recovery_used,(unsigned long)s.recovery_count,remaining,
-        (unsigned long)s.loss_ms,(unsigned long)s.loss_max_ms,(unsigned long)s.grace_count);
+      if(Operation==OP_ALIGN || Status.state==GRAB_ACQUIRE || Status.state==GRAB_ALIGN ||
+         Status.state==GRAB_SETTLE || Status.state==GRAB_VISION_PAUSE || Status.state==GRAB_VISION_GRACE)
+        (void)snprintf(line,sizeof line,"OK grab state=%s mode=%s reason=%s protocol=B2 age_source=rx rx_seq=%lu vision=%s dx=%s dy=%s color=%u stop_requested=%u stop_confirmed=%u recovery_used=%lu recovery_count=%lu recovery_left_ms=%s loss_ms=%lu loss_max_ms=%lu grace_count=%lu\r\n",
+          s.state_name,s.mode,s.reason,(unsigned long)s.rx_seq,s.vision_state,dx,dy,(unsigned)target_color(),
+          s.stop_requested?1U:0U,s.stop_confirmed?1U:0U,(unsigned long)s.recovery_used,(unsigned long)s.recovery_count,remaining,
+          (unsigned long)s.loss_ms,(unsigned long)s.loss_max_ms,(unsigned long)s.grace_count);
+      else
+        (void)snprintf(line,sizeof line,"OK grab state=%s mode=%s reason=%s operation=%s scene=%s slot=%u result=%s x=%.3f xt=%.3f z=%.3f zt=%.3f ref_cause=%s color=%u stop_requested=%u stop_confirmed=%u\r\n",
+          s.state_name,s.mode,s.reason,s.operation,s.scene,(unsigned)s.slot,s.result,s.x_mm,s.x_target_mm,
+          s.z_mm,s.z_target_mm,s.reference_cause,(unsigned)target_color(),s.stop_requested?1U:0U,s.stop_confirmed?1U:0U);
       length=strlen(line);
     }
     (void)ConsoleTx_Debug(CONSOLE_DEBUG_VISION,line,(uint16_t)length);
@@ -1175,31 +1389,73 @@ bool GrabTask_Command(unsigned count,char *tokens[])
   {
     Mecanum_Status_t bus;
     Mecanum_StatusGet(&bus);
-    if(Status.state!=GRAB_IDLE || MechanicalArm_IsBusy() || ArmVision_IsBusy() ||
+    if((Status.state!=GRAB_IDLE && Status.state!=GRAB_COMPLETE) || MechanicalArm_IsBusy() || ArmVision_IsBusy() ||
        MaterialVision_IsBusy() || ChassisRoute_IsBusy() ||
-       ChassisMotion_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() ||
+       ChassisMotion_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy() ||
        bus.locked || bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)
       reply("ERR grab rehome rejected; stop tasks and inspect bus status\r\n");
     else { GrabTask_BootHomeStart(); reply("OK grab rehome accepted; Z/X/Base verification pending\r\n"); status_write(false); }
   }
-  else if((count==3 || count==4) && !strcmp(tokens[1],"start"))
+  else if(count>=3 && count<=5 && !strcmp(tokens[1],"start"))
   {
-    Camera_ColorTypeDef color=default_color(tokens[2]);
-    if(count==4)
+    Camera_ColorTypeDef color=default_color(tokens[2]); uint8_t slot=0;
+    bool fixed=!strcmp(tokens[2],"fixed"), align=!strcmp(tokens[2],"align");
+    if((fixed && count!=3 && count!=5) || (align && count>4))
+    { reply("ERR grab start color; fixed <slot> <color>, align [color], pick [color] [slot]\r\n"); return true; }
+    if(count>=4)
     {
-      if(!strcmp(tokens[2],"fixed") || strlen(tokens[3])!=1 ||
-         tokens[3][0]<'1' || tokens[3][0]>'6')
-      { reply("ERR grab start color; use align|pick 1..6\r\n"); return true; }
-      color=(Camera_ColorTypeDef)(tokens[3][0]-'0');
+      const char *chosen=tokens[fixed?4:3];
+      if(strlen(chosen)!=1 || chosen[0]<'1' || chosen[0]>'6')
+      { reply("ERR grab start color; use 1..6\r\n"); return true; }
+      color=(Camera_ColorTypeDef)(chosen[0]-'0');
     }
-    if(!start_with_color(tokens[2],color)) reply("ERR grab start rejected; inspect grab status\r\n");
+    if(count==5)
+    {
+      const char *chosen=tokens[fixed?3:4];
+      if(strlen(chosen)!=1 || chosen[0]<'1' || chosen[0]>'3')
+      { reply("ERR grab slot; use 1..3\r\n"); return true; }
+      slot=(uint8_t)(chosen[0]-'0');
+    }
+    if(!start_operation(tokens[2],color,align?OP_ALIGN:OP_STORE,SCENE_RAW,slot))
+      reply("ERR grab start rejected; inspect grab status\r\n");
     else
     {
-      char line[96];
+      char line[128];
       (void)snprintf(line,sizeof line,"OK grab start %s accepted color=%u protocol=B2\r\n",
         Status.mode,(unsigned)target_color());
-      reply(line); /* Command accepted only; motion/arrival still require feedback. */
+      reply(line);
     }
+    status_write(false);
+  }
+  else if(count==5 && !strcmp(tokens[1],"store") && !strcmp(tokens[2],"proc"))
+  {
+    if(strlen(tokens[3])!=1 || tokens[3][0]<'1' || tokens[3][0]>'3' ||
+       strlen(tokens[4])!=1 || tokens[4][0]<'1' || tokens[4][0]>'6')
+      reply("ERR grab store; use proc <slot 1..3> <color 1..6>\r\n");
+    else if(!start_operation("fixed",(Camera_ColorTypeDef)(tokens[4][0]-'0'),OP_STORE,SCENE_PROC,(uint8_t)(tokens[3][0]-'0')))
+      reply("ERR grab store rejected; inspect grab status\r\n");
+    else reply("OK grab store proc accepted\r\n");
+    status_write(false);
+  }
+  else if(count==4 && !strcmp(tokens[1],"take"))
+  {
+    GrabScene_t scene;
+    if(!strcmp(tokens[3],"rough")) scene=SCENE_ROUGH;
+    else if(!strcmp(tokens[3],"temp1")) scene=SCENE_TEMP1;
+    else if(!strcmp(tokens[3],"temp2")) scene=SCENE_TEMP2;
+    else { reply("ERR grab take scene; use rough|temp1|temp2\r\n"); return true; }
+    if(strlen(tokens[2])!=1 || tokens[2][0]<'1' || tokens[2][0]>'3')
+      reply("ERR grab slot; use 1..3\r\n");
+    else if(!start_operation("fixed",GRAB_PICK_COLOR,OP_TAKE,scene,(uint8_t)(tokens[2][0]-'0')))
+      reply("ERR grab take rejected; inspect grab status\r\n");
+    else reply("OK grab take accepted\r\n");
+    status_write(false);
+  }
+  else if(count==2 && !strcmp(tokens[1],"return"))
+  {
+    if(!start_operation("fixed",GRAB_PICK_COLOR,OP_RETURN,SCENE_RAW,0))
+      reply("ERR grab return rejected; inspect grab status\r\n");
+    else reply("OK grab return accepted\r\n");
     status_write(false);
   }
   else if(count==4 && !strcmp(tokens[1],"set"))

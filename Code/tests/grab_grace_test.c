@@ -82,7 +82,7 @@ static void short_episodes_preserve_quota(void)
   }
   assert(camera_requests==1 && status().loss_max_ms==200);
 }
-static void near_target_reverse_and_pick_stop(void)
+static void near_target_reverse_and_pick_gap(void)
 {
   unsigned i;
   moving_blue(); step(true,1,3,3); camera_valid=false; step(true,1,3,3);
@@ -94,7 +94,7 @@ static void near_target_reverse_and_pick_stop(void)
   }
   reset(); configure(true); setting("loss_grace_ms","250"); assert(GrabTask_Start("pick"));
   run_to(GRAB_ALIGN,180,1); step(true,1,-95,0); camera_valid=false; step(true,1,-95,0);
-  assert(status().state==GRAB_VISION_PAUSE);
+  assert(status().state==GRAB_VISION_GRACE); /* Pick now shares align's short gap. */
   moving_blue(); run_to(GRAB_SETTLE,200,1); camera_valid=false; step(true,1,0,0);
   assert(status().state==GRAB_VISION_PAUSE && !closures);
 }
@@ -175,7 +175,7 @@ int main(void)
 {
   one_missed_sample_does_not_stop();
   frozen_deadline_and_deceleration(); silence_duplicates_and_observation_count();
-  short_episodes_preserve_quota(); near_target_reverse_and_pick_stop();
+  short_episodes_preserve_quota(); near_target_reverse_and_pick_gap();
   extended_recovery_after_standstill(); faults_and_manual_stop_bypass_grace();
   configuration_and_wire_status(); timestamp_and_sequence_wrap();
   puts("grab_grace_test: PASS"); return 0;

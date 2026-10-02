@@ -56,6 +56,7 @@ if __name__ == "__main__":
                "template/App/radar_scan.c", "template/App/radar_map.c")
     build_test("radar_console_test", "template/App/radar_console.c", "template/App/radar_map.c")
     build_test("grab_task_test")
+    build_test("grab_transfer_test")
     build_test("grab_grace_test")
     build_test("grab_command_sim_test", "template/App/console_tx.c")
     build_test("grab_tuning_sim_test")
