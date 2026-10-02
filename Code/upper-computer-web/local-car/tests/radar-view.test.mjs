@@ -15,8 +15,8 @@ function surface(){
     querySelectorAll(selector){return this.children.flatMap(c=>[...(selector==='input'&&c.tag==='input'?[c]:[]),...c.querySelectorAll(selector)]);}
     getScreenCTM(){return {inverse:()=>this.world?{a:1,d:-1,e:-20,f:2430}:{a:1,d:1,e:-20,f:-30}};}
   }
-  const nodes=new Map(),get=id=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);};
-  for(const id of ['radar-show-obstacles','radar-show-path'])get(id).checked=true;
+  const nodes=new Map(),get=id=>{if(id==='radar-show-path')return null;if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);};
+  get('radar-show-obstacles').checked=true;
   get('map-world').world=true;get('radar-nav-speed').value='100';get('radar-offline-input').value='mask';
   for(const name of ['monitor','radar','offline']){const e=new Element('button');e.dataset.mapTab=name;get('map-tabs').append(e);}
   const saved={document:globalThis.document,DOMPoint:globalThis.DOMPoint,setInterval:globalThis.setInterval};
@@ -30,7 +30,7 @@ test('radar workspace fits the full field without intercepting zoom or drag, kee
   const ui=surface(),wires=[],sources=[],requests=[],model=new RadarModel(),exchange=new RadarExchange({send:async wire=>{wires.push(wire);return true;}});
   try{
     const workspace=mountRadarWorkspace({model,exchange,send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource:value=>sources.push(value)},api:async(path,body)=>{requests.push({path,body});return requests.length===1?{valid:true,algorithm:'radar_map_c_v1',mask:0,points:[[2250,150,1,0]]}:{valid:false,failed_leg:2,algorithm:'radar_map_c_v1',mask:0,points:[]};}});
-    assert.deepEqual(wires,[]);assert.deepEqual(sources,[]);
+    assert.deepEqual(wires,[]);assert.deepEqual(sources,['feedback']);
     const map=ui.get('field-map'),view='-320 -370 3170 2990';
     assert.equal(map.attributes.viewBox,view);
     for(const type of ['wheel','contextmenu','pointerdown','pointerup','pointercancel']){
@@ -40,7 +40,7 @@ test('radar workspace fits the full field without intercepting zoom or drag, kee
     }
     map.events.pointermove({clientX:100,clientY:200});assert.equal(ui.get('map-cursor').textContent,'鼠标 X 80.0 · Y 2230.0 mm');
     workspace.selectTab('offline');workspace.receive('@RADAR '+JSON.stringify({v:1,k:'status',session:1,origin:1,scan:0,map:0,plan:0,page:0,pages:1,state:'idle',points_valid:false}));
-    assert.deepEqual(sources,[]); // Navigation preserves the selected vehicle source.
+    assert.deepEqual(sources,['feedback','offline']); // Navigation changes display only.
     assert.equal(map.attributes.viewBox,view);assert.equal(ui.get('real-route-panel').hidden,true);
     const base={v:1,session:1,origin:1,scan:1,map:1,plan:1};
     workspace.receive('@RADAR '+JSON.stringify({...base,k:'map',page:0,pages:6,mask:4,pose:[2170,230,180]}));
@@ -57,7 +57,18 @@ test('radar workspace fits the full field without intercepting zoom or drag, kee
     assert.equal(ui.get('radar-offline-path').attributes.d,'M2250,150');
     await ui.get('radar-offline-plan').onclick();assert.match(ui.get('radar-offline-status').textContent,/第 2 路段/);
     workspace.connection(false);workspace.connection(true);workspace.selectTab('radar');
-    assert.equal(map.attributes.viewBox,view);assert.deepEqual(wires,[]);assert.deepEqual(sources,[]);
+    assert.equal(map.attributes.viewBox,view);assert.deepEqual(wires,[]);assert.deepEqual(sources,['feedback','offline','feedback']);
+  }finally{ui.restore();}
+});
+
+test('planning paths and station marks render without a second visibility checkbox',()=>{
+  const ui=surface(),model=new RadarModel(),wires=[];
+  try{
+    const workspace=mountRadarWorkspace({model,exchange:new RadarExchange({send:async wire=>{wires.push(wire);return true;}}),send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource(){}},api:async()=>({})});
+    ui.get('radar-device-path').style.display='none';ui.get('radar-stations').style.display='none';
+    workspace.receive('@RADAR '+JSON.stringify({v:1,k:'path',session:1,origin:1,scan:1,map:1,plan:1,page:0,pages:1,offset:0,valid:true,points:[[2250,150,1,0],[2100,1200,5,1]]}));
+    assert.equal(ui.get('radar-device-path').attributes.d,'M2250,150 L2100,1200');assert.equal(ui.get('radar-stations').children.length,2);
+    workspace.render();assert.equal(ui.get('radar-device-path').style.display,'none');assert.equal(ui.get('radar-stations').style.display,'none');assert.deepEqual(wires,[]);
   }finally{ui.restore();}
 });
 

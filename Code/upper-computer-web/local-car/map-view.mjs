@@ -47,8 +47,11 @@ function observeFieldLabels(){
   new ResizeObserver(fit).observe(map);fit();
 }
 export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
-  const telemetry=new Telemetry();let connected=false,running=false,mode=$('map-source').value||'offline',runner=null,activeRows=[],wholeRoute=true;
+  const telemetry=new Telemetry();let connected=false,running=false,mode='feedback',runner=null,activeRows=[],wholeRoute=true;
   let pose={x_mm:2250,y_mm:150,yaw_rad:Math.PI/2},path=[pose];let body=[0,0,0],geometry={...DEFAULT_GEOMETRY};
+  const layerPaths={command:'command-path',feedback:'feedback-path',device:'radar-device-path',offline:'radar-offline-path',sim:'sim-path'};
+  const layerVisible=Object.fromEntries(Object.keys(layerPaths).map(key=>[key,true]));
+  const legendButtons=[...$('map-legend').querySelectorAll('[data-map-layer]')];
   const stepper=new FixedStepper();let last=performance.now(),lastRender=0;
   fieldDrawing();observeFieldLabels();
   const offlineFields=[['start-x','初始 X / mm',2250,-5000,5000,1],['start-y','初始 Y / mm',150,-5000,5000,1],['start-theta','初始 θ / °',90,-3600,3600,1],['geom-l','轴距 L / mm · 估计',210,1,2000,1],['geom-w','轮距 W / mm · 估计',240,1,2000,1],['geom-d','轮径 D / mm · 假设',80,1,1000,.1],['geom-g','减速比 G · 假设',1,.01,100,.01]];
@@ -77,7 +80,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
       tr.append(td);return tr;
     }));
   }
-  function showSimulation(){mode='offline';$('map-source').value=mode;}
+  function showSimulation(){mode='offline';}
   function reset(){if(!readInputs())return;showSimulation();pose={x_mm:Number($('start-x').value),y_mm:Number($('start-y').value),yaw_rad:Number($('start-theta').value)*Math.PI/180};invalidate('模拟已复位 · 从初始位姿开始');}
   function startRoute(rowIndex=null){
     if(!readInputs())return;
@@ -111,7 +114,29 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   $('sim-reset').addEventListener('click',reset);
   $('sim-fields').addEventListener('input',()=>invalidate('参数已编辑 · 整条路线将使用新初始位姿；单段使用当前位姿'));
   $('sim-model').addEventListener('change',()=>invalidate('模型已切换 · 请重新运行路线'));
-  $('map-source').addEventListener('change',e=>{pauseSimulation('已切换数据来源 · 模拟暂停，可继续');mode=e.target.value;render();});
+  $('map-legend').addEventListener('click',e=>{
+    const button=e.target.closest('[data-map-layer]'),key=button?.dataset.mapLayer;
+    if(!Object.hasOwn(layerPaths,key))return;
+    layerVisible[key]=!layerVisible[key];render();
+  });
+  function setSource(value){
+    const next=value==='offline'?'offline':'feedback';
+    if(mode===next)return;
+    pauseSimulation('已切换地图场景 · 模拟暂停，可继续');mode=next;render();
+  }
+  function renderLayers(){
+    const offline=mode==='offline';
+    for(const [key,id]of Object.entries(layerPaths)){
+      const available=key==='device'||(['offline','sim'].includes(key)?offline:!offline);
+      $(id).style.display=available&&layerVisible[key]?'':'none';
+    }
+    $('radar-stations').style.display=$('radar-device-path').style.display;
+    $('route-stops').style.display=$('sim-path').style.display;
+    for(const button of legendButtons){
+      button.hidden=button.dataset.mapContext==='online'?offline:button.dataset.mapContext==='offline'?!offline:false;
+      button.setAttribute('aria-pressed',String(layerVisible[button.dataset.mapLayer]));
+    }
+  }
   $('stream-on').addEventListener('click',async()=>{
     if(isPreparing())return;
     let nonce=0;while(!nonce)nonce=crypto.getRandomValues(new Uint32Array(1))[0];
@@ -126,9 +151,9 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
     const offline=mode==='offline';$('stream-on').disabled=!connected||isPreparing();$('stream-off').disabled=!connected||isPreparing();
     $('telemetry-status').textContent=telemetry.status;onStatus(telemetry.status);
     const g=offline?geometry:telemetry.config?.geometry;
-    const displayPose=offline?pose:mode==='command'?(telemetry.command??(telemetry.stale?telemetry.lastCommand:null)):(telemetry.feedback??(telemetry.stale?telemetry.lastFeedback:null));
+    const displayPose=offline?pose:(telemetry.feedback??(telemetry.stale?telemetry.lastFeedback:null));
     $('map-pose').textContent=poseText(displayPose)+(!offline&&telemetry.stale?' · 最后位置（已过期）':'');$('map-car').style.opacity=!offline&&telemetry.stale?'0.35':'1';
-    $('map-source-label').textContent=offline?'simulated · 离线模拟':mode==='command'?'command_estimate · 指令推算':'feedback_estimate · 反馈估计';
+    $('map-source-label').textContent=offline?'离线模拟 · 16 段路线':'车辆位置 · 反馈估计';
     $('sim-start').disabled=running;
     $('sim-resume').disabled=running||runner?.state!=='running';
     $('sim-pause').disabled=!running;
@@ -151,7 +176,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
         stopMarks.append(svg('text',{transform:`translate(${p.x_mm+40} ${p.y_mm+35}) scale(1 -1)`,'font-size':42,fill:'#065775'},numbers.join('/')));
       }
     }
-    drawPath('sim-path',offline?path:[]);drawPath('command-path',offline?[]:telemetry.paths.command);drawPath('feedback-path',offline?[]:telemetry.paths.feedback);drawCar(displayPose,g,offline);
+    drawPath('sim-path',path);drawPath('command-path',telemetry.paths.command);drawPath('feedback-path',telemetry.paths.feedback);drawCar(displayPose,g,offline);renderLayers();
     $('map-geometry').textContent=g?`L ${g.wheelbase_mm} · W ${g.track_mm} · D ${g.wheel_diameter_mm} mm · G ${g.gear_ratio}${offline?' · 轴距/轮距估计，轮径/减速比假设':` · ${telemetry.config.rev} · 固件配置 · 轴距:${statusName(telemetry.config.geometry_status?.wheelbase)} / 轮距:${statusName(telemetry.config.geometry_status?.track)} / 轮径:${statusName(telemetry.config.geometry_status?.diameter)} / 比:${statusName(telemetry.config.geometry_status?.gear_ratio)}`}`:'在线几何未收到 · 不使用离线参数';
     const motion=motionDisplay(telemetry.route,telemetry.distance);
     $('real-route-status').textContent=motion.text;$('map-route-status').textContent=motion.text;
@@ -182,5 +207,5 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   }
   document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseSimulation('页面已隐藏 · 模拟暂停，可继续');});
   render();requestAnimationFrame(frame);
-  return {setSource(value){if(mode===value)return;$('map-source').value=value;$('map-source').dispatchEvent(new Event('change'));},beginPreparedTelemetry(nonce){pauseSimulation('准备实车跑图 · 离线模拟暂停');mode='feedback';$('map-source').value=mode;$('sim-controls').hidden=true;$('route-editor').hidden=true;$('simulation-actions').hidden=true;$('online-controls').hidden=false;telemetry.begin(nonce,performance.now());render();},snapshot(){telemetry.tick(performance.now());return telemetry;},receive(line){telemetry.accept(line,performance.now());},connection(value){connected=value;telemetry.stop(value?'已连接 · 遥测需手动开启':'串口未连接');render();}};
+  return {setSource,beginPreparedTelemetry(nonce){pauseSimulation('准备实车跑图 · 离线模拟暂停');mode='feedback';$('sim-controls').hidden=true;$('route-editor').hidden=true;$('simulation-actions').hidden=true;$('online-controls').hidden=false;telemetry.begin(nonce,performance.now());render();},snapshot(){telemetry.tick(performance.now());return telemetry;},receive(line){telemetry.accept(line,performance.now());},connection(value){connected=value;telemetry.stop(value?'已连接 · 遥测需手动开启':'串口未连接');render();}};
 }
