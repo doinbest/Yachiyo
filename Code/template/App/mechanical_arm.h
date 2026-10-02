@@ -108,9 +108,6 @@ extern "C"
   uint8_t MechanicalArm_IsBusy(void);
   MechanicalArm_AxisTypeDef MechanicalArm_AxisGet(const char *Name);
   const char *MechanicalArm_AxisNameGet(MechanicalArm_AxisTypeDef Axis);
-  void MechanicalArm_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size);
-  void MechanicalArm_TxCpltCallback(UART_HandleTypeDef *huart);
-  void MechanicalArm_ErrorCallback(UART_HandleTypeDef *huart);
 
 #ifdef __cplusplus
 }

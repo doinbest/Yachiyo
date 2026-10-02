@@ -68,8 +68,6 @@ HAL_StatusTypeDef Camera_Init(void);
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef Color);
 void Camera_RequestStop(void);
 void Camera_Process(void);
-/** @brief 消费一次尚未读取的有效坐标；getter不会发送请求或访问USB。 */
-uint8_t Camera_DataGet(Camera_DataTypeDef *Data);
 /** @brief 主循环非消费式读取诊断快照；NULL不操作，不推进任务或发送数据。 */
 void Camera_SnapshotGet(Camera_SnapshotTypeDef *Snapshot);
 /** @brief 按当前HAL毫秒时钟判断显示状态；不触发超时停车。 */

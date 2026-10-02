@@ -123,9 +123,5 @@ const char *ArmVision_StateNameGet(void);
 uint32_t ArmVision_StatusSequenceGet(void);
 uint8_t ArmVision_ProgressGet(ArmVision_ProgressTypeDef *Data);
 uint8_t ArmVision_MoveDebugGet(ArmVision_MoveDebugDataTypeDef *Data);
-/* 兼容读取：Get仅消费本模块通知；新代码用Camera_SnapshotGet直接读取共享快照。 */
-uint8_t ArmVision_DataGet(Camera_DataTypeDef *Data);
-/* 非消费式读取ArmVision最近处理的历史数据，非当前目标有效性判断。 */
-uint8_t ArmVision_DataPeek(Camera_DataTypeDef *Data);
 
 #endif /* __ARM_VISION_H */

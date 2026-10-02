@@ -22,7 +22,6 @@ static uint8_t Camera_HasFrame;
 static uint8_t Camera_TargetValid;
 static uint8_t Camera_HasValidData;
 static Camera_DataTypeDef Camera_LatestData;
-static volatile uint8_t Camera_DataReady;
 static uint32_t Camera_DataSequence;
 static uint32_t Camera_LastFrameTick;
 static volatile uint32_t Camera_RxByteCount;
@@ -54,7 +53,6 @@ static HAL_StatusTypeDef Camera_RequestStart(uint8_t Function, uint8_t Target)
     Camera_InputLength = 0U;
     Camera_InputOverflow = 0U;
     Camera_StreamLength = 0U;
-    Camera_DataReady = 0U;
     Camera_RequestFunction = Function;
     Camera_RequestTarget = Target;
     Camera_RequestActive = 1U;
@@ -128,7 +126,6 @@ static void Camera_DataPublish(const uint8_t *Frame)
   Camera_LatestData.DY = (int16_t)(((uint16_t)Frame[10] << 8U) | Frame[11]);
   Camera_LatestData.Tick = HAL_GetTick();
   Camera_LatestData.Sequence = Camera_DataSequence;
-  Camera_DataReady = 1U;
 }
 
 /**
@@ -149,7 +146,6 @@ HAL_StatusTypeDef Camera_Init(void)
   Camera_HasFrame = 0U;
   Camera_TargetValid = 0U;
   Camera_HasValidData = 0U;
-  Camera_DataReady = 0U;
   Camera_DataSequence = 0U;
   Camera_LastFrameTick = 0U;
   Camera_RxByteCount = 0U;
@@ -192,7 +188,6 @@ void Camera_RequestStop(void)
   Camera_HasFrame = 0U;
   Camera_TargetValid = 0U;
   Camera_HasValidData = 0U;
-  Camera_DataReady = 0U;
   Camera_InputLength = 0U;
   Camera_StreamLength = 0U;
   Camera_InputOverflow = 0U;
@@ -291,39 +286,10 @@ void Camera_Process(void)
         Camera_InvalidCount++;
         Camera_TargetValid = 0U;
         Camera_HasValidData = 0U;
-        Camera_DataReady = 0U;
       }
     }
     Camera_StreamRemove(FrameLength);
   }
-}
-
-/**
-  * 函    数：读取最新摄像头坐标
-  * 参    数：Data 数据输出地址
-  * 返 回 值：1表示取得新数据，0表示暂无新数据
-  * 说    明：读取后清除新数据标志，当前识别请求保持运行
-  */
-uint8_t Camera_DataGet(Camera_DataTypeDef *Data)
-{
-  uint32_t Primask;
-  uint8_t Ready;
-
-  if (Data == NULL)
-  {
-    return 0U;
-  }
-  Ready = 0U;
-  Primask = __get_PRIMASK();
-  __disable_irq();
-  if (Camera_DataReady != 0U)
-  {
-    *Data = Camera_LatestData;
-    Camera_DataReady = 0U;
-    Ready = 1U;
-  }
-  __set_PRIMASK(Primask);
-  return Ready;
 }
 
 void Camera_SnapshotGet(Camera_SnapshotTypeDef *Snapshot)

@@ -43,7 +43,7 @@ static void request_cache_test(void)
 static void b2_boundaries(void)
 {
   uint8_t frames[42], bad[14], b4[23]={0xff,0xb4,3,1,1,0x4e,1,0x52,0xff,0xef,0,0x1c,2,0,0,0,1,0,0,0,1,0,0xfe};
-  Camera_SnapshotTypeDef snap; Camera_DataTypeDef data; unsigned i; uint32_t seq;
+  Camera_SnapshotTypeDef snap; unsigned i; uint32_t seq;
   Camera_Init(); assert(Camera_MaterialStart(CAMERA_COLOR_BLUE)==HAL_OK);
   assert(tx_length==4 && !memcmp(tx,"\xff\xb2\x03\xff",4));
   make_frame(frames,1); make_frame(frames+14,0); make_frame(frames+28,1);
@@ -62,13 +62,14 @@ static void b2_boundaries(void)
   for(i=0;i<=23;i++) {
     Camera_MaterialStart(CAMERA_COLOR_BLUE);
     Camera_UsbRxCallback(b4,i); Camera_Process(); Camera_UsbRxCallback(b4+i,23-i); Camera_Process();
-    Camera_SnapshotGet(&snap); assert(!snap.HasFrame && !Camera_DataGet(&data));
-    Camera_UsbRxCallback(frames,14); Camera_Process(); assert(Camera_DataGet(&data));
+    Camera_SnapshotGet(&snap); assert(!snap.HasFrame && !snap.HasValidData);
+    Camera_UsbRxCallback(frames,14); Camera_Process(); Camera_SnapshotGet(&snap);
+    assert(snap.HasValidData && snap.TargetValid);
   }
   /* Restart discards partial frames. B2 cannot distinguish a FULL delayed same-colour reply. */
   Camera_UsbRxCallback(frames,7); Camera_Process(); Camera_MaterialStart(CAMERA_COLOR_BLUE);
-  Camera_UsbRxCallback(frames+7,7); Camera_Process(); assert(!Camera_DataGet(&data));
-  Camera_SnapshotGet(&snap); assert(!snap.InvalidCount && !snap.HasFrame);
+  Camera_UsbRxCallback(frames+7,7); Camera_Process(); Camera_SnapshotGet(&snap);
+  assert(!snap.HasValidData && !snap.InvalidCount && !snap.HasFrame);
   tick=0xfffffff0U; Camera_UsbRxCallback(frames,14); Camera_Process(); Camera_SnapshotGet(&snap);
   tick=30; assert(Camera_VisualStateGet(&snap)==CAMERA_VIS_OK);
   tick=1300; assert(Camera_VisualStateGet(&snap)==CAMERA_VIS_STALE);
@@ -76,8 +77,8 @@ static void b2_boundaries(void)
 
 int main(void)
 {
-  Camera_DataTypeDef data;
   Camera_SnapshotTypeDef snapshot;
+  Camera_SnapshotTypeDef consumer;
   uint8_t frame[CAMERA_FRAME_SIZE];
   uint8_t joined[CAMERA_FRAME_SIZE * 2U];
   uint8_t overflow[CAMERA_RX_BUFFER_SIZE + 1U] = {0};
@@ -121,9 +122,14 @@ int main(void)
     assert(snapshot.HasFrame && snapshot.TargetValid && snapshot.HasValidData);
     assert(snapshot.Data.CX == 334 && snapshot.Data.CY == 338);
     assert(snapshot.Data.DX == -17 && snapshot.Data.DY == 28);
-    assert(Camera_DataGet(&data) == 1U);
+    /* A second consumer reads the same frame without consuming it. */
+    Camera_SnapshotGet(&consumer);
+    assert(consumer.HasValidData && consumer.TargetValid);
+    assert(consumer.Data.Sequence == snapshot.Data.Sequence);
+    assert(consumer.Data.CX == snapshot.Data.CX && consumer.Data.CY == snapshot.Data.CY);
+    assert(consumer.Data.DX == snapshot.Data.DX && consumer.Data.DY == snapshot.Data.DY);
     Camera_SnapshotGet(&snapshot);
-    assert(snapshot.HasValidData);
+    assert(snapshot.HasValidData && snapshot.Data.Sequence == consumer.Data.Sequence);
   }
 
   assert(Camera_MaterialStart(CAMERA_COLOR_BLUE) == HAL_OK);
@@ -150,7 +156,6 @@ int main(void)
   assert(snapshot.HasFrame && !snapshot.TargetValid && !snapshot.HasValidData);
   assert(snapshot.LastFrameTick == 300U);
   assert(snapshot.Data.CX == 334 && snapshot.Data.Sequence == 16U);
-  assert(Camera_DataGet(&data) == 0U);
   assert(Camera_VisualStateGet(&snapshot) == CAMERA_VIS_LOST);
   tick = 1501U;
   assert(Camera_VisualStateGet(&snapshot) == CAMERA_VIS_STALE);

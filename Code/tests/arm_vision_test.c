@@ -11,11 +11,9 @@ static unsigned requests, moves, motor_stops;
 static HAL_StatusTypeDef camera_result = HAL_OK;
 static uint8_t configured = 1;
 static Camera_DataTypeDef camera_data;
-static unsigned legacy_reads;
 uint32_t HAL_GetTick(void) { return tick; }
 uint8_t MaterialVision_IsBusy(void) { return peer_busy; }
 uint8_t MechanicalArm_IsBusy(void) { return motor_busy; }
-uint8_t Camera_DataGet(Camera_DataTypeDef *data) { (void)data; legacy_reads++; return 0; }
 void Camera_SnapshotGet(Camera_SnapshotTypeDef *out)
 { memset(out, 0, sizeof(*out)); out->UsbConfigured = configured; out->RequestActive = 1;
   out->Data = camera_data; out->TargetValid = out->HasValidData = camera_data.Sequence != 0; }
@@ -65,7 +63,6 @@ int main(void)
   configured = 1; camera_result = HAL_OK; ArmVision_MaterialCalibrationStart(CAMERA_COLOR_BLUE);
   camera_data.Sequence = 1; camera_data.Tick = tick; ArmVision_Process();
   assert(ArmVision_SampleIndex == 1); ArmVision_Process(); assert(ArmVision_SampleIndex == 1);
-  assert(legacy_reads == 0);
   tick += ARM_VISION_DATA_STALE_TIMEOUT_MS + 1; ArmVision_Process();
   assert(ArmVision_ErrorGet() == ARM_VISION_ERROR_CAMERA_STALE);
   puts("arm_vision_test: OK"); return 0;

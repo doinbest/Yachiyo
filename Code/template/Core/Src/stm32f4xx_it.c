@@ -300,7 +300,7 @@ void UART4_IRQHandler(void)
 void UART5_IRQHandler(void)
 {
   /* USER CODE BEGIN UART5_IRQn 0 */
-  /* ReceiveToIdle由HAL分发到MechanicalArm_RxEventCallback。 */
+  /* ReceiveToIdle由HAL回调直接分发到MotorBus_RxEventCallback。 */
   /* USER CODE END UART5_IRQn 0 */
   HAL_UART_IRQHandler(&huart5);
   /* USER CODE BEGIN UART5_IRQn 1 */

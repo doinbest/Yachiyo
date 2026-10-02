@@ -17,7 +17,6 @@ static uint8_t chassis_ok = 1;
 uint32_t HAL_GetTick(void) { return tick; }
 uint8_t ArmVision_IsBusy(void) { return peer_busy; }
 uint8_t ArmVision_IsReferenceValid(void) { return 1; }
-uint8_t ArmVision_DataPeek(Camera_DataTypeDef *data) { *data = frame; return frame.Sequence != 0; }
 void Camera_SnapshotGet(Camera_SnapshotTypeDef *out)
 { memset(out, 0, sizeof(*out)); out->Data = frame; out->RequestActive = out->UsbConfigured = 1;
   out->HasFrame = out->TargetValid = out->HasValidData = (frame.Sequence != 0); }

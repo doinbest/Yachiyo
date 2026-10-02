@@ -33,7 +33,6 @@ def test_status_commands_and_snapshot_trace_exist():
     for command in ("camera status", "imu status", "screen status"):
         assert command in SOURCE
     assert "Camera_SnapshotGet(&Snapshot)" in SOURCE
-    assert "ArmVision_DataPeek(&Data)" not in SOURCE[:SOURCE.index("ArmConsole_CameraTraceStop")]
 
 
 def test_unsupported_b3_is_explicit_and_not_advertised():

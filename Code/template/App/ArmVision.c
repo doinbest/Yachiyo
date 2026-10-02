@@ -52,7 +52,6 @@ static ArmVision_StateTypeDef ArmVision_State;
 static ArmVision_PhaseTypeDef ArmVision_Phase;
 static MechanicalArm_AxisTypeDef ArmVision_MoveAxis;
 static Camera_DataTypeDef ArmVision_LatestData;
-static uint8_t ArmVision_LatestDataReady;
 static uint8_t ArmVision_ReferenceValid;
 static uint8_t ArmVision_CalibrationValid;
 static ArmVision_CalibrationSourceTypeDef ArmVision_CalibrationSource;
@@ -537,7 +536,6 @@ void ArmVision_Init(void)
   ArmVision_J12 = 0.0f;
   ArmVision_J21 = 0.0f;
   ArmVision_J22 = 0.0f;
-  ArmVision_LatestDataReady = 0U;
   ArmVision_StatusSequence = 1U;
   ArmVision_LastCameraSequence = 0U;
 }
@@ -650,7 +648,6 @@ void ArmVision_Process(void)
     Data = Snapshot.Data;
     ArmVision_LastCameraSequence = Data.Sequence;
     ArmVision_LatestData = Data;
-    ArmVision_LatestDataReady = 1U;
     ArmVision_LastDataTick = Data.Tick;
     ArmVision_HasCameraData = 1U;
     if (ArmVision_State == ARM_VISION_STATE_COLLECT)
@@ -1066,39 +1063,6 @@ uint8_t ArmVision_MoveDebugGet(ArmVision_MoveDebugDataTypeDef *Data)
   }
   *Data = ArmVision_MoveDebugData;
   ArmVision_MoveDebugReady = 0U;
-  return 1U;
-}
-
-/**
-  * 函    数：读取最近一次视觉坐标
-  * 参    数：Data 数据输出地址
-  * 返 回 值：1取得新数据，0暂无新数据
-  * 说    明：不影响ArmVision内部已经使用的中值样本
-  */
-uint8_t ArmVision_DataGet(Camera_DataTypeDef *Data)
-{
-  if ((Data == NULL) || (ArmVision_LatestDataReady == 0U))
-  {
-    return 0U;
-  }
-  *Data = ArmVision_LatestData;
-  ArmVision_LatestDataReady = 0U;
-  return 1U;
-}
-
-/**
-  * 函    数：读取最近一次视觉坐标但不清除标志
-  * 参    数：Data 数据输出地址
-  * 返 回 值：1表示已有坐标，0表示尚未收到坐标
-  * 说    明：供控制台调试输出使用，不影响OLED对新数据的读取
-  */
-uint8_t ArmVision_DataPeek(Camera_DataTypeDef *Data)
-{
-  if ((Data == NULL) || (ArmVision_LatestData.Sequence == 0U))
-  {
-    return 0U;
-  }
-  *Data = ArmVision_LatestData;
   return 1U;
 }
 

@@ -826,39 +826,6 @@ const char *MechanicalArm_AxisNameGet(MechanicalArm_AxisTypeDef Axis)
   return "invalid";
 }
 
-/**
- * 函    数：接收UART5 DMA空闲事件
- * 参    数：huart 串口句柄；Size 本次接收长度
- * 返 回 值：无
- * 说    明：中断中只复制最多16字节并立即重启DMA，解析留在主循环
- */
-void MechanicalArm_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
-{
-  MotorBus_RxEventCallback(huart, Size);
-}
-
-/**
- * 函    数：记录UART5 DMA发送完成事件
- * 参    数：huart 串口句柄
- * 返 回 值：无
- * 说    明：只置位，状态机在主循环中推进
- */
-void MechanicalArm_TxCpltCallback(UART_HandleTypeDef *huart)
-{
-  MotorBus_TxCpltCallback(huart);
-}
-
-/**
- * 函    数：恢复UART5错误后的DMA接收
- * 参    数：huart 串口句柄
- * 返 回 值：无
- * 说    明：活动请求由主循环报告通信失败，不在中断中重发命令
- */
-void MechanicalArm_ErrorCallback(UART_HandleTypeDef *huart)
-{
-  MotorBus_ErrorCallback(huart);
-}
-
 MechanicalArm_ResultTypeDef MechanicalArm_HomeStateRead(MechanicalArm_AxisTypeDef Axis)
 {
   if(Axis > MECHANICAL_ARM_AXIS_X) return MECHANICAL_ARM_RESULT_PARAM_ERROR;
