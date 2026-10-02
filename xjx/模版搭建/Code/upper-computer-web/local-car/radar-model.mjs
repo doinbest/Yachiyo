@@ -9,11 +9,6 @@ export const RADAR_PARAMETERS=[
 ].map(([key,label,value,min,max])=>({key,label,value,min,max}));
 export const STATIONS={1:'启停区',2:'粗加工区',3:'暂存区',4:'原料区',5:'扫码区'};
 export {radarStateText,radarReasonText} from './radar-format.mjs';
-export function zoomView(view,anchor,ratio){
-  const width=Math.max(300,Math.min(31700,view.width*ratio)),scale=width/view.width;
-  return {x:anchor.x+(view.x-anchor.x)*scale,y:anchor.y+(view.y-anchor.y)*scale,width,height:view.height*scale};
-}
-export const panView=(view,delta)=>({...view,x:view.x-delta.x,y:view.y-delta.y});
 const u32=x=>Number.isInteger(x)&&x>=0&&x<=0xffffffff;
 export function parseRadar(line){
   if(typeof line!=='string'||!line.startsWith('@RADAR '))return null;

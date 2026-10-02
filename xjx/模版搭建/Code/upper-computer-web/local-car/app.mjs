@@ -254,7 +254,8 @@ function route(){
   if(active==='vision')visionTabs?.select(next.tab??'grab');
   if(active==='map')radarView?.selectTab(next.tab);
   document.querySelectorAll('#navigation a').forEach(a=>a.setAttribute('aria-current',a.hash===`#${active}`?'page':'false'));
-  $('module-title').textContent=titles[active];$('module-badge').textContent=active==='qr'?'任务码接收':active==='params'?'STM32 RAM / 本地设置':'手动操作';
+  $('module-title').textContent=titles[active];$('module-badge').textContent=active==='qr'?'任务码接收':active==='params'?'仅 RAM · 上电恢复默认 · 空白请读取':'手动操作';
+  $('module-badge').classList.toggle('parameter-header-note',active==='params');$('module-badge').title=active==='params'?'设备参数仅存 STM32 RAM，重新上电恢复固件默认值；输入留空表示未读取。路线速度属于浏览器本地设置。':'';
   content.scrollTop=navigationMemory.restore(location.hash);if(active==='vision'&&next.key==='status')grabPanel?.scrollIntoView({block:'start'});previousHash=location.hash;updateControls();renderStatus();renderLogs();
 }
 document.addEventListener('click',event=>{
