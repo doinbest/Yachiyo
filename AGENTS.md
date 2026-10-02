@@ -108,6 +108,8 @@
 - `keil` 为默认构建后端：`Code/template/MDK-ARM/template.uvprojx`，Target `template`。
 - `eide` 为备用后端：`Code/template/MDK-ARM/eide`，配置 `template`。模块清单应与 Keil 保持一致。
 - 用户要求本轮暂缓 EIDE 维护，当前精简结果只以 Keil 验证；不将备用工程描述为已同步或可用。
+- 2026-10-03：车载三仓转盘 ID 8 共用 UART5，电机与盘 1∶1 直连；第二/第三仓角度尚未标定，不预填 120°。`App/turntable` 独立于机械臂三轴，人工对齐首仓后读取反馈建立软件参考，不自动回零或清零。上电库存待人工核对，普通停止与总线恢复保留配置及库存。
+- 本轮参数界面与单件取放保护官方 Emm_V5、W25Q128 及诊断测试、IOC、EIDE 配置；仅维护 Keil 文件清单。参数页读回与写后比较不等于运动或实物验收，页面导航不得自动发送命令。
 - `grab set` 和 `config <axis> ...` 修改的是 STM32 RAM 参数，复位/重新上电恢复已烧录固件默认值；网页保存的路线速度属于浏览器本地设置。当前未实现这些参数的 Flash 保存与上电加载，不把保留 Flash 驱动或读 ID 诊断描述为已有参数持久化。
 - 固件主机回归：根目录运行 `python Code/tests/run_firmware_tests.py`，需要 Python 和 GCC。
 - 网页回归：根目录运行 `node --test Code/upper-computer-web/local-car/tests/*.test.mjs`。

@@ -9,6 +9,7 @@
 - [工程入口与构建](../README.md)
 - [本地控制台使用手册](../Code/upper-computer-web/local-car/README.md)
 - [当前 USART1 协议](上位机协议.md)
+- [参数控制台与 ID 8 单件取放](开发记录/2026-10-03-参数控制台与ID8单件取放.md)：五标签界面、RAM 读回、车载转盘、单件动作及验证与回退。
 - [长期协作规则](../AGENTS.md)：用户提需求，Codex 负责全部实现及软件验证。
 - [串口屏配置](../Code/HMI/README.md)：HMI 编辑工程、字库与固件对应位置。
 - [香橙派本地源码](../Code/orange_pi/README.md)：与实机入口的区别及现行 B2 联调边界。
