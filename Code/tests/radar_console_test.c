@@ -147,7 +147,7 @@ static void fetch(const char *kind,uint32_t id,unsigned number)
 static unsigned fetch_map(uint32_t id)
 {
   unsigned seen=0;fetch("map",id,0);unsigned pages=page_field("pages");
-  assert(strstr(page,"\"mask\":328000") && strstr(page,"\"pose\":[2170.0,230.0,180.0]"));
+  assert(strstr(page,"\"mask\":328000") && strstr(page,"\"pose\":[2250.0,150.0,180.0]"));
   for(unsigned number=1;number<pages;number++){
     fetch("map",id,number);assert(page_field("pages")==pages && page_field("offset")==seen);
     const char *at=strstr(page,"\"counts\":[");assert(at);at+=10;
@@ -202,7 +202,7 @@ static void test_raw_console(void)
   command("radar debug status");assert(strstr(reply,"\"k\":\"raw\"") && !debug_scans && moves==movement_count);
   busy=true;command("radar debug scan upper");assert(strstr(reply,"stationary_capture_required") && !debug_scans);busy=false;
   command("radar debug scan upper");
-  assert(debug_scans==1 && scans==scan_count && requested_start==RADAR_START_UPPER && captured.zero_deg==90 && captured.lidar_x_mm==2170);
+  assert(debug_scans==1 && scans==scan_count && requested_start==RADAR_START_UPPER && captured.zero_deg==90 && captured.lidar_x_mm==2250);
   assert(strstr(foreground[0],"debug_scan_accepted") && strstr(foreground[foreground_count-1],"\"k\":\"raw\""));
   command("radar fetch raw 1 0");page[0]=0;fast_pump();assert(!page[0] && strstr(reply,"snapshot_changed"));
   raw.raw.active=false;raw.raw.truncated=true;raw.complete=true;raw.state=RADAR_SCAN_READY;
@@ -294,6 +294,8 @@ static void test_live_console(void)
 int main(void)
 {
   RadarMap_Defaults(&params);captured=params;RadarMap_Reset(&map);
+  assert(params.lidar_x_mm==2250 && params.lidar_y_mm==150 && params.zero_deg==180 &&
+    params.angle_min_tenths==0 && params.angle_max_tenths==900 && params.threshold==2);
   scan.state=RADAR_SCAN_READY;scan.reason="complete";scan.map_valid=scan.map_applicable=scan.points_valid=true;
   scan.map_id=scan.scan_id=4;scan.origin_generation=7;scan.coverage_tenths=3600;
   scan.points_map_id=4;start_status.scan_id=4;start_status.result.start_id=RADAR_START_LOWER;start_status.result.reason="manual_reference";
@@ -316,7 +318,7 @@ int main(void)
   pump();assert(strstr(foreground[foreground_count-1],"\"sn\":\"ABC123456\""));
   command("radar probe status");assert(foreground_count==3&&!moves&&!scans);
   pump();command("radar fetch map 4 0");pump();assert(strstr(page,"\"mask\":328000"));
-  assert(strstr(page,"\"pose\":[2170.0,230.0,180.0]"));
+  assert(strstr(page,"\"pose\":[2250.0,150.0,180.0]"));
   /* A ready next request must not wait for the unsolicited-report timer. */
   command("radar fetch map 4 1");page[0]=0;fast_pump();assert(strstr(page,"\"counts\":["));
   bulk_ready=false;command("radar fetch map 4 0");page[0]=0;fast_pump();assert(!page[0]);
@@ -331,12 +333,12 @@ int main(void)
   command("radar nav start 50");assert(moves==1 && submitted_speed==50);
   location.generation++;command("radar nav start 50");assert(moves==1 && strstr(reply,"map_origin"));location.generation--;
   command("radar set threshold 4");assert(map.mask==RADAR_MAP_FIXED_MASK);command("radar nav start 50");assert(moves==1);
-  scan.map_applicable=true;command("radar scan");assert(scans==1 && captured.zero_deg==180 && captured.lidar_x_mm==2170);
+  scan.map_applicable=true;command("radar scan");assert(scans==1 && captured.zero_deg==180 && captured.lidar_x_mm==2250);
   command("radar stop");assert(stops==1 && map.mask==RADAR_MAP_FIXED_MASK);
   scan.coverage_tenths=70;command("radar fetch map 4 0");pump();assert(strstr(page,"\"coverage\":3600"));
   location.observer.feedback.x_mm=1200;location.observer.feedback.y_mm=1200;
   location.observer.feedback.yaw_rad=3.14159265358979323846f;
-  command("radar scan");assert(scans==2 && fabsf(captured.lidar_x_mm-1120)<0.01f && fabsf(captured.lidar_y_mm-1120)<0.01f && fabsf(captured.zero_deg-270)<0.01f);
+  command("radar scan");assert(scans==2 && fabsf(captured.lidar_x_mm-1200)<0.01f && fabsf(captured.lidar_y_mm-1200)<0.01f && fabsf(captured.zero_deg-270)<0.01f);
   command("radar stop");location.observer.feedback.x_mm=2250;location.observer.feedback.y_mm=150;
   location.observer.feedback.yaw_rad=3.14159265358979323846f/2;
   busy=true;command("radar scan");assert(scans==2 && strstr(reply,"stationary"));busy=false;
@@ -378,7 +380,7 @@ int main(void)
    * current lower-route observer pose. Queries and start selection never drive. */
   location.observer.feedback.x_mm=1200;location.observer.feedback.y_mm=1200;
   location.observer.feedback.yaw_rad=3.14159265358979323846f;
-  command("radar scan auto");assert(auto_scans==1 && scans==4 && captured.lidar_x_mm==2170 && captured.lidar_y_mm==230 && captured.zero_deg==180);
+  command("radar scan auto");assert(auto_scans==1 && scans==4 && captured.lidar_x_mm==2250 && captured.lidar_y_mm==150 && captured.zero_deg==180);
   /* The first scan may finish before periodic bulk status can be sent. Its
    * accepted reply must establish an actual capture baseline in the foreground. */
   assert(foreground_count==2 && strstr(foreground[0],"scan_accepted") &&
@@ -419,7 +421,7 @@ int main(void)
   memset(&start_status,0,sizeof start_status);start_status.result.reason="not_scanned";
   RadarConsole_Init();command("radar scan upper");
   assert(manual_scans==1 && requested_start==RADAR_START_UPPER &&
-    captured.lidar_x_mm==2170 && captured.lidar_y_mm==230 && captured.zero_deg==90);
+    captured.lidar_x_mm==2250 && captured.lidar_y_mm==150 && captured.zero_deg==90);
   assert(foreground_count==2 && strstr(foreground[0],"scan_accepted") &&
     strstr(foreground[1],"\"state\":\"collecting\""));
   assert(moves==movement_count);
@@ -428,7 +430,7 @@ int main(void)
   scan.scan_id=scan.map_id=scan.points_map_id=1;scan.origin_generation=location.generation;
   start_status.scan_id=1;start_status.automatic=false;
   start_status.result.start_id=RADAR_START_UPPER;start_status.result.reason="manual_reference";
-  captured.lidar_x_mm=2330;captured.lidar_y_mm=2170;captured.zero_deg=270;
+  captured.lidar_x_mm=2250;captured.lidar_y_mm=2250;captured.zero_deg=180;
 #ifdef RADAR_CONSOLE_PLAN_FIXTURE
   edge_plan=false;
 #endif
@@ -443,7 +445,7 @@ int main(void)
   command("radar task start");assert(strstr(reply,"upper_start_plan_only") && moves==movement_count);
   command("radar scan lower");
   assert(manual_scans==2 && requested_start==RADAR_START_LOWER &&
-    captured.lidar_x_mm==2170 && captured.lidar_y_mm==230 && captured.zero_deg==90);
+    captured.lidar_x_mm==2250 && captured.lidar_y_mm==150 && captured.zero_deg==90);
   command("radar stop");busy=true;command("radar scan upper");
   assert(manual_scans==2 && strstr(reply,"stationary_capture_required"));busy=false;
   command("radar scan sideways");assert(manual_scans==2 && strstr(reply,"format"));

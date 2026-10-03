@@ -40,13 +40,18 @@ typedef struct {
   float zero_deg;              /**< 雷达局部角0从地图+X逆时针计的角度，deg。 */
   uint16_t distance_min_mm, distance_max_mm;
   uint16_t angle_min_tenths, angle_max_tenths; /**< 包含端点；min>max时跨0°。 */
-  uint16_t threshold;          /**< 同格计数达到此值后阻塞；至少1。 */
+  uint16_t threshold;          /**< 完整云按同物体点数判障；低级Add按同格点数；至少1。 */
   uint8_t energy_min, energy_max;
 } RadarMap_Params_t;
 
 typedef struct {
   uint32_t mask; /**< 低25位，bit=r*5+c；r从下向上、c从左向右，均0..4。 */
   uint16_t counts[RADAR_MAP_CELL_COUNT]; /**< 同顺序点数；达到65535后饱和。 */
+  uint32_t evidence_mask; /**< 完整云中达到物体阈值的全部触点格，点数不跨格伪增。 */
+  uint16_t outside_points; /**< 筛选后落在2400mm方场外的点数；可与background重叠。 */
+  uint16_t background_points; /**< 被场外连通长轮廓判据移除的点数，含该轮廓场外点。 */
+  uint16_t accepted_points; /**< 保留在[150,2250)活动网格内的真实点数。 */
+  bool cloud_built; /**< 完整云按物体证据判障；低级Add仍按同格计数。 */
 } RadarMap_t;
 
 typedef struct {
@@ -63,7 +68,7 @@ typedef struct {
   RadarPlan_Point_t points[RADAR_PLAN_MAX_POINTS];
 } RadarPlan_t;
 
-/** @brief 载入参考扫描预设(2170,230,180°)，不表示安装位置已实测。 */
+/** @brief 载入下起点区域中心(2250,150,180°)、顺时针0..90°和2点物体阈值。 */
 void RadarMap_Defaults(RadarMap_Params_t *params);
 /** @return 数值有限、筛选范围合法且阈值至少1时为true。 */
 bool RadarMap_ParamsValid(const RadarMap_Params_t *params);
@@ -77,7 +82,17 @@ bool RadarMap_Project(const RadarMap_Params_t *params, const RadarSample_t *samp
 /** @return 通过筛选且位于[150,2250)活动区、已计入格点数时为true。 */
 bool RadarMap_Add(RadarMap_t *map, const RadarMap_Params_t *params,
                   const RadarSample_t *sample);
-/** @brief 由点数阈值生成原始障碍并OR固定四障碍；保留前方禁障格证据。 */
+/** @brief 用同圈完整、角度顺序的云重新建图；缓存首点可为任意角。
+ * 按选域起点虚拟循环读取原云；不复制云，不改变距离/投影。
+ * 连续物体整体达到threshold后标记所有触点格。仅去掉确有场外延伸的
+ * 连续长轮廓；近短物遮挡仅在背景端部空间连续和局部共线时连接。
+ * counts为保留点的真实逐格数量，单点噪声不能跨独立物体凑阈值。
+ * 结束调用FinishRaw保留前方禁障格证据；调用者决定是否再Finish。
+ * @param count 完整云点数；截断/未完整的云不能替代原流式扫描结果。
+ */
+void RadarMap_BuildCloud(RadarMap_t *map, const RadarMap_Params_t *params,
+                         const RadarSample_t *samples, uint16_t count);
+/** @brief 完整云用物体证据，低级Add用同格阈值；OR固定四障碍，保留禁障格。 */
 void RadarMap_FinishRaw(RadarMap_t *map, const RadarMap_Params_t *params);
 /** @brief 生成扫描障碍；只豁免二维码/原料台前方两格，点数与固定障碍保留。 */
 void RadarMap_Finish(RadarMap_t *map, const RadarMap_Params_t *params);

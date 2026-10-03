@@ -97,7 +97,8 @@ bool RadarScan_StartAuto(const RadarMap_Params_t *lower_reference, uint32_t orig
  * @param lower_reference Frozen lower-start radar world reference and filters.
  * @param start_id Explicit upper/lower corner; no completed auto scan is required.
  * @return Accepted capture; publishes that corner after one complete circle.
- * Upper derives the same installation rotated 180deg; neither follows feedback.
+ * Upper uses the stationary corner convention (+90deg, CW quadrant inward);
+ * neither follows feedback.
  */
 bool RadarScan_StartAt(const RadarMap_Params_t *lower_reference, uint32_t origin_generation,
                       RadarStart_Id_t start_id);

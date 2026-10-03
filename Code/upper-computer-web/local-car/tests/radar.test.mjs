@@ -201,3 +201,18 @@ test('exported offline obstacle edits and selected corner take precedence over t
   const copy=radar.importSnapshot({snapshots:{map:{mask:0,counts:Array(25).fill(0),coordinate_frame:'current'}},offline:{mask:1<<21,manual_mask:1<<21,start_id:1,start_mode:'upper',pose:[2330,2170,0],coordinate_frame:'current'}});
   assert.equal(copy.mask,1<<21);assert.equal(copy.manual_mask,1<<21);assert.equal(copy.start_id,1);
 });
+
+
+test('a matching complete raw cloud takes precedence over a newer display sample on offline import',()=>{
+  const base={session:9,origin:2,scan:3,map:7,plan:8};
+  const full={...base,k:'cloud',complete:true,truncated:false,receivedAt:100,points:[[90,800,30],[100,800,30]]};
+  const sample={...base,k:'points',complete:true,truncated:false,receivedAt:200,points:[[90,800,30]]};
+  const result=radar.importSnapshot({snapshots:{map:{...base,mask:0,pose:[2250,150,180]},cloud:full,points:sample}});
+  assert.equal(result.cloud,full);
+});
+
+test('bare polar points can declare cloud completeness without an inferred point-count rule',()=>{
+  const points=[[90,800,30],[100,800,30]];
+  const result=radar.importSnapshot({mask:0,start_id:2,pose:[2250,150,180],points,cloud_complete:true});
+  assert.deepEqual(result.cloud?.points,points);assert.equal(result.cloud?.cloud_complete,true);
+});

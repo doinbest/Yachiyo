@@ -18,22 +18,76 @@ import serve
 
 
 class RadarServiceTests(unittest.TestCase):
-    def qr_cloud(self, start):
-        # A visible patch of QR board at (2400,1200); nominal sensor installation.
-        x,y,zero=(2170,230,180) if start=='lower' else (2330,2170,0)
-        angle=round(((zero-math.degrees(math.atan2(1200-y,2400-x)))%360)*10)%3600
-        distance=round(math.hypot(2400-x,1200-y))
+    def test_partial_cloud_cannot_replace_map_but_existing_mask_can_still_plan(self):
+        with patch.object(serve.subprocess, 'run', return_value=subprocess.CompletedProcess([],0,stdout='{}',stderr='')) as run:
+            with self.assertRaisesRegex(ValueError, '完整点云'):
+                serve.plan_radar_offline({'cloud_complete':False,'points':[[100,800,80]]})
+            run.assert_not_called()
+        result=serve.plan_radar_offline({'cloud_complete':False,'mask':0x50140|(1<<13)})
+        self.assertEqual(result['mask'],0x50140|(1<<13))
+
+    def test_corner_centers_and_clockwise_quadrant_share_firmware_defaults(self):
+        lower=serve.plan_radar_offline({'start_mode':'lower'})
+        upper=serve.plan_radar_offline({'start_mode':'upper'})
+        self.assertEqual(lower['pose'],[2250,150,180])
+        self.assertEqual(upper['pose'],[2250,2250,270])
+        # Use a central sensor to distinguish the angle filter from field clipping.
+        rejected=serve.plan_radar_offline({'params':{'lidar_x_mm':1200,'lidar_y_mm':1200},
+                                         'points':[[1800,500,80],[1801,500,80]]})
+        self.assertEqual(sum(rejected['counts']),0)
+
+    def test_full_recorded_circle_keeps_two_foregrounds_and_removes_external_contour(self):
+        fixture=ROOT.parents[2]/'Code/tests/fixtures/radar-field-20261004.json'
+        source=json.loads(fixture.read_text(encoding='utf-8'))
+        result=serve.plan_radar_offline({'points':source['points'],'start_mode':'lower'})
+        self.assertEqual(result['mask'],0x50140|(1<<13)|(1<<15))
+        self.assertEqual(sum(result['counts']),7)
+        self.assertEqual([result['counts'][i] for i in (8,13,15)],[3,2,2])
+        self.assertTrue(result['valid'])
+
+    def test_field_boundary_uses_projected_endpoint_not_side_length_as_range_limit(self):
+        def sample(x,y):
+            dx,dy=x-2250,y-150
+            return [round(((180-math.degrees(math.atan2(dy,dx)))%360)*10)%3600,
+                    round(math.hypot(dx,dy)),70]
+        diagonal=sample(350,2000)
+        self.assertGreater(diagonal[1],2400)
+        result=serve.plan_radar_offline({'points':[diagonal,diagonal]})
+        self.assertEqual(result['counts'][20],2)
+        outside=sample(-350,2000)
+        result=serve.plan_radar_offline({'points':[outside,outside]})
+        self.assertEqual(sum(result['counts']),0)
+
+    def test_independent_long_surface_inside_field_remains_an_obstacle(self):
+        points=[]
+        for x in range(1050,1751,50):
+            dx,dy=x-2250,1300-150
+            points.append([round(((180-math.degrees(math.atan2(dy,dx)))%360)*10)%3600,
+                           round(math.hypot(dx,dy)),70])
+        result=serve.plan_radar_offline({'points':sorted(points)})
+        self.assertEqual(sum(result['counts']),len(points))
+        self.assertEqual(result['mask']&((1<<12)|(1<<13)),(1<<12)|(1<<13))
+
+    def corner_evidence(self, start):
+        # Synthetic clutter in another station, inside the real CW quadrant.
+        # It conflicts with QR/raw only in the wrong corner hypothesis; the
+        # selected corner is identifiable but its mission need not be reachable.
+        x,y,zero=(2250,150,180) if start=='lower' else (2250,2250,270)
+        tx,ty=(1200,350) if start=='lower' else (350,1200)
+        angle=round(((zero-math.degrees(math.atan2(ty-y,tx-x)))%360)*10)%3600
+        distance=round(math.hypot(tx-x,ty-y))
         return [[angle,distance,50]]*3
 
     def test_dual_start_offline_classifies_before_clearing_and_keeps_driving_fixed(self):
         for name,selected,y in (('upper',1,2250),('lower',2,150)):
             with self.subTest(start=name):
-                result=serve.plan_radar_offline({'start_mode':'auto','points':self.qr_cloud(name)})
+                result=serve.plan_radar_offline({'start_mode':'auto','points':self.corner_evidence(name)})
                 self.assertEqual(result['start']['selected'],selected)
                 self.assertEqual(result['start']['reason'],'clear_regions')
-                self.assertTrue(result['valid'])
-                self.assertEqual(result['points'][0][:2],[2250,y])
-                self.assertEqual(result['points'][-1][:2],[2250,y])
+                self.assertFalse(result['valid']) # Clutter blocks a different mission station.
+                empty=serve.plan_radar_offline({'start_mode':name})
+                self.assertEqual(empty['points'][0][:2],[2250,y])
+                self.assertEqual(empty['points'][-1][:2],[2250,y])
                 self.assertEqual(result['mask'] & ((1<<14)|(1<<22)),0)
                 self.assertEqual(result['route_profiles']['fixed']['points'][0][:2],[2250,150])
                 self.assertEqual(result['plan_only'],name=='upper')
@@ -54,16 +108,16 @@ class RadarServiceTests(unittest.TestCase):
             serve.plan_radar_offline({'start_mode':'invalid'})
 
     def test_manual_selection_keeps_raw_conflicts_but_clears_only_task_front_cells(self):
-        points=self.qr_cloud('upper')+self.qr_cloud('lower')
+        points=sorted(self.corner_evidence('upper')+self.corner_evidence('lower'))
         unresolved=serve.plan_radar_offline({'start_mode':'auto','points':points})
         self.assertEqual(unresolved['start']['reason'],'both_conflict')
         self.assertFalse(unresolved['valid'])
         selected=serve.plan_radar_offline({'start_mode':'lower','points':points})
-        self.assertEqual(selected['start']['conflicts'],[1<<14,1<<14])
-        self.assertEqual(selected['start']['qr'],[3,3])
-        self.assertTrue(selected['valid'])
-        self.assertEqual(selected['mask'] & (1<<14),0)
-        self.assertEqual(selected['counts'][14],3)
+        self.assertEqual(selected['start']['conflicts'],[1<<14,1<<22])
+        self.assertEqual(selected['start']['qr'],[3,0])
+        self.assertFalse(selected['valid'])
+        self.assertEqual(selected['mask'] & ((1<<14)|(1<<22)),0)
+        self.assertEqual(selected['counts'][22],3)
         override=serve.plan_radar_offline({'start_mode':'lower','points':points,'mask':1<<14})
         self.assertFalse(override['valid']) # An explicit offline obstacle remains authoritative.
 

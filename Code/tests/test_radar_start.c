@@ -8,6 +8,23 @@ static unsigned checks,failures;
   printf("FAIL line %d: %s\n",__LINE__,#c);} } while(0)
 static int near(float a,float b){return fabsf(a-b)<0.03f;}
 
+static void test_shared_corner_params(void)
+{
+  RadarMap_Params_t lower,out,saved;
+  RadarMap_Defaults(&lower);lower.lidar_x_mm=2180;lower.lidar_y_mm=220;lower.zero_deg=350;
+  lower.threshold=7;lower.angle_max_tenths=700;saved=lower;
+  CHECK(RadarStart_ParamsForStart(&lower,RADAR_START_UPPER,&out));
+  CHECK(near(out.lidar_x_mm,2320) && near(out.lidar_y_mm,2180) && near(out.zero_deg,80));
+  CHECK(out.threshold==7 && out.angle_max_tenths==700 && !memcmp(&lower,&saved,sizeof lower));
+  CHECK(RadarStart_ParamsForStart(&lower,RADAR_START_LOWER,&out));
+  CHECK(!memcmp(&out,&lower,sizeof out));
+  CHECK(RadarStart_ParamsForStart(&out,RADAR_START_UPPER,&out));
+  CHECK(near(out.lidar_x_mm,2320) && near(out.lidar_y_mm,2180) && near(out.zero_deg,80));
+  CHECK(!RadarStart_ParamsForStart(&lower,RADAR_START_UNKNOWN,&out));
+  CHECK(!RadarStart_ParamsForStart(NULL,RADAR_START_LOWER,&out));
+  CHECK(!RadarStart_ParamsForStart(&lower,RADAR_START_LOWER,NULL));
+}
+
 /* Independent synthetic LDS50C samples: physical 10mm range resolution, 0.1deg. */
 static RadarSample_t polar(float lx,float ly,float zero,float x,float y,uint8_t energy)
 {
@@ -19,20 +36,23 @@ static RadarSample_t polar(float lx,float ly,float zero,float x,float y,uint8_t 
   sample.energy=energy;return sample;
 }
 
-/* The QR board is on the world right edge, outside the free vehicle-front cell.
- * Under the wrong start it appears near (2100,1200), contradicting that cell. */
+/* Synthetic returns in a non-mandatory cell under the physical corner.
+ * The wrong corner projects lower cell2 to QR14, or upper cell10 to RAW22. */
 static void board(RadarStart_Context_t *context,RadarStart_Id_t physical_start,unsigned count)
 {
-  float lx=physical_start==RADAR_START_LOWER?2170.0f:2330.0f;
-  float ly=physical_start==RADAR_START_LOWER?230.0f:2170.0f;
-  float zero=physical_start==RADAR_START_LOWER?180.0f:0.0f;
+  float lx=2250.0f;
+  float ly=physical_start==RADAR_START_LOWER?150.0f:2250.0f;
+  float zero=physical_start==RADAR_START_LOWER?180.0f:270.0f;
   for(unsigned i=0;i<count;i++) {
-    RadarSample_t sample=polar(lx,ly,zero,2400.0f,1160.0f+40.0f*(float)(i%3U),80);
+    float x=physical_start==RADAR_START_LOWER?1200.0f:350.0f+20.0f*(float)(i%3U);
+    float y=physical_start==RADAR_START_LOWER?350.0f+20.0f*(float)(i%3U):1200.0f;
+    RadarSample_t sample=polar(lx,ly,zero,x,y,80);
+    CHECK(sample.angle_tenths<=900);
     RadarStart_Add(context,&sample);
   }
 }
 
-/* Catch mirroring the whole world instead of rotating the actual sensor offset. */
+/* Static corner headings differ by 90deg; vehicle yaw stays independently fixed. */
 static void test_reference_and_poses(void)
 {
   RadarMap_Params_t reference;
@@ -44,18 +64,18 @@ static void test_reference_and_poses(void)
   lower=RadarStart_Params(&context,RADAR_START_LOWER);
   CHECK(upper!=NULL && lower!=NULL);
   if(upper && lower) {
-    CHECK(near(upper->lidar_x_mm,2330) && near(upper->lidar_y_mm,2170) && near(upper->zero_deg,0));
-    CHECK(near(lower->lidar_x_mm,2170) && near(lower->lidar_y_mm,230) && near(lower->zero_deg,180));
-    CHECK(upper->threshold==3 && lower->threshold==3);
+    CHECK(near(upper->lidar_x_mm,2250) && near(upper->lidar_y_mm,2250) && near(upper->zero_deg,270));
+    CHECK(near(lower->lidar_x_mm,2250) && near(lower->lidar_y_mm,150) && near(lower->zero_deg,180));
+    CHECK(upper->threshold==2 && lower->threshold==2 && lower->angle_max_tenths==900);
   }
-  CHECK(reference.lidar_x_mm==2170 && reference.lidar_y_mm==230 && reference.zero_deg==180);
+  CHECK(reference.lidar_x_mm==2250 && reference.lidar_y_mm==150 && reference.zero_deg==180);
   reference.lidar_x_mm=2100;reference.lidar_y_mm=300;reference.zero_deg=-90;
   reference.energy_min=17;reference.energy_max=100;reference.threshold=4;
   reference.angle_min_tenths=3500;reference.angle_max_tenths=100;
   reference.distance_min_mm=300;reference.distance_max_mm=12000;
   RadarStart_Begin(&context,&reference);upper=RadarStart_Params(&context,RADAR_START_UPPER);
   if(upper) {
-    CHECK(near(upper->lidar_x_mm,2400) && near(upper->lidar_y_mm,2100) && near(upper->zero_deg,90));
+    CHECK(near(upper->lidar_x_mm,2400) && near(upper->lidar_y_mm,2100) && near(upper->zero_deg,0));
     CHECK(upper->energy_min==17 && upper->energy_max==100 && upper->threshold==4);
     CHECK(upper->distance_min_mm==300 && upper->distance_max_mm==12000);
     CHECK(upper->angle_min_tenths==3500 && upper->angle_max_tenths==100);
@@ -77,13 +97,22 @@ static void test_ambiguity_and_conflicts(void)
   RadarStart_Finish(&context,&result);
   CHECK(result.start_id==RADAR_START_UNKNOWN && !strcmp(result.reason,"ambiguous"));
   CHECK(result.conflict_mask[0]==0 && result.conflict_mask[1]==0);
-  board(&context,RADAR_START_LOWER,2);RadarStart_Finish(&context,&result);
-  CHECK(result.start_id==RADAR_START_UNKNOWN && result.qr_counts[0]==2);
-  board(&context,RADAR_START_UPPER,3);board(&context,RADAR_START_LOWER,1);
+  /* Inward ordinary evidence need not identify a corner; never force a default. */
+  for(unsigned i=0;i<2;i++) {
+    RadarSample_t sample=polar(2250,150,180,1200,1200,80);
+    RadarStart_Add(&context,&sample);
+  }
+  RadarStart_Finish(&context,&result);
+  CHECK(result.start_id==RADAR_START_UNKNOWN && !strcmp(result.reason,"ambiguous"));
+  CHECK(context.maps[0].counts[12]==2 && context.maps[1].counts[12]==2);
+  RadarStart_Begin(&context,&params);
+  board(&context,RADAR_START_LOWER,1);RadarStart_Finish(&context,&result);
+  CHECK(result.start_id==RADAR_START_UNKNOWN && result.qr_counts[0]==1);
+  board(&context,RADAR_START_UPPER,2);board(&context,RADAR_START_LOWER,1);
   RadarStart_Finish(&context,&result);
   CHECK(result.start_id==RADAR_START_UNKNOWN && !strcmp(result.reason,"both_conflict"));
-  CHECK(result.conflict_mask[0]==(1UL<<14) && result.conflict_mask[1]==(1UL<<14));
-  CHECK(result.qr_counts[0]==3 && result.qr_counts[1]==3);
+  CHECK(result.conflict_mask[0]==(1UL<<14) && result.conflict_mask[1]==(1UL<<22));
+  CHECK(result.qr_counts[0]==2 && result.raw_counts[1]==2);
 }
 
 /* Both physical corner fixtures must select their own world frame, not the sensor. */
@@ -97,18 +126,20 @@ static void test_board_classification_both_starts(void)
     /* A small obstacle wholly inside cell17 must survive map protection. */
     for(unsigned i=0;i<3;i++) {
       RadarSample_t sample=start==RADAR_START_LOWER?
-        polar(2170,230,180,1200,1590.0f+10.0f*(float)i,80):
-        polar(2330,2170,0,1200,1590.0f+10.0f*(float)i,80);
+        polar(2250,150,180,1200,1590.0f+10.0f*(float)i,80):
+        polar(2250,2250,270,1200,1590.0f+10.0f*(float)i,80);
       RadarStart_Add(&context,&sample);
     }
     RadarStart_Finish(&context,&result);
     CHECK(result.start_id==id && !strcmp(result.reason,"clear_regions"));
     CHECK(result.conflict_mask[id-1U]==0);
-    CHECK(result.conflict_mask[2U-id]==(1UL<<14) && result.qr_counts[2U-id]==3);
+    CHECK(result.conflict_mask[2U-id]==(1UL<<(id==RADAR_START_LOWER?14:22)));
+    CHECK((id==RADAR_START_LOWER?result.qr_counts[0]:result.raw_counts[1])==3);
     const RadarMap_t *map=RadarStart_Map(&context,start);
-    CHECK(map && map->mask==(RADAR_MAP_FIXED_MASK|(1UL<<17)) && map->counts[17]==3);
-    RadarPlan_t plan;
-    CHECK(map && RadarPlan_BuildFromStart(map,start,&plan));
+    CHECK(map && map->mask==(RADAR_MAP_FIXED_MASK|(1UL<<17)|(1UL<<(id==RADAR_START_LOWER?2:10))) && map->counts[17]==3);
+    /* Classification evidence can occupy a business cell; plan an independent clear map. */
+    RadarMap_t clear;RadarPlan_t plan;RadarMap_Reset(&clear);
+    CHECK(RadarPlan_BuildFromStart(&clear,start,&plan));
     CHECK(plan.valid && plan.start_id==id && plan.points[0].x_mm==2250 &&
       plan.points[0].y_mm==(id==RADAR_START_UPPER?2250:150));
     CHECK(plan.points[plan.count-1U].x_mm==2250 &&
@@ -122,7 +153,7 @@ static void test_raw_conflict_and_count_retention(void)
   RadarMap_Params_t params;RadarStart_Context_t context;RadarStart_Result_t result;
   RadarMap_Defaults(&params);RadarStart_Begin(&context,&params);
   for(unsigned i=0;i<3;i++) {
-    RadarSample_t sample=polar(2170,230,180,1200,2100,80);
+    RadarSample_t sample=polar(2250,150,180,1200,2100,80);
     RadarStart_Add(&context,&sample);
   }
   RadarStart_Finish(&context,&result);
@@ -137,7 +168,7 @@ static void test_raw_conflict_and_count_retention(void)
 static void test_filters_streaming_and_saturation(void)
 {
   RadarMap_Params_t params;RadarStart_Context_t context;RadarStart_Result_t result;
-  RadarSample_t sample=polar(2170,230,180,2400,1200,80);
+  RadarSample_t sample=polar(2250,150,180,1200,350,80);
   RadarMap_Defaults(&params);params.energy_min=81;RadarStart_Begin(&context,&params);
   board(&context,RADAR_START_LOWER,3);RadarStart_Finish(&context,&result);
   CHECK(result.start_id==RADAR_START_UNKNOWN && result.qr_counts[0]==0);
@@ -160,7 +191,7 @@ static void test_filters_streaming_and_saturation(void)
 
 int main(void)
 {
-  test_reference_and_poses();test_ambiguity_and_conflicts();
+  test_shared_corner_params();test_reference_and_poses();test_ambiguity_and_conflicts();
   test_board_classification_both_starts();test_raw_conflict_and_count_retention();
   test_filters_streaming_and_saturation();
   printf("Radar dual start: %u checks, %u failures\n",checks,failures);

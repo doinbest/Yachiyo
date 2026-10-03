@@ -15,8 +15,9 @@ static void test_direction_and_history(void)
   RadarMap_Params_t p;
   RadarSample_t s = {0,1000,80};
   float x=0,y=0;
-  const float expected[4][2]={{1170,230},{2170,1230},{3170,230},{2170,-770}};
+  const float expected[4][2]={{1250,150},{2250,1150},{3250,150},{2250,-850}};
   RadarMap_Defaults(&p);
+  CHECK(p.angle_min_tenths==0 && p.angle_max_tenths==900 && p.threshold==2);
   for(unsigned i=0;i<4;i++) {
     s.angle_tenths=(uint16_t)(i*900);
     CHECK(RadarMap_Project(&p,&s,&x,&y));
@@ -41,7 +42,7 @@ static void test_rotated_world_obstacles(void)
   const int yaw[]={0,90,180,270,450,-90};
   const uint16_t world_angles[]={0,900,1800,2700};
   RadarMap_Params_t p;RadarMap_t m,reference;RadarSample_t s={0,700,80};
-  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;p.threshold=1;
+  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;p.threshold=1;p.angle_max_tenths=3600;
   for(unsigned rotation=0;rotation<sizeof(yaw)/sizeof(yaw[0]);rotation++) {
     p.zero_deg=(float)yaw[rotation];RadarMap_Reset(&m);
     for(unsigned obstacle=0;obstacle<4;obstacle++) {
@@ -63,7 +64,7 @@ static void test_map_filters_and_station_obstacle(void)
   RadarMap_Params_t p;
   RadarMap_t m;
   RadarSample_t s={0,500,80};
-  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=350;p.zero_deg=0;
+  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=350;p.zero_deg=0;p.threshold=3;
   RadarMap_Reset(&m);
   CHECK(RadarMap_ParamsValid(&p));
   CHECK(RadarMap_Add(&m,&p,&s));CHECK(RadarMap_Add(&m,&p,&s));
@@ -99,6 +100,131 @@ static int cell_at(int x,int y)
   int r=-1,c=-1;
   for(int i=0;i<5;i++){if(x>=lines[i]&&x<lines[i+1])c=i;if(y>=lines[i]&&y<lines[i+1])r=i;}
   return r<0||c<0?-1:r*5+c;
+}
+
+static void build_cloud(RadarMap_t *m,const RadarMap_Params_t *p,const RadarSample_t *s,unsigned n)
+{
+  RadarMap_BuildCloud(m,p,s,(uint16_t)n);
+}
+
+static RadarSample_t world_sample(float x,float y,const RadarMap_Params_t *p)
+{
+  float dx=x-p->lidar_x_mm,dy=y-p->lidar_y_mm;
+  float angle=fmodf(p->zero_deg-atan2f(dy,dx)*57.2957795131f+360.0f,360.0f);
+  RadarSample_t s={(uint16_t)lroundf(angle*10.0f),(uint16_t)lroundf(hypotf(dx,dy)),30};
+  return s;
+}
+
+/* A measured exterior-connected wall is background; two nearer objects stay. */
+static void test_cloud_exterior_contour_and_occlusions(void)
+{
+  RadarMap_Params_t p;RadarMap_t m;RadarSample_t samples[326];unsigned n=0;
+  RadarMap_Defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=150;p.threshold=2;
+  uint32_t objects=0;
+  for(unsigned angle=250;angle<=900;angle+=2) {
+    bool object=(angle>=370 && angle<=376)||(angle>=542 && angle<=550);
+    uint16_t distance=(uint16_t)lroundf(1600.0f/sinf((float)angle*0.001745329252f));
+    if(angle>=370 && angle<=376)distance=2180;
+    if(angle>=542 && angle<=550)distance=1040;
+    samples[n]=(RadarSample_t){(uint16_t)angle,distance,30};
+    if(object) {
+      float x,y;CHECK(RadarMap_Project(&p,&samples[n],&x,&y));
+      int c=cell_at((int)x,(int)y);if(c>=0)objects|=1UL<<c;
+    }
+    n++;
+  }
+  build_cloud(&m,&p,samples,n);
+  CHECK(m.mask==(RADAR_MAP_FIXED_MASK|objects));
+  CHECK(m.counts[13]>0 && m.counts[13]<p.threshold);
+  CHECK(m.mask&(1UL<<13)); /* Same near object crosses y=1000 into a second cell. */
+  CHECK(m.counts[17]==0 && m.counts[19]==0 && m.counts[24]==0);
+  static RadarSample_t rotated[326];
+  RadarMap_t reference=m;
+  for(unsigned start=1;start<n;start++) {
+    for(unsigned i=0;i<n;i++)rotated[i]=samples[(start+i)%n];
+    build_cloud(&m,&p,rotated,n);
+    CHECK(!memcmp(&m,&reference,sizeof(m)));
+  }
+}
+
+/* Long interior objects, diagonals and additional objects cannot be erased. */
+static void test_cloud_interior_objects_and_real_distance(void)
+{
+  RadarMap_Params_t p;RadarMap_t m;RadarSample_t line[27];
+  RadarMap_Defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=150;p.threshold=2;
+  for(unsigned i=0;i<27;i++)line[i]=world_sample(600.0f+25.0f*(float)i,1100,&p);
+  build_cloud(&m,&p,line,27);
+  CHECK(m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<11)|(1UL<<12)));
+  CHECK(m.counts[11]+m.counts[12]==27);
+  const RadarSample_t diagonal[]={{445,2500,30},{450,2500,30}};
+  build_cloud(&m,&p,diagonal,2);
+  CHECK(m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<20)) && m.counts[20]==2);
+  const RadarSample_t three[]={{150,1800,30},{152,1800,30},
+    {400,1500,30},{402,1500,30},{650,1900,30},{652,1900,30}};
+  build_cloud(&m,&p,three,6);
+  CHECK(m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<5)|(1UL<<12)|(1UL<<23)));
+}
+
+/* Evidence threshold is per continuous object, never unrelated noise in a cell. */
+static void test_cloud_object_threshold_and_filters(void)
+{
+  RadarMap_Params_t p;RadarMap_t m;
+  RadarMap_Defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=150;p.threshold=3;
+  const RadarSample_t cross[]={{543,1041,25},{545,1048,27},{548,1039,25},{550,1050,18},{552,1023,8}};
+  build_cloud(&m,&p,cross,5);
+  CHECK(m.counts[8]==3 && m.counts[13]==2);
+  CHECK(m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<13)));
+  const RadarSample_t one[]={{400,1500,30}};
+  build_cloud(&m,&p,one,1);CHECK(m.mask==RADAR_MAP_FIXED_MASK && m.counts[12]==1);
+  p.threshold=2;
+  const RadarSample_t separate[]={{370,1500,30},{420,1500,30}};
+  build_cloud(&m,&p,separate,2);
+  CHECK(m.mask==RADAR_MAP_FIXED_MASK); /* Both points cell12, separated by >100 mm. */
+  const RadarSample_t rejected[]={{901,1000,30},{902,1000,30},{0,2300,30},{1,2300,30}};
+  build_cloud(&m,&p,rejected,4);CHECK(m.mask==RADAR_MAP_FIXED_MASK);
+  p.energy_min=31;build_cloud(&m,&p,one,1);
+  CHECK(m.mask==RADAR_MAP_FIXED_MASK && m.counts[12]==0);
+  p.energy_min=0;
+  const RadarSample_t required[]={{818,1060,30},{820,1060,30}};
+  build_cloud(&m,&p,required,2);CHECK(m.mask&(1UL<<14));
+  RadarMap_Finish(&m,&p);CHECK(!(m.mask&(1UL<<14)) && m.counts[14]==2);
+}
+
+/* Cache index0 is arbitrary: a complete circle must retain the same objects. */
+static void test_cloud_cyclic_start_and_sector_boundaries(void)
+{
+  static RadarSample_t ordered[360],rotated[360];
+  RadarMap_Params_t p;RadarMap_t reference,m;
+  RadarMap_Defaults(&p);
+  for(unsigned i=0;i<360;i++) {
+    unsigned angle=i*10;
+    uint16_t distance=angle==90 || angle==100?800:angle==400?1500:0;
+    ordered[i]=(RadarSample_t){(uint16_t)angle,distance,30};
+  }
+  build_cloud(&reference,&p,ordered,360);
+  CHECK(reference.mask==(RADAR_MAP_FIXED_MASK|(1UL<<3)) && reference.counts[3]==2);
+  for(unsigned start=0;start<360;start++) {
+    for(unsigned i=0;i<360;i++)rotated[i]=ordered[(start+i)%360];
+    build_cloud(&m,&p,rotated,360);
+    CHECK(!memcmp(&m,&reference,sizeof(m)));
+  }
+  /* One valid endpoint cannot borrow support from an excluded raw angle. */
+  for(unsigned i=0;i<360;i++) {
+    unsigned angle=i*10;
+    uint16_t distance=angle==10 || angle==3590?800:angle==3550?1500:0;
+    ordered[i]=(RadarSample_t){(uint16_t)angle,distance,30};
+  }
+  build_cloud(&m,&p,ordered,360);
+  CHECK(m.mask==RADAR_MAP_FIXED_MASK && m.counts[3]==1);
+  /* A deliberately wrapped selected sector is continuous across raw0. */
+  p.angle_min_tenths=3500;p.angle_max_tenths=100;
+  build_cloud(&reference,&p,ordered,360);
+  CHECK(reference.mask==(RADAR_MAP_FIXED_MASK|(1UL<<3)) && reference.counts[3]==1);
+  for(unsigned start=0;start<360;start+=7) {
+    for(unsigned i=0;i<360;i++)rotated[i]=ordered[(start+i)%360];
+    build_cloud(&m,&p,rotated,360);
+    CHECK(!memcmp(&m,&reference,sizeof(m)));
+  }
 }
 
 /* Only the mission's explicit entry and final parking approach may be diagonal. */
@@ -244,6 +370,10 @@ int main(void)
   test_map_filters_and_station_obstacle();test_mission_and_detour();test_first_shortcut_and_final_staging();
   test_scanned_required_clear_cells();
   test_dual_start_missions();
+  test_cloud_exterior_contour_and_occlusions();
+  test_cloud_interior_objects_and_real_distance();
+  test_cloud_object_threshold_and_filters();
+  test_cloud_cyclic_start_and_sector_boundaries();
   printf("Radar map/planner: %u checks, %u failures\n",checks,failures);
   return failures?1:0;
 }

@@ -77,3 +77,13 @@ test('a complete automatic circle with no selected map exports its matching clou
   model.snapshots.cloud={k:'cloud',session:9,origin:2,scan:3,map:0,plan:0,points:[[0,100,1],[900,200,2]],complete:true,truncated:false};
   const exported=radar.diagnosticSnapshot(model,11);assert.deepEqual(Object.keys(exported.snapshots).sort(),['cloud','raw']);assert.equal(exported.diagnostic.replayable,true);
 });
+
+
+test('old upper diagnostic pose is preserved while exported reference uses the current corner contract',()=>{
+  const model=new radar.RadarModel(),frames=rawFrames({map:0});frames[1].pose=[2330,2170,0];frames[1].start=1;
+  for(const f of frames)model.accept(rawLine(f));
+  model.snapshots.cloud={k:'cloud',session:9,origin:2,scan:3,map:0,plan:0,pose:[2330,2170,0],points:[[0,100,1],[900,200,2]],complete:true,truncated:false};
+  const exported=radar.diagnosticSnapshot(model,11);
+  assert.deepEqual([exported.params.lidar_x_mm,exported.params.lidar_y_mm,exported.params.zero_deg],[2170,230,270]);
+  assert.deepEqual(exported.snapshots.raw.pose,[2330,2170,0]);assert.deepEqual(exported.snapshots.cloud.pose,[2330,2170,0]);assert.equal(exported.params.angle_max_tenths,3600);
+});

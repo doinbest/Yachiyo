@@ -7,7 +7,7 @@
  * lidar_x_mm lidar_y_mm zero_deg distance_min_mm distance_max_mm
  * angle_min_tenths angle_max_tenths threshold energy_min energy_max
  * Then sample_count triples: angle_tenths distance_mm energy.
- * N=0 plans a manual mask; N>0 counts the cloud, then ORs manual_mask.
+ * N=0 plans a manual mask; N>0 classifies the full cloud, then ORs manual_mask.
  * stdout: one JSON object with algorithm, valid, failed_leg, mask, counts,
  * points[[x_mm,y_mm,station,visit],...] and route_profiles from the shared route
  * phase core. Optional --speed mm/s defaults to the firmware route speed.
@@ -33,6 +33,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Host-only storage, matching the MCU's existing full-cloud capacity. */
+static RadarSample_t samples[4096];
 
 static int read_word(char word[96])
 {
@@ -147,7 +150,6 @@ int main(int argc,char *argv[])
   RadarMap_Params_t params;
   RadarMap_t map;
   RadarPlan_t plan;
-  RadarSample_t sample;
   RadarStart_Context_t candidates;
   RadarStart_Result_t start;
   const RadarMap_Params_t *selected_params=&params;
@@ -169,7 +171,7 @@ int main(int argc,char *argv[])
     } else return input_error("unknown_option");
   }
   if(!read_word(word) || strcmp(word,"RADAR1") ||
-     !read_uint(RADAR_MAP_ALL_CELLS,&manual_mask) || !read_uint(UINT32_MAX,&sample_count) ||
+     !read_uint(RADAR_MAP_ALL_CELLS,&manual_mask) || !read_uint(4096U,&sample_count) ||
      !read_params(&params)) return input_error("input_format");
   if(!RadarMap_ParamsValid(&params)) return input_error("invalid_params");
   RadarMap_Reset(&map);
@@ -178,12 +180,13 @@ int main(int argc,char *argv[])
   for(i=0U;i<sample_count;i++) {
     if(!read_uint(UINT16_MAX,&angle) || !read_uint(UINT16_MAX,&distance) || !read_uint(UINT8_MAX,&energy))
       return input_error("input_format");
-    sample.angle_tenths=(uint16_t)angle;sample.distance_mm=(uint16_t)distance;sample.energy=(uint8_t)energy;
-    if(automatic) RadarStart_Add(&candidates,&sample);
-    else (void)RadarMap_Add(&map,&params,&sample);
+    samples[i].angle_tenths=(uint16_t)angle;samples[i].distance_mm=(uint16_t)distance;
+    samples[i].energy=(uint8_t)energy;
   }
   if(read_word(word)) return input_error("input_format");
   if(automatic) {
+    for(i=0U;i<2U;i++)
+      RadarMap_BuildCloud(&candidates.maps[i],&candidates.params[i],samples,(uint16_t)sample_count);
     RadarStart_Finish(&candidates,&start);
     if(strcmp(mode,"auto")) {
       start.start_id=!strcmp(mode,"upper")?RADAR_START_UPPER:RADAR_START_LOWER;
@@ -195,6 +198,7 @@ int main(int argc,char *argv[])
       RadarMap_Finish(&map,selected_params);
     }
   } else {
+    RadarMap_BuildCloud(&map,&params,samples,(uint16_t)sample_count);
     RadarMap_Finish(&map,&params);
     start.start_id=RADAR_START_LOWER;start.reason="manual_reference";
   }

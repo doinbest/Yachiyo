@@ -25,10 +25,10 @@ void RadarMap_Defaults(RadarMap_Params_t *p)
 {
   if(p==NULL) return;
   memset(p,0,sizeof(*p));
-  p->lidar_x_mm=2170.0f;p->lidar_y_mm=230.0f;p->zero_deg=180.0f;
+  p->lidar_x_mm=2250.0f;p->lidar_y_mm=150.0f;p->zero_deg=180.0f;
   p->distance_min_mm=100U;p->distance_max_mm=40000U;
-  p->angle_min_tenths=0U;p->angle_max_tenths=3600U;
-  p->threshold=3U;p->energy_min=0U;p->energy_max=255U;
+  p->angle_min_tenths=0U;p->angle_max_tenths=900U;
+  p->threshold=2U;p->energy_min=0U;p->energy_max=255U;
 }
 
 bool RadarMap_ParamsValid(const RadarMap_Params_t *p)
@@ -72,23 +72,218 @@ static int find_cell(float x,float y,bool endpoint)
   return c<0 || r<0?-1:r*5+c;
 }
 
-bool RadarMap_Add(RadarMap_t *m,const RadarMap_Params_t *p,const RadarSample_t *s)
+static bool sample_allowed(const RadarMap_Params_t *p,const RadarSample_t *s)
 {
   uint16_t angle;
-  float x,y;
-  int cell;
   bool allowed;
-  if(m==NULL || s==NULL || !RadarMap_ParamsValid(p)) return false;
   angle=(uint16_t)(s->angle_tenths%3600U);
   allowed=p->angle_min_tenths<=p->angle_max_tenths?
     angle>=p->angle_min_tenths && angle<=p->angle_max_tenths:
     angle>=p->angle_min_tenths || angle<=p->angle_max_tenths;
-  if(!allowed || s->distance_mm<p->distance_min_mm || s->distance_mm>p->distance_max_mm ||
-     s->energy<p->energy_min || s->energy>p->energy_max || !RadarMap_Project(p,s,&x,&y)) return false;
+  return allowed && s->distance_mm>=p->distance_min_mm && s->distance_mm<=p->distance_max_mm &&
+    s->energy>=p->energy_min && s->energy<=p->energy_max;
+}
+
+bool RadarMap_Add(RadarMap_t *m,const RadarMap_Params_t *p,const RadarSample_t *s)
+{
+  float x,y;
+  int cell;
+  if(m==NULL || s==NULL || !RadarMap_ParamsValid(p) || !sample_allowed(p,s) ||
+     !RadarMap_Project(p,s,&x,&y)) return false;
   cell=find_cell(x,y,false);
   if(cell<0) return false;
+  m->cloud_built=false;m->evidence_mask=0U;
   if(m->counts[cell]<0xFFFFU) ++m->counts[cell];
+  if(m->accepted_points<0xFFFFU) ++m->accepted_points;
   return true;
+}
+
+/* 1534点实测：短物直径12/28mm，邻段间隔323..923mm；长背景端部
+ * 各10点共线RMS为5.7/3.0mm。80..300mm分段均同结果，采用100mm。
+ * 只在真实场外延伸证据下去掉长轮廓，不把所有长物或拟合线当墙。
+ */
+#define RADAR_CONTOUR_GAP_MM       100.0f
+#define RADAR_CONTOUR_SHORT_MM     200.0f
+#define RADAR_CONTOUR_LONG_MM      600.0f
+#define RADAR_CONTOUR_SIDE_MM      400.0f
+#define RADAR_CONTOUR_DROP_MM      150.0f
+#define RADAR_CONTOUR_BRIDGE_MM    300.0f
+#define RADAR_CONTOUR_LINE_RMS_MM  20.0f
+#define RADAR_CONTOUR_LINE_MAX_MM  50.0f
+#define RADAR_CONTOUR_LINE_POINTS  10U
+
+typedef struct {
+  uint16_t first,last,points,outside,inside;
+  uint16_t counts[RADAR_MAP_CELL_COUNT];
+  uint32_t cells;
+  float first_x,first_y,last_x,last_y;
+  float min_x,max_x,min_y,max_y,max_distance;
+} RadarContour_t;
+
+typedef struct {
+  const RadarSample_t *samples;
+  uint16_t count,start;
+} RadarCloudView_t;
+
+/* 只映射虚拟顺序，不移动/复制原始缓存；邻域拟合也使用这一顺序。 */
+static const RadarSample_t *cloud_sample(const RadarCloudView_t *cloud,uint16_t index)
+{
+  uint32_t actual=(uint32_t)cloud->start+index;
+  if(actual>=cloud->count)actual-=cloud->count;
+  return &cloud->samples[actual];
+}
+
+static float contour_span(const RadarContour_t *s)
+{
+  float dx=s->max_x-s->min_x,dy=s->max_y-s->min_y;
+  return sqrtf(dx*dx+dy*dy);
+}
+
+static void contour_add(RadarContour_t *s,uint16_t index,const RadarSample_t *sample,float x,float y)
+{
+  int cell=find_cell(x,y,false);
+  if(s->points==0U) {
+    s->first=index;s->first_x=x;s->first_y=y;
+    s->min_x=s->max_x=x;s->min_y=s->max_y=y;
+  }
+  s->last=index;s->last_x=x;s->last_y=y;++s->points;
+  if(x<s->min_x)s->min_x=x;
+  if(x>s->max_x)s->max_x=x;
+  if(y<s->min_y)s->min_y=y;
+  if(y>s->max_y)s->max_y=y;
+  if((float)sample->distance_mm>s->max_distance)s->max_distance=(float)sample->distance_mm;
+  if(x<0.0f || x>2400.0f || y<0.0f || y>2400.0f)++s->outside;
+  if(cell>=0) {++s->inside;++s->counts[cell];s->cells|=1UL<<cell;}
+}
+
+/* 游标指向下一段首点；跳过筛选无效点，仍保存场外轮廓连接证据。 */
+static bool contour_next(RadarContour_t *s,const RadarMap_Params_t *p,
+                         const RadarCloudView_t *cloud,uint16_t *cursor)
+{
+  uint16_t i=*cursor;
+  memset(s,0,sizeof(*s));
+  while(i<cloud->count) {
+    float x,y,dx,dy;
+    const RadarSample_t *point=cloud_sample(cloud,i);
+    if(!sample_allowed(p,point) || !RadarMap_Project(p,point,&x,&y)) {++i;continue;}
+    dx=x-s->last_x;dy=y-s->last_y;
+    if(s->points && dx*dx+dy*dy>RADAR_CONTOUR_GAP_MM*RADAR_CONTOUR_GAP_MM)break;
+    contour_add(s,i,point,x,y);++i;
+  }
+  *cursor=i;return s->points!=0U;
+}
+
+static void contour_merge(RadarContour_t *group,const RadarContour_t *s)
+{
+  group->points+=s->points;group->inside+=s->inside;group->outside+=s->outside;
+  group->cells|=s->cells;
+  for(unsigned i=0U;i<RADAR_MAP_CELL_COUNT;i++)group->counts[i]+=s->counts[i];
+  if(s->min_x<group->min_x)group->min_x=s->min_x;
+  if(s->max_x>group->max_x)group->max_x=s->max_x;
+  if(s->min_y<group->min_y)group->min_y=s->min_y;
+  if(s->max_y>group->max_y)group->max_y=s->max_y;
+}
+
+static void contour_publish(RadarMap_t *m,const RadarMap_Params_t *p,const RadarContour_t *s)
+{
+  m->outside_points+=s->outside;
+  if(s->outside>=3U && contour_span(s)>=RADAR_CONTOUR_LONG_MM) {
+    m->background_points+=s->points;return;
+  }
+  m->accepted_points+=s->inside;
+  for(unsigned i=0U;i<RADAR_MAP_CELL_COUNT;i++)m->counts[i]+=s->counts[i];
+  if(s->points>=p->threshold)m->evidence_mask|=s->cells;
+}
+
+typedef struct {
+  float x,y,xx,yy,xy;
+  uint16_t count;
+} RadarLineMoments_t;
+
+/* 局部坐标平移仅用于拟合数值稳定；地图和测距始终保持原值。 */
+static bool contour_line(const RadarMap_Params_t *p,const RadarCloudView_t *cloud,
+                         const RadarContour_t *a,const RadarContour_t *c)
+{
+  RadarLineMoments_t moments={0};
+  float angle,nx,ny,mx,my,variance;
+  for(unsigned pass=0U;pass<2U;pass++) {
+    if(pass) {
+      mx=moments.x/(float)moments.count;my=moments.y/(float)moments.count;
+      float xx=moments.xx-moments.x*mx,yy=moments.yy-moments.y*my;
+      float xy=moments.xy-moments.x*my;
+      angle=0.5f*atan2f(2.0f*xy,xx-yy);nx=-sinf(angle);ny=cosf(angle);
+      variance=0.5f*(xx+yy-sqrtf((xx-yy)*(xx-yy)+4.0f*xy*xy))/(float)moments.count;
+      if(variance>RADAR_CONTOUR_LINE_RMS_MM*RADAR_CONTOUR_LINE_RMS_MM)return false;
+    }
+    for(unsigned side=0U;side<2U;side++) {
+      unsigned kept=0U;
+      int index=side?(int)c->first:(int)a->last;
+      int end=side?(int)c->last:(int)a->first;
+      int step=side?1:-1;
+      while((side?index<=end:index>=end) && kept<RADAR_CONTOUR_LINE_POINTS) {
+        float x,y;
+        const RadarSample_t *sample=cloud_sample(cloud,(uint16_t)index);
+        if(sample_allowed(p,sample) && RadarMap_Project(p,sample,&x,&y)) {
+          x-=a->last_x;y-=a->last_y;++kept;
+          if(!pass) {
+            moments.x+=x;moments.y+=y;moments.xx+=x*x;moments.yy+=y*y;moments.xy+=x*y;++moments.count;
+          } else if(fabsf((x-mx)*nx+(y-my)*ny)>RADAR_CONTOUR_LINE_MAX_MM)return false;
+        }
+        index+=step;
+      }
+    }
+  }
+  return true;
+}
+
+static bool contour_bridge(const RadarMap_Params_t *p,const RadarCloudView_t *cloud,
+                           const RadarContour_t *a,const RadarContour_t *b,const RadarContour_t *c)
+{
+  float dx=c->first_x-a->last_x,dy=c->first_y-a->last_y;
+  if(contour_span(b)>RADAR_CONTOUR_SHORT_MM || contour_span(a)<RADAR_CONTOUR_SIDE_MM ||
+     contour_span(c)<RADAR_CONTOUR_SIDE_MM ||
+     (float)cloud_sample(cloud,a->last)->distance_mm-b->max_distance<RADAR_CONTOUR_DROP_MM ||
+     (float)cloud_sample(cloud,c->first)->distance_mm-b->max_distance<RADAR_CONTOUR_DROP_MM ||
+     dx*dx+dy*dy>RADAR_CONTOUR_BRIDGE_MM*RADAR_CONTOUR_BRIDGE_MM)return false;
+  return contour_line(p,cloud,a,c);
+}
+
+void RadarMap_BuildCloud(RadarMap_t *m,const RadarMap_Params_t *p,
+                         const RadarSample_t *samples,uint16_t count)
+{
+  RadarContour_t a,b,c,group;
+  RadarCloudView_t cloud={samples,count,0U};
+  uint16_t cursor=0U;
+  bool have_b,have_c;
+  if(m==NULL)return;
+  RadarMap_Reset(m);
+  if(!RadarMap_ParamsValid(p) || (count && samples==NULL))return;
+  m->cloud_built=true;
+  /* 默认0..90从最小raw角开始；跨0的选域从其min开始，不能在原缓存
+   * index0处拆开物体，也不借用选域外点盲拼首尾以满足阈值。
+   */
+  uint16_t minimum=3600U;
+  for(uint16_t i=0U;i<count;i++) {
+    uint16_t angle=(uint16_t)(((uint32_t)samples[i].angle_tenths%3600U+3600U-
+                              (uint32_t)p->angle_min_tenths%3600U)%3600U);
+    if(angle<minimum) {minimum=angle;cloud.start=i;}
+  }
+  if(!contour_next(&a,p,&cloud,&cursor)) {RadarMap_FinishRaw(m,p);return;}
+  group=a;
+  have_b=contour_next(&b,p,&cloud,&cursor);
+  have_c=have_b && contour_next(&c,p,&cloud,&cursor);
+  while(have_b) {
+    if(have_c && contour_bridge(p,&cloud,&a,&b,&c)) {
+      contour_publish(m,p,&b);contour_merge(&group,&c);a=c;
+      have_b=contour_next(&b,p,&cloud,&cursor);
+      have_c=have_b && contour_next(&c,p,&cloud,&cursor);
+    } else {
+      contour_publish(m,p,&group);group=b;a=b;
+      have_b=have_c;
+      if(have_b) {b=c;have_c=contour_next(&c,p,&cloud,&cursor);}
+    }
+  }
+  contour_publish(m,p,&group);RadarMap_FinishRaw(m,p);
 }
 
 void RadarMap_FinishRaw(RadarMap_t *m,const RadarMap_Params_t *p)
@@ -96,7 +291,8 @@ void RadarMap_FinishRaw(RadarMap_t *m,const RadarMap_Params_t *p)
   unsigned i;
   if(m==NULL || !RadarMap_ParamsValid(p)) return;
   m->mask=RADAR_MAP_FIXED_MASK;
-  for(i=0U;i<RADAR_MAP_CELL_COUNT;i++) if(m->counts[i]>=p->threshold) m->mask|=1UL<<i;
+  if(m->cloud_built)m->mask|=m->evidence_mask;
+  else for(i=0U;i<RADAR_MAP_CELL_COUNT;i++) if(m->counts[i]>=p->threshold) m->mask|=1UL<<i;
 }
 
 void RadarMap_Finish(RadarMap_t *m,const RadarMap_Params_t *p)

@@ -70,13 +70,8 @@ bool RadarScan_LiveStart(const RadarMap_Params_t *params,uint32_t origin_generat
   if(active() || live.active || !RadarMap_ParamsValid(params) ||
      (start_id!=RADAR_START_UPPER && start_id!=RADAR_START_LOWER))return false;
   if(!RadarUart_StartScan())return false;
-  memset(&live,0,sizeof live);live.id=id?id:1U;live.parameters=*params;
-  if(start_id==RADAR_START_UPPER){
-    live.parameters.lidar_x_mm=4500.0f-params->lidar_x_mm;
-    live.parameters.lidar_y_mm=2400.0f-params->lidar_y_mm;
-    live.parameters.zero_deg=fmodf(params->zero_deg+180.0f,360.0f);
-    if(live.parameters.zero_deg<0)live.parameters.zero_deg+=360.0f;
-  }
+  memset(&live,0,sizeof live);live.id=id?id:1U;
+  (void)RadarStart_ParamsForStart(params,start_id,&live.parameters);
   live.origin_generation=origin_generation;live.active=true;
   live.state=RADAR_LIVE_PREPARING;live.reason="configuring";
   memset(live_work,0,sizeof live_work);memset(live_latest,0,sizeof live_latest);
@@ -285,6 +280,17 @@ static void publish_live(void)
 
 static void publish(void)
 {
+  /* The complete angular sequence is required to distinguish a field-external
+   * surface from the foreground objects that briefly occlude it. Live preview
+   * bins are never used for this step. Keep the streaming result if storage was
+   * truncated: a partial cloud cannot establish a complete contour. */
+  if(!status.truncated){
+    if(capture_auto){
+      for(unsigned i=0;i<2U;i++)
+        RadarMap_BuildCloud(&start_candidates.maps[i],&start_candidates.params[i],
+                            cloud,status.point_count);
+    }else RadarMap_BuildCloud(&working_map,&capture_parameters,cloud,status.point_count);
+  }
   status.scan_id++;
   memset(&start_status.result,0,sizeof start_status.result);
   start_status.scan_id=status.scan_id;start_status.automatic=capture_auto;

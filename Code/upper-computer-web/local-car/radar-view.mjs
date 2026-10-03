@@ -1,4 +1,4 @@
-import {RADAR_PARAMETERS,RADAR_GRID,RADAR_FIXED_MASK,INITIAL_VIEW,STATIONS,radarStateText,radarReasonText,importSnapshot,parseRadar,diagnosticSnapshot} from './radar-model.mjs';
+import {RADAR_PARAMETERS,RADAR_GRID,RADAR_FIXED_MASK,INITIAL_VIEW,STATIONS,radarStateText,radarReasonText,importSnapshot,parseRadar,diagnosticSnapshot,isCompleteRadarCloud,preferredRadarCloud} from './radar-model.mjs';
 import {RouteProfileRunner,profilePhaseText,profileResultText} from './route-profile.mjs';
 import {radarProbeText,radarStartText} from './radar-format.mjs';
 import {radarLowerReferenceFromWorld,radarWorldFromLowerReference} from './radar-installation.mjs';
@@ -11,7 +11,7 @@ const GRID=RADAR_GRID;
 
 export function mountRadarParameters({root,exchange,model,canSend,onBusy}){
   const section=element('details');section.className='parameter-group';section.append(element('summary','雷达 · 下次静止扫描参数'));
-  section.append(element('p','应用后读回核对，只修改当前RAM。安装参考预设2170/230/180对应车在起点(2250,150,90°)，可调，尚未实测标定。设备扫描姿态另行显示，参数变化后旧图保留。'));
+  section.append(element('p','下方雷达中心预设(2250,150)，0°向左180°；右上中心(2250,2250)，0°向下270°。建图使用原始0°→顺时针90°，默认格内2点；位置、方向和过滤仍可调。应用并读回只修改当前RAM，旧图按扫描时姿态保留。'));
   const rows=[];
   async function work(status,task){onBusy(true);status.textContent='等待设备参数…';update();try{await task();}catch(error){status.textContent=error.message;}finally{onBusy(false);update();}}
   for(const p of RADAR_PARAMETERS){
@@ -39,7 +39,8 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
   const scanWire=wire=>/^radar (?:debug )?scan(?: auto| upper| lower)?$/.test(wire);
   const interactionBusy=()=>!!(transfer||exchange.busy||scanActivity||selectionActivity||live.running||liveRequested||['preparing','wait_wrap','collecting'].includes(model.status?.state));
   const paramsCurrent=()=>model.connected&&model.paramsLive&&model.snapshots.params?.session===model.identity?.session;
-  const draftMatches=()=>manualStart&&headingDrafts[manualStart]!==null&&paramsCurrent()&&Math.abs(radarLowerReferenceFromWorld(manualStart,headingDrafts[manualStart])-radarLowerReferenceFromWorld('lower',model.params.zero_deg))<1e-5;
+  const geometrySettings=(corner,angle)=>[['lidar_x_mm',2250],['lidar_y_mm',150],['angle_min_tenths',0],['angle_max_tenths',900],['zero_deg',radarLowerReferenceFromWorld(corner,angle)]];
+  const draftMatches=()=>manualStart&&headingDrafts[manualStart]!==null&&paramsCurrent()&&geometrySettings(manualStart,headingDrafts[manualStart]).every(([key,value])=>Number.isFinite(model.params[key])&&Math.abs(model.params[key]-value)<1e-5);
   const selectedScanAllowed=()=>manualStart&&!interactionBusy()&&canSend(`radar scan ${manualStart}`)&&(headingDrafts[manualStart]===null||draftMatches());
   const currentStart=()=>{const start=model.snapshots.start,state=model.status;return start&&!start.historical&&model.connected&&state&&['session','origin','scan'].every(k=>start[k]===state[k])?start:null;};
   const reusableCircle=()=>currentStart()?.auto===true&&model.status?.state==='ready';
@@ -81,21 +82,29 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
     const busy=interactionBusy(),draft=manualStart?headingDrafts[manualStart]:null,known=manualStart?radarWorldFromLowerReference(manualStart,model.params.zero_deg):null,live=paramsCurrent();
     const source=known===null?'设备方向参数未读取':`${live?'设备参数读回':'历史参数读回'}：地图 ${known}°（zero_deg ${model.params.zero_deg}°）`;
     const corner=manualStart==='upper'?'右上':'右下';
-    let text=manualStart?`${corner}名义起点 · ${source}；实际安装方向由人工选择`:'先选择右上或右下名义起点，再点击地图箭头选择雷达0°';
+    let text=manualStart?`${corner}雷达起点中心 ${manualStart==='upper'?'(2250,2250)':'(2250,150)'} · ${source}；地图箭头选择实际0°方向`:'先选择右上或右下起点中心，再点击地图箭头选择雷达0°';
     if(draft!==null){
       const outcome=headingOutcome?.corner===manualStart&&headingOutcome.world===draft?headingOutcome.text:null;
       text=`${corner} · 雷达0°草稿 ${draft}° · ${source} · ${outcome??(draftMatches()?'草稿与设备读回一致 · 请新扫描':'待应用 · 应用后需新扫描')}`;
       if(outcome&&headingOutcome.confirmed&&!draftMatches())text=`${corner} · 雷达0°草稿 ${draft}° · ${source} · 待应用 · 请读回或重新应用后新扫描`;
     }
     if(transfer?.kind==='heading')text+=' · 应用并读回中…';
+    const sectorZero=draft??known??(manualStart==='upper'?270:180),sectorEnd=((sectorZero-90)%360+360)%360;
+    const inward=[sectorZero,sectorZero-45,sectorZero-90].every(angle=>{const radians=angle*Math.PI/180;return Math.cos(radians)<=1e-8&&(manualStart==='upper'?Math.sin(radians)<=1e-8:Math.sin(radians)>=-1e-8);});
+    if(manualStart)text+=` · 建图0°→顺时针90° · ${inward?'扇区朝场内':'扇区有方向朝场外，可继续应用'}`;
     $('radar-heading-status').textContent=text;
     for(const choice of ['upper','lower']){const button=$(`radar-select-${choice}`);button.disabled=busy;button.setAttribute('aria-pressed',String(choice===manualStart));button.classList.toggle('active',choice===manualStart);}
-    $('radar-heading-apply').disabled=!manualStart||draft===null||busy||!canSend(`radar set zero_deg ${radarLowerReferenceFromWorld(manualStart,draft)}`);
+    $('radar-heading-apply').textContent='应用本次建图设置';
+    $('radar-heading-apply').disabled=!manualStart||draft===null||busy||!geometrySettings(manualStart,draft).every(([key,value])=>canSend(`radar set ${key} ${value}`));
     $('radar-scan-selected').disabled=!selectedScanAllowed();
     const layer=$('radar-heading-options');layer.style.display=tab==='radar'&&manualStart?'':'none';
-    const key=`${manualStart}:${draft}:${busy}`;if(headingRenderKey===key)return;headingRenderKey=key;layer.replaceChildren();
+    const key=`${manualStart}:${draft}:${known}:${busy}`;if(headingRenderKey===key)return;headingRenderKey=key;layer.replaceChildren();
     if(!manualStart)return;
     const y=manualStart==='upper'?2250:150,angles=manualStart==='upper'?[270,180]:[90,180];
+    const radial=angle=>{const radians=angle*Math.PI/180;return [Number((2250+900*Math.cos(radians)).toFixed(3)),Number((y+900*Math.sin(radians)).toFixed(3))];};
+    const from=radial(sectorZero),to=radial(sectorZero-90),color=inward?'#18806d':'#bc741d';
+    layer.append(svg('path',{d:`M2250 ${y} L${from[0]} ${from[1]} A900 900 0 0 0 ${to[0]} ${to[1]} Z`,fill:inward?'#22a58622':'#d88b2222',stroke:color,'stroke-width':7,'pointer-events':'none','data-scan-sector':'true','data-zero-deg':sectorZero,'data-end-deg':sectorEnd,'data-inward':inward}));
+    layer.append(svg('text',{transform:`translate(${to[0]} ${to[1]}) scale(1 -1)`,'text-anchor':'middle','font-size':42,fill:color,'pointer-events':'none'},'顺时针90°边界'));
     layer.append(svg('circle',{cx:2250,cy:y,r:27,fill:'#fff',stroke:'#e89025','stroke-width':10}));
     for(const angle of angles){
       const label=angle===90?'向上':angle===270?'向下':'向左',selected=draft===angle;
@@ -106,13 +115,15 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
     }
   }
   $('radar-heading-apply').onclick=()=>{
-    const corner=manualStart,angle=headingDrafts[corner],value=radarLowerReferenceFromWorld(corner,angle);
-    if(!corner||angle===null||interactionBusy()||!canSend(`radar set zero_deg ${value}`))return;
+    const corner=manualStart,angle=headingDrafts[corner],settings=geometrySettings(corner,angle);
+    if(!corner||angle===null||interactionBusy()||!settings.every(([key,value])=>canSend(`radar set ${key} ${value}`)))return;
     void operate('heading',async operation=>{
       onBusy(true);
       try{
-        const result=await exchange.set('zero_deg',value);checkRead(operation);
-        headingOutcome={corner,world:angle,confirmed:result.confirmed,text:result.confirmed?'设备读回一致 · 请按所选起点新扫描':'设备读回不一致 · 草稿保留，请重新应用后新扫描'};
+        let confirmed=true;
+        for(const[key,value]of settings){const result=await exchange.set(key,value);checkRead(operation);confirmed=confirmed&&result.confirmed;}
+        confirmed=confirmed&&settings.every(([key,value])=>Number.isFinite(model.params[key])&&Math.abs(model.params[key]-value)<1e-5);
+        headingOutcome={corner,world:angle,confirmed,text:confirmed?'起点中心、0..90°与方向均读回一致 · 请按所选起点新扫描':'建图设置读回不一致 · 草稿保留，请重新应用后新扫描'};
       }catch(error){headingOutcome={corner,world:angle,confirmed:false,text:`应用未确认 · 草稿保留，需应用后新扫描 · ${error.message}`};}
       finally{onBusy(false);}
     });
@@ -298,7 +309,7 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
   function setOffline(snapshot){
     offline=importSnapshot(snapshot);offline.loaded_from_snapshot=true;offlinePath=null;const params={...Object.fromEntries(RADAR_PARAMETERS.map(p=>[p.key,p.value])),...model.params,...offline.params};
     if(offline.pose){
-      if(offline.start_id===1){const lower=[4500-offline.pose[0],2400-offline.pose[1],((offline.pose[2]+180)%360+360)%360];for(const[key,index]of [['lidar_x_mm',0],['lidar_y_mm',1],['zero_deg',2]])if(!Number.isFinite(offline.params[key]))params[key]=lower[index];}
+      if(offline.start_id===1){const lower=[4500-offline.pose[0],2400-offline.pose[1],radarLowerReferenceFromWorld('upper',offline.pose[2])];for(const[key,index]of [['lidar_x_mm',0],['lidar_y_mm',1],['zero_deg',2]])params[key]=lower[index];}
       else{params.lidar_x_mm=offline.pose[0];params.lidar_y_mm=offline.pose[1];params.zero_deg=offline.pose[2];}
     }
     if(offline.start_id===1)$('route-profile-choice').value='planned';
@@ -309,16 +320,17 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
   $('radar-import').onchange=async()=>{const file=$('radar-import').files[0];if(!file)return;try{const value=JSON.parse(await file.text()),frame=$('radar-import-frame').value;if(value.offline)value.offline.coordinate_frame=frame;if(value.snapshots?.map)value.snapshots.map.coordinate_frame=frame;else value.coordinate_frame=frame;setOffline(value);}catch(error){$('radar-offline-status').textContent=error.message;}};
   $('radar-export').onclick=()=>{if(diagnostic?.current&&!diagnostic.bundle)return;if(diagnostic?.current&&diagnostic.bundle)saveSnapshot(diagnostic.bundle,'radar-diagnostic');else{const snapshots=Object.fromEntries(Object.entries(model.snapshots).filter(([kind])=>kind!=='raw'));saveSnapshot({v:1,coordinate_frame:'current',snapshots,params:model.params,offline,offlinePath},'radar');}};
   $('radar-offline-plan').onclick=async()=>{
-    if(!offline){$('radar-offline-status').textContent='先载入完整地图副本';return;}const params=Object.fromEntries(Object.entries(offlineInputs).map(([key,input])=>[key,Number(input.value)])),useCloud=$('radar-offline-input').value==='cloud',cloud=offline.cloud;if(useCloud&&!cloud?.points){$('radar-offline-status').textContent='重新过滤需要完整点云或显示点云快照';return;}
+    if(!offline){$('radar-offline-status').textContent='先载入完整地图副本';return;}const params=Object.fromEntries(Object.entries(offlineInputs).map(([key,input])=>[key,Number(input.value)])),useCloud=$('radar-offline-input').value==='cloud',cloud=offline.cloud;
+    if(useCloud&&!isCompleteRadarCloud(cloud)){const reason=cloud?.truncated?'当前云已截断':cloud?.k==='points'?'当前云为显示抽样':cloud?.complete===false?'当前云未完整':cloud?.points?'当前云未声明完整':'尚无同圈完整点云';$('radar-offline-status').textContent=`${reason}，不能重建完整圈轮廓；请读取同圈完整点云，或按现有/人工障碍规划`;return;}
     const speed=Number($('radar-nav-speed').value);if(!Number.isInteger(speed)||speed<10||speed>5000){$('radar-offline-status').textContent='启动速度范围10～5000 mm/s';return;}
-    $('radar-offline-plan').disabled=true;$('radar-offline-status').textContent='本机C核心计算中…';try{offlinePath=await api('radar/plan',{mask:useCloud?(offline.manual_mask??0):offline.mask,params,points:useCloud?cloud.points:[],start_mode:offline.start_mode??'manual',speed_mm_s:speed});offline.params=params;offline.receivedAt=Date.now();$('radar-offline-status').textContent=offlinePath.valid?`${offlinePath.algorithm} · 离线预览；未发送实车指令`:`规划不可达 · 第 ${offlinePath.failed_leg} 路段`;renderProfile();render();}catch(error){$('radar-offline-status').textContent=error.message;}finally{$('radar-offline-plan').disabled=false;}
+    $('radar-offline-plan').disabled=true;$('radar-offline-status').textContent='本机C核心计算中…';try{offlinePath=await api('radar/plan',{mask:useCloud?(offline.manual_mask??0):offline.mask,params,points:useCloud?cloud.points:[],cloud_complete:useCloud&&isCompleteRadarCloud(cloud),start_mode:offline.start_mode??'manual',speed_mm_s:speed});offline.params=params;offline.receivedAt=Date.now();$('radar-offline-status').textContent=offlinePath.valid?`${offlinePath.algorithm} · 离线预览；未发送实车指令`:`规划不可达 · 第 ${offlinePath.failed_leg} 路段`;renderProfile();render();}catch(error){$('radar-offline-status').textContent=error.message;}finally{$('radar-offline-plan').disabled=false;}
   };
   function render(){
     const mapSnapshot=model.snapshots.map,path=model.snapshots.path,state=model.status,nav=model.nav;
     const gate=executionGate(),scanning=!!scanActivity||['preparing','wait_wrap','collecting'].includes(state?.state),startSnapshot=model.snapshots.start,unresolved=unresolvedStart();
     $('radar-start-status').textContent=!scanning&&unresolved&&!currentStart()?`起点：未确定 · ${radarReasonText(state.reason)}`:radarStartText(startSnapshot,{pending:scanning,historical:!!startSnapshot&&(!currentStart()||scanning)});
     renderHeading();
-    $('radar-map-age').textContent=model.describe(tab==='offline'?offline:mapSnapshot)+(headingNeedsScan?' · 朝向参数已应用，保留历史图；请新扫描':state?.applicable===false||state?.applicable===0?(unresolved?' · 起点未确定，保留历史图；请人工选择':' · 参数/原点已变化，请重新扫描'):'')+(mapSnapshot?.coverage!==undefined?` · 覆盖 ${(mapSnapshot.coverage/10).toFixed(1)}°`:'');$('radar-path-age').textContent=`设备：${model.describe(path)}${offlinePath?'；虚线：本机离线预览':''}`;
+    $('radar-map-age').textContent=model.describe(tab==='offline'?offline:mapSnapshot)+(headingNeedsScan?' · 建图参数已应用，保留历史图；请新扫描':state?.applicable===false||state?.applicable===0?(unresolved?' · 起点未确定，保留历史图；请人工选择':' · 参数/原点已变化，请重新扫描'):'')+(mapSnapshot?.coverage!==undefined?` · 覆盖 ${(mapSnapshot.coverage/10).toFixed(1)}°`:'');$('radar-path-age').textContent=`设备：${model.describe(path)}${offlinePath?'；虚线：本机离线预览':''}`;
     $('radar-status').textContent=state?.state==='ready'&&unresolved?`本圈采集完成 · ${radarReasonText(state.reason)} · 扫描 ${state.scan} · ${state.map?`显示历史地图 ${state.map} / 规划 ${state.plan}（不适用本圈）`:'尚未发布本圈地图和规划'}`:state?`采集与规划：${radarStateText(state.state)} · ${radarReasonText(state.reason)} · 扫描 ${state.scan} / 地图 ${state.map} / 规划 ${state.plan}`:'点击读取状态，确认设备雷达配置';$('radar-nav-status').textContent=nav?`${radarStateText(nav.state)} · ${radarReasonText(nav.reason)} · ${nav.index}/${nav.total} · ${STATIONS[nav.station]??'通行'} · 访问 ${nav.visit}${nav.state==='stopping'?((nav.stopped??nav.stop_confirmed)?' · 停车已确认':' · 停车待确认'):''}`:'尚无设备导航状态';
     $('radar-probe-status').textContent=radarProbeText(model.probe);
     $('radar-diagnostics').textContent=JSON.stringify({status:state,start:startSnapshot,nav,probe:model.probe},null,2);
@@ -329,7 +341,7 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
     const historicalMap=!model.connected||mapSnapshot?.historical||state&&(state.applicable===false||state.applicable===0||state.map!==mapSnapshot?.map);obstacles.style.opacity=counts.style.opacity=tab!=='offline'&&historicalMap?'.4':'1';
     $('radar-device-path').setAttribute('d',path?.valid!==false?pathData(path?.points):'');$('radar-device-path').style.opacity=!model.connected||path?.historical||state&&(state.applicable===false||state.applicable===0||state.map!==path?.map||state.plan!==path?.plan)?'.4':'1';$('radar-offline-path').setAttribute('d',tab==='offline'?(offlinePath?.plan_only&&$('route-profile-choice').value==='planned'?pathData(offlinePath.valid?offlinePath.points:[]):selectedProfile()?.points?pathData(selectedProfile().points):offlinePath?.valid?pathData(offlinePath.points):''):'');
     const marks=$('radar-stations');marks.replaceChildren();if(path?.valid!==false&&path?.points)for(const p of path.points)if(p[2])marks.append(svg('circle',{cx:p[0],cy:p[1],r:20,fill:'#eaf9f3',stroke:'#008e64','stroke-width':5}));
-    const cloudLayer=$('radar-cloud');cloudLayer.replaceChildren();const cloud=tab==='offline'?offline?.cloud:[model.snapshots.points,model.snapshots.cloud].filter(Boolean).sort((a,b)=>b.receivedAt-a.receivedAt)[0];if($('radar-show-points').checked&&cloud?.points){const pose=cloud.pose??(tab==='offline'?offline?.pose:mapSnapshot?.pose);if(pose)for(const point of cloud.points){const projected=projectRadarPoint(point,pose);if(projected)cloudLayer.append(svg('circle',{cx:projected[0],cy:projected[1],r:7,fill:'#1674a9'}));}cloudLayer.style.opacity=!model.connected||!state?.points_valid||state?.scan!==cloud.scan?'.3':'1';}
+    const cloudLayer=$('radar-cloud');cloudLayer.replaceChildren();const cloud=tab==='offline'?offline?.cloud:preferredRadarCloud(model.snapshots.cloud,model.snapshots.points);if($('radar-show-points').checked&&cloud?.points){const pose=cloud.pose??(tab==='offline'?offline?.pose:mapSnapshot?.pose);if(pose)for(const point of cloud.points){const projected=projectRadarPoint(point,pose);if(projected)cloudLayer.append(svg('circle',{cx:projected[0],cy:projected[1],r:7,fill:'#1674a9'}));}cloudLayer.style.opacity=!model.connected||!state?.points_valid||state?.scan!==cloud.scan?'.3':'1';}
     $('radar-points-age').hidden=!$('radar-show-points').checked;$('radar-points-age').textContent=cloud?`${model.describe(cloud)} · ${cloud.points.length} 点${cloud.k==='points'?'（显示抽样）':''}${cloud.truncated?' · 单圈缓存已截断':''}`:'尚无已下载点云';
     for(const b of document.querySelectorAll('[data-radar-wire]'))b.disabled=!canSend(b.dataset.radarWire)||scanWire(b.dataset.radarWire)&&interactionBusy()||/^radar start (upper|lower)$/.test(b.dataset.radarWire)&&(interactionBusy()||!reusableCircle());
     for(const kind of ['map','path','points','cloud'])$(`radar-fetch-${kind}`).disabled=optional(kind)&&unresolved||!!(exchange.busy||transfer)&&!(!optional(kind)&&optional(transfer?.kind))||!canSend(`radar fetch ${kind} ${currentId(kind)??0} 0`);
@@ -345,7 +357,7 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
     if(live.accept(line)){liveRequested=false;liveMessage='';if(previousLiveState!==live.state){render();onLiveState(live.state);}else renderLive();return true;}
     const radarReply=line.trim().replace(/^(?:arm>\s*)+/,'');
     if(liveRequested&&/^ERR radar\b/.test(radarReply)){liveRequested=false;liveMessage=`实时采集未受理 · ${radarReply}`;render();}
-    const recognized=model.accept(line),exchanged=exchange.receive(line),headingAccepted=exchanged&&transfer?.kind==='heading'&&line==='OK radar parameter_updated_ram';
+    const recognized=model.accept(line),exchanged=exchange.receive(line),headingAccepted=exchanged&&transfer?.kind==='heading'&&radarReply==='OK radar parameter_updated_ram';
     if(headingAccepted){headingNeedsScan=true;for(const kind of ['map','path','points','cloud'])if(model.snapshots[kind])model.snapshots[kind].historical=true;}
     const replyChanged=observeScanReply(line),frame=parseRadar(line);if(frame){observeScan(frame);if(frame.k==='raw'&&frame.page===0&&diagnostic?.phase==='scanning'&&frame.id!==diagnostic.baseline){diagnostic.id=frame.id;diagnostic.metadata={...frame};if(['ready','error','failed','stopped'].includes(frame.state)){diagnostic.phase='waiting';diagnostic.message='本次诊断采集结束 · 等待同圈地图、点云与原始包下载';}}}if(recognized||replyChanged||headingAccepted)render();return recognized;
   },connection(value){model.connection(value);live.connection(value);if(!value){liveRequested=false;liveMessage='';scanActivity=null;selectionActivity=null;pendingResult=null;cancelledCapture=null;exchange.cancel('连接已变化，旧完整快照保留');}render();},render,selectTab,snapshot:()=>model};

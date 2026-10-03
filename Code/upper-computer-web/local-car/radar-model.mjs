@@ -1,16 +1,26 @@
 import {frameCommand} from './protocol.mjs';
+import {radarLowerReferenceFromWorld} from './radar-installation.mjs';
 export const INITIAL_VIEW=Object.freeze({x:-320,y:-370,width:3170,height:2990});
 export const RADAR_PARAMETERS=[
-  ['lidar_x_mm','起点雷达 X / mm',2170,0,2400],['lidar_y_mm','起点雷达 Y / mm',230,0,2400],
+  ['lidar_x_mm','下方参考雷达 X / mm',2250,0,2400],['lidar_y_mm','下方参考雷达 Y / mm',150,0,2400],
   ['zero_deg','起点雷达零角 / °',180,-360,360],['distance_min_mm','距离下限 / mm',100,0,65535],
   ['distance_max_mm','距离上限 / mm',40000,0,65535],['angle_min_tenths','角度下限 / 0.1°',0,0,3600],
-  ['angle_max_tenths','角度上限 / 0.1°',3600,0,3600],['threshold','格内点数阈值',3,1,65535],
+  ['angle_max_tenths','顺时针角度上限 / 0.1°',900,0,3600],['threshold','连续物体点数阈值',2,1,65535],
   ['energy_min','能量下限',0,0,255],['energy_max','能量上限',255,0,255]
 ].map(([key,label,value,min,max])=>({key,label,value,min,max}));
 export const STATIONS={1:'启停区',2:'粗加工区',3:'暂存区',4:'原料区',5:'扫码区'};
 export const RADAR_GRID=Object.freeze([150,550,1000,1400,1850,2250]);
 export const RADAR_FIXED_MASK=0x00050140;
 export {radarStateText,radarReasonText} from './radar-format.mjs';
+/** Full raw measurements only; transport-complete display samples are still partial. */
+export function isCompleteRadarCloud(cloud){
+  return Array.isArray(cloud?.points)&&cloud.k!=='points'&&!cloud.truncated&&cloud.complete!==false&&(cloud.complete===true||cloud.cloud_complete===true);
+}
+/** Prefer the complete raw cloud of the latest capture, preserving newer capture previews. */
+export function preferredRadarCloud(...snapshots){
+  const available=snapshots.filter(snapshot=>Array.isArray(snapshot?.points)).sort((a,b)=>(b.receivedAt??0)-(a.receivedAt??0)),latest=available[0];
+  return available.find(snapshot=>isCompleteRadarCloud(snapshot)&&['session','origin','scan','map'].every(key=>snapshot[key]===latest[key]))??latest;
+}
 const u32=x=>Number.isInteger(x)&&x>=0&&x<=0xffffffff;
 export function parseRadar(line){
   if(typeof line!=='string')return null;
@@ -146,7 +156,7 @@ export function diagnosticSnapshot(model,id){
     if(matches(model.snapshots.start))snapshots.start=model.snapshots.start;
   }
   const params=Object.fromEntries(RADAR_PARAMETERS.slice(3).map((p,i)=>[p.key,raw.filter[i]]));
-  const pose=raw.start===1?[4500-raw.pose[0],2400-raw.pose[1],(raw.pose[2]+180)%360]:raw.pose;
+  const pose=raw.start===1?[4500-raw.pose[0],2400-raw.pose[1],radarLowerReferenceFromWorld('upper',raw.pose[2])]:raw.pose;
   Object.assign(params,{lidar_x_mm:pose[0],lidar_y_mm:pose[1],zero_deg:pose[2]});
   return JSON.parse(JSON.stringify({v:1,coordinate_frame:'current',diagnostic:{id:raw.id,session:raw.session,origin:raw.origin,scan:raw.scan,map:raw.map,replayable:raw.complete,parameters_source:'raw_capture'},snapshots,params}));
 }
@@ -156,7 +166,7 @@ export function importSnapshot(value){
   if(!editedOffline&&value.snapshots?.map){
     const map=value.snapshots.map,matches=snapshot=>snapshot&&['session','origin','scan','map'].every(k=>u32(map[k])&&snapshot[k]===map[k]);
     const start=matches(value.snapshots.start)?value.snapshots.start:null,path=matches(value.snapshots.path)?value.snapshots.path:null;
-    source={...map,points:path?.points??[],start_id:[1,2].includes(start?.selected)?start.selected:path?.start,params:value.params??value.snapshots.params?.params??{},cloud:[value.snapshots.cloud,value.snapshots.points].filter(matches).sort((a,b)=>b.receivedAt-a.receivedAt)[0]};
+    source={...map,points:path?.points??[],start_id:[1,2].includes(start?.selected)?start.selected:path?.start,params:value.params??value.snapshots.params?.params??{},cloud:preferredRadarCloud(...[value.snapshots.cloud,value.snapshots.points].filter(matches))};
   }
   if(!source||typeof source!=='object'||!u32(source.mask))throw new Error('快照需要25格mask和坐标来源');
   const result={...source,params:{...source.params},receivedAt:Date.now(),source:'offline',coordinate_frame:'current'};
@@ -170,5 +180,7 @@ export function importSnapshot(value){
     result.mask=mask;result.counts=counts;
     if(result.params.lidar_x_mm!==undefined){result.params.lidar_x_mm=2400-source.params.lidar_y_mm;result.params.lidar_y_mm=source.params.lidar_x_mm;result.params.zero_deg=(source.params.zero_deg??0)+90;}
   }
+  if(!result.cloud&&Array.isArray(source.points)&&source.cloud_complete===true)
+    result.cloud={points:source.points,pose:result.pose,k:source.k==='points'?'points':'cloud',complete:source.complete,cloud_complete:true,truncated:source.truncated};
   return result;
 }

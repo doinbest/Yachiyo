@@ -21,12 +21,12 @@ export function radarInstallationFromZero(value){
   return {direction:preset?.key??'custom',relativeDeg};
 }
 
-/** Map heading at the chosen nominal start to the firmware's lower reference. */
+/** Static corner heading to the lower reference; upper scans face 90deg further CCW. */
 export function radarLowerReferenceFromWorld(start,value){
-  const angle=numeric(value);return angle===null||!['upper','lower'].includes(start)?null:normalize(angle-(start==='upper'?180:0));
+  const angle=numeric(value);return angle===null||!['upper','lower'].includes(start)?null:normalize(angle-(start==='upper'?90:0));
 }
 
 /** Interpret a lower-reference readback at a chosen start, without physical confirmation. */
 export function radarWorldFromLowerReference(start,value){
-  const angle=numeric(value);return angle===null||!['upper','lower'].includes(start)?null:normalize(angle+(start==='upper'?180:0));
+  const angle=numeric(value);return angle===null||!['upper','lower'].includes(start)?null:normalize(angle+(start==='upper'?90:0));
 }

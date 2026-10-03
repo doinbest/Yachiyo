@@ -23,7 +23,14 @@ typedef struct {
   uint16_t qr_counts[2], raw_counts[2]; /**< 保留每个假设的原始点数。 */
 } RadarStart_Result_t;
 
-/** @brief 清累计图；下方参考推导同安装关系的右上参考，不改变原参数。 */
+/** @brief 从下方引用参数推导静态角点扫描参数，不改输入或车辆参考。
+ * @param lower_reference 下方雷达XY(mm)、世界零角(度)和筛选条件。
+ * @param start_id 上方或下方；上方XY镜像，零角为下方+90度。
+ * @param out 输出参数，可与输入同地址；筛选条件原样保留。
+ * @return 非空输入/输出且起点有效时为true；未知起点返回false。 */
+bool RadarStart_ParamsForStart(const RadarMap_Params_t *lower_reference,
+                               RadarStart_Id_t start_id, RadarMap_Params_t *out);
+/** @brief 清累计图；推导两个静态角点参考，NULL输入使用默认参数。 */
 void RadarStart_Begin(RadarStart_Context_t *context,
                       const RadarMap_Params_t *lower_reference);
 /** @brief 向两个起点假设计入一个已换算为mm、0.1°的原始样本。 */

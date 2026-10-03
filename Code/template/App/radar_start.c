@@ -14,19 +14,29 @@ static int start_index(RadarStart_Id_t id)
   return id==RADAR_START_UPPER?0:(id==RADAR_START_LOWER?1:-1);
 }
 
+bool RadarStart_ParamsForStart(const RadarMap_Params_t *lower,RadarStart_Id_t id,
+                               RadarMap_Params_t *out)
+{
+  if(lower==NULL || out==NULL || start_index(id)<0)return false;
+  *out=*lower;
+  if(id==RADAR_START_UPPER) {
+    /* Static corner contract; this is independent of the vehicle's yaw change. */
+    out->lidar_x_mm=4500.0f-out->lidar_x_mm;
+    out->lidar_y_mm=2400.0f-out->lidar_y_mm;
+    out->zero_deg=fmodf(out->zero_deg+90.0f,360.0f);
+    if(out->zero_deg<0.0f)out->zero_deg+=360.0f;
+  }
+  return true;
+}
+
 void RadarStart_Begin(RadarStart_Context_t *context,const RadarMap_Params_t *lower)
 {
-  float zero;
+  RadarMap_Params_t reference;
   if(context==NULL)return;
-  if(lower!=NULL)context->params[1]=*lower;
-  else RadarMap_Defaults(&context->params[1]);
-  context->params[0]=context->params[1];
-  /* Rotate the lower-start sensor offset by 180deg about the vehicle center. */
-  context->params[0].lidar_x_mm=4500.0f-context->params[1].lidar_x_mm;
-  context->params[0].lidar_y_mm=2400.0f-context->params[1].lidar_y_mm;
-  zero=fmodf(context->params[1].zero_deg+180.0f,360.0f);
-  if(zero<0.0f)zero+=360.0f;
-  context->params[0].zero_deg=zero;
+  if(lower!=NULL)reference=*lower;
+  else RadarMap_Defaults(&reference);
+  RadarStart_ParamsForStart(&reference,RADAR_START_LOWER,&context->params[1]);
+  RadarStart_ParamsForStart(&reference,RADAR_START_UPPER,&context->params[0]);
   RadarMap_Reset(&context->maps[0]);RadarMap_Reset(&context->maps[1]);
 }
 
