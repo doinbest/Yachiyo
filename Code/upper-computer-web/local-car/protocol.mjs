@@ -105,8 +105,8 @@ export const commands = [
   command('bus-recover','system','一键恢复电机总线','bus recover',[],'停止任务并检查全部 8 台电机（含车载转盘 ID 8）；成功后不会自动续跑。结果见终端，底盘同步缓存未确认时仍保持底盘锁定。'),
   command('bus-status','system','查看总线恢复结果','bus status'),
   command('help','system','固件指令帮助','help'),
-  command('chassis-run','chassis','平移与转向测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-100,100,0.1),number('vy','左向速度 / mm·s⁻¹',0,-100,100,0.1),number('omega','逆时针角速度 / rad·s⁻¹',0,-0.15,0.15,0.01),number('seconds','保持时间 / s',1,0.1,59,0.1)],'角速度为 0 时自动保持起步航向，需要 IMU 验证通过；非 0 时执行给定转向。起步和停车各 500 ms；总时长为保持时间加 1 秒。'),
-  command('chassis-heading','chassis','航向保持测试','chassis heading {vx} {vy} {heading} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-100,100,0.1),number('vy','左向速度 / mm·s⁻¹',0,-100,100,0.1),number('heading','HWT101 模块目标角度 / °','',-180,180,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'需本次启动验证通过；目标角度不是地图角度。起步和停车各 500 ms。'),
+  command('chassis-run','chassis','平移与转向测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-300,300,0.1),number('vy','左向速度 / mm·s⁻¹',0,-300,300,0.1),number('omega','逆时针角速度 / rad·s⁻¹',0,-0.15,0.15,0.01),number('seconds','保持时间 / s',1,0.1,59,0.1)],'角速度为 0 时自动保持起步航向，需要 IMU 验证通过；非 0 时执行给定转向。起步和停车各 500 ms；总时长为保持时间加 1 秒。'),
+  command('chassis-heading','chassis','航向保持测试','chassis heading {vx} {vy} {heading} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-300,300,0.1),number('vy','左向速度 / mm·s⁻¹',0,-300,300,0.1),number('heading','HWT101 模块目标角度 / °','',-180,180,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'需本次启动验证通过；目标角度不是地图角度。起步和停车各 500 ms。'),
   command('chassis-turn','chassis','原地转到地图航向','chassis turn {heading}',[number('heading','地图绝对航向 / °','',-180,180,0.1)],'地图从 +X 逆时针，范围 -180～180°；显式执行后原地转向，按新鲜航向反馈完成。与模块航向保持测试分别使用。'),
   command('chassis-origin','chassis','设置地图初始位姿','chassis origin {x} {y} {heading}',[number('x','地图 X / mm','',-10000,10000,0.1),number('y','地图 Y / mm','',-10000,10000,0.1),number('heading','地图航向 / °','',-180,180,0.1)],'需静止且 IMU 验证有效；只设地图位姿，不执行运动。'),
   command('chassis-task','chassis','读取运动任务','chassis task',[],'时间任务结束不表示到达地图位置或反馈确认停止。'),
@@ -190,8 +190,8 @@ export function buildCommand(id, values = {}) {
     if (distance === 0 || distance > 300) throw new Error('合位移须大于 0 且不超过 300 mm。');
   }
   if (id === 'chassis-run' || id === 'chassis-heading') {
-    if (Math.hypot(Number(checked.vx), Number(checked.vy)) > 100)
-      throw new Error('平移合速度不能超过 100 mm/s。');
+    if (Math.hypot(Number(checked.vx), Number(checked.vy)) > 300)
+      throw new Error('平移合速度不能超过 300 mm/s。');
     checked.hold_ms = String(Math.round(Number(checked.seconds) * 1000));
   }
   const line = definition.template.replace(/\{(\w+)\}/g, (_,key) => checked[key]);

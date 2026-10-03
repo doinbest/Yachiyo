@@ -6,11 +6,26 @@ test('finite velocity controls convert seconds to integer milliseconds once', ()
   assert.equal(buildCommand('chassis-run', {vx:60,vy:80,omega:0.15,seconds:1.25}), 'chassis run 60 80 0.15 1250');
   assert.equal(buildCommand('chassis-run', {vx:0,vy:0,omega:-0.15,seconds:0.1}), 'chassis run 0 0 -0.15 100');
   assert.equal(buildCommand('chassis-heading', {vx:10,vy:0,heading:-90,seconds:59}), 'chassis heading 10 0 -90 59000');
-  for (const changed of [{vx:80,vy:80},{omega:0.151},{seconds:0.09},{seconds:59.001},{seconds:'NaN'}]) {
+  for (const changed of [{vx:300,vy:1},{vx:301},{vy:-301},{omega:0.151},{seconds:0.09},{seconds:59.001},{seconds:'NaN'}]) {
     assert.throws(() => buildCommand('chassis-run', {vx:0,vy:0,omega:0,seconds:1,...changed}));
   }
   assert.throws(() => buildCommand('chassis-heading',{vx:0,vy:0,heading:'',seconds:1}));
-  assert.throws(() => buildCommand('chassis-heading',{vx:80,vy:80,heading:0,seconds:1}));
+  assert.throws(() => buildCommand('chassis-heading',{vx:300,vy:1,heading:0,seconds:1}));
+});
+
+test('live translation controls accept 300 mm/s and preserve the resultant speed limit', () => {
+  for (const [vx,vy] of [[300,0],[-300,0],[0,300],[0,-300],[180,240],[-180,-240]]) {
+    assert.equal(buildCommand('chassis-run',{vx,vy,omega:0,seconds:1}),`chassis run ${vx} ${vy} 0 1000`);
+    assert.equal(buildCommand('chassis-heading',{vx,vy,heading:90,seconds:1}),`chassis heading ${vx} ${vy} 90 1000`);
+  }
+  for (const id of ['chassis-run','chassis-heading']) {
+    const fields = commands.find(c => c.id === id).fields;
+    for (const key of ['vx','vy']) {
+      assert.equal(fields.find(f => f.key === key).min,-300);
+      assert.equal(fields.find(f => f.key === key).max,300);
+    }
+    assert.throws(() => buildCommand(id,{vx:300,vy:300,omega:0,heading:90,seconds:1}),/300 mm\/s/);
+  }
 });
 
 test('module heading and map origin remain separate commands; confirmation fields start empty', () => {
