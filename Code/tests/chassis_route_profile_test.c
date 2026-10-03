@@ -28,6 +28,18 @@ int main(void)
   }
   assert(!ChassisRouteProfile_FixedPoint(16,&point));
   assert(!ChassisRouteProfile_FixedPoint(0,NULL));
+  ChassisRoute_Profile_t first=build(expected[0],expected[1],90,true);
+  assert(first.count==2);
+  close_to(first.phases[0].x_mm,2100);close_to(first.phases[0].y_mm,300);
+  assert(!first.phases[0].turn && !strcmp(first.phases[0].direction,"diagonal"));
+  close_to(first.phases[1].x_mm,2100);close_to(first.phases[1].y_mm,1200);
+  assert(!first.phases[1].turn && !strcmp(first.phases[1].direction,"forward"));
+  close_to(first.nominal_time_s,(hypotf(150,150)+900)/200);
+  /* A later pass and a planned detour must keep their own geometry. */
+  first=build(expected[0],expected[1],90,false);assert(first.count==3);
+  for(unsigned j=0;j<first.count;j++) assert(first.phases[j].y_mm!=300);
+  first=build((RadarPlan_Point_t){1800,800,0,0},expected[1],90,true);
+  assert(first.count==1);close_to(first.phases[0].y_mm,1200);
   float yaw=90;
   for(unsigned i=1;i<=15;i++) {
     ChassisRoute_Profile_t p=build(expected[i-1],expected[i],yaw,i==1);

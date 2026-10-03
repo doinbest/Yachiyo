@@ -233,7 +233,7 @@ const wheelSection=node('details',undefined,'advanced');wheelSection.append(node
 actions(wheelSection,[['feedback-read','刷新四轮快照']]);wheelView=mountWheelFeedback(wheelSection);ch.append(wheelSection);
 const realRoute=node('details',undefined,'glass map-controls map-details real-route-panel');realRoute.id='real-route-panel';realRoute.append(node('summary','15 个目标固定路线 · 准备与执行'));
 prepView=mountPreparation({root:realRoute,send:wire=>send(wire,true),beginTelemetry:nonce=>mapView.beginPreparedTelemetry(nonce),telemetry:()=>mapView?.snapshot(),getConfig:()=>bridge.config,saveConfig:c=>bridge.saveConfig(c),configAvailable:()=>bridge.available,isStopped:stopped,acquire:()=>bridge.acquirePreparation(),release:()=>bridge.releasePreparation(),changed:updateControls});
-realRoute.append(node('p','从 (2250,150,90°) 出发，按固定15个目标经过扫码位、原料区、粗加工区、暂存区，最终返回起点。固件按阶段转向、移动与对接。选择手动逐目标或自动停稳0.1秒后继续；扫码和抓放分别启动。','form-note'));
+realRoute.append(node('p','从 (2250,150,90°) 出发，先斜移到 (2100,300)，再保持90°直行到扫码位 (2100,1200)。按固定15个目标经过扫码位、原料区、粗加工区、暂存区，最终返回起点。固件按阶段转向、移动与对接。选择手动逐目标或自动停稳0.1秒后继续；扫码和抓放分别启动。','form-note'));
 realRoute.append(controlForm('chassis-route-start',{label:'手动分段运行'}));
 realRoute.append(controlForm('chassis-route-auto'),parameterLink('调整路线参数','radar','route_speed','地图 · 实车监控'));
 actions(realRoute,[['chassis-route-next','手动下一段'],['chassis-route-cancel','取消路线'],['chassis-route-status','查询实车路线']]);

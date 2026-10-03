@@ -87,6 +87,10 @@ bool ChassisRouteProfile_Build(const RadarPlan_Point_t *from,const RadarPlan_Poi
   if(temp_departure)
     add(out,false,"undock",&x,&y,&yaw,425,1200,90,dock_speed);
   add(out,true,"turn",&x,&y,&yaw,x,y,travel,0);
+  /* Enter the right-hand lane early, then approach QR at constant X.
+   * Only split the direct first leg; preserve obstacle detour waypoints. */
+  if(first_scan_leg && at(from,2250,150) && at(to,2100,1200))
+    add(out,false,"move",&x,&y,&yaw,2100,300,90,speed_mm_s);
   if(temp_arrival)
   {
     add(out,false,"dock_approach",&x,&y,&yaw,425,1200,travel,speed_mm_s);

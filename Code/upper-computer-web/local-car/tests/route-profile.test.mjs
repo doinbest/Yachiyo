@@ -22,11 +22,14 @@ test('preview stops before a swept narrow turn and identifies first target, phas
   assert.equal(footprintIssue(r.pose),null);assert.ok(r.pose.yaw_rad>0);
   assert.match(module.profileResultText(r),/目标 1.*转向.*非行车区/);
 });
-test('first direct diagonal preserves 200 mm/s norm and never skips footprint corners',()=>{
+test('QR approach leaves diagonally then follows a straight lane at 200 mm/s',()=>{
   assert.equal(typeof module.RouteProfileRunner,'function');
-  const r=new module.RouteProfileRunner(make([phase('move',[2100,1200,90],{direction:'diagonal'})],[[2250,150,0,0]]));
+  const r=new module.RouteProfileRunner(make([phase('move',[2100,300,90],{direction:'diagonal'}),phase('move',[2100,1200,90])],[[2250,150,0,0]]));
   for(let i=0;i<400&&r.state==='running';i++){r.advance(.02);assert.ok(Math.hypot(r.body[0],r.body[1])<=200+1e-8);}
   assert.equal(r.state,'done');assert.equal(r.issue,null);assert.ok(r.path.every(p=>footprintIssue(p)===null));
+  assert.equal(r.stops.length,2);
+  assert.deepEqual([r.stops[0].pose.x_mm,r.stops[0].pose.y_mm],[2100,300]);
+  assert.ok(r.path.filter(p=>p.y_mm>=300).every(p=>Math.abs(p.x_mm-2100)<1e-6));
 });
 test('grid reachability can coexist with a blocked footprint and mask obstacles are identified',()=>{
   assert.equal(typeof module.RouteProfileRunner,'function');
@@ -53,7 +56,8 @@ test('current model uses 300 mm/s² ramp and 3000 RPM scaling even with explicit
 
 // Captured from the shared C CLI default profile on 2026-10-03; no JS heading selection.
 const fixedCPhases=[
-  ["move","move","diagonal",1,5,1,[2100,1200,90],200],
+  ["move","move","diagonal",1,5,1,[2100,300,90],200],
+  ["move","move","forward",1,5,1,[2100,1200,90],200],
   ["move","move","forward",2,0,0,[2100,2100,90],200],
   ["turn","turn","turn",3,4,2,[2100,2100,180],0],
   ["move","move","forward",3,4,2,[1200,2100,180],200],

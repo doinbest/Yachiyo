@@ -60,7 +60,11 @@ class RadarServiceTests(unittest.TestCase):
         self.assertEqual(planned['points'],result['points'])
         first=planned['phases'][0]
         self.assertEqual(first,dict(kind='move',phase='move',direction='diagonal',segment=1,
-                                   station=5,visit=1,target=[2100,1200,90],speed_mm_s=200))
+                                   station=5,visit=1,target=[2100,300,90],speed_mm_s=200))
+        for profile in (fixed,planned):
+            self.assertEqual([p['target'] for p in profile['phases'][:2]],[[2100,300,90],[2100,1200,90]])
+            self.assertEqual([p['direction'] for p in profile['phases'][:2]],['diagonal','forward'])
+            self.assertTrue(all(p['segment']==1 and p['station']==5 and p['visit']==1 for p in profile['phases'][:2]))
         docking=[p for p in fixed['phases'] if p['segment']==6]
         self.assertEqual([p['phase'] for p in docking],['turn','dock_approach','arrival_turn','dock'])
         self.assertEqual([p['target'] for p in docking],[[1200,1200,180],[425,1200,180],[425,1200,90],[350,1200,90]])

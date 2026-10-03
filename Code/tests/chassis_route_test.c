@@ -79,6 +79,14 @@ static void expect_cancel(void)
 }
 int main(void)
 {
+  setup();assert(ChassisRoute_StationStart(200));
+  assert(status().segment==1 && motion.target_x_mm==2100 && motion.target_y_mm==300);
+  assert(status().target_y_mm==1200 && !strcmp(status().direction,"diagonal"));
+  arrive();
+  assert(!strcmp(status().state,"running") && status().segment==1);
+  assert(starts==2 && motion.target_x_mm==2100 && motion.target_y_mm==1200);
+  assert(!strcmp(status().direction,"forward") && !ChassisRoute_StationResume());
+  arrive();assert(!strcmp(status().state,"station") && status().station==5 && status().visit==1);
   setup();assert(!ChassisRoute_Next());assert(ChassisRoute_Start());
   assert(status().total==15 && last_speed==CHASSIS_ROUTE_DEFAULT_SPEED_MM_S && !last_turn);
   assert(!ChassisRoute_Start());
@@ -138,7 +146,7 @@ int main(void)
   setup();assert(ChassisRoute_Start());char *query[]={"chassis","route","status"};assert(ChassisRoute_Command(3,query));assert(strstr(reply,"segment=1") && strstr(reply,"total=15") && strstr(reply,"phase=move"));
   char *stop[]={"chassis","stop"};assert(ChassisRoute_Command(2,stop));assert(stops==1);
   setup();char *slow[]={"chassis","route","start","10"};assert(ChassisRoute_Command(4,slow));
-  assert(last_timeout>220000 && last_timeout<224000);finish_leg();assert(ChassisRoute_Next());finish_leg();assert(ChassisRoute_Next());
+  assert(last_timeout>232000 && last_timeout<233000);finish_leg();assert(ChassisRoute_Next());finish_leg();assert(ChassisRoute_Next());
   uint32_t first_timeout=last_timeout;advance_clock(1500);arrive();assert(last_timeout==first_timeout-1500);
   advance_clock(1000);arrive();assert(last_timeout==first_timeout-2500);
   advance_clock(last_timeout);ChassisRoute_Process();assert(!strcmp(status().reason,"route_timeout") && stops==1);
@@ -156,7 +164,7 @@ int main(void)
   setup();assert(ChassisRoute_StationStart(200));assert(ChassisRoute_StationReserved());finish_leg();
   assert(!strcmp(status().state,"station") && status().station==5 && status().visit==1 && status().segment==1);
   assert(!ChassisRoute_IsBusy() && ChassisRoute_StationReserved());
-  advance_clock(1200);ChassisRoute_Process();assert(starts==1 && !ChassisRoute_Start());
+  advance_clock(1200);ChassisRoute_Process();assert(starts==2 && !ChassisRoute_Start());
   assert(ChassisRoute_StationResume());finish_leg();advance_clock(100);ChassisRoute_Process();
   assert(status().segment==3 && ChassisRoute_StationReserved());
   while(!strcmp(status().state,"running")){arrive();assert(ChassisRoute_StationReserved());}
