@@ -264,6 +264,67 @@ static void test_nominal_manual_start(void)
   assert(s.state==RADAR_SCAN_ERROR && s.map_id==old_map && s.scan_id==old_scan &&
     s.map_valid && during.scan_id==selected.scan_id && during.result.start_id==selected.result.start_id);
 }
+static void test_live_cloud(void)
+{
+  RadarMap_Params_t p;RadarScan_LiveStatus_t live;RadarLive_Point_t points[RADAR_LIVE_BINS];
+  RadarScan_Status_t saved_status,after;RadarScan_Raw_t saved_raw,raw_after;
+  RadarScan_StartStatus_t saved_start,start_after;RadarMap_t saved_map;RadarSample_t saved_cloud[32];uint16_t count;
+  /* The preceding debug scan supplies a complete static map/cloud/raw history. */
+  RadarScan_StatusGet(&saved_status);RadarScan_RawStatusGet(&saved_raw);RadarScan_StartStatusGet(&saved_start);
+  saved_map=*RadarScan_Map();const RadarSample_t *cloud=RadarScan_Points(&count);assert(count<=32);
+  memcpy(saved_cloud,cloud,count*sizeof(*cloud));RadarMap_Defaults(&p);p.zero_deg=90;
+  p.angle_min_tenths=p.angle_max_tenths=900; /* Live diagnostics cover all 360deg. */
+  assert(!RadarScan_LiveStart(&p,81,RADAR_START_UNKNOWN));
+  for(unsigned fixed=0;fixed<2;fixed++){
+    unsigned sent=tx_count;
+    assert(RadarScan_LiveStart(&p,81,RADAR_START_UPPER));assert(!RadarScan_LiveStart(&p,81,RADAR_START_LOWER));
+    assert(!RadarScan_Start(&p,81) && !RadarScan_DebugStart(&p,81,RADAR_START_LOWER));
+    RadarScan_LiveStatusGet(&live);assert(live.active && live.state==RADAR_LIVE_PREPARING && !live.sequence);
+    assert(live.parameters.lidar_x_mm==2330 && live.parameters.lidar_y_mm==2170 && live.parameters.zero_deg==270);
+    assert(!RadarScan_LiveCopy(points));configured();full_circle(fixed,4);
+    RadarScan_LiveStatusGet(&live);assert(live.active && live.state==RADAR_LIVE_STREAMING && live.sequence==1);
+    assert(live.points==(fixed?12:16) && tx_count==sent+6 && RadarScan_LiveCopy(points));
+    assert(points[0].angle_tenths==0 && points[0].distance_mm==100);
+    if(fixed)assert(points[10].angle_tenths==300 && points[10].distance_mm==100);
+    else assert(points[7].angle_tenths==225 && points[7].distance_mm==100);
+    /* The ending boundary packet starts the next revolution immediately. */
+    measure(fixed,900,4,false);measure(fixed,1800,4,false);measure(fixed,2700,4,false);measure(fixed,0,4,false);
+    RadarScan_LiveStatusGet(&live);assert(live.sequence==2 && tx_count==sent+6);
+    measure(fixed,900,4,true);RadarScan_LiveStatusGet(&live);
+    assert(live.active && live.sequence==2 && live.circle_restarts && live.state==RADAR_LIVE_WAITING);
+    full_circle(fixed,4);RadarScan_LiveStatusGet(&live);assert(live.sequence==3 && tx_count==sent+6);
+    tick+=10001;service();RadarScan_LiveStatusGet(&live);assert(live.active && live.age_ms>=10000);
+    RadarScan_LiveStop();RadarScan_LiveStatusGet(&live);assert(!live.active && live.state==RADAR_LIVE_STOPPED);
+    RadarScan_StatusGet(&after);RadarScan_RawStatusGet(&raw_after);RadarScan_StartStatusGet(&start_after);
+    assert(after.scan_id==saved_status.scan_id && after.map_id==saved_status.map_id && after.points_valid &&
+      after.state==saved_status.state && after.completed_tick==saved_status.completed_tick);
+    assert(raw_after.id==saved_raw.id && raw_after.complete==saved_raw.complete && raw_after.raw.crc32==saved_raw.raw.crc32 && raw_after.cloud_valid);
+    assert(start_after.scan_id==saved_start.scan_id && start_after.result.start_id==saved_start.result.start_id);
+    assert(!memcmp(RadarScan_Map(),&saved_map,sizeof saved_map));
+    cloud=RadarScan_Points(&count);for(unsigned i=0;i<count;i++)assert(cloud[i].angle_tenths==saved_cloud[i].angle_tenths &&
+      cloud[i].distance_mm==saved_cloud[i].distance_mm && cloud[i].energy==saved_cloud[i].energy);
+  }
+  /* Same-bin returns keep the nearest accepted sample's actual raw angle. */
+  assert(RadarScan_LiveStart(&p,82,RADAR_START_LOWER));configured();
+  point_packet(2700,1,0);point_packet(0,1,1000);point_packet(10,1,500);point_packet(20,1,700);
+  point_packet(30,1,0);point_packet(40,1,99);point_packet(50,1,50000);point_packet(60,1,200);
+  point_packet(2700,1,0);point_packet(0,1,0);RadarScan_LiveStatusGet(&live);
+  assert(live.sequence==1 && live.points==2 && RadarScan_LiveCopy(points));
+  assert(points[0].angle_tenths==10 && points[0].distance_mm==500 && points[2].angle_tenths==60 && points[2].distance_mm==200);
+  /* Status unit changes and DMA loss discard just the partial revolution. */
+  {static const uint8_t cm[]={0x53,0x54,0x0e,0,0,0,0x45,0x44};input(cm,sizeof cm);service();}
+  full_circle(false,4);RadarScan_LiveStatusGet(&live);assert(live.unit==RADAR_UNIT_CM && live.sequence==2);
+  assert(RadarScan_LiveCopy(points) && points[0].distance_mm==1000);
+  uint8_t junk[4096];memset(junk,0x21,sizeof junk);for(unsigned i=0;i<3;i++)input(junk,sizeof junk);
+  service();RadarScan_LiveStatusGet(&live);assert(live.active && live.sequence==2 && live.state==RADAR_LIVE_WAITING);
+  full_circle(false,4);RadarScan_LiveStatusGet(&live);assert(live.sequence==3 && live.state==RADAR_LIVE_STREAMING);
+  RadarScan_Stop();RadarScan_LiveStatusGet(&live);RadarScan_StatusGet(&after);
+  assert(!live.active && live.state==RADAR_LIVE_STOPPED && after.state==saved_status.state && after.map_id==saved_status.map_id);
+  p.energy_min=100;assert(RadarScan_LiveStart(&p,83,RADAR_START_LOWER));configured();full_circle(true,4);
+  RadarScan_LiveStatusGet(&live);assert(live.active && live.sequence==1 && !live.points);
+  assert(RadarScan_LiveCopy(points));for(unsigned i=0;i<120;i++)assert(!points[i].distance_mm);
+  RadarScan_LiveStop();
+}
 int main(void)
 {
   RadarScan_Status_t s;RadarUart_Status_t us;RadarMap_Params_t params;
@@ -398,6 +459,6 @@ int main(void)
   assert(RadarScan_StartAuto(&params,25));configured();point_packet(2700,1,0);point_packet(0,1,0);point_packet(859,3,970);
   measure(true,1800,4,true);board_circle(false,false,false);RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
   assert(s.state==RADAR_SCAN_READY && s.circle_restarts && start_status.result.start_id==RADAR_START_UNKNOWN && !start_status.result.qr_counts[1]);
-  test_nominal_manual_start();test_debug_raw();
-  puts("radar_scan: commands, full circle, manual corners, raw CE/CF replay, CRC/window/partial capture, corrupt-frame/unit/DMA recovery, alarms, snapshot retention PASS");return 0;
+  test_nominal_manual_start();test_debug_raw();test_live_cloud();
+  puts("radar_scan: static/raw CE/CF replay, continuous live bins/unit/filter/recovery/history, commands and snapshot retention PASS");return 0;
 }

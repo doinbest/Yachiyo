@@ -24,6 +24,12 @@ static RadarPlan_t Plan;
 static RadarScan_Status_t Scan;
 static RadarScan_StartStatus_t Start;
 static RadarScan_Raw_t Raw;
+static RadarScan_LiveStatus_t Live;
+static RadarLive_Point_t LiveTx[RADAR_LIVE_BINS];
+static uint32_t LiveTxId,LiveTxSequence,LiveFrameTick,LiveStateTick,LiveReportedId;
+static RadarScan_LiveState_t LiveReportedState;
+static unsigned LivePart;
+static bool LiveSending;
 static ChassisLocalization_Status_t Location;
 static ChassisRoute_Status_t Route;
 static uint32_t Session,PlanId,PlanMap,LastBulk,LastStatus,LastNav,ParamsRevision;
@@ -47,6 +53,7 @@ static void refresh(void)
 {
   RadarScan_StatusGet(&Scan);RadarScan_StartStatusGet(&Start);
   RadarScan_RawStatusGet(&Raw);
+  RadarScan_LiveStatusGet(&Live);
   ChassisLocalization_Get(&Location);ChassisRoute_StatusGet(&Route);
 }
 static bool applicable(void)
@@ -55,8 +62,8 @@ static bool applicable(void)
 }
 bool RadarConsole_ScanBusy(void)
 {
-  RadarScan_Status_t s;RadarScan_StatusGet(&s);
-  return s.state==RADAR_SCAN_PREPARING || s.state==RADAR_SCAN_WAIT_WRAP || s.state==RADAR_SCAN_COLLECTING;
+  RadarScan_Status_t s;RadarScan_LiveStatus_t live;RadarScan_StatusGet(&s);RadarScan_LiveStatusGet(&live);
+  return live.active || s.state==RADAR_SCAN_PREPARING || s.state==RADAR_SCAN_WAIT_WRAP || s.state==RADAR_SCAN_COLLECTING;
 }
 static bool actuators_busy(void)
 {
@@ -86,6 +93,33 @@ static bool finish(bool foreground)
 {
   append("}\r\n");if(!FormatOk || Length>256U) {reply(false,"page_size");return false;}
   return foreground?ConsoleTx_Write((const uint8_t*)Line,(uint16_t)Length):ConsoleTx_Bulk(Line,(uint16_t)Length);
+}
+static void live_state_page(void)
+{
+  Length=0;FormatOk=true;
+  append("@RADAR {\"v\":1,\"k\":\"live_state\",\"s\":%lu,\"id\":%lu,\"active\":%s,\"state\":\"%s\",\"reason\":\"%s\",\"q\":%lu,\"pose\":[%.9g,%.9g,%.9g],\"age_ms\":%lu,\"points\":%u",
+    (unsigned long)Session,(unsigned long)Live.id,Live.active?"true":"false",RadarScan_LiveStateName(Live.state),
+    Live.reason?Live.reason:"not_started",(unsigned long)Live.sequence,(double)Live.parameters.lidar_x_mm,
+    (double)Live.parameters.lidar_y_mm,(double)Live.parameters.zero_deg,(unsigned long)Live.age_ms,Live.points);
+  (void)finish(true);LiveReportedId=Live.id;LiveReportedState=Live.state;LiveStateTick=HAL_GetTick();
+}
+static bool live_part(void)
+{
+  static const char alphabet[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  uint8_t bytes[96];unsigned offset=LivePart*24U;
+  for(unsigned i=0;i<24;i++){
+    const RadarLive_Point_t *p=&LiveTx[offset+i];bytes[i*4]=(uint8_t)p->angle_tenths;
+    bytes[i*4+1]=(uint8_t)(p->angle_tenths>>8);bytes[i*4+2]=(uint8_t)p->distance_mm;
+    bytes[i*4+3]=(uint8_t)(p->distance_mm>>8);
+  }
+  Length=0;FormatOk=true;
+  append("@RADAR {\"v\":1,\"k\":\"live\",\"s\":%lu,\"id\":%lu,\"q\":%lu,\"o\":%u,\"n\":120,\"d\":\"",
+    (unsigned long)Session,(unsigned long)LiveTxId,(unsigned long)LiveTxSequence,offset);
+  for(unsigned i=0;i<sizeof bytes;i+=3){
+    uint32_t value=((uint32_t)bytes[i]<<16)|((uint32_t)bytes[i+1]<<8)|bytes[i+2];
+    append("%c%c%c%c",alphabet[value>>18],alphabet[(value>>12)&63U],alphabet[(value>>6)&63U],alphabet[value&63U]);
+  }
+  append("\"");return finish(false);
 }
 static float param_value(unsigned i)
 {
@@ -295,12 +329,14 @@ void RadarConsole_Init(void)
   StartReportedScan=StartReportedMap=0;
   ProbeReportedId=0;ProbeReportedState=RADAR_PROBE_IDLE;
   RawSession=Session;RawReportedId=0;RawReportedState=RADAR_SCAN_IDLE;
+  LiveTxId=LiveTxSequence=LiveReportedId=0;LivePart=0;LiveSending=false;
+  LiveFrameTick=HAL_GetTick()-1000U;LiveStateTick=0;LiveReportedState=RADAR_LIVE_STOPPED;
 }
 void RadarConsole_Process(void)
 {
   uint32_t now=HAL_GetTick();refresh();
   if(RadarConsole_ScanBusy() && (ChassisMotion_IsBusy() || Mecanum_IsBusy() ||
-      CaptureOrigin!=Location.generation)) RadarScan_Stop();
+      CaptureOrigin!=Location.generation)){RadarScan_Stop();refresh();}
   if(Scan.map_valid && Scan.map_id!=SeenMap){SeenMap=Scan.map_id;(void)build_plan();}
   {
     RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
@@ -313,8 +349,18 @@ void RadarConsole_Process(void)
   if(Raw.id && (Raw.id!=RawReportedId || Raw.state!=RawReportedState)){
     (void)raw_page(0,true);RawReportedId=Raw.id;RawReportedState=Raw.state;
   }
+  if(!Live.active)LiveSending=false;
+  if(Live.id && (Live.id!=LiveReportedId || Live.state!=LiveReportedState ||
+      (Live.active && (uint32_t)(now-LiveStateTick)>=2000U)))live_state_page();
   if(!Watching || !ConsoleTx_BulkReady()) return;
   if(Pending){if(!fetch_page()) reply(false,"snapshot_changed_or_page_range");Pending=false;LastBulk=now;return;}
+  if(Live.active){
+    if(!LiveSending && Live.sequence && (Live.id!=LiveTxId || Live.sequence!=LiveTxSequence) &&
+       (uint32_t)(now-LiveFrameTick)>=1000U && RadarScan_LiveCopy(LiveTx)){
+      LiveTxId=Live.id;LiveTxSequence=Live.sequence;LivePart=0;LiveSending=true;LiveFrameTick=now;
+    }
+    if(LiveSending){if(live_part()){LivePart++;if(LivePart==5U)LiveSending=false;}return;}
+  }
   if((uint32_t)(now-LastBulk)<1000U) return;
   if(Route.planned && (uint32_t)(now-LastNav)>=1500U){nav_page(false);LastNav=now;}
   else if((uint32_t)(now-LastStatus)>=2000U){status_page(false);LastStatus=now;}
@@ -335,8 +381,25 @@ bool RadarConsole_Command(unsigned n,char *t[])
   float value;uint32_t id,page;bool ok=false;const char *reason="format";
   if(n<2U || strcmp(t[0],"radar")) return false;
   refresh();Watching=true;
+  if(n==3U && !strcmp(t[1],"live") && !strcmp(t[2],"status")){live_state_page();return true;}
+  if(n==3U && !strcmp(t[1],"live") && !strcmp(t[2],"stop")){
+    RadarScan_LiveStop();LiveSending=false;reply(true,"live_stop_requested");refresh();live_state_page();return true;
+  }
+  if(n==4U && !strcmp(t[1],"live") && !strcmp(t[2],"start") &&
+     (!strcmp(t[3],"upper") || !strcmp(t[3],"lower"))){
+    RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
+    if(p.state==RADAR_PROBE_TX || p.state==RADAR_PROBE_WAITING)reason="query_in_progress";
+    else if(actuators_busy())reason="stationary_capture_required";
+    else {ok=RadarScan_LiveStart(RadarScan_Params(),Location.generation,
+      !strcmp(t[3],"upper")?RADAR_START_UPPER:RADAR_START_LOWER);reason=ok?"live_start_accepted":"scan_busy_or_parameters";}
+    reply(ok,reason);
+    if(ok){CaptureOrigin=Location.generation;LiveSending=false;LiveTxSequence=0;LiveFrameTick=HAL_GetTick()-1000U;
+      refresh();live_state_page();}
+    return true;
+  }
   if(n==2U && !strcmp(t[1],"status")){
     RadarUart_Status_t uart;RadarUart_StatusGet(&uart);
+    RadarScan_Unit_t unit=Live.active?Live.unit:Scan.unit;
     /* Split diagnostics so full uint32 counters and identities fit 256 bytes. */
     status_page(true);begin("diag",0,3);
     append("\"bytes\":%lu,\"packets\":%lu,\"bad\":%lu,\"overflow\":%lu",
@@ -344,7 +407,7 @@ bool RadarConsole_Command(unsigned n,char *t[])
     (void)finish(true);begin("diag",1,3);
     append("\"alarm\":%lu,\"last_alarm\":%u,\"unit\":\"%s\"",
       (unsigned long)Scan.alarm,(unsigned)Scan.last_alarm,
-      Scan.unit==RADAR_UNIT_CM?"cm":Scan.unit==RADAR_UNIT_MM?"mm":"unknown");
+      unit==RADAR_UNIT_CM?"cm":unit==RADAR_UNIT_MM?"mm":"unknown");
     (void)finish(true);begin("diag",2,3);
     append("\"tx_done\":%lu,\"tx_errors\":%lu,\"uart_errors\":%lu,\"rx_ready\":%s,\"last_tx\":\"%s\"",
       (unsigned long)uart.commands_sent,(unsigned long)uart.tx_errors,(unsigned long)uart.uart_errors,
@@ -369,7 +432,8 @@ bool RadarConsole_Command(unsigned n,char *t[])
     RadarStart_Id_t start=!strcmp(t[3],"auto")?RADAR_START_UNKNOWN:
       !strcmp(t[3],"upper")?RADAR_START_UPPER:RADAR_START_LOWER;
     RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
-    if(p.state==RADAR_PROBE_TX || p.state==RADAR_PROBE_WAITING)reason="query_in_progress";
+    if(Live.active)reason="live_in_progress";
+    else if(p.state==RADAR_PROBE_TX || p.state==RADAR_PROBE_WAITING)reason="query_in_progress";
     else if(actuators_busy())reason="stationary_capture_required";
     else {
       ok=RadarScan_DebugStart(RadarScan_Params(),Location.generation,start);
@@ -388,11 +452,15 @@ bool RadarConsole_Command(unsigned n,char *t[])
     else {reply(true,"probe_accepted");probe_pages(false);}
     return true;
   }
-  if(n==2U && !strcmp(t[1],"stop")){RadarScan_Stop();reply(true,"scan_stop_requested");return true;}
+  if(n==2U && !strcmp(t[1],"stop")){
+    bool was_live=Live.active;RadarScan_Stop();reply(true,"scan_stop_requested");
+    if(was_live){LiveSending=false;refresh();live_state_page();}return true;
+  }
   if((n==2U || (n==3U && (!strcmp(t[2],"auto") || !strcmp(t[2],"upper") ||
                           !strcmp(t[2],"lower")))) && !strcmp(t[1],"scan")){
     bool automatic=n==3U && !strcmp(t[2],"auto");
     RadarStart_Id_t start=n==3U && !strcmp(t[2],"upper")?RADAR_START_UPPER:RADAR_START_LOWER;
+    if(Live.active){reply(false,"live_in_progress");return true;}
     RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
     if(p.state==RADAR_PROBE_TX || p.state==RADAR_PROBE_WAITING){reply(false,"query_in_progress");return true;}
     if(actuators_busy()) reason="stationary_capture_required";

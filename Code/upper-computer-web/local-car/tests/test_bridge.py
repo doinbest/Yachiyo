@@ -60,6 +60,29 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_live_radar_stop_has_priority_and_stream_reaches_browser_channel(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.next_command_at = time.monotonic() + .2
+            self.bridge.send('info')
+            self.bridge.send('radar live stop')
+        wait_for(lambda: len(port.writes) == 1)
+        self.assertEqual(port.writes[0][1], b'radar live stop\r\n')
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+            self.bridge.next_command_at = 0
+        self.bridge.send('radar live status')
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertEqual(port.writes[1][1], b'radar live status\r\n')
+        self.assertTrue(self.bridge.stop_latched)
+        with self.assertRaises(ValueError):
+            self.bridge.send('radar live start lower')
+        line = '@RADAR {"v":1,"k":"live","s":13,"id":1,"q":2,"o":0,"n":120,"d":"AAAAAA=="}'
+        for prefix in ('', 'arm> '):
+            original = prefix+line
+            port.rx.put((original+'\r\n').encode())
+            wait_for(lambda: any(e['kind']=='radar' and e.get('text')==original for e in self.bridge.events))
+
     def test_raw_radar_download_is_read_only_but_debug_scan_is_explicit(self):
         port = self.connect()
         with self.bridge.cv:

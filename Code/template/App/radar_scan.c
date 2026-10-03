@@ -22,6 +22,9 @@ static uint32_t seen_bad, seen_loss, parameter_revision, capture_revision;
 static RadarScan_Raw_t debug_snapshot;
 static bool capture_debug;
 static uint32_t incoming_end, debug_bad_start;
+static RadarScan_LiveStatus_t live;
+static RadarLive_Point_t live_work[RADAR_LIVE_BINS],live_latest[RADAR_LIVE_BINS];
+static bool live_collecting;
 
 static bool active(void)
 {
@@ -39,6 +42,11 @@ const char *RadarScan_UnitName(RadarScan_Unit_t unit)
 {
   return unit == RADAR_UNIT_MM ? "mm" : unit == RADAR_UNIT_CM ? "cm" : "unknown_mm";
 }
+const char *RadarScan_LiveStateName(RadarScan_LiveState_t state)
+{
+  static const char *const names[]={"preparing","waiting","streaming","stopped","error"};
+  return (unsigned)state<sizeof names/sizeof names[0]?names[state]:"unknown";
+}
 
 HAL_StatusTypeDef RadarScan_Init(UART_HandleTypeDef *uart)
 {
@@ -49,9 +57,54 @@ HAL_StatusTypeDef RadarScan_Init(UART_HandleTypeDef *uart)
   have_pending = have_previous = false;
   capture_auto=selection_available=false;
   capture_debug=false;memset(&debug_snapshot,0,sizeof debug_snapshot);
+  memset(&live,0,sizeof live);live.state=RADAR_LIVE_STOPPED;live.reason="not_started";
+  live_collecting=false;
   capture_start=RADAR_START_LOWER;
   parameter_revision = capture_revision = 0;
   return RadarUart_Init(uart);
+}
+
+bool RadarScan_LiveStart(const RadarMap_Params_t *params,uint32_t origin_generation,RadarStart_Id_t start_id)
+{
+  RadarUart_Status_t uart_status;uint32_t id=live.id+1U;
+  if(active() || live.active || !RadarMap_ParamsValid(params) ||
+     (start_id!=RADAR_START_UPPER && start_id!=RADAR_START_LOWER))return false;
+  if(!RadarUart_StartScan())return false;
+  memset(&live,0,sizeof live);live.id=id?id:1U;live.parameters=*params;
+  if(start_id==RADAR_START_UPPER){
+    live.parameters.lidar_x_mm=4500.0f-params->lidar_x_mm;
+    live.parameters.lidar_y_mm=2400.0f-params->lidar_y_mm;
+    live.parameters.zero_deg=fmodf(params->zero_deg+180.0f,360.0f);
+    if(live.parameters.zero_deg<0)live.parameters.zero_deg+=360.0f;
+  }
+  live.origin_generation=origin_generation;live.active=true;
+  live.state=RADAR_LIVE_PREPARING;live.reason="configuring";
+  memset(live_work,0,sizeof live_work);memset(live_latest,0,sizeof live_latest);
+  live_collecting=have_previous=have_pending=false;progress=pending_progress=0;
+  RadarUart_StatusGet(&uart_status);seen_bad=uart_status.bad;seen_loss=uart_status.loss_generation;
+  return true;
+}
+void RadarScan_LiveStop(void)
+{
+  if(!live.active)return;
+  live.active=false;live.state=RADAR_LIVE_STOPPED;live.reason="operator_stop";
+  live_collecting=have_previous=have_pending=false;RadarUart_StopScan();
+}
+void RadarScan_LiveStatusGet(RadarScan_LiveStatus_t *out)
+{
+  if(!out)return;
+  *out=live;
+  out->age_ms=live.sequence?HAL_GetTick()-live.completed_tick:0;
+}
+bool RadarScan_LiveCopy(RadarLive_Point_t points[RADAR_LIVE_BINS])
+{
+  if(!points || !live.sequence)return false;
+  memcpy(points,live_latest,sizeof live_latest);return true;
+}
+static void reset_live_circle(const char *reason)
+{
+  memset(live_work,0,sizeof live_work);live_collecting=have_pending=false;
+  progress=pending_progress=0;live.state=RADAR_LIVE_WAITING;live.reason=reason;
 }
 
 static void reset_circle(const char *reason)
@@ -69,7 +122,7 @@ static bool start_capture(const RadarMap_Params_t *params, uint32_t origin_gener
                           bool automatic,RadarStart_Id_t start_id)
 {
   RadarUart_Status_t uart_status;
-  if (active() || !RadarMap_ParamsValid(params)) return false;
+  if (active() || live.active || !RadarMap_ParamsValid(params)) return false;
   if (!RadarUart_StartScan()) return false;
   capture_debug=false;
   capture_parameters = *params; capture_revision = parameter_revision;
@@ -156,7 +209,7 @@ static void publish_map(const RadarMap_t *map,const RadarMap_Params_t *params)
 bool RadarScan_SelectStart(RadarStart_Id_t start_id)
 {
   const RadarMap_t *map;const RadarMap_Params_t *params;
-  if(active() || !selection_available)return false;
+  if(active() || live.active || !selection_available)return false;
   map=RadarStart_Map(&start_candidates,start_id);params=RadarStart_Params(&start_candidates,start_id);
   if(!map || !params)return false;
   publish_map(map,params);start_status.result.start_id=(uint8_t)start_id;
@@ -169,36 +222,65 @@ void RadarScan_StartStatusGet(RadarScan_StartStatus_t *out)
 
 void RadarScan_Stop(void)
 {
+  if(live.active){RadarScan_LiveStop();return;}
   if (active()) status.elapsed_ms = HAL_GetTick() - start_tick;
   have_pending = have_previous = false;
   status.state = RADAR_SCAN_STOPPED; status.reason = "operator_stop";
   finish_debug(false);RadarUart_StopScan();
 }
 
+static bool packet_sample(const LdsPacket_t *packet,uint16_t span,uint32_t packet_progress,
+                          uint16_t i,RadarScan_Unit_t unit,RadarSample_t *sample,uint32_t *overflows)
+{
+  uint32_t offset, distance;
+  /* Preserve the proven CF sector/(N-1) and CE next-start span/N convention. */
+  offset=packet->fixed?(packet->count>1U?(uint32_t)span*i/(packet->count-1U):0U):(uint32_t)span*i/packet->count;
+  if(packet_progress+offset>=3600U)return false;
+  distance=packet->points[i].distance;if(unit==RADAR_UNIT_CM)distance*=10U;
+  if(distance>65535U){(*overflows)++;distance=0;}
+  sample->angle_tenths=(uint16_t)((packet->start_angle_tenths+offset)%3600U);
+  sample->distance_mm=(uint16_t)distance;sample->energy=packet->points[i].energy;return true;
+}
 static void add_packet(const LdsPacket_t *packet, uint16_t span, uint32_t packet_progress)
 {
-  uint16_t i, angle;
-  uint32_t offset, distance;
+  uint16_t i;
   RadarSample_t sample;
   for (i = 0; i < packet->count; i++) {
-    /* CF FA uses the user's proven F1 sector/(N-1) convention. Its exact
-     * endpoint convention remains a radar/manual verification item. CE FA
-     * spans the next packet start, so divides that span by N. */
-    offset = packet->fixed ? (packet->count > 1U ? (uint32_t)span * i / (packet->count - 1U) : 0U)
-                           : (uint32_t)span * i / packet->count;
-    if (packet_progress + offset >= 3600U) break;
-    angle = (uint16_t)((packet->start_angle_tenths + offset) % 3600U);
-    distance = packet->points[i].distance;
-    if (status.unit == RADAR_UNIT_CM) distance *= 10U;
-    if (distance > 65535U) { status.unit_overflows++; distance = 0; }
-    sample.angle_tenths = angle; sample.distance_mm = (uint16_t)distance;
-    sample.energy = packet->points[i].energy;
+    if(!packet_sample(packet,span,packet_progress,i,status.unit,&sample,&status.unit_overflows))break;
     status.raw_points++;
     if(capture_auto)RadarStart_Add(&start_candidates,&sample);
     else RadarMap_Add(&working_map, &capture_parameters, &sample);
     if (status.point_count < RADAR_SCAN_POINT_CAPACITY) cloud[status.point_count++] = sample;
     else status.truncated = true;
   }
+}
+static void add_live_packet(const LdsPacket_t *packet,uint16_t span,uint32_t packet_progress)
+{
+  RadarSample_t sample;uint16_t i,bin;const RadarMap_Params_t *p=&live.parameters;
+  for(i=0;i<packet->count;i++){
+    if(!packet_sample(packet,span,packet_progress,i,live.unit,&sample,&live.unit_overflows))break;
+    /* A diagnostic cloud covers all angles and the entire physical scene,
+     * including walls outside the map. Only range/energy acceptance applies. */
+    if(!sample.distance_mm || sample.distance_mm<p->distance_min_mm || sample.distance_mm>p->distance_max_mm ||
+       sample.energy<p->energy_min || sample.energy>p->energy_max)continue;
+    bin=(uint16_t)(sample.angle_tenths/(3600U/RADAR_LIVE_BINS));
+    if(!live_work[bin].distance_mm || sample.distance_mm<live_work[bin].distance_mm){
+      live_work[bin].angle_tenths=sample.angle_tenths;live_work[bin].distance_mm=sample.distance_mm;
+    }
+  }
+}
+static void add_current_packet(const LdsPacket_t *packet,uint16_t span,uint32_t packet_progress)
+{
+  if(live.active)add_live_packet(packet,span,packet_progress);
+  else add_packet(packet,span,packet_progress);
+}
+static void publish_live(void)
+{
+  memcpy(live_latest,live_work,sizeof live_latest);live.points=0;
+  for(unsigned i=0;i<RADAR_LIVE_BINS;i++)if(live_latest[i].distance_mm)live.points++;
+  live.sequence++;if(!live.sequence)live.sequence=1U;
+  live.completed_tick=HAL_GetTick();live.state=RADAR_LIVE_STREAMING;live.reason="complete";
+  memset(live_work,0,sizeof live_work);progress=pending_progress=0;have_pending=false;
 }
 
 static void publish(void)
@@ -241,27 +323,29 @@ static void measurement(const LdsPacket_t *packet)
   if (!have_previous) { previous_start = start; have_previous = true; return; }
   if (start == previous_start) return; /* a duplicate packet cannot advance a circle */
   if (start < previous_start && !wrapped) {
-    if (status.state == RADAR_SCAN_COLLECTING) { status.circle_restarts++; reset_circle("angle_resync"); }
+    if(live.active){if(live_collecting){live.circle_restarts++;reset_live_circle("angle_resync");}}
+    else if (status.state == RADAR_SCAN_COLLECTING) { status.circle_restarts++; reset_circle("angle_resync"); }
     previous_start = start; have_pending = false; return;
   }
   delta = (uint16_t)((start + 3600U - previous_start) % 3600U);
-  if (status.state == RADAR_SCAN_WAIT_WRAP) {
+  if (live.active?!live_collecting:status.state==RADAR_SCAN_WAIT_WRAP) {
     previous_start = start;
     if (!wrapped) return;
-    reset_circle("collecting"); status.state = RADAR_SCAN_COLLECTING;
+    if(live.active){reset_live_circle("collecting");live_collecting=true;}
+    else {reset_circle("collecting");status.state=RADAR_SCAN_COLLECTING;}
     if(capture_debug){
       uint32_t frame_bytes=(packet->fixed?10U:8U)+3U*packet->count;
       debug_snapshot.circle_start=incoming_end-frame_bytes-debug_snapshot.raw.first_position;
     }
   } else {
-    if (have_pending) add_packet(&pending_packet, delta, pending_progress);
+    if (have_pending) add_current_packet(&pending_packet, delta, pending_progress);
     progress += delta;
-    status.coverage_tenths = (uint16_t)(progress < 3600U ? progress : 3600U);
+    if(!live.active)status.coverage_tenths=(uint16_t)(progress<3600U?progress:3600U);
     previous_start = start;
-    if (progress >= 3600U) { publish(); return; }
+    if(progress>=3600U){if(live.active)publish_live();else {publish();return;}}
   }
   if (packet->fixed) {
-    add_packet(packet, packet->sector_angle_tenths, progress); have_pending = false;
+    add_current_packet(packet, packet->sector_angle_tenths, progress); have_pending = false;
   } else {
     pending_packet = *packet; pending_progress = progress; have_pending = true;
   }
@@ -269,6 +353,17 @@ static void measurement(const LdsPacket_t *packet)
 
 static void accept_event(const LdsEvent_t *event)
 {
+  if(live.active){
+    if(event->kind==LDS_EVENT_STATUS){
+      RadarScan_Unit_t next=(event->data.status_flags&1U)?RADAR_UNIT_MM:RADAR_UNIT_CM;
+      bool changed=(live.unit==RADAR_UNIT_CM)!=(next==RADAR_UNIT_CM);live.unit=next;
+      if(changed){live.unit_changes++;live.circle_restarts++;
+        if(live.state!=RADAR_LIVE_PREPARING)reset_live_circle("unit_changed");
+        have_previous=have_pending=false;}
+    }else if(event->kind==LDS_EVENT_MEASUREMENT && live.state!=RADAR_LIVE_PREPARING)
+      measurement(&event->data.packet);
+    return;
+  }
   if (!active()) return;
   if (event->kind == LDS_EVENT_STATUS) {
     RadarScan_Unit_t next = (event->data.status_flags & 1U) ? RADAR_UNIT_MM : RADAR_UNIT_CM;
@@ -285,6 +380,12 @@ static void accept_event(const LdsEvent_t *event)
 
 static void check_stream(const RadarUart_Status_t *uart_status)
 {
+  if(live.active && (seen_bad!=uart_status->bad || seen_loss!=uart_status->loss_generation)){
+    if(live.state!=RADAR_LIVE_PREPARING){
+      live.circle_restarts++;reset_live_circle(uart_status->loss_generation!=seen_loss?"rx_resync":"frame_resync");
+      have_previous=false;
+    }
+  }
   if (active() && (seen_bad != uart_status->bad || seen_loss != uart_status->loss_generation)) {
     if (status.state != RADAR_SCAN_PREPARING) {
       status.circle_restarts++; reset_circle(uart_status->loss_generation != seen_loss ? "rx_resync" : "frame_resync");
@@ -303,7 +404,14 @@ void RadarScan_Process(void)
   if (status.state == RADAR_SCAN_PREPARING && uart_status.configured) {
     reset_circle("waiting_wrap"); have_previous = false;
   }
+  if(live.active && live.state==RADAR_LIVE_PREPARING && uart_status.configured){
+    reset_live_circle("waiting_wrap");have_previous=false;
+  }
   while (RadarUart_ReadEventAt(&incoming,&incoming_end)) accept_event(&incoming);
+  if(live.active && uart_status.command_failed){
+    live.active=false;live.state=RADAR_LIVE_ERROR;live.reason="command_failed";
+    live_collecting=have_pending=have_previous=false;RadarUart_StopScan();
+  }
   if (active()) {
     status.elapsed_ms = HAL_GetTick() - start_tick;
     if (uart_status.command_failed || status.elapsed_ms >= RADAR_SCAN_TIMEOUT_MS) {

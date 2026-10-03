@@ -5,8 +5,9 @@ import vm from 'node:vm';
 import {RadarModel,RadarExchange,parseRadar,radarStateText,radarReasonText} from '../radar-model.mjs';
 import {moduleForWire} from '../protocol.mjs';
 import {chineseTerminalLine} from '../terminal-format.mjs';
-import {readOnlyCommand} from '../bridge.mjs';
+import {readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
 import {radarProbeText} from '../radar-format.mjs';
+import {RadarLiveModel} from '../radar-live.mjs';
 
 const identity={v:1,session:13,origin:0,scan:0,map:0,plan:0,page:0,pages:1};
 const statusFrame={...identity,k:'status',state:'error',reason:'scan_timeout',elapsed:10000,applicable:false,points_valid:false};
@@ -48,11 +49,16 @@ test('global stop cancels an active radar page read before waiting for the stop 
   assert.deepEqual(wires,['radar fetch cloud 3 0']);finishStop();assert.equal(await stopping,true);
   assert.equal(elements.get('attempt-wire').textContent,'chassis stop');
 });
-const receiveSource=app.slice(app.indexOf('function receive(line){'),app.indexOf('\nfunction connection('));
+const receiveSource=app.slice(app.indexOf('function receiveRadarLiveState(frame){'),app.indexOf('\nfunction connection('));
 function receiver(raw=false){
   const model=new RadarModel();model.connection(true);
+  const live=new RadarLiveModel();live.connection(true);
   const logs=[],elements=new Map(),context={
-    radarModel:model,radarView:{receive:line=>model.accept(line)},savedRadarSnapshot:null,
+    radarModel:model,radarView:{receive:line=>{
+      const before=live.state;
+      if(live.accept(line)){if(before!==live.state)context.receiveRadarLiveState(live.state);return true;}
+      return model.accept(line);
+    }},savedRadarSnapshot:null,
     localStorage:{setItem(){}},parseRadar,radarStateText,radarReasonText,radarProbeText,
     status:new Map(),bridge:{connected:true},routeLocked:false,
     $:id=>{if(!elements.has(id))elements.set(id,{textContent:''});return elements.get(id);},
@@ -61,8 +67,37 @@ function receiver(raw=false){
     wheelView:null,mapView:null,qrView:null,prepView:null,moduleForWire
   };
   vm.createContext(context);vm.runInContext(receiveSource,context);
-  return {receive:context.receive,model,logs,elements};
+  return {receive:context.receive,model,live,logs,elements,status:context.status};
 }
+
+test('live state updates the main summary while compact pages stay silent in both terminal modes',()=>{
+  for(const raw of [false,true]){
+    const ui=receiver(raw),state={v:1,k:'live_state',s:13,id:2,q:1,active:true,state:'streaming',reason:'complete',pose:[2170,230,180],age_ms:0,points:120};
+    ui.receive('arm> '+wire(state));
+    assert.match(ui.elements.get('map-recent-result').textContent,/实时点云.*实时更新.*圈 1.*120 点/);
+    assert.equal(ui.status.get('map').live,true);assert.equal(ui.model.identity,null);
+    ui.receive('arm> arm> '+wire({v:1,k:'live',s:13,id:2,q:2,o:0,n:120,d:Buffer.alloc(96).toString('base64')}));
+    assert.equal(ui.live.preview.received,24);assert.equal(ui.logs.length,0);
+    ui.receive(wire({...state,active:false,state:'stopped',reason:'operator_stop'}));
+    assert.match(ui.elements.get('map-recent-result').textContent,/实时点云.*已停止.*人工停止/);assert.equal(ui.logs.length,0);
+  }
+});
+
+test('live command replies translate their actual acceptance and stop scope',()=>{
+  assert.match(chineseTerminalLine('OK radar live_start_accepted'),/实时采集已受理/);
+  assert.match(chineseTerminalLine('OK radar live_stop_requested'),/已请求停止实时采集/);
+  assert.match(chineseTerminalLine('ERR radar live_in_progress'),/实时采集中.*停止实时点云/);
+});
+
+test('live stop remains available during preparation, queued writes and parameter batches',()=>{
+  const preparationSource=app.slice(app.indexOf('const preparationStop='),app.indexOf('\nasync function requestStop('));
+  const controlSource=app.slice(app.indexOf('function canSend(wire){'),app.indexOf('\nfunction updateControls('));
+  const context={readOnlyCommand,scopedStopCommand,routeLocked:false,bridge:{connected:true,disconnecting:false},
+    applyingGrabPreset:false,parameterBusy:true,sending:true,stopped:()=>true,prepView:{busy:true,pending:true}};
+  vm.createContext(context);vm.runInContext(preparationSource+'\n'+controlSource,context);
+  assert.equal(context.canSend('radar live stop'),true);
+  assert.equal(context.canSend('radar live start lower'),false);
+});
 
 test('diagnostics reach terminal history while downloaded cloud pages stay separate',()=>{
   const ui=receiver();ui.receive(wire(diagFrame));

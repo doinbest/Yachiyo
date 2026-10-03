@@ -3,7 +3,8 @@ const REASONS={idle:'等待操作',none:'无',configuring:'正在配置雷达',o
 export const radarStateText=value=>STATES[value]??value??'—';
 const PROBE_REASONS={not_run:'尚未执行通信验证',probe_accepted:'序列号查询已受理，等待发送及雷达回复',probe_busy_or_uart:'雷达串口正忙或尚未初始化，请等当前命令结束',query_in_progress:'正在验证通信，请等查询结束再扫描',query_sending:'发送 LUUIDH 序列号查询',query_waiting:'等待 PRODUCT SN 身份回复',sn_reply:'已收到序列号回复',alarm_only:'只收到报警，查询应答未确认',reply_unknown:'收到数据，但未确认完整身份回复',no_reply:'查询窗口内没有收到数据',tx_busy:'USART2 持续忙，查询未发出',tx_timeout:'USART2 发送完成超时',tx_error:'USART2 拒绝发送查询'};
 const START_REASONS={start_ambiguous:'上下起点都缺少明确区分，请人工选择',start_both_conflict:'上下候选区域都有冲突，请人工选择',start_unresolved:'起点尚未确定，请人工选择',upper_start_plan_only:'上起点仅支持建图与规划，暂不执行实车路线',start_selected:'起点已选择，已复用本圈建图与规划',start_selection_unavailable:'尚无可复用的自动扫描完整圈，请先扫描',clear_regions:'必空区域条件唯一匹配',ambiguous:'上下候选无法区分，请人工选择',both_conflict:'上下候选区域都有冲突，请人工选择',manual_selection:'人工选择起点',manual_reference:'当前下起点参考'};
-export const radarReasonText=value=>START_REASONS[value]??PROBE_REASONS[value]??REASONS[value]??value??'—';
+const LIVE_REASONS={not_started:'尚未开启实时采集',live_start_accepted:'实时采集已受理',live_stop_requested:'已请求停止实时采集',live_in_progress:'实时采集中，请先停止实时点云'};
+export const radarReasonText=value=>LIVE_REASONS[value]??START_REASONS[value]??PROBE_REASONS[value]??REASONS[value]??value??'—';
 export function radarStartText(start,{pending=false,historical=false}={}){
   if(pending)return '起点结果：扫描中，等待本圈识别结果';
   if(!start)return '起点结果：尚未读取';

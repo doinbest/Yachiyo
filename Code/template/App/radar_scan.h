@@ -1,5 +1,5 @@
 /** @file radar_scan.h
- * @brief One stationary LDS50C rotation; published maps survive cancellation.
+ * @brief Static LDS50C maps and continuous clouds with independent history.
  */
 #ifndef RADAR_SCAN_H
 #define RADAR_SCAN_H
@@ -7,11 +7,42 @@
 #include "radar_start.h"
 #define RADAR_SCAN_POINT_CAPACITY 4096U
 #define RADAR_SCAN_TIMEOUT_MS 10000U
+#define RADAR_LIVE_BINS 120U
+typedef enum { RADAR_UNIT_UNKNOWN, RADAR_UNIT_MM, RADAR_UNIT_CM } RadarScan_Unit_t;
+
+/** @brief One retained return per 3deg bin; zero distance means empty.
+ * Angles are the actual raw tenths of a degree, distances normalized to mm. */
+typedef struct { uint16_t angle_tenths, distance_mm; } RadarLive_Point_t;
+typedef enum {
+  RADAR_LIVE_PREPARING, RADAR_LIVE_WAITING, RADAR_LIVE_STREAMING,
+  RADAR_LIVE_STOPPED, RADAR_LIVE_ERROR
+} RadarScan_LiveState_t;
+typedef struct {
+  RadarMap_Params_t parameters;
+  RadarScan_LiveState_t state;
+  RadarScan_Unit_t unit;
+  const char *reason;
+  uint32_t id, sequence, origin_generation, completed_tick, age_ms;
+  uint32_t circle_restarts, unit_changes, unit_overflows;
+  uint16_t points;
+  bool active;
+} RadarScan_LiveStatus_t;
+/** @brief Start continuous nominal-corner point clouds without building maps.
+ * Covers all raw angles; applies frozen distance/energy filters, nearest per bin.
+ * @return false during a static/live capture or for an invalid corner/reference. */
+bool RadarScan_LiveStart(const RadarMap_Params_t *lower_reference,
+                         uint32_t origin_generation, RadarStart_Id_t start_id);
+/** @brief Stop live only; preserves static map/cloud/raw and last live circle. */
+void RadarScan_LiveStop(void);
+void RadarScan_LiveStatusGet(RadarScan_LiveStatus_t *status);
+/** @brief Copy the latest complete 120-bin cloud into a TX-owned frozen buffer.
+ * Returns false until one complete revolution; callable from the main loop. */
+bool RadarScan_LiveCopy(RadarLive_Point_t points[RADAR_LIVE_BINS]);
+const char *RadarScan_LiveStateName(RadarScan_LiveState_t state);
 typedef enum {
   RADAR_SCAN_IDLE, RADAR_SCAN_PREPARING, RADAR_SCAN_WAIT_WRAP, RADAR_SCAN_COLLECTING,
   RADAR_SCAN_READY, RADAR_SCAN_STOPPED, RADAR_SCAN_ERROR
 } RadarScan_State_t;
-typedef enum { RADAR_UNIT_UNKNOWN, RADAR_UNIT_MM, RADAR_UNIT_CM } RadarScan_Unit_t;
 typedef struct {
   RadarScan_State_t state;
   const char *reason;

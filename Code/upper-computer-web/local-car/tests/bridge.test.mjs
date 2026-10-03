@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {BridgeLink,readOnlyCommand} from '../bridge.mjs';
+import {BridgeLink,readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
+test('live radar status is readable and live stop bypasses a stop latch without enabling motion',async()=>{
+  assert.equal(readOnlyCommand('radar live status'),true);
+  assert.equal(scopedStopCommand('radar live stop'),true);
+  for(const command of ['radar live start lower','radar live start upper','radar live status extra'])assert.equal(readOnlyCommand(command),false);
+  const f=fixture();f.setStatus({stop_latched:true});await f.bridge.attach();
+  for(const command of ['radar live status','radar live stop']){
+    const sent=f.bridge.send(command);await new Promise(setImmediate);
+    const count=f.requests.filter(r=>r.url==='/api/send').length;
+    f.bridge.deliver({id:15+count,kind:'tx',request_id:count,text:command});await sent;
+  }
+  assert.equal(f.bridge.stopLatched,true);
+  await assert.rejects(f.bridge.send('radar live start lower'),/停止/);
+});
 test('raw radar downloads and debug status remain readable while scans stay explicit',async()=>{
   for(const wire of ['radar debug status','radar fetch raw 1 0'])assert.equal(readOnlyCommand(wire),true);
   for(const wire of ['radar debug scan lower','radar debug scan upper','radar debug scan auto','radar debug status extra'])assert.equal(readOnlyCommand(wire),false);

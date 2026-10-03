@@ -11,6 +11,7 @@ function surface(){
     prepend(...children){this.children.unshift(...children);}
     replaceChildren(...children){this.children=children;}
     setAttribute(k,v){this.attributes[k]=String(v);}
+    removeAttribute(k){delete this.attributes[k];}
     addEventListener(k,fn){this.events[k]=fn;}
     dispatchEvent(event){this.events[event.type]?.(event);return !event.defaultPrevented;}
     click(){this.onclick?.();}
@@ -83,6 +84,82 @@ function liveWorkspace(ui,{respond=true,canSend=()=>true}={}){
 
 const headingChoices=ui=>ui.get('radar-heading-options').children.filter(child=>child.dataset.worldAngle!==undefined);
 const chooseHeading=(ui,angle)=>headingChoices(ui).find(child=>Number(child.dataset.worldAngle)===angle).onclick();
+
+const liveState=(extra={})=>'@RADAR '+JSON.stringify({v:1,k:'live_state',s:9,id:2,q:0,active:true,state:'waiting',reason:'none',pose:[2170,230,180],age_ms:0,points:0,...extra});
+const livePart=(q,o)=>{
+  const bytes=new Uint8Array(96),view=new DataView(bytes.buffer);for(let i=0;i<24;i++){view.setUint16(i*4,(o+i)*30,true);view.setUint16(i*4+2,1000,true);}
+  return '@RADAR '+JSON.stringify({v:1,k:'live',s:9,id:2,q,o,n:120,d:Buffer.from(bytes).toString('base64')});
+};
+
+test('live start and stop are explicit selected-corner commands; views and navigation send nothing',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);try{
+    assert.equal(ui.get('radar-live-start').disabled,true);assert.deepEqual(h.wires,[]);
+    ui.get('radar-select-upper').onclick();ui.get('radar-live-start').onclick();await flush();assert.deepEqual(h.wires,['radar live start upper']);
+    h.workspace.receive(liveState({pose:[2330,2170,270]}));
+    ui.get('radar-live-view').value='center';ui.get('radar-live-view').onchange();ui.get('radar-live-range').value='8000';ui.get('radar-live-range').onchange();
+    h.workspace.selectTab('offline');h.workspace.selectTab('radar');
+    assert.equal(Object.hasOwn(ui.get('field-map').attributes,'hidden'),true);assert.equal(Object.hasOwn(ui.get('radar-live-map').attributes,'hidden'),false);assert.equal(ui.get('radar-live-map').attributes.viewBox,'-8640 -8640 17280 17280');
+    assert.match(ui.get('radar-live-center-heading').attributes.transform,/rotate\(270\)/);assert.deepEqual(h.wires,['radar live start upper']);
+    ui.get('radar-live-stop').onclick();await flush();assert.deepEqual(h.wires,['radar live start upper','radar live stop']);
+    h.workspace.connection(false);h.workspace.connection(true);assert.equal(h.wires.length,2);
+  }finally{await h.close();}
+});
+
+test('SVG live view switches actual hidden attributes and renders ring labels and world axis text',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);try{
+    h.workspace.receive(liveState());
+    ui.get('radar-live-view').value='center';ui.get('radar-live-view').onchange();
+    assert.equal(Object.hasOwn(ui.get('field-map').attributes,'hidden'),true);
+    assert.equal(Object.hasOwn(ui.get('radar-live-map').attributes,'hidden'),false);
+    assert.deepEqual(ui.get('radar-live-center-grid').children.filter(child=>child.tag==='text').map(child=>child.textContent),['1 m','2 m','3 m','4 m','+X','+Y','0°']);
+    ui.get('radar-live-view').value='field';ui.get('radar-live-view').onchange();
+    assert.equal(Object.hasOwn(ui.get('field-map').attributes,'hidden'),false);
+    assert.equal(Object.hasOwn(ui.get('radar-live-map').attributes,'hidden'),true);
+    assert.deepEqual(h.wires,[]);
+  }finally{await h.close();}
+});
+
+test('live increments a separate preview and complete layer without replacing static map or fetching it',async()=>{
+  const ui=surface(),h=liveWorkspace(ui),map={k:'map',session:9,origin:2,scan:3,map:7,plan:8,mask:0x50140,counts:Array(25).fill(0),pose:[2170,230,180]};
+  try{
+    h.model.snapshots.map=map;h.workspace.receive(liveState());
+    h.workspace.receive(livePart(1,0));assert.equal(ui.get('radar-live-points').children.length,24);assert.match(ui.get('radar-live-status').textContent,/预览.*24\/120/);
+    for(const offset of [24,48,72,96])h.workspace.receive(livePart(1,offset));
+    assert.equal(ui.get('radar-live-points').children.length,120);assert.equal(ui.get('radar-live-center-points').children.length,120);
+    assert.equal(h.model.snapshots.map,map);assert.deepEqual(h.wires,[]);assert.match(ui.get('radar-live-status').textContent,/完整.*120.*点/);
+    h.workspace.receive(livePart(2,0));assert.equal(ui.get('radar-live-points').children.length,120);assert.equal(ui.get('radar-live-center-points').children.length,120);assert.match(ui.get('radar-live-status').textContent,/接收下一圈 24\/120/);
+    for(const offset of [24,48,72,96])h.workspace.receive(livePart(2,offset));assert.equal(ui.get('radar-live-points').children.length,120);assert.match(ui.get('radar-live-status').textContent,/圈 2/);
+    h.workspace.connection(false);assert.match(ui.get('radar-live-status').textContent,/历史/);assert.equal(ui.get('radar-live-points').children.length,120);
+  }finally{await h.close();}
+});
+
+test('live state publishes one parsed compact callback and immediately refreshes action availability',async()=>{
+  const ui=surface(),model=new RadarModel(),states=[],wires=[],exchange=new RadarExchange({send:async()=>true});
+  try{
+    const workspace=mountRadarWorkspace({model,exchange,send:async wire=>{wires.push(wire);return true;},canSend:()=>true,mapView:{setSource(){}},api:async()=>({}),onLiveState:state=>states.push(state)});
+    workspace.connection(true);ui.get('radar-select-lower').onclick();assert.equal(ui.get('radar-scan-selected').disabled,false);
+    workspace.receive(liveState());assert.equal(states.length,1);assert.equal(states[0].s,9);assert.equal(ui.get('radar-scan-selected').disabled,true);
+    workspace.receive(livePart(1,0));assert.equal(states.length,1);
+    workspace.receive(liveState({active:false,state:'stopped'}));assert.equal(states.length,2);assert.equal(ui.get('radar-scan-selected').disabled,false);
+    assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+
+test('prefixed live-start rejection releases the pending UI and keeps the selected corner',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);try{
+    ui.get('radar-select-lower').onclick();ui.get('radar-live-start').onclick();await flush();assert.equal(ui.get('radar-live-start').disabled,true);
+    h.workspace.receive('arm> ERR radar stationary_capture_required');
+    assert.equal(ui.get('radar-live-start').disabled,false);assert.equal(ui.get('radar-select-lower').attributes['aria-pressed'],'true');
+    assert.match(ui.get('radar-live-status').textContent,/未受理/);assert.deepEqual(h.wires,['radar live start lower']);
+  }finally{await h.close();}
+});
+
+test('full diagnostic cloud displays every valid downloaded point rather than resampling to 360',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);try{
+    h.model.snapshots.cloud={k:'cloud',session:9,origin:2,scan:3,map:7,plan:8,receivedAt:Date.now(),points:Array.from({length:1534},(_,i)=>[i%3600,500+i,1]),pose:[2170,230,180]};
+    ui.get('radar-show-points').checked=true;h.workspace.render();assert.equal(ui.get('radar-cloud').children.length,1534);
+  }finally{await h.close();}
+});
 
 test('fixed obstacle cells and newly scanned cells have visibly different map colors',async()=>{
   const ui=surface(),h=liveWorkspace(ui);try{

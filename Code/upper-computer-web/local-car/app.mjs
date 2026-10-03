@@ -43,11 +43,16 @@ function appendLog(direction,text){
 function renderLogsNow(){if(active==='map'&&!document.querySelector('.desk').classList.contains('logs-open'))return;const scroll=$('terminal').scrollTop;const scope=$('log-module').value;const visible=visibleTerminalLogs(logs,$('quiet-grab-log').checked,chineseLogs());const hidden=logs.length-visible.length;$('grab-log-hidden').hidden=!hidden;$('grab-log-hidden').textContent=`已隐藏 ${hidden} 条重复报告或回显`;const entries=visible.filter(l=>(filter==='ALL'||l.direction===filter)&&(scope==='all'||l.owner===(scope==='current'?active:scope)||l.direction==='SYS'));const fragment=document.createDocumentFragment();for(const l of entries){const row=node('div',undefined,`log-entry ${l.direction.toLowerCase()} ${replyIsFault(l.text)?'error':''}`);row.append(node('time',l.time),node('b',l.direction),node('span',l.direction==='RX'?displayReply(l.text):l.text));fragment.append(row);}if(!entries.length)fragment.append(node('p','本模块尚无收发记录，可切换“全部模块”查看。','empty-log'));$('terminal').replaceChildren(fragment);$('log-count').textContent=`${logs.length}${errors?' · 错误 '+errors:''}`;$('tx-count').textContent=txCount;$('rx-count').textContent=rxCount;$('terminal').scrollTop=$('autoscroll').checked?$('terminal').scrollHeight:scroll;$('new-logs').hidden=!unseen;$('new-logs').textContent=`${unseen} 条新记录 · 恢复跟随`;}
 let routeLocked=false,bootStage='';
 let connectionState='disconnected',lastStopEvent=null;
+function receiveRadarLiveState(frame){
+  const phase=({preparing:'配置中',waiting:'等待完整圈',streaming:'实时更新',stopped:'已停止',error:'采集失败'})[frame.state];
+  const text=`实时点云 · ${phase} · ${radarReasonText(frame.reason)} · 圈 ${frame.q} · ${frame.points} 点`;
+  $('map-recent-result').textContent=text;status.set('map',{line:text,time:Date.now(),live:bridge.connected});renderStatus();updateControls();
+}
 function receive(line){
   radarView?.receive(line);
   const snapshot=Object.values(radarModel.snapshots).map(s=>s.receivedAt).join(':');if(snapshot!==savedRadarSnapshot){savedRadarSnapshot=snapshot;try{localStorage.setItem('local-car-radar-snapshots',JSON.stringify({snapshots:radarModel.snapshots,params:radarModel.params}));}catch{}}
   const frame=parseRadar(line);
-  if(frame||line.startsWith('@RADAR ')){
+  if(frame||line.trim().replace(/^(?:arm>\s*)+/,'').startsWith('@RADAR ')){
     if(frame?.k==='params')paramsView?.refreshRadarParameters();
     if(frame&&['status','nav'].includes(frame.k)){
       const text=`雷达 ${frame.k} · ${radarStateText(frame.state)} · ${radarReasonText(frame.reason)} · 地图 ${frame.map} / 路径 ${frame.plan}`;
@@ -83,7 +88,7 @@ function communicationError(error){appendLog('SYS',`通信异常：${error.messa
 function stopped(){return bridge.stopLatched;}
 function bridgeEvent(e){if(e.kind==='preparation'&&e.active===false&&e.owner===bridge.preparationOwner&&prepView?.busy)prepView.cancel('共享准备锁定已结束，请重新准备。');if(e.kind==='tx'&&!/^radar fetch /.test(e.text))appendLog('TX',e.text);if(e.kind==='system')appendLog('SYS',e.text||e.error||'本地服务状态变化');if(e.kind==='stop'){if(e.latched)paramsView?.cancel('停止操作已取消参数批次；已读值和草稿保留。');if(e.latched)prepView?.cancel('停止已锁定，准备已取消；解除锁定后也不会自动继续。');lastStopEvent=e;$('stop-status').textContent=describeStopEvent(e,bridge.connected,bridge.disconnecting);$('resume-stop').hidden=!e.latched;updateControls();prepView?.refreshConfiguration();}}
 const bridge=new BridgeLink({receive,state:connection,error:communicationError,event:bridgeEvent,configuration:()=>prepView?.refreshConfiguration()});
-const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|vision stop|material stop|grab stop)$/.test(wire);
+const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|radar live stop|vision stop|material stop|grab stop)$/.test(wire);
 function mayQuery(wire){return readOnlyCommand(wire)&&(!prepView?.busy||!prepView.pending);}
 async function requestStop(){presetCancelled=true;radarExchange.cancel('停止操作已取消雷达读取，保留已完成快照');paramsView?.cancel('停止操作已取消参数核对。');attempts.supersede();$('attempt-wire').textContent='chassis stop';$('attempt-status').textContent='请求停车 · 确认见底部状态';$('latest-command').dataset.state='pending';appendLog('SYS','请求停车 → chassis stop');prepView?.cancel('已中止准备并请求停车；请查看停止状态。');try{await bridge.stop();return true;}catch(error){communicationError(error);return false;}}
 function showAttempt({wire,state,current}) {
@@ -290,7 +295,7 @@ $('log-filters').onclick=e=>{const b=e.target.closest('[data-filter]');if(!b)ret
 $('export-log').onclick=()=>{const content=logs.map(l=>`[${l.time}] ${l.direction} ${l.text}`).join('\r\n');const url=URL.createObjectURL(new Blob(['\ufeff'+content],{type:'text/plain;charset=utf-8'}));const a=node('a');a.href=url;a.download=`yachiyo-${Date.now()}.txt`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 function applyTheme(){const theme=prefs.theme==='black'||(prefs.theme===undefined&&prefs.dark===false)?'black':'blue';document.body.classList.add('dark');document.body.dataset.theme=theme;$('theme-toggle').textContent=theme==='blue'?'◐ 切换黑色':'◐ 切换蓝色';$('theme-toggle').title=`当前为${theme==='blue'?'蓝色':'黑色'}背景`;}
 $('theme-toggle').onclick=()=>{prefs.theme=document.body.dataset.theme==='blue'?'black':'blue';prefs.dark=true;save();applyTheme();};
-applyTheme();buildPages();mapView=mountMap({send,isPreparing:()=>!!prepView?.busy||stopped(),onStatus:text=>$('subscription-note').textContent=text});radarView=mountRadarWorkspace({model:radarModel,exchange:radarExchange,send,canSend,api:(path,body)=>bridge.api(path,body),mapView,onBusy:busy=>{parameterBusy=busy;updateControls();}});window.addEventListener('hashchange',route);route();qrView.connection(false);updateControls();appendLog('SYS','八千代·巡航已就绪，请选择串口后连接；刷新端口列表不会打开设备或发送指令。');
+applyTheme();buildPages();mapView=mountMap({send,isPreparing:()=>!!prepView?.busy||stopped(),onStatus:text=>$('subscription-note').textContent=text});radarView=mountRadarWorkspace({model:radarModel,exchange:radarExchange,send,canSend,api:(path,body)=>bridge.api(path,body),mapView,onLiveState:receiveRadarLiveState,onBusy:busy=>{parameterBusy=busy;updateControls();}});window.addEventListener('hashchange',route);route();qrView.connection(false);updateControls();appendLog('SYS','八千代·巡航已就绪，请选择串口后连接；刷新端口列表不会打开设备或发送指令。');
 
 setInterval(()=>{if(active==='vision'&&(grabSnapshot||grabRouteSnapshot))renderGrabStatus();},1000);
 void bridge.start().then(refreshPorts);

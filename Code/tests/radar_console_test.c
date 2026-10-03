@@ -41,6 +41,21 @@ static RadarUart_Status_t uart_status;
 static RadarScan_Raw_t raw;
 static uint8_t raw_bytes[RADAR_UART_RAW_BYTES];
 static unsigned debug_scans;
+static RadarScan_LiveStatus_t live_fixture;
+static RadarLive_Point_t live_points[RADAR_LIVE_BINS];
+static unsigned live_starts,live_stops,live_copies;
+void RadarScan_LiveStatusGet(RadarScan_LiveStatus_t *s){*s=live_fixture;}
+const char *RadarScan_LiveStateName(RadarScan_LiveState_t state){
+  static const char *const names[]={"preparing","waiting","streaming","stopped","error"};return names[state];
+}
+bool RadarScan_LiveStart(const RadarMap_Params_t *p,uint32_t origin,RadarStart_Id_t start){
+  if(live_fixture.active || scan.state==RADAR_SCAN_COLLECTING)return false;
+  live_starts++;live_fixture.id++;live_fixture.active=true;live_fixture.state=RADAR_LIVE_PREPARING;
+  live_fixture.reason="configuring";live_fixture.parameters=*p;live_fixture.origin_generation=origin;
+  requested_start=start;return true;
+}
+void RadarScan_LiveStop(void){if(live_fixture.active){live_stops++;live_fixture.active=false;live_fixture.state=RADAR_LIVE_STOPPED;live_fixture.reason="operator_stop";}}
+bool RadarScan_LiveCopy(RadarLive_Point_t points[RADAR_LIVE_BINS]){if(!live_fixture.sequence)return false;live_copies++;memcpy(points,live_points,sizeof live_points);return true;}
 const char *RadarScan_StateName(RadarScan_State_t state){
   static const char *const names[]={"idle","preparing","wait_wrap","collecting","ready","stopped","error"};return names[state];
 }
@@ -82,7 +97,7 @@ bool RadarScan_SelectStart(RadarStart_Id_t start){
   start_status.result.start_id=(uint8_t)start;start_status.result.reason="manual_selection";
   scan.map_id++;scan.points_map_id=scan.map_id;scan.map_applicable=true;scan.reason="complete";return true;
 }
-void RadarScan_Stop(void){stops++;scan.state=RADAR_SCAN_STOPPED;}
+void RadarScan_Stop(void){if(live_fixture.active){RadarScan_LiveStop();return;}stops++;scan.state=RADAR_SCAN_STOPPED;}
 bool RadarScan_SetParam(const char *key,float v){if(strcmp(key,"threshold") || v<1) return false;params.threshold=(uint16_t)v;scan.map_applicable=false;return true;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *s){*s=location;}
 void ChassisRoute_StatusGet(ChassisRoute_Status_t *s){*s=route;}
@@ -226,6 +241,55 @@ static void test_raw_console(void)
   command("radar fetch raw 1 0");page[0]=0;fast_pump();assert(!page[0] && strstr(reply,"snapshot_changed"));
   raw.state=RADAR_SCAN_STOPPED;raw.complete=false;raw.scan_id=raw.map_id=0;raw.raw.total=9;
   fetch("raw",UINT32_MAX,0);assert(strstr(page,"\"scan\":0") && strstr(page,"\"map\":0") && strstr(page,"\"state\":\"stopped\""));
+}
+static unsigned base64_value(char c)
+{
+  const char *alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const char *at=strchr(alphabet,c);assert(at);return (unsigned)(at-alphabet);
+}
+static void assert_live_part(unsigned sequence,unsigned offset,const RadarLive_Point_t *expected)
+{
+  assert(strstr(page,"\"k\":\"live\"") && page_field("q")==sequence && page_field("o")==offset && page_field("n")==120);
+  const char *at=strstr(page,"\"d\":\"");assert(at);at+=5;uint8_t decoded[96];unsigned used=0;
+  while(*at!='\"'){
+    unsigned value=(base64_value(at[0])<<18)|(base64_value(at[1])<<12)|(base64_value(at[2])<<6)|base64_value(at[3]);
+    assert(used+3<=sizeof decoded);decoded[used++]=(uint8_t)(value>>16);decoded[used++]=(uint8_t)(value>>8);decoded[used++]=(uint8_t)value;at+=4;
+  }
+  assert(used==96 && strlen(page)<=256);
+  for(unsigned i=0;i<24;i++)assert((unsigned)(decoded[i*4]|decoded[i*4+1]<<8)==expected[offset+i].angle_tenths &&
+    (unsigned)(decoded[i*4+2]|decoded[i*4+3]<<8)==expected[offset+i].distance_mm);
+}
+static void test_live_console(void)
+{
+  unsigned movement_count=moves,static_scans=scans,debug_count=debug_scans;
+  scan.state=RADAR_SCAN_READY;probe.state=RADAR_PROBE_IDLE;memset(&live_fixture,0,sizeof live_fixture);
+  live_fixture.state=RADAR_LIVE_STOPPED;live_fixture.reason="not_started";
+  command("radar live status");assert(strstr(reply,"\"k\":\"live_state\"") && !live_starts && moves==movement_count);
+  busy=true;command("radar live start upper");assert(!live_starts && strstr(reply,"stationary_capture_required"));busy=false;
+  command("radar live start upper");assert(live_starts==1 && requested_start==RADAR_START_UPPER && RadarConsole_ScanBusy());
+  assert(strstr(foreground[0],"live_start_accepted") && strstr(foreground[1],"\"k\":\"live_state\""));
+  command("radar scan lower");assert(scans==static_scans && strstr(reply,"live_in_progress"));
+  command("radar debug scan lower");assert(debug_scans==debug_count && strstr(reply,"live_in_progress"));
+  live_fixture.unit=RADAR_UNIT_MM;scan.unit=RADAR_UNIT_UNKNOWN;
+  command("radar status");assert(strstr(foreground[2],"\"unit\":\"mm\"") && scan.unit==RADAR_UNIT_UNKNOWN);
+  live_fixture.parameters.lidar_x_mm=2330.125f;live_fixture.parameters.lidar_y_mm=2170;live_fixture.parameters.zero_deg=270.0625f;
+  live_fixture.id=UINT32_MAX;live_fixture.sequence=UINT32_MAX;live_fixture.age_ms=UINT32_MAX;
+  live_fixture.points=120;live_fixture.state=RADAR_LIVE_STREAMING;live_fixture.reason="complete";
+  location.generation=0;live_fixture.origin_generation=0;
+  tick=UINT32_MAX-1000U;RadarConsole_Init();
+  command("radar live status");assert(strstr(reply,"\"s\":4294966296") && strstr(reply,"\"id\":4294967295") && strlen(reply)<=256);
+  for(unsigned i=0;i<120;i++)live_points[i]=(RadarLive_Point_t){(uint16_t)(i*30+5),i%7?UINT16_MAX:0};
+  RadarLive_Point_t frozen[120];memcpy(frozen,live_points,sizeof frozen);
+  page[0]=0;fast_pump();assert_live_part(UINT32_MAX,0,frozen);assert(live_copies==1);
+  /* A requested historical page is served before the next live part. */
+  command("radar fetch params 0 0");page[0]=0;fast_pump();assert(strstr(page,"\"k\":\"params\""));
+  live_fixture.sequence=1;memset(live_points,0,sizeof live_points);
+  for(unsigned part=1;part<5;part++){page[0]=0;fast_pump();assert_live_part(UINT32_MAX,part*24,frozen);}
+  assert(live_copies==1);tick+=1000;page[0]=0;fast_pump();assert_live_part(1,0,live_points);assert(live_copies==2);
+  command("radar live stop");assert(!RadarConsole_ScanBusy() && live_stops==1 && strstr(foreground[0],"live_stop_requested"));
+  page[0]=0;fast_pump();assert(!strstr(page,"\"k\":\"live\""));
+  command("radar live start lower");assert(live_starts==2);command("radar stop");assert(live_stops==2 && !live_fixture.active);
+  assert(scans==static_scans && debug_scans==debug_count && moves==movement_count);
 }
 int main(void)
 {
@@ -384,5 +448,6 @@ int main(void)
   assert(manual_scans==2 && strstr(reply,"stationary_capture_required"));busy=false;
   command("radar scan sideways");assert(manual_scans==2 && strstr(reply,"format"));
   test_raw_console();
+  test_live_console();
   puts("radar_console_test: PASS (paging, pose, first scan, no implicit drive, origin and parameter validity)");
 }
