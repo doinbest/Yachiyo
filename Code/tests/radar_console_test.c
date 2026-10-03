@@ -13,23 +13,24 @@
 #include <string.h>
 static uint32_t tick;
 static RadarScan_Status_t scan;
+static RadarScan_StartStatus_t start_status;
 static RadarMap_t map;
 static RadarMap_Params_t params,captured;
 static RadarSample_t samples[360];
 static ChassisLocalization_Status_t location;
 static ChassisRoute_Status_t route;
 static char reply[4096],page[257];
-static char foreground[4][257];
+static char foreground[6][257];
 static unsigned foreground_count;
-static unsigned scans,stops,moves;
+static unsigned scans,auto_scans,stops,moves;
 static float submitted_speed;
 static bool busy,bulk_ready=true;
 #ifdef RADAR_CONSOLE_PLAN_FIXTURE
 static bool edge_plan;
-bool RadarPlan_FixtureBuild(const RadarMap_t *m,RadarPlan_t *p)
+bool RadarPlan_FixtureBuildFromStart(const RadarMap_t *m,RadarStart_Id_t start,RadarPlan_t *p)
 {
-  if(!edge_plan) return RadarPlan_Build(m,p);
-  memset(p,0,sizeof(*p));p->valid=true;p->count=RADAR_PLAN_MAX_POINTS;
+  if(!edge_plan) return RadarPlan_BuildFromStart(m,start,p);
+  memset(p,0,sizeof(*p));p->valid=true;p->count=RADAR_PLAN_MAX_POINTS;p->start_id=(uint8_t)start;
   for(unsigned i=0;i<p->count;i++)p->points[i]=(RadarPlan_Point_t){INT16_MIN,INT16_MAX,UINT8_MAX,UINT8_MAX};
   return true;
 }
@@ -43,15 +44,22 @@ bool RadarUart_ProbeStart(void){
   probe.id++;probe.state=RADAR_PROBE_TX;probe.reason="query_sending";return true;
 }
 uint32_t HAL_GetTick(void){return tick;}
-bool ConsoleTx_Write(const uint8_t *d,uint16_t n){assert(n<=256);if(foreground_count<4){memcpy(foreground[foreground_count],d,n);foreground[foreground_count++][n]=0;}memcpy(reply,d,n);reply[n]=0;return true;}
+bool ConsoleTx_Write(const uint8_t *d,uint16_t n){assert(n<=256);if(foreground_count<6){memcpy(foreground[foreground_count],d,n);foreground[foreground_count++][n]=0;}memcpy(reply,d,n);reply[n]=0;return true;}
 bool ConsoleTx_BulkReady(void){return bulk_ready;}
 bool ConsoleTx_Bulk(const char *d,uint16_t n){assert(n<=256);memcpy(page,d,n);page[n]=0;puts(page);return true;}
 void RadarScan_StatusGet(RadarScan_Status_t *s){*s=scan;}
+void RadarScan_StartStatusGet(RadarScan_StartStatus_t *s){*s=start_status;}
 const RadarMap_t *RadarScan_Map(void){return &map;}
 const RadarMap_Params_t *RadarScan_Params(void){return &params;}
 const RadarMap_Params_t *RadarScan_MapParams(void){return &captured;}
 const RadarSample_t *RadarScan_Points(uint16_t *n){*n=360;return scan.points_valid?samples:NULL;}
 bool RadarScan_Start(const RadarMap_Params_t *p,uint32_t origin){(void)origin;captured=*p;scans++;scan.state=RADAR_SCAN_COLLECTING;return true;}
+bool RadarScan_StartAuto(const RadarMap_Params_t *p,uint32_t origin){auto_scans++;return RadarScan_Start(p,origin);}
+bool RadarScan_SelectStart(RadarStart_Id_t start){
+  if(!start_status.scan_id || !start_status.automatic || RadarConsole_ScanBusy() || start==RADAR_START_UNKNOWN)return false;
+  start_status.result.start_id=(uint8_t)start;start_status.result.reason="manual_selection";
+  scan.map_id++;scan.points_map_id=scan.map_id;scan.map_applicable=true;scan.reason="complete";return true;
+}
 void RadarScan_Stop(void){stops++;scan.state=RADAR_SCAN_STOPPED;}
 bool RadarScan_SetParam(const char *key,float v){if(strcmp(key,"threshold") || v<1) return false;params.threshold=(uint16_t)v;scan.map_applicable=false;return true;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *s){*s=location;}
@@ -132,6 +140,7 @@ static unsigned fetch_path(uint32_t id,bool extremes)
     fetch("path",id,number);
     if(!number)pages=page_field("pages");else assert(page_field("pages")==pages);
     assert(page_field("offset")==seen);
+    assert(page_field("start")==RADAR_START_LOWER);
     const char *at=strstr(page,"\"points\":[");assert(at);at+=10;
     while(*at!=']'){
       int x,y,used=0;unsigned station,visit;
@@ -148,14 +157,17 @@ int main(void)
   RadarMap_Defaults(&params);captured=params;RadarMap_Reset(&map);
   scan.state=RADAR_SCAN_READY;scan.reason="complete";scan.map_valid=scan.map_applicable=scan.points_valid=true;
   scan.map_id=scan.scan_id=4;scan.origin_generation=7;scan.coverage_tenths=3600;
+  scan.points_map_id=4;start_status.scan_id=4;start_status.result.start_id=RADAR_START_LOWER;start_status.result.reason="manual_reference";
   location.generation=7;location.origin_valid=location.feedback_valid=true;
   location.observer.feedback.x_mm=2250;location.observer.feedback.y_mm=150;
   location.observer.feedback.yaw_rad=3.14159265358979323846f/2;
   route.state=route.reason="idle";
   for(unsigned i=0;i<360;i++)samples[i]=(RadarSample_t){(uint16_t)(i*10),65535,255};
   RadarConsole_Init();command("radar status");assert(!moves && !scans);
-  assert(foreground_count==4 && strstr(foreground[1],"\"page\":0,\"pages\":3"));
+  assert(foreground_count==6 && strstr(foreground[1],"\"page\":0,\"pages\":3"));
   assert(strstr(foreground[2],"\"last_alarm\":0") && strstr(foreground[2],"\"unit\":\"unknown\""));
+  assert(strstr(foreground[4],"\"k\":\"start\"") && strstr(foreground[4],"\"selected\":2") && strstr(foreground[5],"\"conflicts\":[0,0]"));
+  command("radar start status");assert(foreground_count==2 && !moves && !scans);
   command("radar probe");assert(!moves&&!scans&&strstr(foreground[0],"probe_accepted"));
   assert(strstr(foreground[1],"\"state\":\"transmitting\""));
   command("radar probe");assert(strstr(reply,"probe_busy_or_uart"));
@@ -197,6 +209,7 @@ int main(void)
   /* Full uint32 identity values still need to fit the DL20 wire-page budget. */
   tick=UINT32_MAX-1000U;scan.state=RADAR_SCAN_READY;scan.map_valid=scan.map_applicable=scan.points_valid=true;
   scan.map_id=scan.scan_id=scan.origin_generation=location.generation=UINT32_MAX;
+  scan.points_map_id=UINT32_MAX;start_status.scan_id=UINT32_MAX;
   RadarConsole_Init();reply[0]=page[0]=0;
   map_pages=fetch_map(UINT32_MAX);points_pages=fetch_points(UINT32_MAX);path_pages=fetch_path(1,false);
   printf("uint32 identity pages: map=%u path=%u points=%u\n",map_pages,path_pages,points_pages);
@@ -210,7 +223,7 @@ int main(void)
   scan.bytes=scan.packets=scan.bad=scan.overflow=scan.alarm=UINT32_MAX;
   scan.last_alarm=UINT16_MAX;
   command("radar status");
-  assert(foreground_count==4 && !strstr(reply,"page_size"));
+  assert(foreground_count==6 && !strstr(reply,"page_size"));
   assert(strstr(foreground[1],"\"bytes\":4294967295") && strstr(foreground[1],"\"overflow\":4294967295"));
   assert(strstr(foreground[2],"\"alarm\":4294967295") && strstr(foreground[2],"\"last_alarm\":65535"));
   uart_status.commands_sent=uart_status.tx_errors=uart_status.uart_errors=UINT32_MAX;
@@ -222,9 +235,41 @@ int main(void)
   probe.state=RADAR_PROBE_UNCONFIRMED;probe.reason="reply_unknown";
   command("radar probe status");assert(foreground_count==3&&!strstr(reply,"page_size"));
   assert(strstr(foreground[2],"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"));
+  /* Auto capture must use the lower installation reference, independent of the
+   * current lower-route observer pose. Queries and start selection never drive. */
+  location.observer.feedback.x_mm=1200;location.observer.feedback.y_mm=1200;
+  location.observer.feedback.yaw_rad=3.14159265358979323846f;
+  command("radar scan auto");assert(auto_scans==1 && scans==4 && captured.lidar_x_mm==2170 && captured.lidar_y_mm==230 && captured.zero_deg==180);
+  /* The first scan may finish before periodic bulk status can be sent. Its
+   * accepted reply must establish an actual capture baseline in the foreground. */
+  assert(foreground_count==2 && strstr(foreground[0],"scan_accepted") &&
+         strstr(foreground[1],"\"k\":\"status\"") && strstr(foreground[1],"\"state\":\"collecting\""));
+  scan.state=RADAR_SCAN_READY;scan.reason="start_ambiguous";scan.map_applicable=false;scan.points_map_id=0;
+  start_status.automatic=true;start_status.result.start_id=RADAR_START_UNKNOWN;start_status.result.reason="ambiguous";
+  start_status.scan_id--;scan.scan_id=start_status.scan_id;
+  unsigned movement_count=moves;foreground_count=0;page[0]=0;fast_pump();
+  assert(foreground_count==3 && strstr(foreground[0],"\"selected\":0") && strstr(foreground[1],"\"qr\":[0,0]") && strstr(foreground[2],"start_ambiguous"));
+  foreground_count=0;fast_pump();assert(!foreground_count);
+  command("radar plan");assert(strstr(reply,"start_unresolved"));
+  command("radar nav start");assert(strstr(reply,"start_unresolved") && moves==movement_count);
+  command("radar task start");assert(strstr(reply,"start_unresolved") && moves==movement_count);
+  command("radar fetch points 4294967294 0");page[0]=0;fast_pump();assert(!page[0] && strstr(reply,"snapshot_changed"));
+  command("radar fetch map 4294967295 0");fast_pump();assert(strstr(page,"\"mask\":328000"));
+  command("radar fetch path 1 0");fast_pump();assert(strstr(page,"\"start\":2"));
+  command("radar start upper");assert(foreground_count==4 && strstr(foreground[0],"start_selected") && strstr(foreground[1],"\"selected\":1") && strstr(foreground[3],"\"k\":\"status\"") && moves==movement_count);
+  foreground_count=0;fast_pump();assert(!foreground_count);
+  command("radar fetch path 2 0");fast_pump();assert(strstr(page,"\"start\":1") && strstr(page,"[2250,2250,1,0]"));
+  command("radar nav start");assert(strstr(reply,"upper_start_plan_only") && moves==movement_count);
+  command("radar task start");assert(strstr(reply,"upper_start_plan_only") && moves==movement_count);
+  command("radar start lower");assert(foreground_count==4 && strstr(foreground[0],"start_selected") && strstr(foreground[1],"\"selected\":2") && moves==movement_count);
+  foreground_count=0;fast_pump();assert(!foreground_count);
+  start_status.scan_id=UINT32_MAX;start_status.result.qr_counts[0]=start_status.result.qr_counts[1]=UINT16_MAX;
+  start_status.result.raw_counts[0]=start_status.result.raw_counts[1]=UINT16_MAX;
+  start_status.result.conflict_mask[0]=start_status.result.conflict_mask[1]=UINT32_MAX;
+  command("radar start status");assert(foreground_count==2 && strstr(foreground[0],"\"id\":4294967295") && strstr(foreground[1],"\"conflicts\":[4294967295,4294967295]"));
 #ifdef RADAR_CONSOLE_PLAN_FIXTURE
   edge_plan=true;command("radar plan");assert(strstr(reply,"plan_ready"));
-  path_pages=fetch_path(2,true);
+  path_pages=fetch_path(4,true);
   printf("int16/uint8 boundary path pages: %u (%u items)\n",path_pages,RADAR_PLAN_MAX_POINTS);
 #endif
   puts("radar_console_test: PASS (paging, pose, first scan, no implicit drive, origin and parameter validity)");

@@ -22,11 +22,13 @@
  * chassis telemetry keep their priority; ConsoleTx paces the wireless bytes. */
 static RadarPlan_t Plan;
 static RadarScan_Status_t Scan;
+static RadarScan_StartStatus_t Start;
 static ChassisLocalization_Status_t Location;
 static ChassisRoute_Status_t Route;
 static uint32_t Session,PlanId,PlanMap,LastBulk,LastStatus,LastNav,ParamsRevision;
 static uint32_t SeenMap;
 static uint32_t CaptureOrigin;
+static uint32_t StartReportedScan,StartReportedMap;
 static bool Watching,Pending,FormatOk;
 static uint32_t ProbeReportedId;
 static RadarUart_ProbeState_t ProbeReportedState;
@@ -40,7 +42,8 @@ static const char *const States[]={"idle","preparing","wait_wrap","collecting","
 
 static void refresh(void)
 {
-  RadarScan_StatusGet(&Scan);ChassisLocalization_Get(&Location);ChassisRoute_StatusGet(&Route);
+  RadarScan_StatusGet(&Scan);RadarScan_StartStatusGet(&Start);
+  ChassisLocalization_Get(&Location);ChassisRoute_StatusGet(&Route);
 }
 static bool applicable(void)
 {
@@ -89,9 +92,10 @@ static float param_value(unsigned i)
 }
 static bool build_plan(void)
 {
-  if(!Scan.map_valid) return false;
+  RadarStart_Id_t start=Start.automatic?(RadarStart_Id_t)Start.result.start_id:RADAR_START_LOWER;
+  if(!Scan.map_valid || start==RADAR_START_UNKNOWN) return false;
   PlanMap=Scan.map_id;PlanId++;if(!PlanId) PlanId=1U;
-  return RadarPlan_Build(RadarScan_Map(),&Plan);
+  return RadarPlan_BuildFromStart(RadarScan_Map(),start,&Plan);
 }
 static void status_page(bool foreground)
 {
@@ -100,6 +104,20 @@ static void status_page(bool foreground)
     States[Scan.state],Scan.reason?Scan.reason:"none",(unsigned long)Scan.elapsed_ms,
     applicable()?"true":"false",Scan.points_valid?"true":"false");
   (void)finish(foreground);
+}
+static void start_pages(void)
+{
+  begin("start",0,2);
+  append("\"id\":%lu,\"auto\":%s,\"selected\":%u,\"reason\":\"%s\"",
+    (unsigned long)Start.scan_id,Start.automatic?"true":"false",Start.result.start_id,
+    Start.result.reason?Start.result.reason:"not_scanned");
+  (void)finish(true);
+  begin("start",1,2);
+  append("\"id\":%lu,\"qr\":[%u,%u],\"raw\":[%u,%u],\"conflicts\":[%lu,%lu]",
+    (unsigned long)Start.scan_id,Start.result.qr_counts[0],Start.result.qr_counts[1],
+    Start.result.raw_counts[0],Start.result.raw_counts[1],
+    (unsigned long)Start.result.conflict_mask[0],(unsigned long)Start.result.conflict_mask[1]);
+  (void)finish(true);StartReportedScan=Start.scan_id;StartReportedMap=Scan.map_id;
 }
 static void probe_pages(bool all)
 {
@@ -163,18 +181,18 @@ static bool fetch_page(void)
   {
     if(!PlanId || RequestedId!=PlanId) return false;
     begin("path",Plan.count,Plan.count);
-    append("\"offset\":%u,\"valid\":%s,\"failed_leg\":%u,\"points\":[",Plan.count,Plan.valid?"true":"false",Plan.failed_leg);
+    append("\"offset\":%u,\"start\":%u,\"valid\":%s,\"failed_leg\":%u,\"points\":[",Plan.count,Plan.start_id,Plan.valid?"true":"false",Plan.failed_leg);
     capacity=page_capacity(Plan.count,26U);
     pages=Plan.count?(Plan.count+capacity-1U)/capacity:1U;if(RequestedPage>=pages) return false;
     begin("path",RequestedPage,pages);offset=RequestedPage*capacity;
-    append("\"offset\":%u,\"valid\":%s,\"failed_leg\":%u,\"points\":[",offset,Plan.valid?"true":"false",Plan.failed_leg);
+    append("\"offset\":%u,\"start\":%u,\"valid\":%s,\"failed_leg\":%u,\"points\":[",offset,Plan.start_id,Plan.valid?"true":"false",Plan.failed_leg);
     for(i=offset;i<Plan.count && i<offset+capacity;i++) append("%s[%d,%d,%u,%u]",i==offset?"":",",
       Plan.points[i].x_mm,Plan.points[i].y_mm,Plan.points[i].station,Plan.points[i].visit);
     append("]");
   }
   else if(!strcmp(Kind,"points") || !strcmp(Kind,"cloud"))
   {
-    points=RadarScan_Points(&count);if(!points || !Scan.points_valid || RequestedId!=Scan.scan_id) return false;
+    points=RadarScan_Points(&count);if(!points || !Scan.points_valid || !Scan.points_map_id || RequestedId!=Scan.scan_id) return false;
     total=!strcmp(Kind,"points") && count>360U?360U:count;
     begin(Kind,total,total);
     append("\"offset\":%u,\"total\":%u,\"truncated\":%s,\"points\":[",total,total,Scan.truncated?"true":"false");
@@ -201,6 +219,7 @@ void RadarConsole_Init(void)
   memset(&Plan,0,sizeof(Plan));Session=HAL_GetTick()+1U;if(!Session) Session=1;
   PlanId=PlanMap=SeenMap=LastBulk=LastStatus=LastNav=CaptureOrigin=0;ParamsRevision=1;
   Watching=Pending=false;Kind[0]=0;
+  StartReportedScan=StartReportedMap=0;
   ProbeReportedId=0;ProbeReportedState=RADAR_PROBE_IDLE;
 }
 void RadarConsole_Process(void)
@@ -213,6 +232,9 @@ void RadarConsole_Process(void)
     RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
     if(p.id && (p.id!=ProbeReportedId || p.state!=ProbeReportedState))
       probe_pages(p.state!=RADAR_PROBE_TX && p.state!=RADAR_PROBE_WAITING);
+  }
+  if(Start.scan_id && (Start.scan_id!=StartReportedScan || Scan.map_id!=StartReportedMap)){
+    start_pages();status_page(true);LastStatus=LastBulk=now;
   }
   if(!Watching || !ConsoleTx_BulkReady()) return;
   if(Pending){if(!fetch_page()) reply(false,"snapshot_changed_or_page_range");Pending=false;LastBulk=now;return;}
@@ -250,7 +272,16 @@ bool RadarConsole_Command(unsigned n,char *t[])
     append("\"tx_done\":%lu,\"tx_errors\":%lu,\"uart_errors\":%lu,\"rx_ready\":%s,\"last_tx\":\"%s\"",
       (unsigned long)uart.commands_sent,(unsigned long)uart.tx_errors,(unsigned long)uart.uart_errors,
       uart.rx_ready?"true":"false",uart.last_tx);
-    (void)finish(true);return true;
+    (void)finish(true);if(Start.scan_id)start_pages();return true;
+  }
+  if(n==3U && !strcmp(t[1],"start")){
+    if(!strcmp(t[2],"status")){start_pages();return true;}
+    if(!strcmp(t[2],"upper") || !strcmp(t[2],"lower")){
+      ok=RadarScan_SelectStart(!strcmp(t[2],"upper")?RADAR_START_UPPER:RADAR_START_LOWER);
+      reply(ok,ok?"start_selected":"start_selection_unavailable");
+      if(ok){refresh();(void)build_plan();SeenMap=Scan.map_id;start_pages();status_page(true);LastStatus=LastBulk=HAL_GetTick();}
+      return true;
+    }
   }
   if(n==3U && !strcmp(t[1],"probe") && !strcmp(t[2],"status")){probe_pages(true);return true;}
   if(n==2U && !strcmp(t[1],"probe")){
@@ -260,7 +291,8 @@ bool RadarConsole_Command(unsigned n,char *t[])
     return true;
   }
   if(n==2U && !strcmp(t[1],"stop")){RadarScan_Stop();reply(true,"scan_stop_requested");return true;}
-  if(n==2U && !strcmp(t[1],"scan")){
+  if((n==2U || (n==3U && !strcmp(t[2],"auto"))) && !strcmp(t[1],"scan")){
+    bool automatic=n==3U;
     RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
     if(p.state==RADAR_PROBE_TX || p.state==RADAR_PROBE_WAITING){reply(false,"query_in_progress");return true;}
     if(actuators_busy()) reason="stationary_capture_required";
@@ -268,19 +300,27 @@ bool RadarConsole_Command(unsigned n,char *t[])
       RadarMap_Params_t p=*RadarScan_Params();
       /* Registered reference pose is expressed at the validated chassis origin.
        * Only the sensor pose follows actual feedback; IMU/motor axes stay intact. */
-      if(Location.origin_valid && Location.feedback_valid){
+      if(!automatic && Location.origin_valid && Location.feedback_valid){
         float yaw=Location.observer.feedback.yaw_rad-CHASSIS_MODEL_PI/2.0f;
         float dx=p.lidar_x_mm-2250.0f,dy=p.lidar_y_mm-150.0f;
         p.lidar_x_mm=Location.observer.feedback.x_mm+cosf(yaw)*dx-sinf(yaw)*dy;
         p.lidar_y_mm=Location.observer.feedback.y_mm+sinf(yaw)*dx+cosf(yaw)*dy;
         p.zero_deg+=yaw*180.0f/CHASSIS_MODEL_PI;
       }
-      ok=RadarScan_Start(&p,Location.generation);reason=ok?"scan_accepted":"scan_busy_or_parameters";
+      ok=automatic?RadarScan_StartAuto(&p,Location.generation):RadarScan_Start(&p,Location.generation);
+      reason=ok?"scan_accepted":"scan_busy_or_parameters";
       if(ok) CaptureOrigin=Location.generation;
+    }
+    if(ok){
+      /* Establish the capture baseline even if its circle completes before the
+       * periodic bulk status slot becomes available. This also keeps queued
+       * historical ready frames from masquerading as the requested scan. */
+      reply(true,reason);refresh();status_page(true);LastStatus=HAL_GetTick();return true;
     }
   }
   else if(n==2U && !strcmp(t[1],"plan")){
-    ok=build_plan();reason=ok?"plan_ready":Scan.map_valid?"leg_unreachable":"no_complete_map";
+    if(Start.automatic && Start.result.start_id==RADAR_START_UNKNOWN)reason="start_unresolved";
+    else {ok=build_plan();reason=ok?"plan_ready":Scan.map_valid?"leg_unreachable":"no_complete_map";}
   }
   else if(n==2U && !strcmp(t[1],"get")){
     if(Pending) reason="page_pending";
@@ -305,6 +345,8 @@ bool RadarConsole_Command(unsigned n,char *t[])
     else if((n==3U || n==4U) && !strcmp(t[2],"start") && (n==3U || number(t[3],&value))){
       if(n==3U) value=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
       if(RadarConsole_ScanBusy()) reason="scan_in_progress";
+      else if(Start.automatic && Start.result.start_id==RADAR_START_UNKNOWN)reason="start_unresolved";
+      else if(Start.result.start_id==RADAR_START_UPPER)reason="upper_start_plan_only";
       else if(!applicable() || PlanMap!=Scan.map_id) reason="map_origin_or_parameters_changed";
       else if(!Plan.valid) reason="leg_unreachable";
       else if(actuators_busy()) reason="actuator_busy";

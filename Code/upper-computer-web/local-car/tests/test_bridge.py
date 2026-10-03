@@ -60,6 +60,18 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_start_status_is_read_only_during_stop_latch_but_selection_is_explicit(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        self.bridge.send('radar start status')
+        wait_for(lambda: len(port.writes) == 1)
+        self.assertEqual(port.writes[0][1], b'radar start status\r\n')
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('radar start upper', 'radar start lower', 'radar scan auto'):
+            with self.assertRaises(ValueError):
+                self.bridge.send(command)
+
     def test_probe_evidence_reaches_cmd_and_jsonl_history(self):
         port = self.connect()
         line = '@RADAR '+json.dumps(dict(v=1,k='probe',session=13,origin=0,scan=0,map=0,plan=0,page=2,pages=3,id=1,sn='MOCK12345',hex='CECECECE0001'),separators=(',',':'))

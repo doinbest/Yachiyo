@@ -21,7 +21,7 @@ READ_COMMAND = re.compile(
     r'(?:vision|camera|material|imu|qr|grab) status|qr read|grab get [a-z][a-z0-9_]*|'
     r'turntable (?:status|inventory|get [a-z][a-z0-9_]*)|'
     r'chassis (?:task|status|snapshot|feedback|stop-status|route status)|'
-    r'radar (?:status|get|probe(?: status)?|nav status|fetch (?:map|path|points|cloud|params) \d+ \d+)|map status)')
+    r'radar (?:status|get|probe(?: status)?|nav status|start status|fetch (?:map|path|points|cloud|params) \d+ \d+)|map status)')
 PREPARATION_COMMAND = re.compile(
     r'(?:chassis (?:units 65536|feedback (?:0|on)|'
     r'origin 2250 150 90|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')

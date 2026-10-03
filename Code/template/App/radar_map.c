@@ -91,12 +91,19 @@ bool RadarMap_Add(RadarMap_t *m,const RadarMap_Params_t *p,const RadarSample_t *
   return true;
 }
 
-void RadarMap_Finish(RadarMap_t *m,const RadarMap_Params_t *p)
+void RadarMap_FinishRaw(RadarMap_t *m,const RadarMap_Params_t *p)
 {
   unsigned i;
   if(m==NULL || !RadarMap_ParamsValid(p)) return;
   m->mask=RADAR_MAP_FIXED_MASK;
   for(i=0U;i<RADAR_MAP_CELL_COUNT;i++) if(m->counts[i]>=p->threshold) m->mask|=1UL<<i;
+}
+
+void RadarMap_Finish(RadarMap_t *m,const RadarMap_Params_t *p)
+{
+  if(m==NULL || !RadarMap_ParamsValid(p)) return;
+  RadarMap_FinishRaw(m,p);
+  m->mask=(m->mask&~RADAR_MAP_REQUIRED_CLEAR_MASK)|RADAR_MAP_FIXED_MASK;
 }
 
 void RadarMap_LegacyPoint(float old_x,float old_y,float *x,float *y)
@@ -251,24 +258,29 @@ static bool segment_clear(uint32_t mask,int16_t sx,int16_t sy,int16_t ex,int16_t
   return true;
 }
 
-bool RadarPlan_Build(const RadarMap_t *m,RadarPlan_t *p)
+bool RadarPlan_BuildFromStart(const RadarMap_t *m,RadarStart_Id_t start_id,RadarPlan_t *p)
 {
   unsigned leg;
+  int16_t start_y=start_id==RADAR_START_UPPER?2250:150;
+  int16_t staging_y=start_id==RADAR_START_UPPER?2100:300;
   if(p==NULL) return false;
   memset(p,0,sizeof(*p));
-  if(m==NULL) return false;
-  if(!append_point(p,Stations[0][0],Stations[0][1],1U,0U)) return false;
+  if(m==NULL || (start_id!=RADAR_START_UPPER && start_id!=RADAR_START_LOWER)) return false;
+  p->start_id=(uint8_t)start_id;
+  if(!append_point(p,2250,start_y,1U,0U)) return false;
   for(leg=0U;leg+1U<RADAR_PLAN_MISSION_VISITS;leg++) {
     uint8_t from=MissionOrder[leg],to=MissionOrder[leg+1U];
+    int16_t from_x=from==1U?2250:Stations[from-1U][0];
+    int16_t from_y=from==1U?start_y:Stations[from-1U][1];
     bool ok;
     if(leg==0U && segment_clear((m->mask|RADAR_MAP_FIXED_MASK)&RADAR_MAP_ALL_CELLS,
-                               2250,150,2100,1200)) {
+                               2250,start_y,2100,1200)) {
       ok=append_point(p,2100,1200,5U,1U);
     } else if(leg+2U==RADAR_PLAN_MISSION_VISITS) {
-      ok=append_leg(m,Stations[from-1U][0],Stations[from-1U][1],2100,300,0U,0U,p) &&
-         append_point(p,2250,150,1U,8U);
+      ok=append_leg(m,from_x,from_y,2100,staging_y,0U,0U,p) &&
+         append_point(p,2250,start_y,1U,8U);
     } else {
-      ok=append_leg(m,Stations[from-1U][0],Stations[from-1U][1],
+      ok=append_leg(m,from_x,from_y,
                     Stations[to-1U][0],Stations[to-1U][1],to,(uint8_t)(leg+1U),p);
     }
     if(!ok) {
@@ -276,6 +288,11 @@ bool RadarPlan_Build(const RadarMap_t *m,RadarPlan_t *p)
     }
   }
   p->valid=true;return true;
+}
+
+bool RadarPlan_Build(const RadarMap_t *m,RadarPlan_t *p)
+{
+  return RadarPlan_BuildFromStart(m,RADAR_START_LOWER,p);
 }
 
 bool RadarPlan_BuildLeg(const RadarMap_t *m,float sx,float sy,float ex,float ey,RadarPlan_t *p)

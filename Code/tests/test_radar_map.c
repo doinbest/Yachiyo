@@ -107,10 +107,12 @@ static void check_clear_path(const RadarPlan_t *p,uint32_t mask,bool mission)
   for(unsigned i=1;i<p->count;i++) {
     int x=p->points[i-1].x_mm,y=p->points[i-1].y_mm;
     int dx=p->points[i].x_mm-x,dy=p->points[i].y_mm-y;
-    bool shortcut=mission && i==1 && x==2250 && y==150 &&
+    int start_y=p->start_id==RADAR_START_UPPER?2250:150;
+    int staging_y=p->start_id==RADAR_START_UPPER?2100:300;
+    bool shortcut=mission && i==1 && x==2250 && y==start_y &&
       p->points[i].x_mm==2100 && p->points[i].y_mm==1200 && p->points[i].station==5;
-    bool final=mission && i+1==p->count && x==2100 && y==300 &&
-      p->points[i].x_mm==2250 && p->points[i].y_mm==150 && p->points[i].station==1;
+    bool final=mission && i+1==p->count && x==2100 && y==staging_y &&
+      p->points[i].x_mm==2250 && p->points[i].y_mm==start_y && p->points[i].station==1;
     CHECK((dx==0)!=(dy==0) || shortcut || final);
     int steps=abs(dx)+abs(dy);
     for(int n=0;n<=steps;n++) {
@@ -172,10 +174,76 @@ static void test_first_shortcut_and_final_staging(void)
   CHECK(!RadarPlan_Build(&m,&q) && q.failed_leg==1 && !q.valid && q.count==0);
 }
 
+/* Competition QR/raw front zones are free; other station obstacles still count. */
+static void test_scanned_required_clear_cells(void)
+{
+  RadarMap_Params_t params;
+  RadarMap_t map;
+  RadarPlan_t plan;
+  RadarMap_Defaults(&params);RadarMap_Reset(&map);
+  map.counts[14]=3;map.counts[22]=3;map.counts[2]=3;map.counts[10]=3;
+  RadarMap_Finish(&map,&params);
+  CHECK(map.mask==(RADAR_MAP_FIXED_MASK|(1UL<<2)|(1UL<<10)));
+  CHECK(map.counts[14]==3 && map.counts[22]==3);
+  CHECK(!RadarPlan_Build(&map,&plan) && plan.failed_leg==3);
+  RadarMap_Reset(&map);map.mask|=1UL<<14;
+  CHECK(!RadarPlan_Build(&map,&plan) && plan.failed_leg==1);
+  RadarMap_Reset(&map);map.counts[14]=3;map.counts[22]=3;
+  RadarMap_FinishRaw(&map,&params);
+  CHECK(map.mask==(RADAR_MAP_FIXED_MASK|(1UL<<14)|(1UL<<22)));
+  RadarMap_Finish(&map,&params);
+  CHECK(map.mask==RADAR_MAP_FIXED_MASK && map.counts[14]==3 && map.counts[22]==3);
+}
+
+/* The selected corner is a vehicle target; all detours retain station/visit order. */
+static void test_dual_start_missions(void)
+{
+  const uint8_t stations[9]={1,5,4,2,3,4,2,3,1};
+  const uint32_t obstacles[]={0U,1UL<<12,1UL<<9,1UL<<19,1UL<<7,1UL<<3,1UL<<23};
+  RadarMap_t map;RadarPlan_t plan,legacy;
+  for(unsigned id=RADAR_START_UPPER;id<=RADAR_START_LOWER;id++) {
+    int start_y=id==RADAR_START_UPPER?2250:150;
+    int staging_y=id==RADAR_START_UPPER?2100:300;
+    for(unsigned mask=0;mask<sizeof(obstacles)/sizeof(obstacles[0]);mask++) {
+      RadarMap_Reset(&map);map.mask|=obstacles[mask];
+      CHECK(RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)id,&plan));
+      CHECK(plan.valid && plan.start_id==id && plan.count>2 && plan.count<193);
+      if(plan.count<3)continue;
+      CHECK(plan.points[0].x_mm==2250 && plan.points[0].y_mm==start_y);
+      CHECK(plan.points[plan.count-1].x_mm==2250 && plan.points[plan.count-1].y_mm==start_y);
+      CHECK(plan.points[plan.count-2].x_mm==2100 && plan.points[plan.count-2].y_mm==staging_y);
+      unsigned visit=0;
+      for(unsigned point=0;point<plan.count;point++)if(plan.points[point].station) {
+        CHECK(visit<9);
+        if(visit<9)CHECK(plan.points[point].station==stations[visit] && plan.points[point].visit==visit);
+        visit++;
+      }
+      CHECK(visit==9);check_clear_path(&plan,map.mask,true);
+      if(mask==0)CHECK(plan.points[1].station==5 && plan.points[1].visit==1 &&
+        plan.points[1].x_mm==2100 && plan.points[1].y_mm==1200);
+    }
+    RadarMap_Reset(&map);map.mask|=1UL<<14;
+    CHECK(!RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)id,&plan));
+    CHECK(!plan.valid && plan.count==0 && plan.failed_leg==1 && plan.start_id==id);
+    RadarMap_Reset(&map);map.mask|=1UL<<22;
+    CHECK(!RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)id,&plan) && plan.failed_leg==2);
+    RadarMap_Reset(&map);map.mask|=1UL<<(id==RADAR_START_UPPER?24:4);
+    CHECK(!RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)id,&plan) && plan.failed_leg==1);
+  }
+  RadarMap_Reset(&map);
+  CHECK(!RadarPlan_BuildFromStart(&map,RADAR_START_UNKNOWN,&plan) && !plan.valid && !plan.count);
+  CHECK(!RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)99,&plan));
+  CHECK(RadarPlan_Build(&map,&legacy));
+  CHECK(RadarPlan_BuildFromStart(&map,RADAR_START_LOWER,&plan));
+  CHECK(plan.start_id==RADAR_START_LOWER && !memcmp(&legacy,&plan,sizeof(plan)));
+}
+
 int main(void)
 {
   test_direction_and_history();test_rotated_world_obstacles();
   test_map_filters_and_station_obstacle();test_mission_and_detour();test_first_shortcut_and_final_staging();
+  test_scanned_required_clear_cells();
+  test_dual_start_missions();
   printf("Radar map/planner: %u checks, %u failures\n",checks,failures);
   return failures?1:0;
 }

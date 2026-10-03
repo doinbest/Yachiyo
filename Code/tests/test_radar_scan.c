@@ -56,12 +56,32 @@ static void measure(bool fixed,unsigned start,unsigned count,bool bad)
 }
 static void full_circle(bool fixed,unsigned count)
 { measure(fixed,2700,count,false);measure(fixed,0,count,false);measure(fixed,900,count,false);measure(fixed,1800,count,false);measure(fixed,2700,count,false);measure(fixed,0,count,false); }
+/* Zero-span CF samples let independent board bearings stay exact while packet
+ * starts still cover one rotation. Zero range fills carry no map evidence. */
+static void point_packet(unsigned start,unsigned count,unsigned distance)
+{
+  uint8_t p[LDS_MAX_FRAME_BYTES];unsigned at=8,sum=count+start;
+  p[0]=0xcf;p[1]=0xfa;put16(p+2,count);put16(p+4,start);put16(p+6,0);
+  for(unsigned i=0;i<count;i++){p[at]=80;put16(p+at+1,distance);sum+=80+distance;at+=3;}
+  put16(p+at,sum);input(p,at+2);for(unsigned i=0;i<6;i++)service();tick++;
+}
+static void board_circle(bool upper,bool lower,bool beyond_cloud)
+{
+  point_packet(2700,1,0);point_packet(0,256,0);
+  if(beyond_cloud)for(unsigned angle=10;angle<=190;angle+=10)point_packet(angle,256,0);
+  if(upper)point_packet(859,3,970); /* Upper physical board conflicts only under lower. */
+  if(lower)point_packet(1033,3,1000); /* Lower physical board conflicts only under upper. */
+  point_packet(2700,1,0);point_packet(0,1,0);
+}
 int main(void)
 {
   RadarScan_Status_t s;RadarUart_Status_t us;RadarMap_Params_t params;
+  RadarScan_StartStatus_t start_status;
   uint16_t count;const RadarSample_t *points;uint32_t id;unsigned i;
   uint8_t junk[4096];memset(junk,0,sizeof junk);
   assert(RadarScan_Init(&uart)==HAL_OK);RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_IDLE&&tx_count==0);
+  RadarScan_StartStatusGet(&start_status);assert(!start_status.scan_id && !strcmp(start_status.result.reason,"not_scanned"));
+  assert(!RadarScan_SelectStart(RADAR_START_LOWER));
   RadarMap_Defaults(&params);assert(RadarScan_Start(&params,7));force_busy=true;service();assert(tx_count==0);
   force_busy=false;configured();assert(tx_count==6);
   for(i=1;i<6;i++)assert(tx_ticks[i]-tx_ticks[i-1]>=20);
@@ -69,6 +89,7 @@ int main(void)
   assert(s.state==RADAR_SCAN_READY&&s.map_valid&&s.points_valid&&s.map_id==1&&s.scan_id==1&&s.origin_generation==7);
   assert(s.coverage_tenths==3600&&s.point_count==128&&s.unit==RADAR_UNIT_UNKNOWN);
   points=RadarScan_Points(&count);assert(points&&count==128&&points[0].angle_tenths==0&&points[31].angle_tenths==871);
+  RadarScan_StartStatusGet(&start_status);assert(start_status.scan_id==1&&!start_status.automatic&&start_status.result.start_id==RADAR_START_LOWER&&!strcmp(start_status.result.reason,"manual_reference"));
   id=s.map_id;assert(RadarScan_Start(&params,8));configured();RadarScan_StatusGet(&s);
   assert(s.map_valid&&!s.points_valid&&RadarScan_Map()!=0&&RadarScan_Points(&count)==0);
   measure(true,2700,4,false);measure(true,0,4,false);measure(true,900,4,true);
@@ -147,5 +168,44 @@ int main(void)
    RadarUart_ProbeGet(&probe);RadarScan_StatusGet(&s);
    assert(probe.state==RADAR_PROBE_CONFIRMED&&s.state==RADAR_SCAN_READY&&s.map_id==id&&s.points_valid);
    assert(RadarScan_Map()->mask==mask&&RadarScan_Params()->threshold==threshold&&RadarScan_Points(&count));}
+  /* Ambiguous auto circles retain the last map/pose, but cannot execute it as
+   * the newly captured result; their complete raw cloud remains available. */
+  RadarMap_t historical=*RadarScan_Map();RadarMap_Params_t historical_params=*RadarScan_MapParams();
+  uint32_t historical_map=s.map_id,previous_scan=s.scan_id,historical_tick=s.completed_tick;
+  RadarMap_Defaults(&params);assert(RadarScan_StartAuto(&params,21));configured();board_circle(false,false,false);
+  RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
+  assert(s.state==RADAR_SCAN_READY && s.scan_id==previous_scan+1 && s.map_id==historical_map);
+  assert(s.completed_tick==historical_tick);
+  assert(s.map_valid && !s.map_applicable && s.points_valid && !s.points_map_id && !strcmp(s.reason,"start_ambiguous"));
+  assert(!memcmp(RadarScan_Map(),&historical,sizeof historical) && !memcmp(RadarScan_MapParams(),&historical_params,sizeof historical_params));
+  assert(start_status.automatic && start_status.scan_id==s.scan_id && start_status.result.start_id==RADAR_START_UNKNOWN);
+  assert(RadarScan_Points(&count) && count==257);
+  uint32_t circle_completed_tick=tick-1U;tick+=100;
+  assert(!RadarScan_SelectStart(RADAR_START_UNKNOWN));assert(RadarScan_SelectStart(RADAR_START_LOWER));
+  RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
+  assert(s.scan_id==previous_scan+1 && s.map_id==historical_map+1 && s.points_map_id==s.map_id && s.map_applicable);
+  assert(s.completed_tick==circle_completed_tick);
+  assert(start_status.result.start_id==RADAR_START_LOWER && !strcmp(start_status.result.reason,"manual_selection"));
+  RadarScan_Stop();RadarScan_StartStatusGet(&start_status);assert(start_status.result.start_id==RADAR_START_LOWER);
+  assert(RadarScan_StartAuto(&params,22));assert(!RadarScan_SelectStart(RADAR_START_UPPER));RadarScan_Stop();
+  RadarScan_StartStatusGet(&start_status);assert(start_status.scan_id==previous_scan+1);
+  /* All raw samples feed classification, including evidence beyond 4096. */
+  assert(RadarScan_StartAuto(&params,23));configured();board_circle(false,true,true);
+  RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
+  assert(s.state==RADAR_SCAN_READY && s.truncated && s.point_count==4096 && s.raw_points==5124);
+  assert(start_status.result.start_id==RADAR_START_LOWER && start_status.result.qr_counts[0]==3 && start_status.result.qr_counts[1]==0);
+  assert(s.map_applicable && s.points_map_id==s.map_id && RadarScan_MapParams()->lidar_y_mm==230);
+  /* Contradictory frames never silently publish the lower assumption. */
+  historical_map=s.map_id;assert(RadarScan_StartAuto(&params,24));configured();board_circle(true,true,false);
+  RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
+  assert(s.map_id==historical_map && !strcmp(s.reason,"start_both_conflict") && !s.points_map_id);
+  assert(start_status.result.qr_counts[0]==3 && start_status.result.qr_counts[1]==3 && start_status.result.start_id==RADAR_START_UNKNOWN);
+  previous_scan=s.scan_id;assert(RadarScan_SelectStart(RADAR_START_UPPER));RadarScan_StatusGet(&s);
+  assert(s.scan_id==previous_scan && s.map_id==historical_map+1 && RadarScan_MapParams()->lidar_x_mm==2330 && RadarScan_MapParams()->lidar_y_mm==2170);
+  assert(RadarScan_Map()->counts[14]==3 && !(RadarScan_Map()->mask&RADAR_MAP_REQUIRED_CLEAR_MASK));
+  /* A damaged partial circle must discard its hypothesis counts as well. */
+  assert(RadarScan_StartAuto(&params,25));configured();point_packet(2700,1,0);point_packet(0,1,0);point_packet(859,3,970);
+  measure(true,1800,4,true);board_circle(false,false,false);RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
+  assert(s.state==RADAR_SCAN_READY && s.circle_restarts && start_status.result.start_id==RADAR_START_UNKNOWN && !start_status.result.qr_counts[1]);
   puts("radar_scan: commands, full circle, corrupt-frame/unit/DMA recovery, alarms, snapshot retention PASS");return 0;
 }

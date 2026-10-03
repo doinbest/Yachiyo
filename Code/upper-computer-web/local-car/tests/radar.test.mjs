@@ -166,3 +166,38 @@ test('default page transport immediately requests the next page after the matche
   try{await new Promise(setImmediate);assert.equal(wires.length,2,'matched pages should have no one-second browser sleep');await reading;}
   finally{exchange.cancel();await reading.catch(()=>{});}
 });
+
+test('start classification pages publish atomically and retain both candidate scores',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'start',session:9,origin:2,scan:3,map:7,plan:8,id:3,pages:2};
+  model.connection(true);
+  model.accept('@RADAR '+JSON.stringify({...base,page:1,qr:[0,4],raw:[0,5],conflicts:[0,2]}));assert.equal(model.snapshots.start,undefined);
+  model.accept('@RADAR '+JSON.stringify({...base,page:0,auto:true,selected:1,reason:'clear_regions'}));
+  assert.ok(model.snapshots.start,'classification should publish after all score pages arrive');
+  assert.equal(model.snapshots.start.selected,1);assert.deepEqual(model.snapshots.start.qr,[0,4]);assert.deepEqual(model.snapshots.start.conflicts,[0,2]);
+  model.connection(false);assert.equal(model.snapshots.start.historical,true);
+});
+
+test('start classification supports an extra budget page without mixing completed circles',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'start',session:4294967295,origin:4294967294,scan:4294967293,map:4294967292,plan:4294967291,id:4294967293,pages:3};
+  const frame=value=>'@RADAR '+JSON.stringify({...base,...value});
+  model.accept(frame({page:0,auto:true,selected:0,reason:'both_conflict'}));
+  model.accept(frame({page:1,qr:[1,2],raw:[3,4]}));model.accept(frame({page:2,id:22,conflicts:[2,2]}));assert.equal(model.snapshots.start,undefined);
+  model.accept(frame({page:2,conflicts:[2,2]}));assert.ok(model.snapshots.start,'classification should assemble variable score pages');assert.equal(model.snapshots.start.reason,'both_conflict');assert.deepEqual(model.snapshots.start.raw,[3,4]);
+});
+
+test('offline copies retain only the start and path belonging to their complete map',()=>{
+  const base={session:9,origin:2,scan:3,map:7,plan:8},map={...base,mask:0,counts:Array(25).fill(0),pose:[2330,2170,0],coordinate_frame:'current'};
+  const upper=radar.importSnapshot({snapshots:{map,start:{...base,selected:1},path:{...base,start:1,points:[[2250,2250,1,0]]}},params:{lidar_x_mm:2170,lidar_y_mm:230,zero_deg:180}});
+  assert.equal(upper.start_id,1);assert.equal(upper.start_mode,'upper');assert.equal(radar.importSnapshot(JSON.parse(JSON.stringify(upper))).start_id,1);
+  const untouchedOffline=radar.importSnapshot({snapshots:{map,start:{...base,selected:1}},offline:{mask:0x50140,coordinate_frame:'current'}});
+  assert.equal(untouchedOffline.start_id,1);assert.equal(untouchedOffline.mask,0);
+  const lower=radar.importSnapshot({snapshots:{map,start:{...base,scan:4,selected:0},path:{...base,start:2,points:[[2250,150,1,0]]}}});
+  assert.equal(lower.start_id,2);assert.equal(lower.start_mode,'lower');
+  const unrelated=radar.importSnapshot({snapshots:{map,start:{...base,scan:4,selected:1},path:{...base,map:8,start:1,points:[[2250,2250,1,0]]}}});
+  assert.equal(unrelated.start_id,undefined);assert.equal(unrelated.start_mode,'manual');assert.deepEqual(unrelated.points,[]);
+});
+
+test('exported offline obstacle edits and selected corner take precedence over the original device snapshot',()=>{
+  const copy=radar.importSnapshot({snapshots:{map:{mask:0,counts:Array(25).fill(0),coordinate_frame:'current'}},offline:{mask:1<<21,manual_mask:1<<21,start_id:1,start_mode:'upper',pose:[2330,2170,0],coordinate_frame:'current'}});
+  assert.equal(copy.mask,1<<21);assert.equal(copy.manual_mask,1<<21);assert.equal(copy.start_id,1);
+});

@@ -14,9 +14,20 @@ extern "C" {
 
 #define RADAR_MAP_CELL_COUNT       25U
 #define RADAR_MAP_FIXED_MASK       0x00050140UL
+#define RADAR_MAP_REQUIRED_CLEAR_MASK ((1UL<<14)|(1UL<<22))
 #define RADAR_MAP_ALL_CELLS        0x01FFFFFFUL
 #define RADAR_PLAN_MAX_POINTS      193U
 #define RADAR_PLAN_MISSION_VISITS  9U
+
+typedef enum {
+  RADAR_START_UNKNOWN=0,
+  RADAR_START_UPPER=1,
+  RADAR_START_LOWER=2
+} RadarStart_Id_t;
+
+typedef struct {
+  float x_mm, y_mm, yaw_deg; /**< 车辆名义地图位姿；mm、从+X逆时针deg。 */
+} RadarStart_Pose_t;
 
 typedef struct {
   uint16_t angle_tenths; /**< 雷达局部顺时针角，0.1°；3600等价于0。 */
@@ -47,6 +58,7 @@ typedef struct {
 typedef struct {
   uint16_t count;
   uint8_t failed_leg; /* 失败工位段1..8；0表示没有失败或输入坐标无效。 */
+  uint8_t start_id; /**< 任务起点：0=无任务起点，1=右上，2=右下。 */
   bool valid;
   RadarPlan_Point_t points[RADAR_PLAN_MAX_POINTS];
 } RadarPlan_t;
@@ -65,7 +77,9 @@ bool RadarMap_Project(const RadarMap_Params_t *params, const RadarSample_t *samp
 /** @return 通过筛选且位于[150,2250)活动区、已计入格点数时为true。 */
 bool RadarMap_Add(RadarMap_t *map, const RadarMap_Params_t *params,
                   const RadarSample_t *sample);
-/** @brief 由点数阈值生成扫描障碍并OR固定四障碍；不豁免整个任务格。 */
+/** @brief 由点数阈值生成原始障碍并OR固定四障碍；保留前方禁障格证据。 */
+void RadarMap_FinishRaw(RadarMap_t *map, const RadarMap_Params_t *params);
+/** @brief 生成扫描障碍；只豁免二维码/原料台前方两格，点数与固定障碍保留。 */
 void RadarMap_Finish(RadarMap_t *map, const RadarMap_Params_t *params);
 /** @brief 在当前图规划1→5→4→2→3→4→2→3→1；同向直线点合并。
  * 中转点station=0；业务站点station为1..5、visit为0..8；起点1/0。
@@ -75,6 +89,11 @@ void RadarMap_Finish(RadarMap_t *map, const RadarMap_Params_t *params);
  * @return 完整可达为true；失败时valid=false、count=0并报告failed_leg。
  */
 bool RadarPlan_Build(const RadarMap_t *map, RadarPlan_t *plan);
+/** @brief 同一业务路线按右上/右下起点规划并返回该起点；未知起点不规划。
+ * 右上返程经(2100,2100)，右下经(2100,300)；手动map.mask仍为权威障碍。
+ */
+bool RadarPlan_BuildFromStart(const RadarMap_t *map, RadarStart_Id_t start_id,
+                              RadarPlan_t *plan);
 /** @brief 从任意当前图位置规划一段；四邻居格路与格内轴向连接，单位mm。
  * @return 可达为true；结果station/visit均为0，不触发业务工位。
  */

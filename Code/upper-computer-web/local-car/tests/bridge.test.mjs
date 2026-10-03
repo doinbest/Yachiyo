@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {BridgeLink,readOnlyCommand} from '../bridge.mjs';
 test('communication diagnostics remain read-only while stopped',()=>{
+  assert.equal(readOnlyCommand('radar start status'),true);
+  for(const wire of ['radar start upper','radar start lower','radar scan auto'])assert.equal(readOnlyCommand(wire),false);
   assert.equal(readOnlyCommand('bus status'),true);
   assert.equal(readOnlyCommand('bus recover'),false);
   assert.equal(readOnlyCommand('grab status'),true);

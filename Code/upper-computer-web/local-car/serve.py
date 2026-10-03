@@ -24,6 +24,9 @@ RADAR_DEFAULTS = dict(lidar_x_mm=2170, lidar_y_mm=230, zero_deg=180,
 
 def plan_radar_offline(body):
     """Run the exact firmware C core locally. This never receives a serial bridge."""
+    start_mode = body.get('start_mode', 'manual')
+    if start_mode not in ('manual', 'auto', 'upper', 'lower'):
+        raise ValueError('start_mode must be manual, auto, upper or lower')
     speed = body.get('speed_mm_s', 200)
     if type(speed) not in (int, float) or not math.isfinite(speed) or not 10 <= speed <= 5000:
         raise ValueError('Route speed must be a finite number from 10 to 5000 mm/s')
@@ -47,8 +50,10 @@ def plan_radar_offline(body):
             raise ValueError('Point values exceed the radar protocol range')
     workspace = Path(__file__).resolve().parents[3]
     sources = [workspace/'Code/tools/radar_plan_cli.c', workspace/'Code/template/App/radar_map.c',
+               workspace/'Code/template/App/radar_start.c',
                workspace/'Code/template/App/chassis_route_profile.c']
-    headers = [workspace/'Code/template/App/radar_map.h', workspace/'Code/template/App/chassis_route_profile.h',
+    headers = [workspace/'Code/template/App/radar_map.h', workspace/'Code/template/App/radar_start.h',
+               workspace/'Code/template/App/chassis_route_profile.h',
                workspace/'Code/template/App/chassis_config.h', workspace/'Code/template/App/motor_id_config.h']
     executable = workspace/'.embeddedskills/tests/radar_plan_cli.exe'
     with _planner_lock:
@@ -66,7 +71,7 @@ def plan_radar_offline(body):
                 raise OSError('Shared C planner build failed: '+built.stderr[-2000:])
         request = f'RADAR1 {mask} {len(points)}\n'+' '.join(str(params[key]) for key in RADAR_DEFAULTS)+'\n'
         request += ''.join(' '.join(map(str, point))+'\n' for point in points)
-        result = subprocess.run([str(executable), '--speed', str(speed)], input=request,
+        result = subprocess.run([str(executable), '--speed', str(speed), '--start', start_mode], input=request,
                                 capture_output=True, text=True, timeout=15)
         try:
             output = json.loads(result.stdout)

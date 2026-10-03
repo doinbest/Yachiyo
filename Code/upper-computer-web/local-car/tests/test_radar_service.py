@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 import sys
 import unittest
@@ -17,6 +18,55 @@ import serve
 
 
 class RadarServiceTests(unittest.TestCase):
+    def qr_cloud(self, start):
+        # A visible patch of QR board at (2400,1200); nominal sensor installation.
+        x,y,zero=(2170,230,180) if start=='lower' else (2330,2170,0)
+        angle=round(((zero-math.degrees(math.atan2(1200-y,2400-x)))%360)*10)%3600
+        distance=round(math.hypot(2400-x,1200-y))
+        return [[angle,distance,50]]*3
+
+    def test_dual_start_offline_classifies_before_clearing_and_keeps_driving_fixed(self):
+        for name,selected,y in (('upper',1,2250),('lower',2,150)):
+            with self.subTest(start=name):
+                result=serve.plan_radar_offline({'start_mode':'auto','points':self.qr_cloud(name)})
+                self.assertEqual(result['start']['selected'],selected)
+                self.assertEqual(result['start']['reason'],'clear_regions')
+                self.assertTrue(result['valid'])
+                self.assertEqual(result['points'][0][:2],[2250,y])
+                self.assertEqual(result['points'][-1][:2],[2250,y])
+                self.assertEqual(result['mask'] & ((1<<14)|(1<<22)),0)
+                self.assertEqual(result['route_profiles']['fixed']['points'][0][:2],[2250,150])
+                self.assertEqual(result['plan_only'],name=='upper')
+                if name=='upper':
+                    self.assertFalse(result['route_profiles']['planned']['phases'])
+
+    def test_unresolved_dual_start_never_silently_builds_lower_path(self):
+        result=serve.plan_radar_offline({'start_mode':'auto','points':[]})
+        self.assertEqual(result['start']['selected'],0)
+        self.assertEqual(result['start']['reason'],'ambiguous')
+        self.assertFalse(result['valid'])
+        self.assertFalse(result['points'])
+        self.assertFalse(result['route_profiles']['planned']['phases'])
+        selected=serve.plan_radar_offline({'start_mode':'upper','points':[]})
+        self.assertEqual(selected['start']['reason'],'manual_selection')
+        self.assertEqual(selected['points'][0][:2],[2250,2250])
+        with self.assertRaises(ValueError):
+            serve.plan_radar_offline({'start_mode':'invalid'})
+
+    def test_manual_selection_keeps_raw_conflicts_but_clears_only_task_front_cells(self):
+        points=self.qr_cloud('upper')+self.qr_cloud('lower')
+        unresolved=serve.plan_radar_offline({'start_mode':'auto','points':points})
+        self.assertEqual(unresolved['start']['reason'],'both_conflict')
+        self.assertFalse(unresolved['valid'])
+        selected=serve.plan_radar_offline({'start_mode':'lower','points':points})
+        self.assertEqual(selected['start']['conflicts'],[1<<14,1<<14])
+        self.assertEqual(selected['start']['qr'],[3,3])
+        self.assertTrue(selected['valid'])
+        self.assertEqual(selected['mask'] & (1<<14),0)
+        self.assertEqual(selected['counts'][14],3)
+        override=serve.plan_radar_offline({'start_mode':'lower','points':points,'mask':1<<14})
+        self.assertFalse(override['valid']) # An explicit offline obstacle remains authoritative.
+
     def test_radar_reads_and_scoped_cancel_classification(self):
         for command in ('radar status','radar get','radar fetch cloud 7 33','radar nav status'):
             self.assertIsNotNone(serial_bridge.READ_COMMAND.fullmatch(command),command)
@@ -130,6 +180,7 @@ class RadarServiceTests(unittest.TestCase):
         # Changing the shared C core must invalidate a cached host executable.
         workspace=ROOT.parents[2]
         files=('Code/tools/radar_plan_cli.c','Code/template/App/radar_map.c','Code/template/App/radar_map.h',
+               'Code/template/App/radar_start.c','Code/template/App/radar_start.h',
                'Code/template/App/chassis_route_profile.c','Code/template/App/chassis_route_profile.h',
                'Code/template/App/chassis_config.h','Code/template/App/motor_id_config.h')
         with tempfile.TemporaryDirectory() as directory:
@@ -140,7 +191,8 @@ class RadarServiceTests(unittest.TestCase):
             with patch.object(serve,'__file__',str(clone/'Code/upper-computer-web/local-car/serve.py')):
                 serve.plan_radar_offline({})
                 executable=clone/'.embeddedskills/tests/radar_plan_cli.exe'
-                for name in ('Code/template/App/chassis_route_profile.c','Code/template/App/chassis_route_profile.h'):
+                for name in ('Code/template/App/chassis_route_profile.c','Code/template/App/chassis_route_profile.h',
+                             'Code/template/App/radar_start.c','Code/template/App/radar_start.h'):
                     path=clone/name;stamp=executable.stat().st_mtime+2
                     os.utime(path,(stamp,stamp))
                     with patch.object(serve.subprocess,'run',wraps=subprocess.run) as run:

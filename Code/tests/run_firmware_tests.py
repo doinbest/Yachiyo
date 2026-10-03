@@ -54,8 +54,9 @@ if __name__ == "__main__":
     build_test("grab_route_test", "template/App/GrabRoute.c", "template/Hardware/QR.c")
     build_test("test_radar_parser", "template/Hardware/lds_parser.c")
     build_test("test_radar_map", "template/App/radar_map.c")
+    build_test("test_radar_start", "template/App/radar_start.c", "template/App/radar_map.c")
     build_test("test_radar_scan", "template/Hardware/lds_parser.c", "template/Hardware/radar_uart.c",
-               "template/App/radar_scan.c", "template/App/radar_map.c")
+               "template/App/radar_scan.c", "template/App/radar_map.c", "template/App/radar_start.c")
     build_test("test_radar_probe", "template/Hardware/lds_parser.c", "template/Hardware/radar_uart.c")
     build_test("radar_console_test", "template/App/radar_console.c", "template/App/radar_map.c")
     build_test("grab_task_test")

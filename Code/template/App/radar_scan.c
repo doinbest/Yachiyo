@@ -8,11 +8,15 @@ static RadarMap_t published_map, working_map;
  * The console/browser can retain the previous complete cloud as history. */
 static RadarSample_t cloud[RADAR_SCAN_POINT_CAPACITY];
 static RadarScan_Status_t status;
+static RadarScan_StartStatus_t start_status;
+static RadarStart_Context_t start_candidates;
 static LdsPacket_t pending_packet;
 static LdsEvent_t incoming;
 static bool have_pending, have_previous;
+static bool capture_auto,selection_available;
 static uint16_t previous_start;
 static uint32_t progress, pending_progress, start_tick, capture_origin;
+static uint32_t capture_completed_tick;
 static uint32_t seen_bad, seen_loss, parameter_revision, capture_revision;
 
 static bool active(void)
@@ -35,9 +39,11 @@ const char *RadarScan_UnitName(RadarScan_Unit_t unit)
 HAL_StatusTypeDef RadarScan_Init(UART_HandleTypeDef *uart)
 {
   memset(&status, 0, sizeof status); RadarMap_Defaults(&parameters);
+  memset(&start_status, 0, sizeof start_status);start_status.result.reason="not_scanned";
   RadarMap_Reset(&published_map); RadarMap_Reset(&working_map);
   status.state = RADAR_SCAN_IDLE; status.reason = "idle";
   have_pending = have_previous = false;
+  capture_auto=selection_available=false;
   parameter_revision = capture_revision = 0;
   return RadarUart_Init(uart);
 }
@@ -46,21 +52,25 @@ static void reset_circle(const char *reason)
 {
   have_pending = false; progress = pending_progress = 0;
   RadarMap_Reset(&working_map);
+  if(capture_auto)RadarStart_Begin(&start_candidates,&capture_parameters);
   status.point_count = status.coverage_tenths = 0;
   status.raw_points = 0; status.truncated = false;
   status.state = RADAR_SCAN_WAIT_WRAP; status.reason = reason;
 }
 
-bool RadarScan_Start(const RadarMap_Params_t *params, uint32_t origin_generation)
+static bool start_capture(const RadarMap_Params_t *params, uint32_t origin_generation,bool automatic)
 {
   RadarUart_Status_t uart_status;
   if (active() || !RadarMap_ParamsValid(params)) return false;
   if (!RadarUart_StartScan()) return false;
   capture_parameters = *params; capture_revision = parameter_revision;
+  capture_auto=automatic;
+  selection_available=false;
   capture_origin = origin_generation; start_tick = HAL_GetTick();
   RadarUart_StatusGet(&uart_status); seen_bad = uart_status.bad; seen_loss = uart_status.loss_generation;
   have_previous = have_pending = false; progress = pending_progress = 0;
   RadarMap_Reset(&working_map);
+  if(capture_auto)RadarStart_Begin(&start_candidates,&capture_parameters);
   status.state = RADAR_SCAN_PREPARING; status.reason = "configuring";
   status.points_valid = false; status.point_count = 0; status.truncated = false;
   status.unit = RADAR_UNIT_UNKNOWN; status.elapsed_ms = 0; status.raw_points = 0;
@@ -68,6 +78,31 @@ bool RadarScan_Start(const RadarMap_Params_t *params, uint32_t origin_generation
   status.coverage_tenths = 0;
   return true;
 }
+
+bool RadarScan_Start(const RadarMap_Params_t *params,uint32_t origin_generation)
+{ return start_capture(params,origin_generation,false); }
+bool RadarScan_StartAuto(const RadarMap_Params_t *params,uint32_t origin_generation)
+{ return start_capture(params,origin_generation,true); }
+static void publish_map(const RadarMap_t *map,const RadarMap_Params_t *params)
+{
+  published_map=*map;published_parameters=*params;
+  RadarMap_Finish(&published_map,&published_parameters);
+  status.map_id++;status.points_map_id=status.map_id;status.map_valid=true;
+  status.map_applicable=capture_revision==parameter_revision;
+  status.origin_generation=capture_origin;status.completed_tick=capture_completed_tick;
+}
+bool RadarScan_SelectStart(RadarStart_Id_t start_id)
+{
+  const RadarMap_t *map;const RadarMap_Params_t *params;
+  if(active() || !selection_available)return false;
+  map=RadarStart_Map(&start_candidates,start_id);params=RadarStart_Params(&start_candidates,start_id);
+  if(!map || !params)return false;
+  publish_map(map,params);start_status.result.start_id=(uint8_t)start_id;
+  start_status.result.reason="manual_selection";
+  status.state=RADAR_SCAN_READY;status.reason="complete";return true;
+}
+void RadarScan_StartStatusGet(RadarScan_StartStatus_t *out)
+{ if(out)*out=start_status; }
 
 void RadarScan_Stop(void)
 {
@@ -95,7 +130,8 @@ static void add_packet(const LdsPacket_t *packet, uint16_t span, uint32_t packet
     sample.angle_tenths = angle; sample.distance_mm = (uint16_t)distance;
     sample.energy = packet->points[i].energy;
     status.raw_points++;
-    RadarMap_Add(&working_map, &capture_parameters, &sample);
+    if(capture_auto)RadarStart_Add(&start_candidates,&sample);
+    else RadarMap_Add(&working_map, &capture_parameters, &sample);
     if (status.point_count < RADAR_SCAN_POINT_CAPACITY) cloud[status.point_count++] = sample;
     else status.truncated = true;
   }
@@ -103,14 +139,28 @@ static void add_packet(const LdsPacket_t *packet, uint16_t span, uint32_t packet
 
 static void publish(void)
 {
-  RadarMap_Finish(&working_map, &capture_parameters);
-  published_map = working_map; published_parameters = capture_parameters;
-  status.scan_id++; status.map_id++; status.points_map_id = status.map_id;
-  status.map_valid = status.points_valid = true;
-  status.map_applicable = capture_revision == parameter_revision;
-  status.origin_generation = capture_origin; status.completed_tick = HAL_GetTick();
-  status.elapsed_ms = status.completed_tick - start_tick;
+  status.scan_id++;
+  memset(&start_status.result,0,sizeof start_status.result);
+  start_status.scan_id=status.scan_id;start_status.automatic=capture_auto;
+  status.points_valid=true;capture_completed_tick=HAL_GetTick();
+  status.elapsed_ms = capture_completed_tick - start_tick;
   status.coverage_tenths = 3600U; status.state = RADAR_SCAN_READY; status.reason = "complete";
+  if(capture_auto){
+    RadarStart_Finish(&start_candidates,&start_status.result);selection_available=true;
+    if(start_status.result.start_id!=RADAR_START_UNKNOWN)
+      publish_map(RadarStart_Map(&start_candidates,(RadarStart_Id_t)start_status.result.start_id),
+                  RadarStart_Params(&start_candidates,(RadarStart_Id_t)start_status.result.start_id));
+    else {
+      status.map_applicable=false;status.points_map_id=0;
+      status.reason=!strcmp(start_status.result.reason,"both_conflict")?"start_both_conflict":"start_ambiguous";
+    }
+  } else {
+    RadarMap_FinishRaw(&working_map,&capture_parameters);
+    start_status.result.start_id=RADAR_START_LOWER;start_status.result.reason="manual_reference";
+    start_status.result.qr_counts[1]=working_map.counts[14];start_status.result.raw_counts[1]=working_map.counts[22];
+    start_status.result.conflict_mask[1]=working_map.mask&RADAR_MAP_REQUIRED_CLEAR_MASK;
+    publish_map(&working_map,&capture_parameters);
+  }
   have_pending = have_previous = false; RadarUart_StopScan();
 }
 

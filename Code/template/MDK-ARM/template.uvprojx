@@ -2141,6 +2141,16 @@
               <FilePath>../App/radar_map.h</FilePath>
             </File>
             <File>
+              <FileName>radar_start.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/radar_start.c</FilePath>
+            </File>
+            <File>
+              <FileName>radar_start.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../App/radar_start.h</FilePath>
+            </File>
+            <File>
               <FileName>radar_scan.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/radar_scan.c</FilePath>

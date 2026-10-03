@@ -32,7 +32,8 @@ export class RadarModel{
       if(!same&&f.page!==0)return true;
       this.probe={...(same?this.probe:{}),...f,receivedAt:now,historical:!this.connected};return true;
     }
-    if(!['map','path','points','cloud','params'].includes(f.k)||!Number.isInteger(f.pages)||f.pages<1||f.pages>4096||!Number.isInteger(f.page)||f.page<0||f.page>=f.pages)return true;
+    if(!['map','path','points','cloud','params','start'].includes(f.k)||!Number.isInteger(f.pages)||f.pages<1||f.pages>4096||!Number.isInteger(f.page)||f.page<0||f.page>=f.pages)return true;
+    if(f.k==='start'&&(!u32(f.id)||f.id!==f.scan))return true;
     const identity=`${f.session}:${f.origin}:${f.scan}:${f.map}:${f.plan}:${f.pages}`;
     const key=f.k+':'+identity;
     let pages=this.pending.get(key);if(!pages){for(const k of this.pending.keys())if(k.startsWith(f.k+':'))this.pending.delete(k);pages=new Map();this.pending.set(key,pages);}
@@ -43,7 +44,15 @@ export class RadarModel{
     const complete={...ordered[0],source:'device',receivedAt:now,coordinate_frame:'current',complete:true,historical:false};
     delete complete._receivedAt;
     if(Number.isFinite(complete.age_ms))complete.age_ms+=now-ordered[0]._receivedAt;
-    if(f.k==='params'){if(ordered.some(p=>p.rev!==ordered[0].rev))return true;for(const p of ordered)if(typeof p.key==='string'&&Number.isFinite(p.value))this.params[p.key]=p.value;complete.params={...this.params};this.paramsLive=true;}
+    if(f.k==='start'){
+      if(typeof complete.auto!=='boolean'||![0,1,2].includes(complete.selected)||typeof complete.reason!=='string')return true;
+      for(const field of ['qr','raw','conflicts']){
+        const scores=ordered.find(p=>Object.hasOwn(p,field))?.[field];
+        if(!Array.isArray(scores)||scores.length!==2||!scores.every(Number.isFinite))return true;
+        complete[field]=[...scores];
+      }
+    }
+    else if(f.k==='params'){if(ordered.some(p=>p.rev!==ordered[0].rev))return true;for(const p of ordered)if(typeof p.key==='string'&&Number.isFinite(p.value))this.params[p.key]=p.value;complete.params={...this.params};this.paramsLive=true;}
     else{
       const field=f.k==='map'?'counts':'points',items=[];
       for(const p of ordered){
@@ -62,7 +71,7 @@ export class RadarModel{
   describe(snapshot,now=Date.now()){
     if(!snapshot)return '尚无完整结果';
     const cloud=['points','cloud'].includes(snapshot.k);
-    const historical=snapshot.historical===true||snapshot.source!=='device'||!this.connected||this.status&&(['session','origin','map',...(cloud?['scan']:[]),...(snapshot.k==='path'?['plan']:[])].some(k=>this.status[k]!==snapshot[k])||cloud&&!this.status.points_valid);
+    const historical=snapshot.historical===true||snapshot.source!=='device'||!this.connected||this.status&&(['session','origin','map',...(cloud||snapshot.k==='start'?['scan']:[]),...(snapshot.k==='path'?['plan']:[])].some(k=>this.status[k]!==snapshot[k])||cloud&&!this.status.points_valid||snapshot.k!=='start'&&(this.status.applicable===false||this.status.applicable===0));
     return `${historical?'历史 · ':''}${snapshot.source==='device'?'F407设备':'离线副本'} · 地图 ${snapshot.map??'—'} / 路径 ${snapshot.plan??'—'} · 结果年龄 ${Math.max(0,Math.floor(((snapshot.age_ms??0)+now-snapshot.receivedAt)/1000))} 秒`;
   }
 }
@@ -111,9 +120,17 @@ export class RadarExchange{
   });}
 }
 export function importSnapshot(value){
-  const source=value.snapshots?.map?{...value.snapshots.map,points:value.snapshots.path?.points??[],params:value.params??value.snapshots.params?.params??{},cloud:[value.snapshots.cloud,value.snapshots.points].filter(c=>c&&['session','origin','map','scan'].every(k=>c[k]===value.snapshots.map[k])).sort((a,b)=>b.receivedAt-a.receivedAt)[0]}:value;
+  const editedOffline=value.offline&&(value.offline.loaded_from_snapshot===true||value.offlinePath||value.offline.manual_mask!==undefined||[1,2].includes(value.offline.start_id));
+  let source=editedOffline?value.offline:value;
+  if(!editedOffline&&value.snapshots?.map){
+    const map=value.snapshots.map,matches=snapshot=>snapshot&&['session','origin','scan','map'].every(k=>u32(map[k])&&snapshot[k]===map[k]);
+    const start=matches(value.snapshots.start)?value.snapshots.start:null,path=matches(value.snapshots.path)?value.snapshots.path:null;
+    source={...map,points:path?.points??[],start_id:[1,2].includes(start?.selected)?start.selected:path?.start,params:value.params??value.snapshots.params?.params??{},cloud:[value.snapshots.cloud,value.snapshots.points].filter(matches).sort((a,b)=>b.receivedAt-a.receivedAt)[0]};
+  }
   if(!source||typeof source!=='object'||!u32(source.mask))throw new Error('快照需要25格mask和坐标来源');
   const result={...source,params:{...source.params},receivedAt:Date.now(),source:'offline',coordinate_frame:'current'};
+  const selected=[1,2].includes(source.start_id)?source.start_id:[1,2].includes(source.start?.selected)?source.start.selected:source.start_mode==='upper'?1:source.start_mode==='lower'?2:undefined;
+  result.start_id=selected;result.start_mode=selected===1?'upper':selected===2?'lower':'manual';
   if(source.coordinate_frame==='reference'){
     const point=p=>[2400-p[1],p[0],...p.slice(2)];
     result.points=(source.points??[]).map(point);if(source.pose)result.pose=[2400-source.pose[1],source.pose[0],(source.pose[2]??0)+90];
