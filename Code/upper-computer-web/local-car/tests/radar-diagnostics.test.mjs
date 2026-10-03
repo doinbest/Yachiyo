@@ -31,6 +31,23 @@ test('console prompts cannot hide radar status or prevent a requested page compl
 // Execute the production app's receive handler. DOM sinks are isolated; the
 // real model, parser and frame dispatch run without opening a serial port.
 const app=readFileSync(new URL('../app.mjs',import.meta.url),'utf8');
+const stopSource=app.slice(app.indexOf('async function requestStop(){'),app.indexOf('\nfunction showAttempt('));
+
+test('global stop cancels an active radar page read before waiting for the stop response',async()=>{
+  const wires=[],elements=new Map();let finishStop;
+  const exchange=new RadarExchange({timeoutMs:40,send:async wire=>{wires.push(wire);return true;}});
+  const context={radarExchange:exchange,presetCancelled:false,paramsView:null,prepView:null,
+    attempts:{supersede(){}},appendLog(){},communicationError(){},
+    $:id=>{if(!elements.has(id))elements.set(id,{textContent:'',dataset:{}});return elements.get(id);},
+    bridge:{stop:()=>new Promise(resolve=>{finishStop=resolve;})}};
+  vm.createContext(context);vm.runInContext(stopSource,context);
+  const reading=exchange.fetch('cloud',3),rejection=assert.rejects(reading,/停止操作已取消雷达读取/);await new Promise(setImmediate);
+  const stopping=context.requestStop();await rejection;
+  assert.equal(exchange.busy,false);assert.deepEqual(wires,['radar fetch cloud 3 0']);
+  exchange.receive(wire({...identity,k:'cloud',scan:3,map:7,plan:8,pages:2,offset:0,total:2,points:[[900,1234,88]]}));await new Promise(setImmediate);
+  assert.deepEqual(wires,['radar fetch cloud 3 0']);finishStop();assert.equal(await stopping,true);
+  assert.equal(elements.get('attempt-wire').textContent,'chassis stop');
+});
 const receiveSource=app.slice(app.indexOf('function receive(line){'),app.indexOf('\nfunction connection('));
 function receiver(raw=false){
   const model=new RadarModel();model.connection(true);

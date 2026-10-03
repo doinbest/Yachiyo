@@ -18,8 +18,8 @@
 #include <math.h>
 #include <errno.h>
 
-/* A requested page has its own low-priority slot. Chassis telemetry and replies
- * cannot overwrite it; pages consume at most 256 wire bytes per second. */
+/* A requested page has its own <=256-byte low-priority slot. Replies and
+ * chassis telemetry keep their priority; ConsoleTx paces the wireless bytes. */
 static RadarPlan_t Plan;
 static RadarScan_Status_t Scan;
 static ChassisLocalization_Status_t Location;
@@ -129,28 +129,46 @@ static void nav_page(bool foreground)
     (unsigned long)Route.station,(unsigned long)Route.visit,Route.stop_confirmed?"true":"false");
   (void)finish(foreground);
 }
+/* Draft with the largest page/offset digits for this snapshot, then reserve
+ * ]}\r\n and a comma with every worst-width item. Identity widths are actual;
+ * item values never change the capacity or offsets between requested pages. */
+static unsigned page_capacity(unsigned total,unsigned item_bytes)
+{
+  unsigned capacity=FormatOk && Length+4U<256U?(256U-Length-4U)/item_bytes:0U;
+  if(!capacity) capacity=1U;
+  if(total && capacity>total) capacity=total;
+  return capacity;
+}
 static bool fetch_page(void)
 {
-  unsigned i,offset,total,pages;uint16_t count=0;const RadarSample_t *points;
+  unsigned i,offset,total,pages,capacity;uint16_t count=0;const RadarSample_t *points;
   if(!strcmp(Kind,"map"))
   {
     const RadarMap_t *m=RadarScan_Map();const RadarMap_Params_t *p=RadarScan_MapParams();
-    if(!Scan.map_valid || RequestedId!=Scan.map_id || RequestedPage>=6U) return false;
-    begin("map",RequestedPage,6);
+    if(!Scan.map_valid || RequestedId!=Scan.map_id) return false;
+    begin("map",RADAR_MAP_CELL_COUNT,RADAR_MAP_CELL_COUNT+1U);
+    append("\"offset\":%u,\"counts\":[",RADAR_MAP_CELL_COUNT);
+    capacity=page_capacity(RADAR_MAP_CELL_COUNT,6U);
+    pages=1U+(RADAR_MAP_CELL_COUNT+capacity-1U)/capacity;
+    if(RequestedPage>=pages) return false;
+    begin("map",RequestedPage,pages);
     if(!RequestedPage) append("\"mask\":%lu,\"pose\":[%.1f,%.1f,%.1f],\"coverage\":%u,\"age_ms\":%lu,\"applicable\":%s",
       (unsigned long)m->mask,(double)p->lidar_x_mm,(double)p->lidar_y_mm,(double)p->zero_deg,
       3600U,(unsigned long)(HAL_GetTick()-Scan.completed_tick),applicable()?"true":"false");
-    else {offset=(RequestedPage-1U)*5U;append("\"offset\":%u,\"counts\":[",offset);
-      for(i=0;i<5U;i++) append("%s%u",i?",":"",m->counts[offset+i]);
+    else {offset=(RequestedPage-1U)*capacity;append("\"offset\":%u,\"counts\":[",offset);
+      for(i=offset;i<RADAR_MAP_CELL_COUNT && i<offset+capacity;i++) append("%s%u",i==offset?"":",",m->counts[i]);
       append("]");}
   }
   else if(!strcmp(Kind,"path"))
   {
     if(!PlanId || RequestedId!=PlanId) return false;
-    pages=Plan.count?(Plan.count+1U)/2U:1U;if(RequestedPage>=pages) return false;
-    begin("path",RequestedPage,pages);offset=RequestedPage*2U;
+    begin("path",Plan.count,Plan.count);
+    append("\"offset\":%u,\"valid\":%s,\"failed_leg\":%u,\"points\":[",Plan.count,Plan.valid?"true":"false",Plan.failed_leg);
+    capacity=page_capacity(Plan.count,26U);
+    pages=Plan.count?(Plan.count+capacity-1U)/capacity:1U;if(RequestedPage>=pages) return false;
+    begin("path",RequestedPage,pages);offset=RequestedPage*capacity;
     append("\"offset\":%u,\"valid\":%s,\"failed_leg\":%u,\"points\":[",offset,Plan.valid?"true":"false",Plan.failed_leg);
-    for(i=offset;i<Plan.count && i<offset+2U;i++) append("%s[%d,%d,%u,%u]",i==offset?"":",",
+    for(i=offset;i<Plan.count && i<offset+capacity;i++) append("%s[%d,%d,%u,%u]",i==offset?"":",",
       Plan.points[i].x_mm,Plan.points[i].y_mm,Plan.points[i].station,Plan.points[i].visit);
     append("]");
   }
@@ -158,10 +176,13 @@ static bool fetch_page(void)
   {
     points=RadarScan_Points(&count);if(!points || !Scan.points_valid || RequestedId!=Scan.scan_id) return false;
     total=!strcmp(Kind,"points") && count>360U?360U:count;
-    pages=total?(total+2U)/3U:1U;if(RequestedPage>=pages) return false;
-    begin(Kind,RequestedPage,pages);offset=RequestedPage*3U;
+    begin(Kind,total,total);
+    append("\"offset\":%u,\"total\":%u,\"truncated\":%s,\"points\":[",total,total,Scan.truncated?"true":"false");
+    capacity=page_capacity(total,18U);
+    pages=total?(total+capacity-1U)/capacity:1U;if(RequestedPage>=pages) return false;
+    begin(Kind,RequestedPage,pages);offset=RequestedPage*capacity;
     append("\"offset\":%u,\"total\":%u,\"truncated\":%s,\"points\":[",offset,total,Scan.truncated?"true":"false");
-    for(i=offset;i<total && i<offset+3U;i++) {
+    for(i=offset;i<total && i<offset+capacity;i++) {
       unsigned at=total?(uint32_t)i*count/total:0U;
       append("%s[%u,%u,%u]",i==offset?"":",",points[at].angle_tenths,points[at].distance_mm,points[at].energy);
     }append("]");
@@ -193,9 +214,10 @@ void RadarConsole_Process(void)
     if(p.id && (p.id!=ProbeReportedId || p.state!=ProbeReportedState))
       probe_pages(p.state!=RADAR_PROBE_TX && p.state!=RADAR_PROBE_WAITING);
   }
-  if(!Watching || !ConsoleTx_BulkReady() || (uint32_t)(now-LastBulk)<1000U) return;
-  if(Pending){if(!fetch_page()) reply(false,"snapshot_changed_or_page_range");Pending=false;}
-  else if(Route.planned && (uint32_t)(now-LastNav)>=1500U){nav_page(false);LastNav=now;}
+  if(!Watching || !ConsoleTx_BulkReady()) return;
+  if(Pending){if(!fetch_page()) reply(false,"snapshot_changed_or_page_range");Pending=false;LastBulk=now;return;}
+  if((uint32_t)(now-LastBulk)<1000U) return;
+  if(Route.planned && (uint32_t)(now-LastNav)>=1500U){nav_page(false);LastNav=now;}
   else if((uint32_t)(now-LastStatus)>=2000U){status_page(false);LastStatus=now;}
   else return;
   LastBulk=now;

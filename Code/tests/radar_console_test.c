@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 static uint32_t tick;
 static RadarScan_Status_t scan;
@@ -22,7 +23,17 @@ static char foreground[4][257];
 static unsigned foreground_count;
 static unsigned scans,stops,moves;
 static float submitted_speed;
-static bool busy;
+static bool busy,bulk_ready=true;
+#ifdef RADAR_CONSOLE_PLAN_FIXTURE
+static bool edge_plan;
+bool RadarPlan_FixtureBuild(const RadarMap_t *m,RadarPlan_t *p)
+{
+  if(!edge_plan) return RadarPlan_Build(m,p);
+  memset(p,0,sizeof(*p));p->valid=true;p->count=RADAR_PLAN_MAX_POINTS;
+  for(unsigned i=0;i<p->count;i++)p->points[i]=(RadarPlan_Point_t){INT16_MIN,INT16_MAX,UINT8_MAX,UINT8_MAX};
+  return true;
+}
+#endif
 static RadarUart_Probe_t probe;
 static RadarUart_Status_t uart_status;
 void RadarUart_ProbeGet(RadarUart_Probe_t *s){*s=probe;}
@@ -33,7 +44,7 @@ bool RadarUart_ProbeStart(void){
 }
 uint32_t HAL_GetTick(void){return tick;}
 bool ConsoleTx_Write(const uint8_t *d,uint16_t n){assert(n<=256);if(foreground_count<4){memcpy(foreground[foreground_count],d,n);foreground[foreground_count++][n]=0;}memcpy(reply,d,n);reply[n]=0;return true;}
-bool ConsoleTx_BulkReady(void){return true;}
+bool ConsoleTx_BulkReady(void){return bulk_ready;}
 bool ConsoleTx_Bulk(const char *d,uint16_t n){assert(n<=256);memcpy(page,d,n);page[n]=0;puts(page);return true;}
 void RadarScan_StatusGet(RadarScan_Status_t *s){*s=scan;}
 const RadarMap_t *RadarScan_Map(void){return &map;}
@@ -66,6 +77,72 @@ static void command(const char *s)
   assert(RadarConsole_Command(n,t));
 }
 static void pump(void){tick+=1000;RadarConsole_Process();}
+static void fast_pump(void){tick++;RadarConsole_Process();}
+static unsigned page_field(const char *key)
+{
+  char name[32];unsigned value;
+  snprintf(name,sizeof(name),"\"%s\":",key);
+  const char *at=strstr(page,name);assert(at && sscanf(at+strlen(name),"%u",&value)==1);
+  return value;
+}
+static void fetch(const char *kind,uint32_t id,unsigned number)
+{
+  char text[64];snprintf(text,sizeof(text),"radar fetch %s %lu %u",kind,(unsigned long)id,number);
+  page[0]=reply[0]=0;command(text);fast_pump();
+  assert(page[0] && strlen(page)<=256 && !strstr(reply,"page_size"));
+  assert(page_field("page")==number);
+}
+/* These checks catch omitted/overlapping items when page capacity changes. */
+static unsigned fetch_map(uint32_t id)
+{
+  unsigned seen=0;fetch("map",id,0);unsigned pages=page_field("pages");
+  assert(strstr(page,"\"mask\":328000") && strstr(page,"\"pose\":[2170.0,230.0,180.0]"));
+  for(unsigned number=1;number<pages;number++){
+    fetch("map",id,number);assert(page_field("pages")==pages && page_field("offset")==seen);
+    const char *at=strstr(page,"\"counts\":[");assert(at);at+=10;
+    while(*at!=']'){
+      char *end;unsigned long value=strtoul(at,&end,10);
+      assert(end!=at && seen<RADAR_MAP_CELL_COUNT && value==map.counts[seen++]);at=end;
+      if(*at==',')at++;else assert(*at==']');
+    }
+  }
+  assert(seen==RADAR_MAP_CELL_COUNT);return pages;
+}
+static unsigned fetch_points(uint32_t id)
+{
+  unsigned seen=0,pages=0;
+  for(unsigned number=0;!number || number<pages;number++){
+    fetch("points",id,number);
+    if(!number)pages=page_field("pages");else assert(page_field("pages")==pages);
+    assert(page_field("offset")==seen && page_field("total")==360);
+    const char *at=strstr(page,"\"points\":[");assert(at);at+=10;
+    while(*at!=']'){
+      unsigned angle,distance,energy;int used=0;
+      assert(sscanf(at,"[%u,%u,%u]%n",&angle,&distance,&energy,&used)==3 && used>0 && seen<360);
+      assert(angle==samples[seen].angle_tenths && distance==65535 && energy==255);seen++;at+=used;
+      if(*at==',')at++;else assert(*at==']');
+    }
+  }
+  assert(seen==360);return pages;
+}
+static unsigned fetch_path(uint32_t id,bool extremes)
+{
+  unsigned seen=0,pages=0;RadarPlan_t expected;assert(RadarPlan_Build(&map,&expected));
+  for(unsigned number=0;!number || number<pages;number++){
+    fetch("path",id,number);
+    if(!number)pages=page_field("pages");else assert(page_field("pages")==pages);
+    assert(page_field("offset")==seen);
+    const char *at=strstr(page,"\"points\":[");assert(at);at+=10;
+    while(*at!=']'){
+      int x,y,used=0;unsigned station,visit;
+      assert(sscanf(at,"[%d,%d,%u,%u]%n",&x,&y,&station,&visit,&used)==4 && used>0);
+      if(extremes){assert(seen<RADAR_PLAN_MAX_POINTS && x==INT16_MIN && y==INT16_MAX && station==255 && visit==255);}
+      else {assert(seen<expected.count && x==expected.points[seen].x_mm && y==expected.points[seen].y_mm && station==expected.points[seen].station && visit==expected.points[seen].visit);}
+      seen++;at+=used;if(*at==',')at++;else assert(*at==']');
+    }
+  }
+  assert(seen==(extremes?RADAR_PLAN_MAX_POINTS:expected.count));return pages;
+}
 int main(void)
 {
   RadarMap_Defaults(&params);captured=params;RadarMap_Reset(&map);
@@ -89,14 +166,17 @@ int main(void)
   command("radar probe status");assert(foreground_count==3&&!moves&&!scans);
   pump();command("radar fetch map 4 0");pump();assert(strstr(page,"\"mask\":328000"));
   assert(strstr(page,"\"pose\":[2170.0,230.0,180.0]"));
-  for(unsigned i=1;i<6;i++){char cmd[64];snprintf(cmd,sizeof(cmd),"radar fetch map 4 %u",i);command(cmd);pump();assert(strstr(page,"\"counts\":["));}
-  command("radar fetch points 4 119");pump();assert(strstr(page,"\"offset\":357") && strstr(page,"65535,255"));
-  for(unsigned i=0;i<120;i++){char cmd[64];snprintf(cmd,sizeof(cmd),"radar fetch points 4 %u",i);command(cmd);pump();assert(strstr(page,"\"k\":\"points\""));}
-  command("radar fetch path 1 0");pump();unsigned path_pages=0;
-  assert(sscanf(strstr(page,"\"pages\":")+8,"%u",&path_pages)==1 && path_pages>0);
-  for(unsigned i=1;i<path_pages;i++){char cmd[64];snprintf(cmd,sizeof(cmd),"radar fetch path 1 %u",i);command(cmd);pump();assert(strstr(page,"\"k\":\"path\""));}
+  /* A ready next request must not wait for the unsolicited-report timer. */
+  command("radar fetch map 4 1");page[0]=0;fast_pump();assert(strstr(page,"\"counts\":["));
+  bulk_ready=false;command("radar fetch map 4 0");page[0]=0;fast_pump();assert(!page[0]);
+  command("radar fetch map 4 1");assert(strstr(reply,"page_pending"));
+  bulk_ready=true;fast_pump();assert(strstr(page,"\"page\":0,"));assert(!moves && !scans);
+  for(unsigned i=0;i<RADAR_MAP_CELL_COUNT;i++)map.counts[i]=(uint16_t)(65000+i);
+  unsigned map_pages=fetch_map(4),points_pages=fetch_points(4),path_pages=fetch_path(1,false);
+  assert(map_pages<6 && points_pages<120);
+  printf("normal identity pages: map=%u path=%u points=%u\n",map_pages,path_pages,points_pages);
   command("radar get");pump();assert(strstr(page,"\"key\":\"lidar_x_mm\""));
-  for(unsigned i=1;i<10;i++){char cmd[64];snprintf(cmd,sizeof(cmd),"radar fetch params 0 %u",i);command(cmd);pump();assert(strstr(page,"\"k\":\"params\""));}
+  for(unsigned i=1;i<10;i++){fetch("params",0,i);assert(strstr(page,"\"k\":\"params\""));}
   command("radar nav start 50");assert(moves==1 && submitted_speed==50);
   location.generation++;command("radar nav start 50");assert(moves==1 && strstr(reply,"map_origin"));location.generation--;
   command("radar set threshold 4");assert(map.mask==RADAR_MAP_FIXED_MASK);command("radar nav start 50");assert(moves==1);
@@ -118,8 +198,8 @@ int main(void)
   tick=UINT32_MAX-1000U;scan.state=RADAR_SCAN_READY;scan.map_valid=scan.map_applicable=scan.points_valid=true;
   scan.map_id=scan.scan_id=scan.origin_generation=location.generation=UINT32_MAX;
   RadarConsole_Init();reply[0]=page[0]=0;
-  command("radar fetch points 4294967295 89");pump();
-  assert(strstr(page,"\"k\":\"points\"") && !strstr(reply,"page_size"));
+  map_pages=fetch_map(UINT32_MAX);points_pages=fetch_points(UINT32_MAX);path_pages=fetch_path(1,false);
+  printf("uint32 identity pages: map=%u path=%u points=%u\n",map_pages,path_pages,points_pages);
   command("radar nav start");assert(moves==2 && submitted_speed==200);
   command("radar task start");assert(moves==3 && submitted_speed==200);
   route.planned=true;route.state="running";route.reason="dock_approach";
@@ -142,5 +222,10 @@ int main(void)
   probe.state=RADAR_PROBE_UNCONFIRMED;probe.reason="reply_unknown";
   command("radar probe status");assert(foreground_count==3&&!strstr(reply,"page_size"));
   assert(strstr(foreground[2],"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"));
+#ifdef RADAR_CONSOLE_PLAN_FIXTURE
+  edge_plan=true;command("radar plan");assert(strstr(reply,"plan_ready"));
+  path_pages=fetch_path(2,true);
+  printf("int16/uint8 boundary path pages: %u (%u items)\n",path_pages,RADAR_PLAN_MAX_POINTS);
+#endif
   puts("radar_console_test: PASS (paging, pose, first scan, no implicit drive, origin and parameter validity)");
 }

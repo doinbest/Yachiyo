@@ -6,7 +6,7 @@ import {frameCommand,moduleForWire} from '../protocol.mjs';
 import {chineseTerminalLine} from '../terminal-format.mjs';
 
 test('complete radar pages are assembled out of order without mixing maps or erasing history',()=>{
-  const model=new radar.RadarModel(),base={v:1,k:'map',session:9,origin:2,scan:3,map:7,plan:0,pages:2,mask:4,pose:[2250,150,0]};
+  const model=new radar.RadarModel(),base={v:1,k:'map',session:9,origin:2,scan:3,map:7,plan:0,pages:2};
   model.accept('@RADAR '+JSON.stringify({...base,page:1,offset:5,counts:[6,7,8,9,10]}),100);
   assert.equal(model.snapshots.map,undefined);
   model.accept('@RADAR '+JSON.stringify({...base,page:0,offset:0,counts:[1,2,3,4,5]}),110);
@@ -107,7 +107,7 @@ test('radar transport reaches the snapshot consumer independently of terminal RX
 test('a new scan keeps the previous complete cloud and labels it historical even when the old map remains',()=>{
   const model=new radar.RadarModel(),base={v:1,session:1,origin:2,scan:3,map:7,plan:0,page:0,pages:1};
   model.connection(true);
-  model.accept('@RADAR '+JSON.stringify({...base,k:'map',mask:0,pose:[2170,230,180],counts:[0],offset:0}));
+  model.accept('@RADAR '+JSON.stringify({...base,k:'map',mask:0,pose:[2170,230,180],counts:Array(25).fill(0),offset:0}));
   model.accept('@RADAR '+JSON.stringify({...base,k:'cloud',points:[[900,200,50]],offset:0,total:1}));
   assert.deepEqual(model.snapshots.cloud.pose,[2170,230,180]);
   model.accept('@RADAR '+JSON.stringify({...base,k:'status',scan:4,state:'collecting',points_valid:false}));
@@ -129,7 +129,7 @@ test('three-sample firmware pages assemble without assuming the previous four-sa
 
 test('reconnecting preserves historical labels until that kind is fully read again, even if IDs coincide',()=>{
   const model=new radar.RadarModel(),base={v:1,session:1,origin:2,scan:3,map:7,plan:0,page:0,pages:1};
-  const map='@RADAR '+JSON.stringify({...base,k:'map',mask:0,pose:[2170,230,180],counts:[0],offset:0});
+  const map='@RADAR '+JSON.stringify({...base,k:'map',mask:0,pose:[2170,230,180],counts:Array(25).fill(0),offset:0});
   model.connection(true);model.accept(map);
   model.accept('@RADAR '+JSON.stringify({...base,k:'cloud',points:[[900,200,50]],offset:0,total:1}));
   assert.doesNotMatch(model.describe(model.snapshots.map),/历史/);
@@ -143,4 +143,26 @@ test('reconnecting preserves historical labels until that kind is fully read aga
   model.accept(map);
   assert.doesNotMatch(model.describe(model.snapshots.map),/历史/);
   assert.match(model.describe(model.snapshots.cloud),/历史/);
+});
+
+test('firmware maps require all 25 counts independently of compact page capacities',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'map',session:1,origin:2,scan:3,map:7,plan:8,pages:3};
+  const frame=f=>'@RADAR '+JSON.stringify({...base,...f});
+  model.accept(frame({page:0,mask:4,pose:[2170,230,180]}));
+  model.accept(frame({page:1,offset:0,counts:Array(7).fill(1)}));
+  model.accept(frame({page:2,offset:7,counts:Array(17).fill(2)}));
+  assert.equal(model.snapshots.map,undefined,'a short compact map must not publish a partial grid');
+  model.accept(frame({page:2,offset:7,counts:Array(18).fill(2)}));
+  assert.deepEqual(model.snapshots.map.counts,[...Array(7).fill(1),...Array(18).fill(2)]);
+});
+
+test('default page transport immediately requests the next page after the matched reply',async()=>{
+  const wires=[];let exchange;
+  exchange=new radar.RadarExchange({send:async wire=>{
+    wires.push(wire);const page=Number(wire.split(' ').at(-1));
+    queueMicrotask(()=>exchange.receive('@RADAR '+JSON.stringify({v:1,k:'path',session:1,origin:2,scan:3,map:7,plan:8,page,pages:2,offset:page,points:[[page,100,0,0]]})));return true;
+  }});
+  const reading=exchange.fetch('path',8);reading.catch(()=>{});
+  try{await new Promise(setImmediate);assert.equal(wires.length,2,'matched pages should have no one-second browser sleep');await reading;}
+  finally{exchange.cancel();await reading.catch(()=>{});}
 });

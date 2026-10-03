@@ -53,7 +53,7 @@ export class RadarModel{
         items.push(...p[field]);
       }
       complete[field]=items;
-      if(f.k==='map'&&f.pages===6&&items.length!==25)return true;
+      if(f.k==='map'&&('mask' in complete||Array.isArray(complete.pose)||f.pages===6)&&items.length!==25)return true;
       if(['points','cloud'].includes(f.k)&&Number.isInteger(f.total)&&items.length!==f.total)return true;
       if(f.k==='points'||f.k==='cloud'){const map=this.snapshots.map;if(map&&['session','origin','scan','map'].every(k=>map[k]===f[k])){complete.pose=[...map.pose];complete.age_ms=(map.age_ms??0)+now-map.receivedAt;}}
     }
@@ -67,8 +67,10 @@ export class RadarModel{
   }
 }
 export class RadarExchange{
-  constructor({send,intervalMs=1000,timeoutMs=10000,onProgress=()=>{}}){Object.assign(this,{send,intervalMs,timeoutMs,onProgress});this.pending=null;this.busy=false;this.revision=0;}
-  cancel(reason='读取已取消，保留已完成快照'){this.revision++;if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error(reason));this.pending=null;}}
+  constructor({send,intervalMs=0,timeoutMs=10000,onProgress=()=>{}}){Object.assign(this,{send,intervalMs,timeoutMs,onProgress});this.pending=null;this.busy=false;this.revision=0;this.listeners=new Set();}
+  subscribeState(listener){this.listeners.add(listener);return ()=>this.listeners.delete(listener);}
+  notifyState(type){for(const listener of this.listeners)listener({type,busy:this.busy});}
+  cancel(reason='读取已取消，保留已完成快照'){this.revision++;if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error(reason));this.pending=null;}this.notifyState('cancel');}
   receive(line){
     const f=parseRadar(line),p=this.pending;
     if(p&&/^ERR radar\b/.test(line)){clearTimeout(p.timer);this.pending=null;p.reject(new Error(line));return true;}
@@ -76,7 +78,7 @@ export class RadarExchange{
     if(!f||!p||!p.match(f))return false;
     clearTimeout(p.timer);this.pending=null;p.resolve(f);return true;
   }
-  async run(work){if(this.busy)throw new Error('上一项雷达读取仍在进行');this.busy=true;const revision=this.revision;try{return await work(revision);}finally{this.busy=false;}}
+  async run(work){if(this.busy)throw new Error('上一项雷达读取仍在进行');this.busy=true;this.notifyState('busy');const revision=this.revision;try{return await work(revision);}finally{this.busy=false;this.notifyState('idle');}}
   read(wire,match,revision,matchLine){
     frameCommand(wire);if(revision!==this.revision)return Promise.reject(new Error('读取已取消'));
     const reply=new Promise((resolve,reject)=>{
