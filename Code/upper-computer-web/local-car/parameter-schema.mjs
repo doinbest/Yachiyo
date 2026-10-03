@@ -23,7 +23,7 @@ export const parameterFields=[
   ...grabParameters.map(p=>({...p,kind:'grab',tab:materialKeys.has(p.key)?'material':motionKeys.has(p.key)?'motion':'vision',
     label:positions[p.key]??labels[p.key]??p.label,group:positions[p.key]?'Z 场景距离':p.key==='close_ms'?'夹爪动作时序':p.key==='x_car'||p.key==='base_car_offset'?'车载取放位置':materialKeys.has(p.key)?'自动取放速度':p.group,
     min:positions[p.key]?0:p.min,max:positions[p.key]?10000:p.max,unit:positions[p.key]?'mm':p.key==='x_car'?'mm':p.key==='base_car_offset'?'°':p.key==='close_ms'?'ms':p.key.endsWith('_ppm')?'脉冲/mm':p.key==='x_speed'||p.key==='z_speed'?'mm/s':'',
-    note:p.key==='close_ms'?'发出开合指令后，到下一步 Z 动作的等待；通常无需调整。':undefined,
+    note:p.key==='vision_wait_ms'?'首次等待与停稳后重获颜色的等待窗口；不会延长旧坐标有效期。':p.key==='close_ms'?'发出开合指令后，到下一步 Z 动作的等待；通常无需调整。':undefined,
     conversion:liftToDown[p.key]?'rise':positions[p.key]?'down':null,down:liftToDown[p.key],lift:pairs[p.key]})),
   ...turntableParameters.map(p=>({...p,kind:'turntable',tab:'turntable',group:p.key.startsWith('slot')?'仓位角度':'分度与反馈'})),
   ...['base','x','z'].flatMap(axis=>[['rpm','普通运动速度 / RPM',1,3000],['acc','普通运动加速度档位',1,255],['limit',axis==='z'?'普通运动脉冲限制（固定不限）':'普通运动脉冲限制',axis==='z'?0:1,3200]].map(([part,label,min,max])=>({key:`${axis}_${part}`,kind:'arm',axis,part,label,min,max,step:1,tab:'motion',group:`${axis.toUpperCase()} 普通手动运动`,readOnly:axis==='z'&&part==='limit'}))),

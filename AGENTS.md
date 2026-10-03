@@ -114,6 +114,7 @@
 - 2026-10-03：车载三仓转盘 ID 8 共用 UART5，电机与盘 1∶1 直连；第二/第三仓角度尚未标定，不预填 120°。`App/turntable` 独立于机械臂三轴，人工对齐首仓后读取反馈建立软件参考，不自动回零或清零。上电库存待人工核对，普通停止与总线恢复保留配置及库存。
 - 本轮参数界面与单件取放保护官方 Emm_V5、W25Q128 及诊断测试、IOC、EIDE 配置；仅维护 Keil 文件清单。参数页读回与写后比较不等于运动或实物验收，页面导航不得自动发送命令。
 - `grab set` 和 `config <axis> ...` 修改的是 STM32 RAM 参数，复位/重新上电恢复已烧录固件默认值；网页保存的路线速度属于浏览器本地设置。当前未实现这些参数的 Flash 保存与上电加载，不把保留 Flash 驱动或读 ID 诊断描述为已有参数持久化。
+- 2026-10-03 视觉联动二次提速：GrabTask共享align/pick默认body_speed=40、lambda=1.2、accel=60、x_speed=10（mm/s及mm/s²）；自动z_speed=55.5556 mm/s，对应当前Z尺度500 RPM，下降/提起共用，不改回零配置。vision_wait_ms=12000用于首次等颜色及停稳后重获；RecoveryUsed仅诊断，不设累计两次退出。坐标新鲜度、短漏检宽限和夹取前到位判据独立。
 - 固件主机回归：根目录运行 `python Code/tests/run_firmware_tests.py`，需要 Python 和 GCC。
 - 网页回归：根目录运行 `node --test Code/upper-computer-web/local-car/tests/*.test.mjs`。
 - 桥接回归：`python -m unittest discover -s Code/upper-computer-web/local-car/tests -p test_bridge.py`。

@@ -35,7 +35,7 @@ test('single grasp actions have explicit distinct wires and retain pure route co
 
 test('grab inputs distinguish startup defaults from unknown calibration and fit the firmware frame',()=>{
   assert.ok(protocol.grabParameters?.length>20);
-  const defaults={z_speed:27.777778,loss_grace_ms:250,age_ms:1000,accel:20,body_speed:20,lambda:0.6,travel_mm:0,lead_mm:2,dx_tol:5,dy_tol:5,ref_u:334,ref_v:338,j00:2,j01:0,j02:0,j10:0,j11:2,j12:2,x_ppm:31.746032,x_min:0,x_max:100,x_pre:0,z_observe:0,z_ppm:480,z_min:-80,z_max:0,z_grab:-80,z_place:-60,z_lift:-40,pos_tol:1,stop_speed:2,feedback_ms:2000,close_ms:500};
+  const defaults={z_speed:55.555556,loss_grace_ms:250,age_ms:1000,accel:60,body_speed:40,lambda:1.2,vision_wait_ms:12000,x_speed:10,travel_mm:0,lead_mm:2,dx_tol:5,dy_tol:5,ref_u:334,ref_v:338,j00:2,j01:0,j02:0,j10:0,j11:2,j12:2,x_ppm:31.746032,x_min:0,x_max:100,x_pre:0,z_observe:0,z_ppm:480,z_min:-80,z_max:0,z_grab:-80,z_place:-60,z_lift:-40,pos_tol:1,stop_speed:2,feedback_ms:2000,close_ms:500};
   for(const parameter of protocol.grabParameters){
     const command=protocol.commands.find(c=>c.id===`grab-set-${parameter.key}`);
     assert.equal(command.fields[0].value,defaults[parameter.key]??'',parameter.key);
@@ -131,12 +131,12 @@ test('vision pause presents only device recovery progress, with old firmware lef
   assert.equal(s.recovery_used,1); assert.equal(s.recovery_count,2); assert.equal(s.recovery_left_ms,350);
   assert.match(protocol.grabRecoveryText(s),/等待目标恢复.*2\/3.*350/);
   const reacquire=protocol.parseGrabStatus('OK grab state=vision_pause mode=align reason=vision_reacquire_wait recovery_used=0 recovery_count=1 recovery_left_ms=400 stop_confirmed=1');
-  assert.match(protocol.grabRecoveryText(reacquire),/已重发蓝色识别.*1\/3.*400/);
+  assert.match(protocol.grabRecoveryText(reacquire),/已重发目标颜色识别.*1\/3.*400/);
   const stopping=protocol.parseGrabStatus('OK grab state=vision_pause reason=vision_pause_stopping recovery_used=0 recovery_count=0 recovery_left_ms=na stop_confirmed=0');
   assert.match(protocol.grabRecoveryText(stopping),/正在停车/); assert.doesNotMatch(protocol.grabRecoveryText(stopping),/剩余/);
-  assert.match(protocol.grabRecoveryText(protocol.parseGrabStatus('OK grab state=align reason=vision_recovered recovery_used=2')),/已恢复对准.*2\/2/);
+  assert.match(protocol.grabRecoveryText(protocol.parseGrabStatus('OK grab state=align reason=vision_recovered recovery_used=2')),/已恢复对准.*2次/);
   assert.equal(protocol.grabRecoveryText(protocol.parseGrabStatus('OK grab state=align')),'未报告');
-  for(const value of ['-1','1501','1.2']) assert.equal(protocol.parseGrabStatus(`OK grab state=vision_pause recovery_left_ms=${value}`),null);
+  for(const value of ['-1','120001','1.2']) assert.equal(protocol.parseGrabStatus(`OK grab state=vision_pause recovery_left_ms=${value}`),null);
 });
 
 
@@ -165,4 +165,10 @@ test('short blue loss exposes device timing and requires new observations withou
   for(const value of [-1,301,1.5]) assert.throws(()=>protocol.buildCommand('grab-set-loss_grace_ms',{value}));
   const compact=protocol.parseGrabStatus('OK grab state=align vision=Ok dx=-95 dy=-1 loss_ms=200 loss_max_ms=200 grace_count=0');
   assert.equal(protocol.grabPixelText(compact),'-95 / -1 px');
+});
+
+test('recovery counter is diagnostic and the 12-second wait is readable',()=>{
+ const s=protocol.parseGrabStatus('OK grab state=vision_pause recovery_used=5 recovery_count=0 recovery_left_ms=12000 stop_confirmed=1');
+ assert.equal(s.recovery_used,5);assert.equal(s.recovery_left_ms,12000);
+ assert.equal(protocol.buildGrabPresetCommands({vision_wait_ms:12000})[0],'grab set vision_wait_ms 12000');
 });

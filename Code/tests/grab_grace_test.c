@@ -109,10 +109,10 @@ static void extended_recovery_after_standstill(void)
   assert(!RecoveryWaiting && status().recovery_left_ms==-1);
   wheel_moving=false;
   for(i=0;i<80 && !RecoveryWaiting;i++) step(true,1,-95,0);
-  assert(RecoveryWaiting && status().stop_confirmed && status().recovery_left_ms==1500);
+  assert(RecoveryWaiting && status().stop_confirmed && status().recovery_left_ms==12000);
   stopped_at=clock_ms;
   for(i=0;i<20;i++) step(true,1,-95,0);
-  assert(status().state==GRAB_VISION_PAUSE && status().recovery_left_ms==500 && camera_requests==2);
+  assert(status().state==GRAB_VISION_PAUSE && status().recovery_left_ms==11000 && camera_requests==2);
   camera_valid=true; step(true,1,-94,0); step(true,1,-93,0); step(true,1,-92,0);
   assert(clock_ms-stopped_at==1150 && status().state==GRAB_ALIGN && RecoveryUsed==1);
   assert(status().loss_ms>1500 && status().loss_ms==status().loss_max_ms && !CaptureCount && !closures);

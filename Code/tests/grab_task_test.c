@@ -185,7 +185,7 @@ static void configure(bool vision)
   if (!vision) return;
   /* Legacy fixtures retain their original response; boot-default tests below
    * exercise the current tuning without these explicit overrides. */
-  setting("lambda","0.3"); setting("body_speed","10");
+  setting("lambda","0.3"); setting("body_speed","10"); setting("x_speed","5");
   setting("loss_grace_ms","0"); /* Legacy immediate-pause cases; grace has its own suite. */
   setting("accel","10"); setting("travel_mm","50"); setting("lead_mm","2");
   setting("dx_tol","2"); setting("dy_tol","2"); setting("ref_u","334"); setting("ref_v","338");
@@ -290,7 +290,7 @@ static void invalid_and_cancel(void)
   step(true,1,20,20); assert(velocity_requests > 0);
   camera_valid = false; step(false,1,0,0);
   assert(status().state == GRAB_VISION_PAUSE);
-  run_to(GRAB_ERROR,100,1); assert(!closures);
+  run_to(GRAB_ERROR,320,1); assert(!closures);
   GrabTask_Stop(); run_to(GRAB_IDLE,100,1); assert(!closures);
 }
 static void solver_and_configuration(void)
@@ -555,7 +555,7 @@ static void b2_stability_boundaries(void)
   /* Parser has seen valid -> invalid -> valid in one USB batch. */
   camera.InvalidCount++; step(true,1,0,0);
   assert(status().state==GRAB_VISION_PAUSE && !CaptureCount && !VisualStable && !closures);
-  camera_valid=false; run_to(GRAB_ERROR,100,1); assert(!strcmp(status().reason,"vision_recover_timeout"));
+  camera_valid=false; run_to(GRAB_ERROR,320,1); assert(!strcmp(status().reason,"vision_recover_timeout"));
   camera_valid=true;
   GrabTask_Stop(); run_to(GRAB_IDLE,100,1);
   step(false,1,0,0); camera.InvalidCount=0; assert(GrabTask_Start("align")); run_to(GRAB_HOLD,250,1);
@@ -606,7 +606,7 @@ static void pause_until_stopped(void)
   status_write(false); assert(strstr(output,"recovery_left_ms=na"));
   for(i=0;i<80 && !RecoveryWaiting;i++) step(true,1,20,20);
   assert(RecoveryWaiting && !RecoveryCount && status().stop_confirmed);
-  assert(status().recovery_left_ms==1500);
+  assert(status().recovery_left_ms==12000);
 }
 static void restart_after_stop_and_verified_rehome(void)
 {
@@ -667,7 +667,7 @@ static void alignment_reacquire_boundaries(void)
 
   reset(); configure(true); assert(GrabTask_Start("align")); run_to(GRAB_ALIGN,180,1);
   pause_until_stopped(); before=camera_requests; camera_tx_result=HAL_BUSY;
-  run_to(GRAB_ERROR,80,1);
+  run_to(GRAB_ERROR,320,1);
   assert(camera_requests==before && !strcmp(status().reason,"vision_recover_timeout"));
   assert(status().stop_confirmed);
 
@@ -688,15 +688,15 @@ static void alignment_reacquire_boundaries(void)
 
   reset(); configure(true); assert(GrabTask_Start("align")); run_to(GRAB_ALIGN,180,1);
   before=camera_requests;
-  for(i=0;i<2;i++) {
+  for(i=0;i<4;i++) {
     pause_until_stopped(); step(true,1,20,20);
     assert(camera_requests==before+i+1 && !RecoveryCount);
     step(false,1,20,20); assert(!RecoveryCount); /* No new receive sequence after request. */
     run_to(GRAB_ALIGN,6,1); assert(RecoveryUsed==i+1);
   }
   camera.InvalidCount++; step(true,1,20,20);
-  assert(status().state==GRAB_STOPPING && !strcmp(status().reason,"vision_recover_limit"));
-  run_to(GRAB_ERROR,80,1); assert(camera_requests==before+2 && status().stop_confirmed);
+  assert(status().state==GRAB_VISION_PAUSE && RecoveryUsed==4);
+  run_to(GRAB_ALIGN,80,1); assert(camera_requests==before+5 && RecoveryUsed==5);
 }
 static void recovery_rollover_and_settle(void)
 {
@@ -731,26 +731,26 @@ static void recovery_boundaries_and_faults(void)
   unsigned i, before;
   reset(); configure(true); assert(GrabTask_Start("pick")); run_to(GRAB_ALIGN,180,1);
   Retries=2;
-  for(i=0;i<2;i++) {
+  for(i=0;i<4;i++) {
     pause_until_stopped(); before=velocity_requests;
     step(false,1,20,20); assert(!RecoveryCount);
     step(true,1,20,20); assert(RecoveryCount==1);
     camera.InvalidCount++; step(true,1,20,20); assert(RecoveryCount==1);
     camera.Data.Sequence+=5; GrabTask_Process(); assert(RecoveryCount==2);
     assert(velocity_requests==before && !closures);
-    RecoveryTick=clock_ms-1450; step(true,1,20,20); /* Exactly 1500 ms is accepted. */
+    RecoveryTick=clock_ms-11950; step(true,1,20,20); /* Exactly 12000 ms is accepted. */
     assert(status().state==GRAB_ALIGN && RecoveryUsed==i+1 && Retries==2 && !CaptureCount);
     assert(fabsf(XIntegral-Axes[0].mm)<.001f && !PreviousVelocity[0]);
   }
   camera.InvalidCount++; step(true,1,20,20);
-  assert(status().state==GRAB_STOPPING && !strcmp(status().reason,"vision_recover_limit"));
-  assert(!RecoveryWaiting && !closures); run_to(GRAB_ERROR,100,1);
+  assert(status().state==GRAB_VISION_PAUSE && RecoveryUsed==4);
+  assert(!RecoveryWaiting && !closures); run_to(GRAB_ALIGN,100,1); assert(RecoveryUsed==5);
   GrabTask_Stop(); run_to(GRAB_IDLE,100,1); step(false,1,0,0);
   assert(GrabTask_Start("align") && RecoveryUsed==0);
 
   reset(); configure(true); assert(GrabTask_Start("align")); run_to(GRAB_ALIGN,180,1);
   pause_until_stopped(); step(true,1,20,20); step(true,1,20,20);
-  RecoveryTick=clock_ms-1451; step(true,1,20,20);
+  RecoveryTick=clock_ms-11951; step(true,1,20,20);
   assert(status().state==GRAB_STOPPING && !strcmp(status().reason,"vision_recover_timeout"));
 
   reset(); configure(true); assert(GrabTask_Start("align")); run_to(GRAB_ALIGN,180,1);
@@ -836,22 +836,22 @@ static void tuned_initial_response_is_faster_and_bounded(void)
   reset(); GrabTask_BootHomeStart(); run_to(GRAB_IDLE,250,0);
   /* Live run: dx=-95..-57, dy approximately zero. The new profile should
    * exceed the old 10 mm/s cap here, then slow as it approaches the window. */
-  assert(solve(-95,0,0,v) && v[0]>19.9f && v[0]<=20.001f);
-  assert(solve(-61,0,0,v) && v[0]>18.0f && v[0]<18.6f);
-  assert(solve(-6,0,0,v) && v[0]>0 && v[0]<2.0f);
-  assert(solve(95,0,0,v) && v[0]<-19.9f && v[0]>=-20.001f);
+  assert(solve(-95,0,0,v) && v[0]>39.9f && v[0]<=40.001f);
+  assert(solve(-61,0,0,v) && v[0]>36.0f && v[0]<37.2f);
+  assert(solve(-6,0,0,v) && v[0]>0 && v[0]<4.0f);
+  assert(solve(95,0,0,v) && v[0]<-39.9f && v[0]>=-40.001f);
   assert(solve(-3000,-3000,50,v));
-  assert(hypotf(v[0],v[1])<=20.001f && fabsf(v[2])<=5.001f);
+  assert(hypotf(v[0],v[1])<=40.001f && fabsf(v[2])<=10.001f);
   /* Exercise the production acceleration limiter over consecutive updates. */
   pending_valid=false; PendingAction=MECHANICAL_ARM_ACTION_NONE;
   LastControl=clock_ms; Status.dx=-95; Status.dy=0; FreshVision=true;
   memset(PreviousVelocity,0,sizeof PreviousVelocity); XIntegral=Axes[0].mm;
   for(i=0;i<10;i++) {
     clock_ms+=100; align_control(clock_ms);
-    assert(Status.forward_mm_s>previous && Status.forward_mm_s-previous<=2.001f);
+    assert(Status.forward_mm_s>=previous && Status.forward_mm_s-previous<=6.001f);
     previous=Status.forward_mm_s;
   }
-  assert(previous>19.9f && previous<=20.001f);
+  assert(previous>39.9f && previous<=40.001f);
   Status.dx=0;
   for(i=0;i<11;i++) { clock_ms+=100; align_control(clock_ms); }
   assert(fabsf(Status.forward_mm_s)<1e-5f);
@@ -891,18 +891,18 @@ static void selected_target_colors(void)
   assert(strstr(output,"ERR grab start color") && status().state==GRAB_IDLE);
 }
 
-static void grab_z_speed_matches_250_rpm(void)
+static void grab_z_speed_matches_500_rpm(void)
 {
   unsigned i;
   reset(); GrabTask_BootHomeStart(); run_to(GRAB_IDLE,250,0);
   setting("x_car","0"); assert(GrabTask_Start("fixed")); run_to(GRAB_DESCEND,100,0);
   for(i=0;i<10 && !z_position_rpm;i++) step(true,0,0,0);
-  /* 80 mm * 480 command pulses/mm, at the user's 250 RPM target. */
-  assert(z_position_rpm==250 && z_position_pulses==-38400 && z_position_acc==8);
+  /* 80 mm * 480 command pulses/mm, at the user's 500 RPM target. */
+  assert(z_position_rpm==500 && z_position_pulses==-38400 && z_position_acc==8);
   assert(!closures); /* A submitted descent is not arrival. */
   pending_valid=false; PendingAction=MECHANICAL_ARM_ACTION_NONE;
   assert(axis_move(1,-40));
-  assert(z_position_rpm==250 && z_position_pulses==-19200 && z_position_acc==8);
+  assert(z_position_rpm==500 && z_position_pulses==-19200 && z_position_acc==8);
   /* Preserve the existing mm/s setting, including the value sent by the UI. */
   reset(); configure(false); setting("z_ppm","480"); setting("z_speed","27.777778");
   assert(axis_move(1,-10)); assert(z_position_rpm==250 && z_position_pulses==-4800);
@@ -910,9 +910,33 @@ static void grab_z_speed_matches_250_rpm(void)
   assert(axis_move(1,-10)); assert(z_position_rpm==45 && z_position_pulses==-4800);
 }
 
+static void long_color_wait_and_timeout(void)
+{
+  for(unsigned pick=0;pick<2;pick++) {
+    reset();configure(true);camera_valid=false;
+    assert(GrabTask_Start(pick?"pick":"align"));run_to(GRAB_ACQUIRE,180,1);
+    unsigned before=velocity_requests;
+    for(unsigned i=0;i<200;i++) step(true,1,0,0);
+    assert(status().state==GRAB_ACQUIRE && velocity_requests==before && !closures);
+    camera_valid=true;step(true,1,20,20);assert(status().state==GRAB_ALIGN);
+    pause_until_stopped();camera_valid=false;
+    for(unsigned i=0;i<200;i++) step(true,1,20,20);
+    assert(status().state==GRAB_VISION_PAUSE && !closures);
+    camera_valid=true;run_to(GRAB_ALIGN,10,1);assert(RecoveryUsed==1);
+  }
+  reset();configure(true);camera_valid=false;setting("vision_wait_ms","2000");
+  assert(GrabTask_Start("align"));run_to(GRAB_ACQUIRE,180,1);
+  RequestTick=clock_ms-2000;step(false,1,0,0);
+  assert(status().state==GRAB_STOPPING && !strcmp(status().reason,"vision_acquire_timeout"));
+  assert(!closures);
+  reset();configure(true);camera_valid=false;assert(GrabTask_Start("align"));
+  run_to(GRAB_ACQUIRE,180,1);GrabTask_Stop();run_to(GRAB_IDLE,100,1);
+}
+
 int main(void)
 {
-  grab_z_speed_matches_250_rpm();
+  long_color_wait_and_timeout();
+  grab_z_speed_matches_500_rpm();
   tuned_initial_response_is_faster_and_bounded();
   alignment_reacquire_boundaries();
   repeated_stop_must_finish();

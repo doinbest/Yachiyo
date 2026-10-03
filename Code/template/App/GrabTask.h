@@ -31,7 +31,7 @@ typedef struct
   uint32_t rx_seq; /**< MCU receive sequence, not camera capture sequence. */
   const char *vision_state;
   uint32_t age_ms, elapsed_ms;
-  uint32_t recovery_used; /**< Successful automatic recoveries in this task, 0..2. */
+  uint32_t recovery_used; /**< Successful automatic recoveries in this task; diagnostic only. */
   uint32_t recovery_count; /**< Consecutive new valid observations in the recovery window, 0..3. */
   int32_t recovery_left_ms; /**< -1 before standstill/outside recovery; MCU time only. */
   uint32_t loss_ms; /**< Active interruption or last completed one, measured from last good RX; ms. */

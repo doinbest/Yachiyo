@@ -28,7 +28,8 @@ export const grabParameters = [
   ...[['pos_tol','轴到位容差 / mm'],['stop_speed','停稳速度阈值 / mm·s⁻¹'],['dx_tol','DX 抓取窗口 / px'],['dy_tol','DY 抓取窗口 / px']].map(([key,label])=>({key,label,group:'反馈与抓取条件',min:0.0001,max:100})),
   ...[['close_ms','夹爪闭合 / 松开等待 / ms',1],['stable_ms','精定位稳定时间 / ms',200]].map(([key,label,min])=>({key,label,group:'反馈与抓取条件',min,max:120000,step:1})),
   ...[['feedback_ms','反馈最大年龄 / ms'],['age_ms','有效坐标接收超时 / ms']].map(([key,label])=>({key,label,group:'反馈与抓取条件',min:50,max:5000,step:1})),
-  {key:'loss_grace_ms',label:'蓝色对准漏检容忍 / ms（0 关闭）',group:'反馈与抓取条件',min:0,max:300,step:1},
+  {key:'vision_wait_ms',label:'目标颜色等待窗口 / ms',group:'反馈与抓取条件',min:1500,max:120000,step:1},
+  {key:'loss_grace_ms',label:'视觉对准短暂漏检容忍 / ms（0 关闭）',group:'反馈与抓取条件',min:0,max:300,step:1},
   {key:'frames',label:'稳定坐标观测次数',group:'反馈与抓取条件',min:3,max:100,step:1},
   {key:'retries',label:'重新对准次数上限',group:'反馈与抓取条件',min:0,max:10,step:1},
   {key:'ref_u',label:'观察姿态准心 U / px',group:'准心与像素响应',min:0,max:639,step:1},
@@ -250,7 +251,7 @@ export function parseGrabStatus(line) {
     if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(raw) || !Number.isFinite(Number(raw))) return null;
     result[key]=Number(raw);
     if (['stop_requested','stop_confirmed'].includes(key) && ![0,1].includes(result[key])) return null;
-    if (Object.hasOwn({recovery_used:2,recovery_count:3,recovery_left_ms:1500,grace_count:3},key) && (!Number.isInteger(result[key]) || result[key]<0 || result[key]>{recovery_used:2,recovery_count:3,recovery_left_ms:1500,grace_count:3}[key])) return null;
+    if (Object.hasOwn({recovery_used:4294967295,recovery_count:3,recovery_left_ms:120000,grace_count:3},key) && (!Number.isInteger(result[key]) || result[key]<0 || result[key]>{recovery_used:4294967295,recovery_count:3,recovery_left_ms:120000,grace_count:3}[key])) return null;
     if (['rx_seq','loss_ms','loss_max_ms'].includes(key) && (!Number.isInteger(result[key]) || result[key]<0 || result[key]>0xffffffff)) return null;
     if (['age','elapsed'].includes(key) && result[key]<0) return null;
   }
@@ -298,14 +299,14 @@ export function grabPixelText(snapshot) {
 /** Display only MCU-reported recovery progress; never drive control or a local timer. */
 export function grabRecoveryText(s) {
   if(!s || s.recovery_used===null || s.recovery_used===undefined)return '未报告';
-  const used=`${s.recovery_used}/2`;
+  const used=`${s.recovery_used}次`;
   if(s.reason==='vision_recover_timeout')return `恢复窗口超时；已恢复 ${used}，任务停止`;
   if(s.reason==='vision_recover_limit')return `恢复次数耗尽（${used}）；任务停止`;
   if(s.state==='vision_grace')return `短暂漏检，沿原运动趋势减速；中断 ${s.loss_ms??'未报告'} ms；恢复观测 ${s.grace_count??'未报告'}/3；不会下降夹取`;
   if(s.reason==='vision_gap_recovered')return `短暂漏检已恢复，未消耗停车恢复次数；中断 ${s.loss_ms??'未报告'} ms；重新检查对准`;
   if(s.state==='vision_pause') {
     if(s.recovery_left_ms===null || s.recovery_left_ms===undefined || s.stop_confirmed!==1)return `漏检，正在停车；已恢复 ${used}；不会下降夹取`;
-    const waiting=s.reason==='vision_reacquire_wait'?'已重发蓝色识别，等待新坐标':'等待目标恢复';
+    const waiting=s.reason==='vision_reacquire_wait'?'已重发目标颜色识别，等待新坐标':'等待目标恢复';
     return `${waiting}（${s.recovery_count??'未报告'}/3）；设备报告剩余 ${s.recovery_left_ms} ms；已恢复 ${used}；不会下降夹取`;
   }
   if(s.reason==='vision_recovered')return `已恢复对准（${used}）；重新检查对准与停稳`;

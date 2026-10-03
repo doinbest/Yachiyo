@@ -28,7 +28,7 @@ enum
   C_LAMBDA, C_BODY_SPEED, C_X_SPEED, C_Z_SPEED, C_STABLE_MS, C_FRAMES,
   C_RETRIES, C_X_WEIGHT, C_Z_PLACE, C_LOSS_GRACE_MS,
   C_Z_PROC_GRAB, C_Z_PROC_LIFT, C_Z_CAR_LIFT, C_Z_PROC_PLACE,
-  C_Z_TEMP_PLACE, C_Z_STACK_PLACE, C_X_CAR, C_BASE_CAR_OFFSET, C_COUNT
+  C_Z_TEMP_PLACE, C_Z_STACK_PLACE, C_X_CAR, C_BASE_CAR_OFFSET, C_VISION_WAIT_MS, C_COUNT
 };
 static const char *const Keys[C_COUNT] = {
   "x_ppm","z_ppm","x_min","x_max","z_min","z_max","x_pre","z_observe",
@@ -37,7 +37,7 @@ static const char *const Keys[C_COUNT] = {
   "j00","j01","j02","j10","j11","j12","lambda","body_speed","x_speed",
   "z_speed","stable_ms","frames","retries","x_weight","z_place","loss_grace_ms",
   "z_proc_grab","z_proc_lift","z_car_lift","z_proc_place","z_temp_place",
-  "z_stack_place","x_car","base_car_offset"
+  "z_stack_place","x_car","base_car_offset","vision_wait_ms"
 };
 static const char *const States[] = {"idle","prepare","acquire","align","settle",
   "descend","close","lift","turn","place","release","retract","hold","stopping","error","homing","vision_pause","vision_grace",
@@ -60,10 +60,10 @@ static uint32_t LastSequence, LastInvalidCount, StableTick, StopTick, WheelQuiet
 static uint32_t WheelGroupTick, CaptureCount;
 static int64_t WheelOrigin[4], WheelLastPosition[4];
 static uint32_t WheelLastPositionTick[4];
-#define GRAB_RECOVERY_WINDOW_MS 1500U
+#define GRAB_RECOVERY_WINDOW_MS ((uint32_t)Config[C_VISION_WAIT_MS])
 #define GRAB_CONTROL_PERIOD_MS 100U
 #define GRAB_RECOVERY_OBSERVATIONS 3U
-#define GRAB_RECOVERY_LIMIT 2U
+/* RecoveryUsed is diagnostic only; successful reacquisitions do not exhaust a quota. */
 static unsigned PrepareStep, PollIndex, Retries;
 static uint32_t RecoveryUsed, RecoveryCount, RecoveryTick, RecoverySequence;
 static bool RecoveryWaiting, RecoveryRestartPending;
@@ -243,18 +243,17 @@ void GrabTask_Init(void)
   RecoveryUsed=RecoveryCount=0; RecoveryWaiting=RecoveryRestartPending=false;
   LossActive=false; LossTick=LossLastMs=LossMaxMs=GraceCount=GraceSequence=0;
   for(i=0;i<C_COUNT;i++) Config[i]=NAN;
-  /* 2026-09-30: trial tuning from blue dx=-95..-57; the previous profile
-   * commanded at most 10 mm/s. X remains limited to 5 mm/s. */
-  Config[C_LAMBDA]=.6f; Config[C_BODY_SPEED]=20; Config[C_X_SPEED]=5;
-  /* Z: user-requested 250 RPM at 3200 command pulses/rev and 480 pulses/mm.
+  /* 2026-10-03: faster shared align/pick response; near-window control stays proportional. */
+  Config[C_LAMBDA]=1.2f; Config[C_BODY_SPEED]=40; Config[C_X_SPEED]=10;
+  /* Z: user-requested 500 RPM at 3200 command pulses/rev and 480 pulses/mm.
    * Keep the public z_speed setting in mm/s; home O_Vel is driver-owned. */
-  Config[C_Z_SPEED]=250.0f*3200.0f/(60.0f*480.0f);
+  Config[C_Z_SPEED]=500.0f*3200.0f/(60.0f*480.0f);
   Config[C_STABLE_MS]=200; Config[C_FRAMES]=3; Config[C_RETRIES]=2; Config[C_X_WEIGHT]=2.333333f;
   Config[C_POS_TOL]=1; Config[C_STOP_SPEED]=2; /* mm / mm/s, initial relaxed acceptance thresholds. */
   Config[C_FEEDBACK_MS]=2000; Config[C_CLOSE_MS]=500;
-  Config[C_AGE_MS]=1000; Config[C_ACCEL]=20; Config[C_TRAVEL]=0; Config[C_LEAD]=2;
+  Config[C_AGE_MS]=1000; Config[C_ACCEL]=60; Config[C_TRAVEL]=0; Config[C_LEAD]=2;
   Config[C_DX_TOL]=5; Config[C_DY_TOL]=5;
-  Config[C_LOSS_GRACE_MS]=250;
+  Config[C_LOSS_GRACE_MS]=250; Config[C_VISION_WAIT_MS]=12000;
   Config[C_Z_CAR_LIFT]=0; Config[C_BASE_CAR_OFFSET]=-180;
   visual_defaults_restore();
   memset(&Status,0,sizeof Status); memset(Axes,0,sizeof Axes);
@@ -621,7 +620,6 @@ static bool vision_request_valid(const Camera_SnapshotTypeDef *s)
 static void vision_pause_begin(void)
 {
   GraceCount=0;
-  if(RecoveryUsed>=GRAB_RECOVERY_LIMIT) { fault("vision_recover_limit"); return; }
   RecoveryWaiting=false; RecoveryCount=0; HaveCapture=FreshVision=false;
   /* Alignment can reacquire through the existing B2 command, without changing Pi code. */
   RecoveryRestartPending=true;
@@ -1033,6 +1031,8 @@ void GrabTask_Process(void)
   else if(Status.state==GRAB_ACQUIRE || Status.state==GRAB_ALIGN || Status.state==GRAB_SETTLE)
   {
     bool usable=vision_read(now);
+    if(Status.state==GRAB_ACQUIRE && !usable && now-RequestTick>Config[C_VISION_WAIT_MS])
+    { fault("vision_acquire_timeout"); return; }
     if(HaveCapture && (uint32_t)(now-Vision.Tick)>Config[C_AGE_MS]) fault("vision_stale");
     if(Status.state==GRAB_ACQUIRE && usable && FreshVision)
     { enter(GRAB_ALIGN); XIntegral=Axes[0].target; Status.stop_requested=Status.stop_confirmed=false; }
@@ -1245,6 +1245,7 @@ static bool config_value_valid(unsigned key,float value)
   if(key>=C_J00 && key<=C_J12) return fabsf(value)<=10000;
   if(key==C_REF_U || key==C_REF_V) return value>=0 && value<= (key==C_REF_U?639:479) && floorf(value)==value;
   if(key==C_RETRIES) return value>=0 && value<=10 && floorf(value)==value;
+  if(key==C_VISION_WAIT_MS) return value>=1500 && value<=120000 && floorf(value)==value;
   if(key==C_LOSS_GRACE_MS) return value>=0 && value<=300 && floorf(value)==value;
   if(key==C_FRAMES) return value>=3 && value<=100 && floorf(value)==value;
   if(key==C_CLOSE_MS || key==C_STABLE_MS || key==C_AGE_MS || key==C_FEEDBACK_MS)
