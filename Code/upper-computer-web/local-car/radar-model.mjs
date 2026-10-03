@@ -11,7 +11,9 @@ export const STATIONS={1:'启停区',2:'粗加工区',3:'暂存区',4:'原料区
 export {radarStateText,radarReasonText} from './radar-format.mjs';
 const u32=x=>Number.isInteger(x)&&x>=0&&x<=0xffffffff;
 export function parseRadar(line){
-  if(typeof line!=='string'||!line.startsWith('@RADAR '))return null;
+  if(typeof line!=='string')return null;
+  line=line.trim().replace(/^(?:arm>\s*)+/,'');
+  if(!line.startsWith('@RADAR '))return null;
   try{const f=JSON.parse(line.slice(7));return f?.v===1&&typeof f.k==='string'&&['session','origin','scan','map','plan'].every(k=>u32(f[k]))?f:null;}catch{return null;}
 }
 const idFor=(kind,f)=>kind==='path'?f.plan:kind==='params'?0:['points','cloud'].includes(kind)?f.scan:f.map;

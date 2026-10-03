@@ -45,11 +45,14 @@ let connectionState='disconnected',lastStopEvent=null;
 function receive(line){
   radarView?.receive(line);
   const snapshot=Object.values(radarModel.snapshots).map(s=>s.receivedAt).join(':');if(snapshot!==savedRadarSnapshot){savedRadarSnapshot=snapshot;try{localStorage.setItem('local-car-radar-snapshots',JSON.stringify({snapshots:radarModel.snapshots,params:radarModel.params}));}catch{}}
-  if(line.startsWith('@RADAR ')){
-    const frame=parseRadar(line);if(frame&&['status','nav'].includes(frame.k)){
+  const frame=parseRadar(line);
+  if(frame||line.startsWith('@RADAR ')){
+    if(frame&&['status','nav'].includes(frame.k)){
       const text=`雷达 ${frame.k} · ${radarStateText(frame.state)} · ${radarReasonText(frame.reason)} · 地图 ${frame.map} / 路径 ${frame.plan}`;
       $('map-recent-result').textContent=text;status.set('map',{line:text,time:Date.now(),live:bridge.connected});if(frame.k==='nav')routeLocked=['running','stopping','waiting','station'].includes(frame.state);renderStatus();updateControls();
-    }return;
+      if(!chineseLogs())appendLog('RX',line);
+    }else if(frame?.k==='diag')appendLog('RX',line);
+    return;
   }
   if(radarExchange.busy&&(line==='OK radar page_pending'||/^(?:arm>\s*)?radar fetch /.test(line)))return;
   appendLog('RX',line);

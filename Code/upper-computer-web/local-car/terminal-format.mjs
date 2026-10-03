@@ -52,6 +52,10 @@ function grabStatusSummary(line){
 }
 export function chineseTerminalLine(original){
   const line=original.replace(/^(?:arm>\s*)+/, '');
+  if(line.startsWith('@RADAR '))try{
+    const frame=JSON.parse(line.slice(7));
+    if(frame?.v===1&&frame.k==='diag')return `雷达诊断：接收 ${frame.bytes??'—'} B · 有效测量包 ${frame.packets??'—'} · 校验/长度异常 ${frame.bad??'—'} · 溢出 ${frame.overflow??'—'} B · 报警 ${frame.alarm??'—'} · 单位 ${frame.unit??'—'}`;
+  }catch{}
   const radar=line.match(/^(OK|ERR) radar ([a-z_]+)$/);if(radar)return `雷达${radar[1]==='ERR'?'未受理':'设备回复'}：${radarReasonText(radar[2])}`;
   if(/^(?:OK|ERR|EVT) grab state=/.test(line)){
     const summary=grabStatusSummary(line);
