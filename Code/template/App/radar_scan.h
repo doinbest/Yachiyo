@@ -29,6 +29,29 @@ typedef struct {
   bool automatic;
   RadarStart_Result_t result;
 } RadarScan_StartStatus_t;
+/** @brief Explicit debug scan and its frozen raw/cloud binding.
+ * circle_start/end delimit the first included measurement header and the final
+ * boundary frame end, relative to raw.first_position. complete requires that
+ * whole interval to remain in the contiguous raw window. */
+typedef struct {
+  RadarUart_Raw_t raw;
+  RadarMap_Params_t parameters;
+  RadarScan_State_t state;
+  RadarScan_Unit_t unit;
+  const char *reason;
+  uint32_t id, scan_id, map_id, origin_generation;
+  uint32_t circle_start, circle_end, point_total, bad, restarts;
+  uint16_t points;
+  uint8_t start_id;
+  bool automatic, complete, cloud_truncated, cloud_valid;
+} RadarScan_Raw_t;
+/** @brief Explicit raw diagnostic capture with the nominal installation.
+ * UNKNOWN evaluates both corners; UPPER/LOWER captures the named corner.
+ * Ordinary Start/StartAt/StartAuto never arm raw recording. */
+bool RadarScan_DebugStart(const RadarMap_Params_t *lower_reference,
+                         uint32_t origin_generation, RadarStart_Id_t start_id);
+void RadarScan_RawStatusGet(RadarScan_Raw_t *status);
+uint16_t RadarScan_RawRead(uint32_t offset, uint8_t *bytes, uint16_t capacity);
 HAL_StatusTypeDef RadarScan_Init(UART_HandleTypeDef *uart);
 /** @brief Accept a stationary capture; caller checks chassis/arm and origin readiness.
  * @param params Frozen parameters for this capture, mm/degrees/tenths as named.

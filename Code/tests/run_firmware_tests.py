@@ -92,6 +92,6 @@ if __name__ == "__main__":
                 "template/Hardware/Camera.c", "-o", camera_object])
     run([sys.executable, "tests/display_schedule_test.py"])
     build_test("oled_ui_test", "template/App/oled_ui.c", str(camera_object))
-    for name in ["grab_camera_protocol_test.py", "hwt101_upload_test.py", "w25q128_startup_test.py", "arm_console_test.py", "usb_camera_test.py", "usb_cdc_tx_test.py", "chassis_map_contract_test.py"]:
+    for name in ["grab_camera_protocol_test.py", "hwt101_upload_test.py", "w25q128_startup_test.py", "arm_console_test.py", "usb_camera_test.py", "usb_cdc_tx_test.py", "chassis_map_contract_test.py", "radar_capture_unpack_test.py"]:
         run([sys.executable, ROOT / "tests" / name])
     print("Firmware host regression suite: PASS")

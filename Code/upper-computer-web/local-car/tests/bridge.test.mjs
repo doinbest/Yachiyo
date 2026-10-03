@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {BridgeLink,readOnlyCommand} from '../bridge.mjs';
+test('raw radar downloads and debug status remain readable while scans stay explicit',async()=>{
+  for(const wire of ['radar debug status','radar fetch raw 1 0'])assert.equal(readOnlyCommand(wire),true);
+  for(const wire of ['radar debug scan lower','radar debug scan upper','radar debug scan auto','radar debug status extra'])assert.equal(readOnlyCommand(wire),false);
+  const f=fixture();f.setStatus({stop_latched:true});await f.bridge.attach();
+  const sent=f.bridge.send('radar fetch raw 1 0');await new Promise(setImmediate);
+  f.bridge.deliver({id:16,kind:'tx',request_id:1,text:'radar fetch raw 1 0'});await sent;
+  assert.equal(f.bridge.stopLatched,true);
+  await assert.rejects(f.bridge.send('radar debug scan lower'),/停止/);
+});
 test('communication diagnostics remain read-only while stopped',()=>{
   assert.equal(readOnlyCommand('radar start status'),true);
   for(const wire of ['radar start upper','radar start lower','radar scan auto'])assert.equal(readOnlyCommand(wire),false);

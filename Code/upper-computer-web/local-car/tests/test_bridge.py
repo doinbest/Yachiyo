@@ -60,6 +60,20 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_raw_radar_download_is_read_only_but_debug_scan_is_explicit(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        for command in ('radar debug status', 'radar fetch raw 1 0'):
+            self.assertIsNotNone(READ_COMMAND.fullmatch(command))
+            self.bridge.send(command)
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('radar debug scan lower', 'radar debug scan upper', 'radar debug scan auto', 'radar debug status extra'):
+            self.assertIsNone(READ_COMMAND.fullmatch(command))
+            with self.assertRaises(ValueError):
+                self.bridge.send(command)
+
     def test_start_status_is_read_only_during_stop_latch_but_selection_is_explicit(self):
         port = self.connect()
         with self.bridge.cv:

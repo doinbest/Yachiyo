@@ -15,6 +15,7 @@ static uint8_t work[RADAR_UART_PROCESS_BYTES];
 static uint16_t work_count, work_at;
 static LdsParser_t parser;
 static LdsEvent_t events[RADAR_EVENT_QUEUE];
+static uint32_t event_ends[RADAR_EVENT_QUEUE];
 static uint8_t event_head, event_count;
 static RadarUart_Status_t diagnostics;
 static volatile uint32_t irq_errors;
@@ -39,6 +40,36 @@ static RadarUart_Probe_t probe;
 static uint32_t probe_tick, probe_rx_start, probe_parsed, probe_generation, probe_last_byte;
 static uint8_t sn_match, sn_length;
 static bool probe_receiving, sn_collecting, sn_complete;
+/* Diagnostic storage is not DMA-owned. Only the main-loop reader writes it. */
+static uint8_t raw_bytes[RADAR_UART_RAW_BYTES];
+static RadarUart_Raw_t raw_capture;
+static uint16_t raw_head;
+
+static void raw_segment_lost(uint32_t position)
+{
+  if (!raw_capture.active) return;
+  raw_capture.losses++; raw_capture.truncated = true;
+  raw_capture.total = 0; raw_head = 0;
+  raw_capture.window_start = position - raw_capture.first_position;
+  raw_capture.received = raw_capture.window_start;
+}
+
+static void raw_append(const uint8_t *bytes, uint16_t count, uint32_t position)
+{
+  uint16_t i, tail;
+  if (!raw_capture.active) return;
+  for (i = 0; i < count; i++, position++) {
+    if ((int32_t)(position - raw_capture.first_position) < 0) continue;
+    if (!raw_capture.total) raw_capture.window_start = position - raw_capture.first_position;
+    if (raw_capture.total == RADAR_UART_RAW_BYTES) {
+      raw_head = (uint16_t)((raw_head + 1U) % RADAR_UART_RAW_BYTES);
+      raw_capture.window_start++; raw_capture.truncated = true;
+    } else raw_capture.total++;
+    tail = (uint16_t)((raw_head + raw_capture.total - 1U) % RADAR_UART_RAW_BYTES);
+    raw_bytes[tail] = bytes[i];
+    raw_capture.received = position - raw_capture.first_position + 1U;
+  }
+}
 
 static bool probe_active(void)
 {
@@ -165,6 +196,7 @@ HAL_StatusTypeDef RadarUart_Init(UART_HandleTypeDef *uart)
   command_generation = in_flight_generation = 0;
   command_due_tick = HAL_GetTick();
   memset(&probe, 0, sizeof probe); probe.reason = "not_run";
+  memset(&raw_capture, 0, sizeof raw_capture); raw_head = 0;
   probe_receiving = sn_collecting = sn_complete = false; sn_match = sn_length = 0;
   return start_receive();
 }
@@ -283,6 +315,9 @@ static void queue_event(void)
 {
   uint8_t tail = (uint8_t)((event_head + event_count) % RADAR_EVENT_QUEUE);
   events[tail] = *LdsParser_Event(&parser); event_count++;
+  /* Poll may expose an inner frame while trailing bytes stay in parser.frame.
+   * Subtracting those bytes identifies the frame's true RX end, not Poll time. */
+  event_ends[tail] = consumed - work_count + work_at - parser.used;
   /* Count only frames completed by this query's fresh input. Old buffered
    * alarms and DMA bytes ahead of the parser must not skew its result. */
   if (probe_active() && probe_receiving &&
@@ -300,6 +335,7 @@ void RadarUart_Process(void)
   service_commands(HAL_GetTick());
   if (rx_error) {
     rx_error = false; diagnostics.loss_generation++;
+    raw_segment_lost(producer_snapshot());
     discard_input(); HAL_UART_AbortReceive(radar_uart);
     if (start_receive() == HAL_OK) diagnostics.restarts++;
     else diagnostics.restart_failures++;
@@ -314,6 +350,7 @@ void RadarUart_Process(void)
   if (available > RADAR_UART_RX_BYTES) {
     diagnostics.overwritten_bytes += available - RADAR_UART_RX_BYTES;
     diagnostics.overflow_events++; diagnostics.loss_generation++;
+    raw_segment_lost(producer);
     discard_input(); service_probe(HAL_GetTick()); return;
   }
   while (budget) {
@@ -325,6 +362,7 @@ void RadarUart_Process(void)
       if (available > RADAR_UART_RX_BYTES) {
         diagnostics.overwritten_bytes += available - RADAR_UART_RX_BYTES;
         diagnostics.overflow_events++; diagnostics.loss_generation++;
+        raw_segment_lost(producer);
         discard_input(); service_probe(HAL_GetTick()); return;
       }
       take = (uint16_t)(available < budget ? available : budget);
@@ -337,8 +375,10 @@ void RadarUart_Process(void)
       if (producer - read_start > RADAR_UART_RX_BYTES) {
         diagnostics.overwritten_bytes += producer - read_start - RADAR_UART_RX_BYTES;
         diagnostics.overflow_events++; diagnostics.loss_generation++;
+        raw_segment_lost(producer);
         discard_input(); service_probe(HAL_GetTick()); return;
       }
+      raw_append(work, take, read_start);
       consumed += take; work_count = take; work_at = 0;
     }
     probe_byte(work[work_at], consumed - work_count + work_at, HAL_GetTick());
@@ -349,10 +389,64 @@ void RadarUart_Process(void)
 }
 
 bool RadarUart_ReadEvent(LdsEvent_t *event)
+{ return RadarUart_ReadEventAt(event, 0); }
+
+bool RadarUart_ReadEventAt(LdsEvent_t *event, uint32_t *end_position)
 {
   if (!event || !event_count) return false;
+  if (end_position) *end_position = event_ends[event_head];
   *event = events[event_head]; event_head = (uint8_t)((event_head + 1U) % RADAR_EVENT_QUEUE);
   event_count--; return true;
+}
+
+void RadarUart_RawStart(void)
+{
+  memset(&raw_capture, 0, sizeof raw_capture); raw_head = 0;
+  raw_capture.first_position = producer_snapshot();
+  raw_capture.active = raw_capture.valid = true;
+}
+
+void RadarUart_RawStop(void)
+{
+  uint32_t end, position, remaining, crc = 0xffffffffU;
+  uint16_t take;
+  unsigned i, bit;
+  if (!raw_capture.active) return;
+  /* work[] was recorded on the successful DMA copy. Freeze the still unread
+   * DMA tail independently of parser admission, including alarms/bad frames. */
+  end = producer_snapshot(); position = consumed; remaining = end - position;
+  if (remaining > RADAR_UART_RX_BYTES) {
+    position = end - RADAR_UART_RX_BYTES;
+    raw_segment_lost(position); remaining = RADAR_UART_RX_BYTES;
+  }
+  if (rx_error) raw_segment_lost(position);
+  while (remaining) {
+    take = (uint16_t)(RADAR_UART_RX_BYTES - ((position - ring_base) % RADAR_UART_RX_BYTES));
+    if (take > remaining) take = (uint16_t)remaining;
+    raw_append((uint8_t *)rx_words + ((position - ring_base) % RADAR_UART_RX_BYTES), take, position);
+    position += take; remaining -= take;
+  }
+  for (i = 0; i < raw_capture.total; i++) {
+    crc ^= raw_bytes[(raw_head + i) % RADAR_UART_RAW_BYTES];
+    for (bit = 0; bit < 8; bit++) crc = (crc >> 1) ^ ((crc & 1U) ? 0xedb88320U : 0U);
+  }
+  raw_capture.crc32 = crc ^ 0xffffffffU; raw_capture.active = false;
+}
+
+void RadarUart_RawGet(RadarUart_Raw_t *out)
+{ if (out) *out = raw_capture; }
+
+uint16_t RadarUart_RawRead(uint32_t offset, uint8_t *bytes, uint16_t capacity)
+{
+  uint16_t count, first, at;
+  if (!bytes || !raw_capture.valid || raw_capture.active || offset >= raw_capture.total) return 0;
+  count = (uint16_t)(raw_capture.total - offset);
+  if (count > capacity) count = capacity;
+  at = (uint16_t)((raw_head + offset) % RADAR_UART_RAW_BYTES);
+  first = (uint16_t)(RADAR_UART_RAW_BYTES - at); if (first > count) first = count;
+  memcpy(bytes, raw_bytes + at, first);
+  if (first < count) memcpy(bytes + first, raw_bytes, count - first);
+  return count;
 }
 
 void RadarUart_StatusGet(RadarUart_Status_t *status)

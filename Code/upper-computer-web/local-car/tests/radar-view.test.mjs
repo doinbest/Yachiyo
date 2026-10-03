@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {RadarModel,RadarExchange} from '../radar-model.mjs';
 import {mountRadarWorkspace,mountRadarParameters} from '../radar-view.mjs';
+import {rawFrames,rawLine} from './radar-raw-fixture.mjs';
 
 function surface(){
   class Element{
@@ -82,6 +83,78 @@ function liveWorkspace(ui,{respond=true,canSend=()=>true}={}){
 
 const headingChoices=ui=>ui.get('radar-heading-options').children.filter(child=>child.dataset.worldAngle!==undefined);
 const chooseHeading=(ui,angle)=>headingChoices(ui).find(child=>Number(child.dataset.worldAngle)===angle).onclick();
+
+test('fixed obstacle cells and newly scanned cells have visibly different map colors',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);try{
+    h.model.snapshots.map={k:'map',session:9,origin:2,scan:3,map:7,plan:8,mask:0x50140|(1<<13),counts:Array(25).fill(0)};h.workspace.render();
+    const cells=ui.get('radar-obstacles').children;
+    const fixed=cells.find(cell=>cell.attributes['data-cell']==='6'),scanned=cells.find(cell=>cell.attributes['data-cell']==='13');
+    assert.equal(fixed?.attributes['data-obstacle'],'fixed');assert.equal(scanned?.attributes['data-obstacle'],'scan');
+    assert.notEqual(fixed.attributes.fill,scanned.attributes.fill);
+  }finally{await h.close();}
+});
+
+test('explicit diagnostic circle downloads matching map path cloud and raw and blocks early exports',async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{respond:false});let held;
+  const frames=rawFrames({scan:4,map:8,id:12});
+  h.exchange.send=async wire=>{
+    h.wires.push(wire);const [, ,kind,,pageText]=wire.split(' '),page=Number(pageText);
+    if(kind==='raw'&&page===6)held=frames[page];
+    else if(kind==='raw')queueMicrotask(()=>h.workspace.receive(rawLine(frames[page])));
+    else if(kind==='cloud')queueMicrotask(()=>h.workspace.receive(frame({k:'cloud',scan:4,map:8,plan:9,total:2,offset:0,truncated:false,points:[[0,100,1],[900,200,2]]})));
+    else queueMicrotask(()=>h.workspace.receive(h.reply(wire)));
+    return true;
+  };
+  try{
+    h.workspace.receive(frame({k:'status',state:'idle',scan:3,map:7,plan:8,points_valid:false}));
+    ui.get('radar-select-lower').onclick();
+    assert.equal(typeof ui.get('radar-debug-scan').onclick,'function');ui.get('radar-debug-scan').onclick();await flush();
+    assert.equal(h.wires[0],'radar debug scan lower');h.workspace.receive('OK radar debug_scan_accepted');
+    h.workspace.receive(frame({k:'status',state:'wait_wrap',scan:3,map:7,plan:8}));
+    h.workspace.receive(frame({k:'status',state:'ready',scan:4,map:8,plan:9,applicable:true,points_valid:true}));
+    h.workspace.receive(rawLine(frames[0]));await flush();await flush();
+    assert.deepEqual(h.wires.filter(wire=>wire.startsWith('radar fetch ')),['radar fetch map 8 0','radar fetch map 8 1','radar fetch map 8 2','radar fetch path 9 0','radar fetch path 9 1','radar fetch cloud 4 0',...Array.from({length:7},(_,page)=>`radar fetch raw 12 ${page}`)]);
+    assert.equal(ui.get('radar-debug-export').disabled,true);assert.equal(ui.get('radar-export').disabled,true);
+    assert.match(ui.get('radar-debug-status').textContent,/下载.*原始.*6\/7/);
+    h.workspace.receive(rawLine(held));await flush();
+    assert.equal(ui.get('radar-debug-export').disabled,false);assert.equal(ui.get('radar-export').disabled,false);
+    assert.match(ui.get('radar-debug-status').textContent,/完整.*可导出/);
+    h.workspace.receive(frame({k:'status',state:'ready',scan:4,map:8,plan:9,applicable:true,points_valid:true}));await flush();
+    assert.equal(h.wires.filter(wire=>wire==='radar fetch raw 12 0').length,1);
+    ui.get('radar-scan-selected').onclick();await flush();
+    const create=URL.createObjectURL;let saved;URL.createObjectURL=blob=>{saved=blob;return 'blob:test';};
+    try{
+      ui.get('radar-export').onclick();assert.equal(Object.hasOwn(JSON.parse(await saved.text()).snapshots,'raw'),false);
+      ui.get('radar-debug-export').onclick();assert.equal(JSON.parse(await saved.text()).snapshots.raw.id,12);
+    }finally{URL.createObjectURL=create;}
+  }finally{await h.close();}
+});
+
+test('automatic diagnostic circle with unresolved start downloads cloud and raw without reading an old map',async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{respond:false}),frames=rawFrames({scan:4,map:0,id:12});frames[1].start=0;frames[1].auto=true;
+  h.exchange.send=async wire=>{h.wires.push(wire);const [, ,kind,,pageText]=wire.split(' ');queueMicrotask(()=>h.workspace.receive(kind==='raw'?rawLine(frames[Number(pageText)]):frame({k:'cloud',scan:4,map:0,plan:0,pose:[2170,230,180],total:2,offset:0,truncated:false,points:[[0,100,1],[900,200,2]]})));return true;};
+  try{
+    h.workspace.receive(frame({k:'status',state:'idle',points_valid:false}));ui.get('radar-debug-scan').onclick();await flush();
+    assert.equal(h.wires[0],'radar debug scan auto');h.workspace.receive('OK radar debug_scan_accepted');
+    h.workspace.receive(frame({k:'status',state:'wait_wrap'}));h.workspace.receive(frame({k:'status',state:'ready',scan:4,map:7,plan:8,applicable:false,points_valid:true,reason:'start_ambiguous'}));
+    h.workspace.receive(rawLine(frames[0]));await flush();await flush();
+    assert.equal(h.wires.some(wire=>/^radar fetch (map|path)/.test(wire)),false);
+    assert.equal(h.wires.includes('radar fetch cloud 4 0'),true);assert.equal(ui.get('radar-debug-export').disabled,false);
+    assert.match(ui.get('radar-debug-status').textContent,/起点未确定.*完整点云.*原始/);
+  }finally{await h.close();}
+});
+
+for(const rawState of ['stopped','ready'])test(`${rawState} partial diagnostic requires explicit download and explains incomplete raw without old cloud or map`,async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{respond:false}),frames=rawFrames({scan:0,map:0,id:12});Object.assign(frames[0],{state:rawState,complete:false});frames[3].circle=[0,0];frames[4].cloud_valid=false;
+  h.exchange.send=async wire=>{h.wires.push(wire);queueMicrotask(()=>h.workspace.receive(rawLine(frames[Number(wire.split(' ').at(-1))])));return true;};
+  try{
+    ui.get('radar-select-lower').onclick();ui.get('radar-debug-scan').onclick();await flush();h.workspace.receive('OK radar debug_scan_accepted');
+    h.exchange.cancel();h.workspace.receive(rawLine(frames[0]));await flush();assert.deepEqual(h.wires,['radar debug scan lower']);
+    assert.equal(ui.get('radar-debug-download').disabled,false);ui.get('radar-debug-download').onclick();await flush();await flush();
+    assert.equal(h.wires.some(wire=>/^radar fetch (cloud|map|path)/.test(wire)),false);assert.equal(ui.get('radar-debug-export').disabled,false);
+    assert.match(ui.get('radar-debug-status').textContent,rawState==='ready'?/采集完成.*原始记录未覆盖完整圈.*不能完整重放/:/未完成有效圈.*仅导出原始/);
+  }finally{await h.close();}
+});
 function headingReplies(h,{value=90,reject=false}={}){
   h.exchange.send=async wire=>{h.wires.push(wire);queueMicrotask(()=>h.workspace.receive(wire.startsWith('radar set ')?(reject?'ERR radar scan_busy_or_parameters':'OK radar parameter_updated_ram'):frame({k:'params',rev:3,key:'zero_deg',value})));return true;};
 }

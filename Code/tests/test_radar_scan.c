@@ -12,7 +12,7 @@ static HAL_UART_RxEventTypeTypeDef rx_type;
 static bool tx_busy, force_busy;
 static unsigned tx_count;
 static unsigned receive_failures;
-static uint32_t tx_ticks[256];
+static uint32_t tx_ticks[1024];
 static char last_tx[7];
 uint32_t HAL_GetTick(void) { return tick; }
 HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef *u,uint8_t *p,uint16_t n)
@@ -56,6 +56,118 @@ static void measure(bool fixed,unsigned start,unsigned count,bool bad)
 }
 static void full_circle(bool fixed,unsigned count)
 { measure(fixed,2700,count,false);measure(fixed,0,count,false);measure(fixed,900,count,false);measure(fixed,1800,count,false);measure(fixed,2700,count,false);measure(fixed,0,count,false); }
+static void board_circle(bool upper,bool lower,bool beyond_cloud);
+static uint32_t crc32_bytes(const uint8_t *bytes,unsigned count)
+{
+  uint32_t crc=0xffffffffU;
+  for(unsigned i=0;i<count;i++){
+    crc^=bytes[i];for(unsigned bit=0;bit<8;bit++)crc=(crc>>1)^((crc&1U)?0xedb88320U:0U);
+  }
+  return crc^0xffffffffU;
+}
+static void debug_input(uint8_t *expected,unsigned *length,const uint8_t *bytes,unsigned count)
+{
+  memcpy(expected+*length,bytes,count);*length+=count;input(bytes,count);
+  for(unsigned i=0;i<8;i++)service();
+}
+/* Dropping unparsed status/alarm/bad bytes, using current parameters, or marking
+ * a cropped circle complete must fail these tests. Only the HAL is simulated. */
+static void test_debug_raw(void)
+{
+  RadarMap_Params_t p;RadarScan_Raw_t raw;RadarScan_Status_t s;
+  uint8_t expected[2048],downloaded[RADAR_UART_RAW_BYTES],frame[LDS_MAX_FRAME_BYTES];
+  RadarSample_t saved[128];RadarMap_t saved_map;uint16_t count;
+  static const uint8_t prefix[]={0x53,0x54,0x0f,0,0,0,0x45,0x44,
+    0xce,0xce,0xce,0xce,7,0,'P','R','O','D','U','C','T',' ','S','N',':',' ','T','1','\r','\n'};
+  assert(crc32_bytes((const uint8_t *)"123456789",9)==0xcbf43926U);
+  /* A recovered inner event ends before the last RX byte that exposed it.
+   * Its location must come from buffered frame consumption, not Poll time. */
+  {
+    static const uint8_t nested[]={0xce,0xfa,4,0,100,0,0xce,0xfa,1,0,200,0,0,0,0,201,0,0,0,0};
+    LdsEvent_t event;uint32_t end;RadarUart_Raw_t uart_raw;
+    assert(RadarScan_Init(&uart)==HAL_OK);RadarUart_RawStart();RadarUart_RawGet(&uart_raw);
+    input(nested,sizeof nested);RadarUart_Process();
+    assert(RadarUart_ReadEventAt(&event,&end) && event.kind==LDS_EVENT_MEASUREMENT && event.data.packet.start_angle_tenths==200);
+    assert(end-uart_raw.first_position==17);
+    RadarUart_RawStop();RadarUart_RawGet(&uart_raw);
+    assert(uart_raw.total==sizeof nested && RadarUart_RawRead(0,downloaded,sizeof downloaded)==sizeof nested && !memcmp(downloaded,nested,sizeof nested));
+  }
+  for(unsigned fixed=0;fixed<2;fixed++){
+    RadarMap_Defaults(&p);assert(RadarScan_Init(&uart)==HAL_OK);
+    RadarScan_RawStatusGet(&raw);assert(!raw.id && !raw.complete && !RadarScan_RawRead(0,downloaded,1));
+    assert(RadarScan_DebugStart(&p,71,RADAR_START_LOWER));configured();
+    unsigned length=0,n=packet(frame,fixed,1800,4);frame[n-1]^=1;
+    debug_input(expected,&length,prefix,sizeof prefix);debug_input(expected,&length,frame,n);
+    unsigned prelude=length;
+    static const unsigned angles[]={2700,0,900,1800,2700,0};
+    for(unsigned i=0;i<6;i++){n=packet(frame,fixed,angles[i],4);debug_input(expected,&length,frame,n);}
+    RadarScan_StatusGet(&s);RadarScan_RawStatusGet(&raw);
+    assert(s.state==RADAR_SCAN_READY && raw.complete && raw.id==1 && raw.scan_id==s.scan_id && raw.map_id==s.map_id);
+    assert(raw.origin_generation==71 && raw.unit==RADAR_UNIT_MM && raw.start_id==RADAR_START_LOWER && !raw.automatic);
+    assert(raw.raw.total==length && raw.raw.received==length && !raw.raw.truncated && !raw.raw.losses);
+    assert(raw.circle_start==prelude+n && raw.circle_end==length && !raw.raw.window_start);
+    assert(raw.raw.crc32==crc32_bytes(expected,length) && raw.bad==1 && raw.cloud_valid);
+    assert(RadarScan_RawRead(0,downloaded,sizeof downloaded)==length && !memcmp(expected,downloaded,length));
+    assert(!RadarScan_RawRead(length,downloaded,1));
+    assert(RadarScan_RawRead(3,downloaded,7)==7 && !memcmp(expected+3,downloaded,7));
+    unsigned expected_count=fixed?15U:16U; /* CF's final 360deg endpoint is excluded. */
+    const RadarSample_t *points=RadarScan_Points(&count);assert(points && count==expected_count);
+    memcpy(saved,points,count*sizeof(*points));saved_map=*RadarScan_Map();
+    assert(RadarScan_SetParam("zero_deg",90));RadarScan_RawStatusGet(&raw);assert(raw.parameters.zero_deg==180);
+    /* Replay the actual captured bytes through the real parser and assembler. */
+    assert(RadarScan_Init(&uart)==HAL_OK);assert(RadarScan_Start(&p,71));configured();
+    input(expected,length);for(unsigned i=0;i<100;i++)service();
+    points=RadarScan_Points(&count);assert(points && count==expected_count);
+    for(unsigned i=0;i<count;i++)assert(points[i].angle_tenths==saved[i].angle_tenths &&
+      points[i].distance_mm==saved[i].distance_mm && points[i].energy==saved[i].energy);
+    assert(!memcmp(RadarScan_Map(),&saved_map,sizeof saved_map));
+    RadarScan_RawStatusGet(&raw);assert(!raw.id);
+  }
+  /* A long prelude rolls away, but the final circle remains downloadable. */
+  assert(RadarScan_Init(&uart)==HAL_OK);RadarMap_Defaults(&p);
+  assert(RadarScan_DebugStart(&p,72,RADAR_START_UPPER));configured();
+  memset(downloaded,0x21,1000);
+  for(unsigned i=0;i<20;i++){input(downloaded,1000);for(unsigned j=0;j<4;j++)service();}
+  full_circle(true,4);RadarScan_RawStatusGet(&raw);RadarScan_StatusGet(&s);
+  assert(raw.complete && raw.raw.truncated && raw.raw.total==RADAR_UART_RAW_BYTES && raw.raw.window_start>0);
+  assert(raw.circle_start>=raw.raw.window_start && raw.circle_end<=raw.raw.window_start+raw.raw.total);
+  assert(raw.parameters.lidar_x_mm==2330 && raw.parameters.lidar_y_mm==2170 && raw.parameters.zero_deg==0);
+  assert(RadarScan_RawRead(0,downloaded,sizeof downloaded)==sizeof downloaded && raw.raw.crc32==crc32_bytes(downloaded,sizeof downloaded));
+  uint32_t raw_id=raw.id;assert(RadarScan_Start(&p,73));RadarScan_RawStatusGet(&raw);
+  assert(raw.id==raw_id && raw.complete && !raw.cloud_valid);configured();full_circle(false,4);
+  RadarScan_RawStatusGet(&raw);assert(raw.id==raw_id && !raw.cloud_valid);
+  /* Partial stop and timeout publish diagnostic bytes, never a complete circle. */
+  assert(RadarScan_DebugStart(&p,74,RADAR_START_LOWER));configured();input(prefix,sizeof prefix);service();RadarScan_Stop();
+  RadarScan_RawStatusGet(&raw);assert(raw.id==raw_id+1 && raw.state==RADAR_SCAN_STOPPED && !raw.complete && !raw.scan_id && !raw.map_id);
+  assert(raw.raw.total==sizeof prefix && RadarScan_RawRead(0,downloaded,sizeof downloaded)==sizeof prefix);
+  assert(RadarScan_DebugStart(&p,75,RADAR_START_UNKNOWN));configured();input(prefix,sizeof prefix);service();tick+=10001;service();
+  RadarScan_RawStatusGet(&raw);assert(raw.state==RADAR_SCAN_ERROR && !raw.complete && raw.automatic);
+  /* More than 16KB in the final circle is explicit truncation, not replayable. */
+  assert(RadarScan_DebugStart(&p,76,RADAR_START_LOWER));configured();measure(false,2700,256,false);measure(false,0,256,false);
+  for(unsigned angle=100;angle<3600;angle+=100)measure(false,angle,256,false);
+  measure(false,0,256,false);RadarScan_RawStatusGet(&raw);RadarScan_StatusGet(&s);
+  assert(s.state==RADAR_SCAN_READY && raw.scan_id==s.scan_id && raw.raw.truncated && !raw.complete);
+  assert(raw.circle_start<raw.raw.window_start && raw.point_total==9216 && raw.cloud_truncated);
+  /* DMA loss is recorded independently of parsing; a later intact circle can recover. */
+  assert(RadarScan_DebugStart(&p,77,RADAR_START_LOWER));configured();
+  for(unsigned i=0;i<3;i++)input(downloaded,4096);
+  service();full_circle(false,4);
+  RadarScan_RawStatusGet(&raw);assert(raw.raw.losses && raw.complete && raw.circle_start>=raw.raw.window_start);
+  /* An unresolved auto circle binds map=0; selecting it later does not rewrite
+   * the already frozen diagnostic model or attach the older published map. */
+  RadarScan_StatusGet(&s);uint32_t historical_map=s.map_id;
+  assert(RadarScan_DebugStart(&p,78,RADAR_START_UNKNOWN));configured();board_circle(false,false,false);
+  RadarScan_RawStatusGet(&raw);RadarScan_StatusGet(&s);
+  assert(raw.complete && raw.cloud_valid && raw.scan_id==s.scan_id && !raw.map_id && s.map_id==historical_map);
+  assert(raw.points==257 && !raw.start_id && raw.automatic && raw.parameters.lidar_x_mm==2170);
+  assert(RadarScan_SelectStart(RADAR_START_UPPER));RadarScan_RawStatusGet(&raw);
+  assert(!raw.map_id && !raw.start_id && raw.parameters.lidar_x_mm==2170 && raw.cloud_valid);
+  assert(RadarScan_DebugStart(&p,79,RADAR_START_LOWER));configured();
+  {static const uint8_t cm[]={0x53,0x54,0x0e,0,0,0,0x45,0x44};input(cm,sizeof cm);service();}
+  full_circle(false,4);RadarScan_RawStatusGet(&raw);
+  const RadarSample_t *points=RadarScan_Points(&count);
+  assert(raw.complete && raw.unit==RADAR_UNIT_CM && points && points[0].distance_mm==1000);
+}
 /* Zero-span CF samples let independent board bearings stay exact while packet
  * starts still cover one rotation. Zero range fills carry no map evidence. */
 static void point_packet(unsigned start,unsigned count,unsigned distance)
@@ -286,6 +398,6 @@ int main(void)
   assert(RadarScan_StartAuto(&params,25));configured();point_packet(2700,1,0);point_packet(0,1,0);point_packet(859,3,970);
   measure(true,1800,4,true);board_circle(false,false,false);RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
   assert(s.state==RADAR_SCAN_READY && s.circle_restarts && start_status.result.start_id==RADAR_START_UNKNOWN && !start_status.result.qr_counts[1]);
-  test_nominal_manual_start();
-  puts("radar_scan: commands, full circle, manual corners, corrupt-frame/unit/DMA recovery, alarms, snapshot retention PASS");return 0;
+  test_nominal_manual_start();test_debug_raw();
+  puts("radar_scan: commands, full circle, manual corners, raw CE/CF replay, CRC/window/partial capture, corrupt-frame/unit/DMA recovery, alarms, snapshot retention PASS");return 0;
 }

@@ -7,6 +7,23 @@
 #include "lds_parser.h"
 #define RADAR_UART_RX_BYTES 4096U
 #define RADAR_UART_PROCESS_BYTES 512U
+#define RADAR_UART_RAW_BYTES 16384U
+
+/** @brief Frozen diagnostic RX window. Offsets count bytes from RawStart.
+ * The rolling window may drop an old prelude; losses discard the older segment
+ * so the retained bytes always describe one contiguous RX interval. */
+typedef struct {
+  uint32_t first_position, window_start, total, received, crc32, losses;
+  bool active, valid, truncated;
+} RadarUart_Raw_t;
+/** @brief Arm raw capture at the current DMA cursor; no UART transmission. */
+void RadarUart_RawStart(void);
+/** @brief Freeze the bytes already received, including parser-independent tail. */
+void RadarUart_RawStop(void);
+void RadarUart_RawGet(RadarUart_Raw_t *status);
+/** @brief Read up to capacity retained bytes; offset is relative to the window.
+ * Returns zero until frozen, or outside the retained window. */
+uint16_t RadarUart_RawRead(uint32_t offset, uint8_t *bytes, uint16_t capacity);
 typedef struct {
   uint32_t received_bytes, parsed_bytes, packets, status_packets, bad;
   uint32_t overwritten_bytes, overflow_events, queue_full, loss_generation;
@@ -48,5 +65,8 @@ bool RadarUart_StartScan(void);
 /** @brief Schedule LSTOPH; reception and lifetime diagnostics remain active. */
 void RadarUart_StopScan(void);
 bool RadarUart_ReadEvent(LdsEvent_t *event);
+/** @brief Event plus actual absolute RX offset immediately after its frame.
+ * Includes buffered events recovered inside a bad outer packet. */
+bool RadarUart_ReadEventAt(LdsEvent_t *event, uint32_t *end_position);
 void RadarUart_StatusGet(RadarUart_Status_t *status);
 #endif

@@ -1,6 +1,7 @@
 import {RouteRunner,defaultSegment,defaultRoute,bodyCorners,turntableGap,routeResultText} from './route-model.mjs?v=two-batch-1';
 import {DEFAULT_GEOMETRY,SIM_MAX_RPM,FIELD,inverse,forward,quantize,rotate,midpoint,wheelCenters,FixedStepper,Telemetry,motionDisplay} from './map-model.mjs?v=route-20260925';
 import {RouteProfileRunner,profilePhaseText,profileResultText,PROFILE_MAX_RPM} from './route-profile.mjs';
+import {RADAR_GRID} from './radar-model.mjs';
 
 const $=id=>document.getElementById(id);
 const fmt=(v,n=1)=>Number.isFinite(v)?v.toFixed(n):'—';
@@ -12,8 +13,8 @@ function svg(tag,attrs={},text){const e=document.createElementNS(ns,tag);for(con
 function fieldDrawing(){
   const root=$('field-static');
   root.append(svg('rect',{x:0,y:0,width:2400,height:2400,fill:'#c5c9ce',stroke:'#607486','stroke-width':8}));
-  for(let i=0;i<=2400;i+=300){root.append(svg('path',{d:`M ${i} 0 V 2400 M 0 ${i} H 2400`,stroke:'#9ca9b5','stroke-width':2}));}
   for(const b of FIELD.blocks)root.append(svg('rect',{x:b.x,y:b.y,width:450,height:450,fill:'#f8edb7',stroke:'#d0b25c','stroke-width':3}));
+  for(const mm of RADAR_GRID)root.append(svg('path',{d:`M ${mm} 150 V 2250 M 150 ${mm} H 2250`,stroke:'#607486','stroke-width':5,'data-radar-grid':mm}));
   for(const b of [{x:0,y:910,w:150,h:580},{x:910,y:0,w:580,h:150}])root.append(svg('rect',{x:b.x,y:b.y,width:b.w,height:b.h,fill:'#e9cc83',stroke:'#a08046','stroke-width':3}));
   for(const y of [0,2100])root.append(svg('rect',{x:2100,y,width:300,height:300,fill:'#92bfdf',stroke:'#467ba6','stroke-width':3}));
   root.append(svg('circle',{cx:1200,cy:2470,r:150,fill:'#fff3d2',stroke:'#996c3e','stroke-width':5}),svg('path',{d:'M 2400 1100 V 1300',stroke:'#193b59','stroke-width':15}));

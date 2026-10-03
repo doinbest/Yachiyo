@@ -23,6 +23,7 @@
 static RadarPlan_t Plan;
 static RadarScan_Status_t Scan;
 static RadarScan_StartStatus_t Start;
+static RadarScan_Raw_t Raw;
 static ChassisLocalization_Status_t Location;
 static ChassisRoute_Status_t Route;
 static uint32_t Session,PlanId,PlanMap,LastBulk,LastStatus,LastNav,ParamsRevision;
@@ -32,6 +33,8 @@ static uint32_t StartReportedScan,StartReportedMap;
 static bool Watching,Pending,FormatOk;
 static uint32_t ProbeReportedId;
 static RadarUart_ProbeState_t ProbeReportedState;
+static uint32_t RawSession,RawReportedId;
+static RadarScan_State_t RawReportedState;
 static char Kind[8],Line[257];
 static uint32_t RequestedId;
 static unsigned RequestedPage,Length;
@@ -43,6 +46,7 @@ static const char *const States[]={"idle","preparing","wait_wrap","collecting","
 static void refresh(void)
 {
   RadarScan_StatusGet(&Scan);RadarScan_StartStatusGet(&Start);
+  RadarScan_RawStatusGet(&Raw);
   ChassisLocalization_Get(&Location);ChassisRoute_StatusGet(&Route);
 }
 static bool applicable(void)
@@ -157,9 +161,75 @@ static unsigned page_capacity(unsigned total,unsigned item_bytes)
   if(total && capacity>total) capacity=total;
   return capacity;
 }
+static void begin_raw(unsigned page,unsigned pages)
+{
+  Length=0;FormatOk=true;
+  append("@RADAR {\"v\":1,\"k\":\"raw\",\"session\":%lu,\"origin\":%lu,\"scan\":%lu,\"map\":%lu,\"plan\":0,\"id\":%lu,\"page\":%u,\"pages\":%u,",
+    (unsigned long)RawSession,(unsigned long)Raw.origin_generation,(unsigned long)Raw.scan_id,
+    (unsigned long)Raw.map_id,(unsigned long)Raw.id,page,pages);
+}
+static bool raw_page(unsigned page,bool foreground)
+{
+  unsigned total=(unsigned)Raw.raw.total,capacity,pages,offset,i;uint8_t bytes[128];
+  /* Worst page/offset widths are stable for the frozen window. */
+  begin_raw(total+5U,total+5U);
+  append("\"offset\":%u,\"total\":%u,\"hex\":\"",total,total);
+  capacity=page_capacity(total,2U);if(capacity>sizeof bytes)capacity=sizeof bytes;
+  pages=5U+(total?(total+capacity-1U)/capacity:0U);
+  if(page>=pages)return false;
+  begin_raw(page,pages);
+  switch(page){
+  case 0:
+    append("\"state\":\"%s\",\"complete\":%s,\"truncated\":%s,\"total\":%u,\"crc32\":\"%08lX\"",
+      RadarScan_StateName(Raw.state),Raw.complete?"true":"false",Raw.raw.truncated?"true":"false",total,
+      (unsigned long)Raw.raw.crc32);break;
+  case 1:
+    append("\"pose\":[%.9g,%.9g,%.9g],\"unit\":\"%s\",\"start\":%u,\"auto\":%s,\"points\":%u",
+      (double)Raw.parameters.lidar_x_mm,(double)Raw.parameters.lidar_y_mm,(double)Raw.parameters.zero_deg,
+      RadarScan_UnitName(Raw.unit),Raw.start_id,Raw.automatic?"true":"false",Raw.points);break;
+  case 2:
+    append("\"filter\":[%u,%u,%u,%u,%u,%u,%u],\"point_total\":%lu",
+      Raw.parameters.distance_min_mm,Raw.parameters.distance_max_mm,Raw.parameters.angle_min_tenths,
+      Raw.parameters.angle_max_tenths,Raw.parameters.threshold,Raw.parameters.energy_min,Raw.parameters.energy_max,
+      (unsigned long)Raw.point_total);break;
+  case 3:
+    append("\"window\":%lu,\"circle\":[%lu,%lu],\"cloud_truncated\":%s",
+      (unsigned long)Raw.raw.window_start,(unsigned long)Raw.circle_start,(unsigned long)Raw.circle_end,
+      Raw.cloud_truncated?"true":"false");break;
+  case 4:
+    append("\"received\":%lu,\"losses\":%lu,\"bad\":%lu,\"restarts\":%lu,\"cloud_valid\":%s",
+      (unsigned long)Raw.raw.received,(unsigned long)Raw.raw.losses,(unsigned long)Raw.bad,
+      (unsigned long)Raw.restarts,Raw.cloud_valid?"true":"false");break;
+  default:
+    offset=(page-5U)*capacity;
+    i=RadarScan_RawRead(offset,bytes,(uint16_t)capacity);if(!i)return false;
+    append("\"offset\":%u,\"total\":%u,\"hex\":\"",offset,total);
+    for(unsigned at=0;at<i;at++)append("%02X",bytes[at]);
+    append("\"");break;
+  }
+  return finish(foreground);
+}
+static void begin_cloud(const char *kind,unsigned page,unsigned pages)
+{
+  if(!Raw.cloud_valid || Raw.scan_id!=Scan.scan_id){begin(kind,page,pages);return;}
+  Length=0;FormatOk=true;
+  append("@RADAR {\"v\":1,\"k\":\"%s\",\"session\":%lu,\"origin\":%lu,\"scan\":%lu,\"map\":%lu,\"plan\":0,\"page\":%u,\"pages\":%u,",
+    kind,(unsigned long)RawSession,(unsigned long)Raw.origin_generation,(unsigned long)Raw.scan_id,
+    (unsigned long)Raw.map_id,page,pages);
+}
+static void cloud_pose(void)
+{
+  if(Raw.cloud_valid && Raw.scan_id==Scan.scan_id)
+    append("\"pose\":[%.9g,%.9g,%.9g],",(double)Raw.parameters.lidar_x_mm,
+      (double)Raw.parameters.lidar_y_mm,(double)Raw.parameters.zero_deg);
+}
 static bool fetch_page(void)
 {
   unsigned i,offset,total,pages,capacity;uint16_t count=0;const RadarSample_t *points;
+  if(!strcmp(Kind,"raw")){
+    if(!Raw.id || RequestedId!=Raw.id || Raw.raw.active)return false;
+    return raw_page(RequestedPage,false);
+  }
   if(!strcmp(Kind,"map"))
   {
     const RadarMap_t *m=RadarScan_Map();const RadarMap_Params_t *p=RadarScan_MapParams();
@@ -192,13 +262,16 @@ static bool fetch_page(void)
   }
   else if(!strcmp(Kind,"points") || !strcmp(Kind,"cloud"))
   {
-    points=RadarScan_Points(&count);if(!points || !Scan.points_valid || !Scan.points_map_id || RequestedId!=Scan.scan_id) return false;
+    points=RadarScan_Points(&count);
+    if(!points || !Scan.points_valid || (!Scan.points_map_id && !Raw.cloud_valid) || RequestedId!=Scan.scan_id) return false;
     total=!strcmp(Kind,"points") && count>360U?360U:count;
-    begin(Kind,total,total);
+    begin_cloud(Kind,total,total);
+    cloud_pose(); /* Reserve the first page's frozen pose in every capacity draft. */
     append("\"offset\":%u,\"total\":%u,\"truncated\":%s,\"points\":[",total,total,Scan.truncated?"true":"false");
     capacity=page_capacity(total,18U);
     pages=total?(total+capacity-1U)/capacity:1U;if(RequestedPage>=pages) return false;
-    begin(Kind,RequestedPage,pages);offset=RequestedPage*capacity;
+    begin_cloud(Kind,RequestedPage,pages);offset=RequestedPage*capacity;
+    if(!RequestedPage)cloud_pose();
     append("\"offset\":%u,\"total\":%u,\"truncated\":%s,\"points\":[",offset,total,Scan.truncated?"true":"false");
     for(i=offset;i<total && i<offset+capacity;i++) {
       unsigned at=total?(uint32_t)i*count/total:0U;
@@ -221,6 +294,7 @@ void RadarConsole_Init(void)
   Watching=Pending=false;Kind[0]=0;
   StartReportedScan=StartReportedMap=0;
   ProbeReportedId=0;ProbeReportedState=RADAR_PROBE_IDLE;
+  RawSession=Session;RawReportedId=0;RawReportedState=RADAR_SCAN_IDLE;
 }
 void RadarConsole_Process(void)
 {
@@ -235,6 +309,9 @@ void RadarConsole_Process(void)
   }
   if(Start.scan_id && (Start.scan_id!=StartReportedScan || Scan.map_id!=StartReportedMap)){
     start_pages();status_page(true);LastStatus=LastBulk=now;
+  }
+  if(Raw.id && (Raw.id!=RawReportedId || Raw.state!=RawReportedState)){
+    (void)raw_page(0,true);RawReportedId=Raw.id;RawReportedState=Raw.state;
   }
   if(!Watching || !ConsoleTx_BulkReady()) return;
   if(Pending){if(!fetch_page()) reply(false,"snapshot_changed_or_page_range");Pending=false;LastBulk=now;return;}
@@ -284,6 +361,27 @@ bool RadarConsole_Command(unsigned n,char *t[])
     }
   }
   if(n==3U && !strcmp(t[1],"probe") && !strcmp(t[2],"status")){probe_pages(true);return true;}
+  if(n==3U && !strcmp(t[1],"debug") && !strcmp(t[2],"status")){
+    (void)raw_page(0,true);return true;
+  }
+  if(n==4U && !strcmp(t[1],"debug") && !strcmp(t[2],"scan") &&
+     (!strcmp(t[3],"upper") || !strcmp(t[3],"lower") || !strcmp(t[3],"auto"))){
+    RadarStart_Id_t start=!strcmp(t[3],"auto")?RADAR_START_UNKNOWN:
+      !strcmp(t[3],"upper")?RADAR_START_UPPER:RADAR_START_LOWER;
+    RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
+    if(p.state==RADAR_PROBE_TX || p.state==RADAR_PROBE_WAITING)reason="query_in_progress";
+    else if(actuators_busy())reason="stationary_capture_required";
+    else {
+      ok=RadarScan_DebugStart(RadarScan_Params(),Location.generation,start);
+      reason=ok?"debug_scan_accepted":"scan_busy_or_parameters";
+    }
+    reply(ok,reason);
+    if(ok){
+      CaptureOrigin=Location.generation;RawSession=Session;refresh();status_page(true);
+      (void)raw_page(0,true);RawReportedId=Raw.id;RawReportedState=Raw.state;LastStatus=HAL_GetTick();
+    }
+    return true;
+  }
   if(n==2U && !strcmp(t[1],"probe")){
     if(RadarConsole_ScanBusy()) reply(false,"scan_in_progress");
     else if(!RadarUart_ProbeStart()) reply(false,"probe_busy_or_uart");
@@ -335,7 +433,7 @@ bool RadarConsole_Command(unsigned n,char *t[])
     reason=ok?"parameter_updated_ram":"parameter_range_or_key";
   }
   else if(n==5U && !strcmp(t[1],"fetch") && integer(t[3],&id) && integer(t[4],&page)){
-    if(strcmp(t[2],"map") && strcmp(t[2],"path") && strcmp(t[2],"points") && strcmp(t[2],"cloud") && strcmp(t[2],"params")) reason="fetch_kind";
+    if(strcmp(t[2],"map") && strcmp(t[2],"path") && strcmp(t[2],"points") && strcmp(t[2],"cloud") && strcmp(t[2],"params") && strcmp(t[2],"raw")) reason="fetch_kind";
     else if(Pending) reason="page_pending";
     else if(page>65535U) reason="page_range";
     else {strcpy(Kind,t[2]);RequestedId=id;RequestedPage=(unsigned)page;Pending=true;return true;}

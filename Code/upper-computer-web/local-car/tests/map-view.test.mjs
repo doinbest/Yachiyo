@@ -39,6 +39,15 @@ const state=(t,valid=true)=>({v:1,kind:'state',session:42,t_ms:t,target:{body:[0
 const receive=(view,packet)=>view.receive('@CHASSIS '+JSON.stringify(packet));
 function online(view){view.beginPreparedTelemetry(42);receive(view,config);receive(view,state(20));}
 
+test('field displays the actual nonuniform 5 by 5 radar boundaries instead of a 300 mm background grid',()=>{
+  const ui=surface();try{
+    mountMap({send:async()=>true});
+    const grid=ui.get('field-static').children.filter(node=>node.attributes['data-radar-grid']!==undefined);
+    assert.deepEqual(grid.map(node=>node.attributes.d),[150,550,1000,1400,1850,2250].map(mm=>`M ${mm} 150 V 2250 M 150 ${mm} H 2250`));
+    assert.equal(ui.get('field-static').children.some(node=>node.attributes.d==='M 300 0 V 2400 M 0 300 H 2400'),false);
+  }finally{ui.restore();}
+});
+
 test('map mounts without a vehicle-source selector and defaults to one feedback vehicle',()=>{
   const ui=surface(),wires=[];try{
     let view;assert.doesNotThrow(()=>{view=mountMap({send:async wire=>{wires.push(wire);return true;}});});

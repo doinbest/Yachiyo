@@ -19,6 +19,9 @@ static uint16_t previous_start;
 static uint32_t progress, pending_progress, start_tick, capture_origin;
 static uint32_t capture_completed_tick;
 static uint32_t seen_bad, seen_loss, parameter_revision, capture_revision;
+static RadarScan_Raw_t debug_snapshot;
+static bool capture_debug;
+static uint32_t incoming_end, debug_bad_start;
 
 static bool active(void)
 {
@@ -45,6 +48,7 @@ HAL_StatusTypeDef RadarScan_Init(UART_HandleTypeDef *uart)
   status.state = RADAR_SCAN_IDLE; status.reason = "idle";
   have_pending = have_previous = false;
   capture_auto=selection_available=false;
+  capture_debug=false;memset(&debug_snapshot,0,sizeof debug_snapshot);
   capture_start=RADAR_START_LOWER;
   parameter_revision = capture_revision = 0;
   return RadarUart_Init(uart);
@@ -57,6 +61,7 @@ static void reset_circle(const char *reason)
   if(capture_auto)RadarStart_Begin(&start_candidates,&capture_parameters);
   status.point_count = status.coverage_tenths = 0;
   status.raw_points = 0; status.truncated = false;
+  if(capture_debug)debug_snapshot.circle_start=debug_snapshot.circle_end=0;
   status.state = RADAR_SCAN_WAIT_WRAP; status.reason = reason;
 }
 
@@ -66,6 +71,7 @@ static bool start_capture(const RadarMap_Params_t *params, uint32_t origin_gener
   RadarUart_Status_t uart_status;
   if (active() || !RadarMap_ParamsValid(params)) return false;
   if (!RadarUart_StartScan()) return false;
+  capture_debug=false;
   capture_parameters = *params; capture_revision = parameter_revision;
   capture_auto=automatic;capture_start=start_id;
   selection_available=false;
@@ -94,6 +100,51 @@ bool RadarScan_StartAt(const RadarMap_Params_t *params,uint32_t origin_generatio
   if(start_id!=RADAR_START_UPPER && start_id!=RADAR_START_LOWER)return false;
   return start_capture(params,origin_generation,false,start_id);
 }
+bool RadarScan_DebugStart(const RadarMap_Params_t *params,uint32_t origin_generation,RadarStart_Id_t start_id)
+{
+  RadarUart_Status_t uart_status;
+  uint32_t id=debug_snapshot.id+1U;
+  if(start_id!=RADAR_START_UNKNOWN && start_id!=RADAR_START_UPPER && start_id!=RADAR_START_LOWER)return false;
+  if(!start_capture(params,origin_generation,start_id==RADAR_START_UNKNOWN,start_id))return false;
+  memset(&debug_snapshot,0,sizeof debug_snapshot);capture_debug=true;
+  debug_snapshot.id=id?id:1U;debug_snapshot.parameters=capture_parameters;
+  debug_snapshot.origin_generation=origin_generation;debug_snapshot.start_id=(uint8_t)start_id;
+  debug_snapshot.automatic=capture_auto;debug_snapshot.state=RADAR_SCAN_PREPARING;
+  debug_snapshot.reason="configuring";
+  RadarUart_StatusGet(&uart_status);debug_bad_start=uart_status.bad;
+  RadarUart_RawStart();RadarUart_RawGet(&debug_snapshot.raw);return true;
+}
+
+static void finish_debug(bool circle_completed)
+{
+  RadarUart_Status_t uart_status;
+  if(!capture_debug)return;
+  RadarUart_RawStop();RadarUart_RawGet(&debug_snapshot.raw);RadarUart_StatusGet(&uart_status);
+  debug_snapshot.state=status.state;debug_snapshot.reason=status.reason;
+  debug_snapshot.unit=status.unit;debug_snapshot.bad=uart_status.bad-debug_bad_start;
+  debug_snapshot.restarts=status.circle_restarts;debug_snapshot.point_total=status.raw_points;
+  if(circle_completed){
+    debug_snapshot.scan_id=status.scan_id;debug_snapshot.map_id=status.points_map_id;
+    debug_snapshot.parameters=status.points_map_id?published_parameters:capture_parameters;
+    debug_snapshot.start_id=start_status.result.start_id;
+    debug_snapshot.points=status.point_count;debug_snapshot.cloud_truncated=status.truncated;
+    debug_snapshot.complete=debug_snapshot.circle_end>debug_snapshot.circle_start &&
+      debug_snapshot.circle_start>=debug_snapshot.raw.window_start &&
+      debug_snapshot.circle_end<=debug_snapshot.raw.window_start+debug_snapshot.raw.total;
+  }
+  capture_debug=false;
+}
+
+void RadarScan_RawStatusGet(RadarScan_Raw_t *out)
+{
+  if(!out)return;
+  *out=debug_snapshot;RadarUart_RawGet(&out->raw);
+  if(capture_debug){out->state=status.state;out->reason=status.reason;out->unit=status.unit;}
+  out->cloud_valid=out->scan_id && status.points_valid && out->scan_id==status.scan_id;
+}
+
+uint16_t RadarScan_RawRead(uint32_t offset,uint8_t *bytes,uint16_t capacity)
+{ return debug_snapshot.id?RadarUart_RawRead(offset,bytes,capacity):0; }
 static void publish_map(const RadarMap_t *map,const RadarMap_Params_t *params)
 {
   published_map=*map;published_parameters=*params;
@@ -110,7 +161,8 @@ bool RadarScan_SelectStart(RadarStart_Id_t start_id)
   if(!map || !params)return false;
   publish_map(map,params);start_status.result.start_id=(uint8_t)start_id;
   start_status.result.reason="manual_selection";
-  status.state=RADAR_SCAN_READY;status.reason="complete";return true;
+  status.state=RADAR_SCAN_READY;status.reason="complete";
+  return true;
 }
 void RadarScan_StartStatusGet(RadarScan_StartStatus_t *out)
 { if(out)*out=start_status; }
@@ -119,7 +171,8 @@ void RadarScan_Stop(void)
 {
   if (active()) status.elapsed_ms = HAL_GetTick() - start_tick;
   have_pending = have_previous = false;
-  RadarUart_StopScan(); status.state = RADAR_SCAN_STOPPED; status.reason = "operator_stop";
+  status.state = RADAR_SCAN_STOPPED; status.reason = "operator_stop";
+  finish_debug(false);RadarUart_StopScan();
 }
 
 static void add_packet(const LdsPacket_t *packet, uint16_t span, uint32_t packet_progress)
@@ -173,6 +226,8 @@ static void publish(void)
     start_status.result.conflict_mask[index]=working_map.mask&RADAR_MAP_REQUIRED_CLEAR_MASK;
     publish_map(&working_map,&capture_parameters);
   }
+  if(capture_debug)debug_snapshot.circle_end=incoming_end-debug_snapshot.raw.first_position;
+  finish_debug(true);
   have_pending = have_previous = false; RadarUart_StopScan();
 }
 
@@ -194,6 +249,10 @@ static void measurement(const LdsPacket_t *packet)
     previous_start = start;
     if (!wrapped) return;
     reset_circle("collecting"); status.state = RADAR_SCAN_COLLECTING;
+    if(capture_debug){
+      uint32_t frame_bytes=(packet->fixed?10U:8U)+3U*packet->count;
+      debug_snapshot.circle_start=incoming_end-frame_bytes-debug_snapshot.raw.first_position;
+    }
   } else {
     if (have_pending) add_packet(&pending_packet, delta, pending_progress);
     progress += delta;
@@ -239,18 +298,18 @@ void RadarScan_Process(void)
 {
   RadarUart_Status_t uart_status;
   RadarUart_StatusGet(&uart_status); check_stream(&uart_status);
-  while (RadarUart_ReadEvent(&incoming)) accept_event(&incoming);
+  while (RadarUart_ReadEventAt(&incoming,&incoming_end)) accept_event(&incoming);
   RadarUart_Process(); RadarUart_StatusGet(&uart_status); check_stream(&uart_status);
   if (status.state == RADAR_SCAN_PREPARING && uart_status.configured) {
     reset_circle("waiting_wrap"); have_previous = false;
   }
-  while (RadarUart_ReadEvent(&incoming)) accept_event(&incoming);
+  while (RadarUart_ReadEventAt(&incoming,&incoming_end)) accept_event(&incoming);
   if (active()) {
     status.elapsed_ms = HAL_GetTick() - start_tick;
     if (uart_status.command_failed || status.elapsed_ms >= RADAR_SCAN_TIMEOUT_MS) {
       status.state = RADAR_SCAN_ERROR;
       status.reason = uart_status.command_failed ? "command_failed" : "scan_timeout";
-      have_pending = have_previous = false; RadarUart_StopScan();
+      have_pending = have_previous = false;finish_debug(false);RadarUart_StopScan();
     }
   }
 }

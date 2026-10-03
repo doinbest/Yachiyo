@@ -1,4 +1,4 @@
-import {RADAR_PARAMETERS,INITIAL_VIEW,STATIONS,radarStateText,radarReasonText,importSnapshot,parseRadar} from './radar-model.mjs';
+import {RADAR_PARAMETERS,RADAR_GRID,RADAR_FIXED_MASK,INITIAL_VIEW,STATIONS,radarStateText,radarReasonText,importSnapshot,parseRadar,diagnosticSnapshot} from './radar-model.mjs';
 import {RouteProfileRunner,profilePhaseText,profileResultText} from './route-profile.mjs';
 import {radarProbeText,radarStartText} from './radar-format.mjs';
 import {radarLowerReferenceFromWorld,radarWorldFromLowerReference} from './radar-installation.mjs';
@@ -6,7 +6,7 @@ const $=id=>document.getElementById(id),ns='http://www.w3.org/2000/svg';
 const element=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
 const svg=(tag,attrs)=>{const e=document.createElementNS(ns,tag);for(const[k,v]of Object.entries(attrs))e.setAttribute(k,v);return e;};
 const pathData=points=>(points??[]).map((p,i)=>`${i?'L':'M'}${p[0]},${p[1]}`).join(' ');
-const GRID=[150,550,1000,1400,1850,2250];
+const GRID=RADAR_GRID;
 
 export function mountRadarParameters({root,exchange,model,canSend,onBusy}){
   const section=element('details');section.className='parameter-group';section.append(element('summary','雷达 · 下次静止扫描参数'));
@@ -28,12 +28,13 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
   let tab='monitor',offline=importSnapshot({mask:0x00050140,counts:Array(25).fill(0),coordinate_frame:'current'}),offlinePath=null;
   let transfer=null,scanActivity=null,selectionActivity=null,pendingResult=null,cancelledCapture=null,scheduled=false,internalCancel=false;
   let manualStart=null,headingOutcome=null,headingNeedsScan=false,headingRenderKey=null;
+  let diagnostic=null,diagnosticScheduled=false;
   const headingDrafts={upper:null,lower:null};
   const captureKey=f=>f?`${f.session}:${f.origin}:${f.scan}:${f.map}`:null;
   const resultKey=f=>f?`${captureKey(f)}:${f.plan}`:null;
   const sameResult=target=>model.status?.state==='ready'&&resultKey(model.status)===resultKey(target);
-  const optional=kind=>['points','cloud'].includes(kind);
-  const scanWire=wire=>/^radar scan(?: auto| upper| lower)?$/.test(wire);
+  const optional=kind=>['points','cloud','diagnostic'].includes(kind);
+  const scanWire=wire=>/^radar (?:debug )?scan(?: auto| upper| lower)?$/.test(wire);
   const interactionBusy=()=>!!(transfer||exchange.busy||scanActivity||selectionActivity||['preparing','wait_wrap','collecting'].includes(model.status?.state));
   const paramsCurrent=()=>model.connected&&model.paramsLive&&model.snapshots.params?.session===model.identity?.session;
   const draftMatches=()=>manualStart&&headingDrafts[manualStart]!==null&&paramsCurrent()&&Math.abs(radarLowerReferenceFromWorld(manualStart,headingDrafts[manualStart])-radarLowerReferenceFromWorld('lower',model.params.zero_deg))<1e-5;
@@ -115,6 +116,21 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
     });
   };
   $('radar-scan-selected').onclick=()=>{if(selectedScanAllowed())requestWire(`radar scan ${manualStart}`);};
+  const diagnosticWire=()=>`radar debug scan ${manualStart??'auto'}`;
+  const diagnosticAllowed=()=>!interactionBusy()&&canSend(diagnosticWire())&&(!manualStart||headingDrafts[manualStart]===null||draftMatches());
+  $('radar-debug-scan').onclick=()=>{
+    if(!diagnosticAllowed())return;
+    diagnostic={current:true,phase:'scanning',baseline:model.rawStatus?.id??null,id:null,metadata:null,bundle:null,message:'诊断静止扫描一圈中 · 完成后下载同圈完整点云和原始包'};
+    requestWire(diagnosticWire());
+  };
+  $('radar-debug-download').onclick=()=>{
+    if(interactionBusy())return;
+    const metadata=model.rawStatus;
+    if(!metadata||!['ready','error','failed','stopped'].includes(metadata.state))return;
+    diagnostic={current:true,phase:'waiting',id:metadata.id,metadata:{...metadata},bundle:null,message:'准备下载本次诊断 · 完整前不能导出'};render();
+  };
+  function saveSnapshot(snapshot,prefix){const url=URL.createObjectURL(new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'})),a=element('a');a.href=url;a.download=`${prefix}-${Date.now()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+  $('radar-debug-export').onclick=()=>{if(diagnostic?.bundle)saveSnapshot(diagnostic.bundle,'radar-diagnostic');};
   async function operate(kind,work){
     if(transfer||exchange.busy)return;
     const operation={kind};operation.done=new Promise(resolve=>{operation.finish=resolve;});transfer=operation;render();
@@ -143,9 +159,41 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
       });
     });
   }
+  function scheduleDiagnostic(){
+    if(diagnosticScheduled||diagnostic?.phase!=='waiting'||pendingResult||transfer||exchange.busy)return;
+    diagnosticScheduled=true;
+    queueMicrotask(()=>{
+      diagnosticScheduled=false;
+      const job=diagnostic;
+      if(job?.phase!=='waiting'||pendingResult||transfer||exchange.busy||!canSend(`radar fetch raw ${job.id} 0`))return;
+      job.phase='downloading';
+      void operate('diagnostic',async operation=>{
+        try{
+          const target=job.metadata;
+          if(target.complete){
+            if(target.map){
+              if(captureKey(model.snapshots.map)!==captureKey(target))await exchange.fetch('map',target.map);
+              checkRead(operation);
+              if(captureKey(model.snapshots.path)!==captureKey(target)||model.snapshots.path.plan!==model.snapshots.map.plan)await exchange.fetch('path',model.snapshots.map.plan);
+              checkRead(operation);
+            }
+            if(captureKey(model.snapshots.cloud)!==captureKey(target)||!model.snapshots.cloud.complete){
+              if(model.status?.session!==target.session||model.status?.scan!==target.scan||!model.status?.points_valid)throw new Error('设备已开始新圈，本次诊断点云不可下载；已完成历史诊断仍保留');
+              await exchange.fetch('cloud',target.scan);checkRead(operation);
+            }
+          }
+          await exchange.fetch('raw',job.id);checkRead(operation);
+          if(captureKey(model.snapshots.raw)!==captureKey(target))throw new Error('设备诊断记录已更新，请重新读取诊断状态');
+          job.bundle=diagnosticSnapshot(model,job.id);job.phase='complete';
+          job.message=job.bundle.snapshots.map?'同圈地图、路径、完整点云和原始包已完整下载 · 可导出诊断':job.bundle.snapshots.cloud?'起点未确定 · 同圈完整点云和原始包已完整下载 · 可导出诊断':job.metadata.state==='ready'?'采集完成，原始记录未覆盖完整圈，不能完整重放 · 可导出部分原始诊断':'原始诊断已下载 · 本次未完成有效圈，仅导出原始诊断';
+          $('radar-transfer').textContent=job.message;
+        }catch(error){job.phase='failed';job.message=`诊断下载未完成 · ${error.message} · 可重新下载`;throw error;}
+      });
+    });
+  }
   exchange.subscribeState(({type})=>{
     if(type==='cancel')model.pending.clear();
-    if(type==='cancel'&&!internalCancel){if(transfer)transfer.cancelled=true;pendingResult=null;cancelledCapture=scanActivity?.key??null;scanActivity=null;selectionActivity=null;}
+    if(type==='cancel'&&!internalCancel){if(transfer)transfer.cancelled=true;pendingResult=null;cancelledCapture=scanActivity?.key??null;scanActivity=null;selectionActivity=null;if(diagnostic&&!diagnostic.bundle){diagnostic.phase='failed';diagnostic.message='诊断已取消 · 已完成历史数据保留；未完整下载，不能导出本次诊断';}}
     if(type==='idle')scheduleResult();
   });
   function observeScan(f){
@@ -177,17 +225,17 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
     const reply=line.trim().replace(/^(?:arm>\s*)+/,'');
     if(selectionActivity&&reply.startsWith('ERR radar ')){selectionActivity=null;$('radar-transfer').textContent=`起点选择未受理 · ${radarReasonText(reply.split(' ')[2])}`;return true;}
     if(!scanActivity?.explicit)return false;
-    if(reply==='OK radar scan_accepted'){scanActivity.accepted=true;return true;}
-    if(/^ERR radar (?:stationary_capture_required|query_in_progress|scan_busy_or_parameters)$/.test(reply)){scanActivity=null;$('radar-transfer').textContent=`扫描未受理 · ${radarReasonText(reply.split(' ')[2])}`;return true;}
+    if(reply==='OK radar scan_accepted'||reply==='OK radar debug_scan_accepted'){scanActivity.accepted=true;return true;}
+    if(/^ERR radar (?:stationary_capture_required|query_in_progress|scan_busy_or_parameters)$/.test(reply)){scanActivity=null;if(diagnostic?.phase==='scanning'){diagnostic.phase='failed';diagnostic.message=`诊断扫描未受理 · ${radarReasonText(reply.split(' ')[2])}`;}$('radar-transfer').textContent=`扫描未受理 · ${radarReasonText(reply.split(' ')[2])}`;return true;}
     return false;
   }
-  exchange.onProgress=({kind,page,pages})=>{const label=({map:'地图',path:'规划路径',points:'可选显示点云',cloud:'可选完整点云'})[kind]??kind;$('radar-transfer').textContent=`下载 ${label} · ${page}/${pages} 页 · 完整后显示`;};
+  exchange.onProgress=({kind,page,pages})=>{const label=({map:'地图',path:'规划路径',points:'可选显示点云',cloud:'完整点云',raw:'原始包'})[kind]??kind;$('radar-transfer').textContent=`下载 ${label} · ${page}/${pages} 页 · 完整后显示`;if(diagnostic?.phase==='downloading'){diagnostic.message=`下载同圈 ${label} · ${page}/${pages} 页 · 全部完成后可导出`;$('radar-debug-status').textContent=diagnostic.message;}};
   function requestWire(wire){
     if(!canSend(wire)||scanWire(wire)&&interactionBusy()||/^radar start (upper|lower)$/.test(wire)&&(interactionBusy()||!reusableCircle()))return;
-    if(scanWire(wire)){cancelledCapture=null;pendingResult=null;selectionActivity=null;scanActivity={key:captureKey(model.status),explicit:true,accepted:false,observed:false};$('radar-transfer').textContent='已请求静止扫描 · 完成后自动显示地图与路径';}
+    if(scanWire(wire)){if(diagnostic&&!wire.startsWith('radar debug ')){diagnostic.current=false;if(!diagnostic.bundle)diagnostic.phase='historical';}cancelledCapture=null;pendingResult=null;selectionActivity=null;scanActivity={key:captureKey(model.status),explicit:true,accepted:false,observed:false};$('radar-transfer').textContent='已请求静止扫描 · 完成后自动显示地图与路径';}
     if(/^radar start (upper|lower)$/.test(wire)){selectionActivity={...model.status,key:resultKey(model.status),selected:wire.endsWith('upper')?1:2};pendingResult=null;$('radar-transfer').textContent='已请求选择起点 · 复用完整圈重新建图与规划';}
     if(wire==='radar stop'||wire==='radar nav cancel')exchange.cancel();
-    void Promise.resolve(send(wire)).then(ok=>{if(scanWire(wire)&&ok!==true)scanActivity=null;if(/^radar start (upper|lower)$/.test(wire)&&ok!==true)selectionActivity=null;render();});
+    void Promise.resolve(send(wire)).then(ok=>{if(scanWire(wire)&&ok!==true){scanActivity=null;if(diagnostic?.phase==='scanning'){diagnostic.phase='failed';diagnostic.message='诊断扫描写出未确认，请重新扫描';}}if(/^radar start (upper|lower)$/.test(wire)&&ok!==true)selectionActivity=null;render();});
   }
   for(const b of document.querySelectorAll('[data-radar-wire]'))b.onclick=()=>requestWire(b.dataset.radarWire);
   const currentId=kind=>kind==='path'?(model.status?.plan??model.snapshots.path?.plan):['points','cloud'].includes(kind)?(model.status?.scan??model.snapshots.map?.scan):(model.status?.map??model.snapshots.map?.map);
@@ -223,7 +271,7 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
   for(let row=4;row>=0;row--)for(let col=0;col<5;col++){const label=element('label',`R${row+1}C${col+1}`),input=element('input');input.type='checkbox';input.dataset.cell=row*5+col;input.onchange=()=>{if(!offline)return;const bit=1<<Number(input.dataset.cell);offline.mask=input.checked?offline.mask|bit:offline.mask&~bit;offline.manual_mask=input.checked?(offline.manual_mask??0)|bit:(offline.manual_mask??0)&~bit;invalidateOfflinePlan();};label.prepend(input);$('radar-mask-cells').append(label);input.checked=!!(offline.mask&(1<<Number(input.dataset.cell)));}
   $('radar-use-device').onclick=()=>{if(!model.snapshots.map){$('radar-offline-status').textContent='先读取完整设备地图';return;}setOffline({snapshots:model.snapshots,params:model.params});};
   $('radar-import').onchange=async()=>{const file=$('radar-import').files[0];if(!file)return;try{const value=JSON.parse(await file.text()),frame=$('radar-import-frame').value;if(value.offline)value.offline.coordinate_frame=frame;if(value.snapshots?.map)value.snapshots.map.coordinate_frame=frame;else value.coordinate_frame=frame;setOffline(value);}catch(error){$('radar-offline-status').textContent=error.message;}};
-  $('radar-export').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify({v:1,coordinate_frame:'current',snapshots:model.snapshots,params:model.params,offline,offlinePath},null,2)],{type:'application/json'})),a=element('a');a.href=url;a.download=`radar-${Date.now()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+  $('radar-export').onclick=()=>{if(diagnostic?.current&&!diagnostic.bundle)return;if(diagnostic?.current&&diagnostic.bundle)saveSnapshot(diagnostic.bundle,'radar-diagnostic');else{const snapshots=Object.fromEntries(Object.entries(model.snapshots).filter(([kind])=>kind!=='raw'));saveSnapshot({v:1,coordinate_frame:'current',snapshots,params:model.params,offline,offlinePath},'radar');}};
   $('radar-offline-plan').onclick=async()=>{
     if(!offline){$('radar-offline-status').textContent='先载入完整地图副本';return;}const params=Object.fromEntries(Object.entries(offlineInputs).map(([key,input])=>[key,Number(input.value)])),useCloud=$('radar-offline-input').value==='cloud',cloud=offline.cloud;if(useCloud&&!cloud?.points){$('radar-offline-status').textContent='重新过滤需要完整点云或显示点云快照';return;}
     const speed=Number($('radar-nav-speed').value);if(!Number.isInteger(speed)||speed<10||speed>5000){$('radar-offline-status').textContent='启动速度范围10～5000 mm/s';return;}
@@ -240,7 +288,7 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
     $('radar-diagnostics').textContent=JSON.stringify({status:state,start:startSnapshot,nav,probe:model.probe},null,2);
     $('radar-execution-reason').textContent=gate|| (state?.map===0?'尚无设备地图，请静止扫描':state?.applicable===false||state?.applicable===0?'当前地图原点或参数已变化，请重新扫描':path?.plan===state?.plan&&path?.valid===false?`第 ${path.failed_leg} 路段不可达，请调整障碍或扫描过滤参数`:'执行由设备检查当前地图和底盘准备；无需下载完整点云');
     $('radar-param-summary').textContent=Object.keys(model.params).length?`雷达 (${model.params.lidar_x_mm},${model.params.lidar_y_mm}) mm · 零角 ${model.params.zero_deg}° · 阈值 ${model.params.threshold}`:'参数尚未读回 · 参数调试页主动读取';
-    const obstacles=$('radar-obstacles');obstacles.replaceChildren();const mask=tab==='offline'?(offlinePath?.mask??offline?.mask??mapSnapshot?.mask??0):(mapSnapshot?.mask??0);if($('radar-show-obstacles').checked)for(let i=0;i<25;i++)if(mask&(1<<i)){const row=Math.floor(i/5),col=i%5;obstacles.append(svg('rect',{x:GRID[col],y:GRID[row],width:GRID[col+1]-GRID[col],height:GRID[row+1]-GRID[row],fill:'#d9444433',stroke:'#c34343','stroke-width':4}));}
+    const obstacles=$('radar-obstacles');obstacles.replaceChildren();const mask=tab==='offline'?(offlinePath?.mask??offline?.mask??mapSnapshot?.mask??0):(mapSnapshot?.mask??0);if($('radar-show-obstacles').checked)for(let i=0;i<25;i++)if(mask&(1<<i)){const row=Math.floor(i/5),col=i%5,fixed=!!(RADAR_FIXED_MASK&(1<<i));obstacles.append(svg('rect',{x:GRID[col],y:GRID[row],width:GRID[col+1]-GRID[col],height:GRID[row+1]-GRID[row],fill:fixed?'#e3b94555':'#d9444466',stroke:fixed?'#a78322':'#c34343','stroke-width':4,'data-cell':i,'data-obstacle':fixed?'fixed':'scan'}));}
     const counts=$('radar-counts');counts.replaceChildren();const cellCounts=tab==='offline'?(offlinePath?.counts??offline?.counts):mapSnapshot?.counts;if($('radar-show-counts').checked&&cellCounts)for(let i=0;i<25;i++){const row=Math.floor(i/5),col=i%5,x=(GRID[col]+GRID[col+1])/2,y=(GRID[row]+GRID[row+1])/2,label=svg('text',{transform:`translate(${x} ${y}) scale(1 -1)`,'text-anchor':'middle','font-size':48,fill:'#1b4d65'});label.textContent=String(cellCounts[i]??0);counts.append(label);}
     const historicalMap=!model.connected||mapSnapshot?.historical||state&&(state.applicable===false||state.applicable===0||state.map!==mapSnapshot?.map);obstacles.style.opacity=counts.style.opacity=tab!=='offline'&&historicalMap?'.4':'1';
     $('radar-device-path').setAttribute('d',path?.valid!==false?pathData(path?.points):'');$('radar-device-path').style.opacity=!model.connected||path?.historical||state&&(state.applicable===false||state.applicable===0||state.map!==path?.map||state.plan!==path?.plan)?'.4':'1';$('radar-offline-path').setAttribute('d',tab==='offline'?(offlinePath?.plan_only&&$('route-profile-choice').value==='planned'?pathData(offlinePath.valid?offlinePath.points:[]):selectedProfile()?.points?pathData(selectedProfile().points):offlinePath?.valid?pathData(offlinePath.points):''):'');
@@ -249,11 +297,16 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
     $('radar-points-age').hidden=!$('radar-show-points').checked;$('radar-points-age').textContent=cloud?`${model.describe(cloud)} · ${cloud.points.length} 点${cloud.k==='points'?'（显示抽样）':''}${cloud.truncated?' · 单圈缓存已截断':''}`:'尚无已下载点云';
     for(const b of document.querySelectorAll('[data-radar-wire]'))b.disabled=!canSend(b.dataset.radarWire)||scanWire(b.dataset.radarWire)&&interactionBusy()||/^radar start (upper|lower)$/.test(b.dataset.radarWire)&&(interactionBusy()||!reusableCircle());
     for(const kind of ['map','path','points','cloud'])$(`radar-fetch-${kind}`).disabled=optional(kind)&&unresolved||!!(exchange.busy||transfer)&&!(!optional(kind)&&optional(transfer?.kind))||!canSend(`radar fetch ${kind} ${currentId(kind)??0} 0`);
-    $('radar-cancel-transfer').disabled=!(exchange.busy||transfer||pendingResult);$('radar-nav-start').disabled=!!gate||!canSend(`radar nav start ${$('radar-nav-speed').value}`);$('radar-task-start').disabled=!!gate||!canSend(`radar task start ${$('radar-nav-speed').value}`);scheduleResult();
+    $('radar-debug-scan').disabled=!diagnosticAllowed();$('radar-debug-scan').textContent=`诊断扫描一圈 · ${manualStart==='upper'?'右上':manualStart==='lower'?'右下':'自动识别'}`;
+    const raw=model.rawStatus;$('radar-debug-download').disabled=interactionBusy()||!raw||!['ready','error','failed','stopped'].includes(raw.state)||!canSend(`radar fetch raw ${raw?.id??0} 0`);
+    $('radar-debug-export').disabled=!diagnostic?.bundle;$('radar-debug-export').textContent=diagnostic?.current===false?'导出上次诊断':'导出同圈诊断';$('radar-export').disabled=!!diagnostic?.current&&!diagnostic.bundle;
+    $('radar-export-status').textContent=diagnostic?.current&&!diagnostic.bundle?'诊断下载未完成，导出暂不可用；雷达建图页可查看进度或重新下载。':'';
+    $('radar-debug-status').textContent=diagnostic?(diagnostic.current===false?'上次诊断 · ':'')+diagnostic.message:'诊断扫描会记录原始包；完整点云和原始包下载完成后，才能导出同圈诊断。普通扫描不记录原始包。';
+    $('radar-cancel-transfer').disabled=!(exchange.busy||transfer||pendingResult);$('radar-nav-start').disabled=!!gate||!canSend(`radar nav start ${$('radar-nav-speed').value}`);$('radar-task-start').disabled=!!gate||!canSend(`radar task start ${$('radar-nav-speed').value}`);scheduleResult();scheduleDiagnostic();
   }
   renderProfile();selectTab('monitor');render();setInterval(render,1000);return {receive(line){
     const recognized=model.accept(line),exchanged=exchange.receive(line),headingAccepted=exchanged&&transfer?.kind==='heading'&&line==='OK radar parameter_updated_ram';
     if(headingAccepted){headingNeedsScan=true;for(const kind of ['map','path','points','cloud'])if(model.snapshots[kind])model.snapshots[kind].historical=true;}
-    const replyChanged=observeScanReply(line),frame=parseRadar(line);if(frame)observeScan(frame);if(recognized||replyChanged||headingAccepted)render();return recognized;
+    const replyChanged=observeScanReply(line),frame=parseRadar(line);if(frame){observeScan(frame);if(frame.k==='raw'&&frame.page===0&&diagnostic?.phase==='scanning'&&frame.id!==diagnostic.baseline){diagnostic.id=frame.id;diagnostic.metadata={...frame};if(['ready','error','failed','stopped'].includes(frame.state)){diagnostic.phase='waiting';diagnostic.message='本次诊断采集结束 · 等待同圈地图、点云与原始包下载';}}}if(recognized||replyChanged||headingAccepted)render();return recognized;
   },connection(value){model.connection(value);if(!value){scanActivity=null;selectionActivity=null;pendingResult=null;cancelledCapture=null;exchange.cancel('连接已变化，旧完整快照保留');}render();},render,selectTab,snapshot:()=>model};
 }
