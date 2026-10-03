@@ -60,6 +60,36 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_probe_evidence_reaches_cmd_and_jsonl_history(self):
+        port = self.connect()
+        line = '@RADAR '+json.dumps(dict(v=1,k='probe',session=13,origin=0,scan=0,map=0,plan=0,page=2,pages=3,id=1,sn='MOCK12345',hex='CECECECE0001'),separators=(',',':'))
+        output = io.StringIO()
+        finished = threading.Event()
+        with redirect_stdout(output):
+            thread = threading.Thread(target=print_events,args=(self.bridge,finished))
+            thread.start()
+            try:
+                port.rx.put((line+'\r\n').encode())
+                wait_for(lambda: 'MOCK12345' in output.getvalue())
+            finally:
+                finished.set()
+                thread.join(1)
+        history = Path(self.bridge.event_file.name).read_text(encoding='utf-8')
+        self.assertIn('MOCK12345',history)
+        self.assertIn('CECECECE0001',history)
+
+    def test_radar_probe_can_run_during_stop_latch_without_resuming_motion(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        self.bridge.send('radar probe')
+        self.bridge.send('radar probe status')
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertEqual([data for _, data in port.writes], [b'radar probe\r\n', b'radar probe status\r\n'])
+        self.assertTrue(self.bridge.stop_latched)
+        with self.assertRaises(ValueError): self.bridge.send('radar scan')
+        with self.assertRaises(ValueError): self.bridge.send('radar probe LSTARH')
+
     def test_diagnostic_queries_are_read_only(self):
         self.assertIsNotNone(READ_COMMAND.fullmatch('grab status'))
         self.assertIsNotNone(READ_COMMAND.fullmatch('grab get retarget_ok'))

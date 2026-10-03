@@ -1,5 +1,6 @@
 import {RADAR_PARAMETERS,INITIAL_VIEW,STATIONS,radarStateText,radarReasonText,importSnapshot} from './radar-model.mjs';
 import {RouteProfileRunner,profilePhaseText,profileResultText} from './route-profile.mjs';
+import {radarProbeText} from './radar-format.mjs';
 const $=id=>document.getElementById(id),ns='http://www.w3.org/2000/svg';
 const element=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
 const svg=(tag,attrs)=>{const e=document.createElementNS(ns,tag);for(const[k,v]of Object.entries(attrs))e.setAttribute(k,v);return e;};
@@ -83,7 +84,8 @@ export function mountRadarWorkspace({model,exchange,send,canSend,api,mapView,onB
     const mapSnapshot=model.snapshots.map,path=model.snapshots.path,state=model.status,nav=model.nav;
     $('radar-map-age').textContent=model.describe(tab==='offline'?offline:mapSnapshot)+(state?.applicable===false||state?.applicable===0?' · 参数/原点已变化，请重新扫描':'')+(mapSnapshot?.coverage!==undefined?` · 覆盖 ${(mapSnapshot.coverage/10).toFixed(1)}°`:'');$('radar-path-age').textContent=`设备：${model.describe(path)}${offlinePath?'；虚线：本机离线预览':''}`;
     $('radar-status').textContent=state?`${radarStateText(state.state)} · ${radarReasonText(state.reason)} · 扫描 ${state.scan} / 地图 ${state.map} / 规划 ${state.plan}`:'点击读取状态，确认设备雷达配置';$('radar-nav-status').textContent=nav?`${radarStateText(nav.state)} · ${radarReasonText(nav.reason)} · ${nav.index}/${nav.total} · ${STATIONS[nav.station]??'通行'} · 访问 ${nav.visit}${nav.state==='stopping'?((nav.stopped??nav.stop_confirmed)?' · 停车已确认':' · 停车待确认'):''}`:'尚无设备导航状态';
-    $('radar-diagnostics').textContent=JSON.stringify({status:state,nav},null,2);
+    $('radar-probe-status').textContent=radarProbeText(model.probe);
+    $('radar-diagnostics').textContent=JSON.stringify({status:state,nav,probe:model.probe},null,2);
     $('radar-execution-reason').textContent=state?.map===0?'尚无设备地图，请静止扫描':state?.applicable===false||state?.applicable===0?'当前地图原点或参数已变化，请重新扫描':path?.plan===state?.plan&&path?.valid===false?`第 ${path.failed_leg} 路段不可达，请调整障碍或扫描过滤参数`:'执行由设备检查当前地图和底盘准备；无需下载完整点云';
     $('radar-param-summary').textContent=Object.keys(model.params).length?`雷达 (${model.params.lidar_x_mm},${model.params.lidar_y_mm}) mm · 零角 ${model.params.zero_deg}° · 阈值 ${model.params.threshold}`:'参数尚未读回 · 参数调试页主动读取';
     const obstacles=$('radar-obstacles');obstacles.replaceChildren();const mask=tab==='offline'?(offlinePath?.mask??offline?.mask??mapSnapshot?.mask??0):(mapSnapshot?.mask??0);if($('radar-show-obstacles').checked)for(let i=0;i<25;i++)if(mask&(1<<i)){const row=Math.floor(i/5),col=i%5;obstacles.append(svg('rect',{x:GRID[col],y:GRID[row],width:GRID[col+1]-GRID[col],height:GRID[row+1]-GRID[row],fill:'#d9444433',stroke:'#c34343','stroke-width':4}));}

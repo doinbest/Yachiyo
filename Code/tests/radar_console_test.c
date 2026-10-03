@@ -23,6 +23,14 @@ static unsigned foreground_count;
 static unsigned scans,stops,moves;
 static float submitted_speed;
 static bool busy;
+static RadarUart_Probe_t probe;
+static RadarUart_Status_t uart_status;
+void RadarUart_ProbeGet(RadarUart_Probe_t *s){*s=probe;}
+void RadarUart_StatusGet(RadarUart_Status_t *s){*s=uart_status;}
+bool RadarUart_ProbeStart(void){
+  if(probe.state==RADAR_PROBE_TX||probe.state==RADAR_PROBE_WAITING)return false;
+  probe.id++;probe.state=RADAR_PROBE_TX;probe.reason="query_sending";return true;
+}
 uint32_t HAL_GetTick(void){return tick;}
 bool ConsoleTx_Write(const uint8_t *d,uint16_t n){assert(n<=256);if(foreground_count<4){memcpy(foreground[foreground_count],d,n);foreground[foreground_count++][n]=0;}memcpy(reply,d,n);reply[n]=0;return true;}
 bool ConsoleTx_BulkReady(void){return true;}
@@ -69,8 +77,16 @@ int main(void)
   route.state=route.reason="idle";
   for(unsigned i=0;i<360;i++)samples[i]=(RadarSample_t){(uint16_t)(i*10),65535,255};
   RadarConsole_Init();command("radar status");assert(!moves && !scans);
-  assert(foreground_count==3 && strstr(foreground[1],"\"page\":0,\"pages\":2"));
+  assert(foreground_count==4 && strstr(foreground[1],"\"page\":0,\"pages\":3"));
   assert(strstr(foreground[2],"\"last_alarm\":0") && strstr(foreground[2],"\"unit\":\"unknown\""));
+  command("radar probe");assert(!moves&&!scans&&strstr(foreground[0],"probe_accepted"));
+  assert(strstr(foreground[1],"\"state\":\"transmitting\""));
+  command("radar probe");assert(strstr(reply,"probe_busy_or_uart"));
+  command("radar scan");assert(!scans&&strstr(reply,"query_in_progress"));
+  probe.state=RADAR_PROBE_CONFIRMED;probe.reason="sn_reply";probe.tx_complete=true;
+  strcpy(probe.sn,"ABC123456");probe.raw_count=6;memset(probe.raw,0xce,6);
+  pump();assert(strstr(foreground[foreground_count-1],"\"sn\":\"ABC123456\""));
+  command("radar probe status");assert(foreground_count==3&&!moves&&!scans);
   pump();command("radar fetch map 4 0");pump();assert(strstr(page,"\"mask\":328000"));
   assert(strstr(page,"\"pose\":[2170.0,230.0,180.0]"));
   for(unsigned i=1;i<6;i++){char cmd[64];snprintf(cmd,sizeof(cmd),"radar fetch map 4 %u",i);command(cmd);pump();assert(strstr(page,"\"counts\":["));}
@@ -114,8 +130,17 @@ int main(void)
   scan.bytes=scan.packets=scan.bad=scan.overflow=scan.alarm=UINT32_MAX;
   scan.last_alarm=UINT16_MAX;
   command("radar status");
-  assert(foreground_count==3 && !strstr(reply,"page_size"));
+  assert(foreground_count==4 && !strstr(reply,"page_size"));
   assert(strstr(foreground[1],"\"bytes\":4294967295") && strstr(foreground[1],"\"overflow\":4294967295"));
   assert(strstr(foreground[2],"\"alarm\":4294967295") && strstr(foreground[2],"\"last_alarm\":65535"));
+  uart_status.commands_sent=uart_status.tx_errors=uart_status.uart_errors=UINT32_MAX;
+  uart_status.rx_ready=true;strcpy(uart_status.last_tx,"LSTARH");
+  command("radar status");assert(strstr(foreground[3],"\"last_tx\":\"LSTARH\""));
+  assert(strstr(foreground[3],"\"tx_done\":4294967295")&&!strstr(reply,"page_size"));
+  probe.id=probe.rx_bytes=probe.alarms=UINT32_MAX;probe.last_alarm=UINT16_MAX;
+  memset(probe.sn,'Z',24);probe.sn[24]=0;probe.raw_count=24;memset(probe.raw,0xff,24);
+  probe.state=RADAR_PROBE_UNCONFIRMED;probe.reason="reply_unknown";
+  command("radar probe status");assert(foreground_count==3&&!strstr(reply,"page_size"));
+  assert(strstr(foreground[2],"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"));
   puts("radar_console_test: PASS (paging, pose, first scan, no implicit drive, origin and parameter validity)");
 }

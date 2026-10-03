@@ -18,14 +18,20 @@ export function parseRadar(line){
 }
 const idFor=(kind,f)=>kind==='path'?f.plan:kind==='params'?0:['points','cloud'].includes(kind)?f.scan:f.map;
 export class RadarModel{
-  snapshots={};pending=new Map();connected=false;status=null;nav=null;params={};paramsLive=false;identity=null;
-  connection(value){if(!value||!this.connected)for(const snapshot of Object.values(this.snapshots))snapshot.historical=true;this.connected=value;if(!value){this.pending.clear();this.status=null;this.nav=null;this.paramsLive=false;}}
+  snapshots={};pending=new Map();connected=false;status=null;nav=null;probe=null;params={};paramsLive=false;identity=null;
+  connection(value){if(!value||!this.connected){for(const snapshot of Object.values(this.snapshots))snapshot.historical=true;if(this.probe)this.probe.historical=true;}this.connected=value;if(!value){this.pending.clear();this.status=null;this.nav=null;this.paramsLive=false;}}
   accept(line,now=Date.now()){
     const f=parseRadar(line);if(!f)return false;
-    if(this.identity&&this.identity.session!==f.session)this.pending.clear();
+    if(this.identity&&this.identity.session!==f.session){this.pending.clear();if(this.probe)this.probe.historical=true;}
     this.identity={session:f.session,origin:f.origin};
     if(f.k==='status'||f.k==='diag'){this.status={...this.status,...f,receivedAt:now};return true;}
     if(f.k==='nav'){this.nav={...f,receivedAt:now};return true;}
+    if(f.k==='probe'){
+      if(!u32(f.id)||f.pages!==3||!Number.isInteger(f.page)||f.page<0||f.page>2)return true;
+      const same=this.probe?.id===f.id&&this.probe?.session===f.session;
+      if(!same&&f.page!==0)return true;
+      this.probe={...(same?this.probe:{}),...f,receivedAt:now,historical:!this.connected};return true;
+    }
     if(!['map','path','points','cloud','params'].includes(f.k)||!Number.isInteger(f.pages)||f.pages<1||f.pages>4096||!Number.isInteger(f.page)||f.page<0||f.page>=f.pages)return true;
     const identity=`${f.session}:${f.origin}:${f.scan}:${f.map}:${f.plan}:${f.pages}`;
     const key=f.k+':'+identity;

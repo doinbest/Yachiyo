@@ -10,6 +10,7 @@ import {mountQr} from './qr-panel.mjs?v=bridge-1';
 import {mountParameterPage} from './parameter-page.mjs?v=parameter-page-20261001';
 import {RadarModel,RadarExchange,parseRadar,radarStateText,radarReasonText} from './radar-model.mjs';
 import {mountRadarWorkspace} from './radar-view.mjs';
+import {radarProbeText} from './radar-format.mjs';
 import {parsePageRoute,createNavigationMemory} from './page-navigation.mjs';
 import {migrateRoutePreferences,bindRouteSpeed} from './route-settings.mjs';
 const $=id=>document.getElementById(id);
@@ -51,7 +52,10 @@ function receive(line){
       const text=`雷达 ${frame.k} · ${radarStateText(frame.state)} · ${radarReasonText(frame.reason)} · 地图 ${frame.map} / 路径 ${frame.plan}`;
       $('map-recent-result').textContent=text;status.set('map',{line:text,time:Date.now(),live:bridge.connected});if(frame.k==='nav')routeLocked=['running','stopping','waiting','station'].includes(frame.state);renderStatus();updateControls();
       if(!chineseLogs())appendLog('RX',line);
-    }else if(frame?.k==='diag')appendLog('RX',line);
+    }else if(frame?.k==='diag'||frame?.k==='probe'){
+      appendLog('RX',line);
+      if(frame.k==='probe'&&Object.hasOwn(frame,'state'))$('map-recent-result').textContent=radarProbeText(frame);
+    }
     return;
   }
   if(radarExchange.busy&&(line==='OK radar page_pending'||/^(?:arm>\s*)?radar fetch /.test(line)))return;

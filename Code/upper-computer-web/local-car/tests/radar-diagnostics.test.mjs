@@ -5,6 +5,8 @@ import vm from 'node:vm';
 import {RadarModel,RadarExchange,parseRadar,radarStateText,radarReasonText} from '../radar-model.mjs';
 import {moduleForWire} from '../protocol.mjs';
 import {chineseTerminalLine} from '../terminal-format.mjs';
+import {readOnlyCommand} from '../bridge.mjs';
+import {radarProbeText} from '../radar-format.mjs';
 
 const identity={v:1,session:13,origin:0,scan:0,map:0,plan:0,page:0,pages:1};
 const statusFrame={...identity,k:'status',state:'error',reason:'scan_timeout',elapsed:10000,applicable:false,points_valid:false};
@@ -34,7 +36,7 @@ function receiver(raw=false){
   const model=new RadarModel();model.connection(true);
   const logs=[],elements=new Map(),context={
     radarModel:model,radarView:{receive:line=>model.accept(line)},savedRadarSnapshot:null,
-    localStorage:{setItem(){}},parseRadar,radarStateText,radarReasonText,
+    localStorage:{setItem(){}},parseRadar,radarStateText,radarReasonText,radarProbeText,
     status:new Map(),bridge:{connected:true},routeLocked:false,
     $:id=>{if(!elements.has(id))elements.set(id,{textContent:''});return elements.get(id);},
     renderStatus(){},updateControls(){},appendLog:(direction,text)=>logs.push({direction,text}),
@@ -83,4 +85,31 @@ test('split diagnostics retain every counter and display the actual alarm code',
   assert.match(unknown,/0xCECE/);assert.doesNotMatch(unknown,/电源故障/);
   const otherOrder=chineseTerminalLine(wire({...alarm,last_alarm:1}));
   assert.match(otherOrder,/0x0001/);assert.doesNotMatch(otherOrder,/电源故障/);
+});
+
+test('probe pages reach logs and combine by query identity without stale success',()=>{
+  const ui=receiver();
+  const frames=[{...identity,k:'probe',page:0,pages:3,id:1,state:'confirmed',reason:'sn_reply',tx:true},
+    {...identity,k:'probe',page:1,pages:3,id:1,bytes:123,alarm:15,last_alarm:256},
+    {...identity,k:'probe',page:2,pages:3,id:1,sn:'ABC123456',hex:'CECECECE0001'}];
+  for(const f of frames)ui.receive('arm> '+wire(f));
+  assert.equal(ui.logs.length,3);assert.equal(ui.model.probe.sn,'ABC123456');
+  assert.equal(ui.model.probe.tx,true);assert.equal(ui.model.probe.alarm,15);
+  assert.match(ui.elements.get('map-recent-result').textContent,/往返通信已确认/);
+  assert.match(chineseTerminalLine(wire(frames[0])),/往返通信已确认/);
+  assert.match(chineseTerminalLine(wire(frames[2])),/ABC123456/);
+  assert.match(chineseTerminalLine(wire(frames[2])),/CE CE CE CE 00 01/);
+  ui.receive(wire({...frames[0],id:2,state:'waiting',reason:'query_waiting',tx:true}));
+  assert.equal(ui.model.probe.sn,undefined);assert.equal(ui.model.probe.alarm,undefined);
+  ui.receive(wire(frames[2]));assert.equal(ui.model.probe.id,2);assert.equal(ui.model.probe.sn,undefined);
+  ui.model.connection(false);assert.equal(ui.model.probe.historical,true);
+  ui.model.connection(true);assert.equal(ui.model.probe.historical,true);
+  ui.receive(wire({...statusFrame,session:14}));assert.equal(ui.model.probe.historical,true);
+});
+
+test('diagnostic query remains usable while stopped and cannot admit a motion command',()=>{
+  assert.equal(readOnlyCommand('radar probe'),true);assert.equal(readOnlyCommand('radar probe status'),true);
+  assert.equal(readOnlyCommand('radar probe LSTARH'),false);assert.equal(readOnlyCommand('radar scan'),false);
+  const summary=chineseTerminalLine(wire({...identity,k:'probe',id:1,state:'unconfirmed',reason:'alarm_only',tx:true}));
+  assert.match(summary,/MCU.*发送完成/);assert.match(summary,/报警/);assert.doesNotMatch(summary,/往返通信已确认/);
 });

@@ -1,4 +1,4 @@
-import {radarReasonText} from './radar-format.mjs';
+import {radarReasonText,radarProbeText} from './radar-format.mjs';
 export const visualStateText=state=>({Idle:'无活动视觉请求',Off:'USB 未枚举',Wait:'等待首个回复',Lost:'已收到报文，当前无有效坐标',Ok:'有效坐标',Stale:'坐标已过期'})[state]??'未报告';
 // Presentation only. Never feed translated text back into a protocol parser.
 const names={vision_grace:'短暂漏检，减速等待',vision_gap_decelerating:'沿原运动趋势减速，等待连续有效坐标',vision_gap_recovered:'短暂漏检已恢复，未消耗停车恢复次数',vision_pause:'视觉暂停，不会下降夹取',vision_pause_stopping:'漏检，正在停车',vision_recover_wait:'已停稳，等待目标恢复',vision_reacquire_wait:'已重发目标颜色识别，等待新坐标',vision_recovered:'已恢复对准',vision_recover_timeout:'恢复窗口超时',vision_recover_limit:'恢复次数耗尽',vision_usb_off:'视觉 USB 断开',vision_request_lost:'视觉请求失效',vision_stale:'有效坐标接收超时',vision_lost:'视觉坐标失效',feedback_stale:'机械反馈过期',chassis_tx:'底盘通信故障',base:'Base 底座',x:'X 伸缩轴',z:'Z 升降轴',all:'全部轴',fixed:'固定取放',align:'仅协同对准',pick:'视觉取放',idle:'空闲',prepare:'准备中',acquire:'等待视觉',homing:'正在回零',descend:'下降夹取',close:'夹紧等待',lift:'提起',turn:'Base 转向',place:'下降放置',release:'松爪等待',retract:'提起复位',hold:'动作完成，等待验收',stopping:'正在停止',error:'故障',running:'运行中',waiting:'等待中',station:'站点等待',done:'已完成',complete:'已完成',failed:'失败',none:'无',cancelled:'已取消',pending_tx:'等待停车发送',monitoring:'等待四轮停稳',stopped:'四轮已确认停稳',missing_feedback:'缺少新鲜反馈',timeout:'超时',tx_failed:'发送失败',new_motion:'出现新动作，原停车确认失效',reply_timeout:'驱动回复超时',uart_error:'串口通信错误',motor_request:'电机请求失败',motor_feedback:'电机反馈异常',config_missing:'缺少参数',home_z:'Z 碰撞回零',home_x:'X 碰撞回零',home_base:'Base 就近回零',home_complete:'三轴回零完成',home_stop_unconfirmed:'回零停止未确认',aligned_wait_check:'对准完成，等待验收',placed_wait_check:'取放完成，等待验收',VERIFYING:'静止验证中',DONE:'完成',PASS:'通过',FAIL:'失败',Idle:'空闲',Wait:'等待相机回复',ALIGNED:'对准完成',ERROR:'故障',unlimited:'不限',initial:'初始模型',custom:'自定义模型'};
@@ -54,6 +54,11 @@ export function chineseTerminalLine(original){
   const line=original.replace(/^(?:arm>\s*)+/, '');
   if(line.startsWith('@RADAR '))try{
     const frame=JSON.parse(line.slice(7));
+    if(frame?.v===1&&frame.k==='probe'){
+      if(Object.hasOwn(frame,'state'))return `雷达通信验证 #${frame.id}：${radarProbeText(frame)}`;
+      if(Object.hasOwn(frame,'hex'))return `雷达通信证据 #${frame.id}：SN ${frame.sn||'未收到'} · 原始 RX ${frame.hex.match(/.{1,2}/g)?.join(' ')||'无数据'}`;
+      return `雷达查询窗口 #${frame.id}：接收 ${frame.bytes} B · 报警 ${frame.alarm} · 最近报警 0x${frame.last_alarm.toString(16).toUpperCase().padStart(4,'0')} · ${frame.elapsed} ms`;
+    }
     if(frame?.v===1&&frame.k==='diag'){
       const parts=[];
       for(const [key,label,unit] of [['bytes','接收',' B'],['packets','有效测量包',''],['bad','校验/长度异常',''],['overflow','溢出',' B'],['alarm','报警','']])
@@ -64,6 +69,11 @@ export function chineseTerminalLine(original){
         parts.push(`最近报警 ${code}${frame.alarm>0&&frame.last_alarm===0x0100?'（电源故障）':''}`);
       }
       if(Object.hasOwn(frame,'unit'))parts.push(`单位 ${frame.unit}`);
+      if(Object.hasOwn(frame,'tx_done'))parts.push(`USART2 发送完成 ${frame.tx_done} 条`);
+      if(Object.hasOwn(frame,'last_tx'))parts.push(`最近发送 ${frame.last_tx||'无'}`);
+      if(Object.hasOwn(frame,'tx_errors'))parts.push(`发送错误 ${frame.tx_errors}`);
+      if(Object.hasOwn(frame,'uart_errors'))parts.push(`串口错误 ${frame.uart_errors}`);
+      if(Object.hasOwn(frame,'rx_ready'))parts.push(`DMA 接收${frame.rx_ready?'就绪':'未就绪'}`);
       return `雷达诊断：${parts.join(' · ')}`;
     }
   }catch{}

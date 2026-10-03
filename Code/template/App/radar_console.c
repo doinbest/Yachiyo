@@ -28,6 +28,8 @@ static uint32_t Session,PlanId,PlanMap,LastBulk,LastStatus,LastNav,ParamsRevisio
 static uint32_t SeenMap;
 static uint32_t CaptureOrigin;
 static bool Watching,Pending,FormatOk;
+static uint32_t ProbeReportedId;
+static RadarUart_ProbeState_t ProbeReportedState;
 static char Kind[8],Line[257];
 static uint32_t RequestedId;
 static unsigned RequestedPage,Length;
@@ -99,6 +101,25 @@ static void status_page(bool foreground)
     applicable()?"true":"false",Scan.points_valid?"true":"false");
   (void)finish(foreground);
 }
+static void probe_pages(bool all)
+{
+  RadarUart_Probe_t p;unsigned i;
+  static const char *const names[]={"idle","transmitting","waiting","confirmed","unconfirmed","error","cancelled"};
+  RadarUart_ProbeGet(&p);
+  begin("probe",0,3);
+  append("\"id\":%lu,\"state\":\"%s\",\"reason\":\"%s\",\"tx\":%s",
+    (unsigned long)p.id,names[p.state],p.reason?p.reason:"not_run",p.tx_complete?"true":"false");
+  (void)finish(true);
+  if(all){
+    begin("probe",1,3);append("\"id\":%lu,\"bytes\":%lu,\"alarm\":%lu,\"last_alarm\":%u,\"elapsed\":%lu",
+      (unsigned long)p.id,(unsigned long)p.rx_bytes,(unsigned long)p.alarms,(unsigned)p.last_alarm,(unsigned long)p.elapsed_ms);
+    (void)finish(true);
+    begin("probe",2,3);append("\"id\":%lu,\"sn\":\"%s\",\"hex\":\"",(unsigned long)p.id,p.sn);
+    for(i=0;i<p.raw_count;i++)append("%02X",p.raw[i]);
+    append("\"");(void)finish(true);
+  }
+  ProbeReportedId=p.id;ProbeReportedState=p.state;
+}
 static void nav_page(bool foreground)
 {
   begin("nav",0,1);
@@ -159,6 +180,7 @@ void RadarConsole_Init(void)
   memset(&Plan,0,sizeof(Plan));Session=HAL_GetTick()+1U;if(!Session) Session=1;
   PlanId=PlanMap=SeenMap=LastBulk=LastStatus=LastNav=CaptureOrigin=0;ParamsRevision=1;
   Watching=Pending=false;Kind[0]=0;
+  ProbeReportedId=0;ProbeReportedState=RADAR_PROBE_IDLE;
 }
 void RadarConsole_Process(void)
 {
@@ -166,6 +188,11 @@ void RadarConsole_Process(void)
   if(RadarConsole_ScanBusy() && (ChassisMotion_IsBusy() || Mecanum_IsBusy() ||
       CaptureOrigin!=Location.generation)) RadarScan_Stop();
   if(Scan.map_valid && Scan.map_id!=SeenMap){SeenMap=Scan.map_id;(void)build_plan();}
+  {
+    RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
+    if(p.id && (p.id!=ProbeReportedId || p.state!=ProbeReportedState))
+      probe_pages(p.state!=RADAR_PROBE_TX && p.state!=RADAR_PROBE_WAITING);
+  }
   if(!Watching || !ConsoleTx_BulkReady() || (uint32_t)(now-LastBulk)<1000U) return;
   if(Pending){if(!fetch_page()) reply(false,"snapshot_changed_or_page_range");Pending=false;}
   else if(Route.planned && (uint32_t)(now-LastNav)>=1500U){nav_page(false);LastNav=now;}
@@ -188,18 +215,32 @@ bool RadarConsole_Command(unsigned n,char *t[])
   if(n<2U || strcmp(t[0],"radar")) return false;
   refresh();Watching=true;
   if(n==2U && !strcmp(t[1],"status")){
+    RadarUart_Status_t uart;RadarUart_StatusGet(&uart);
     /* Split diagnostics so full uint32 counters and identities fit 256 bytes. */
-    status_page(true);begin("diag",0,2);
+    status_page(true);begin("diag",0,3);
     append("\"bytes\":%lu,\"packets\":%lu,\"bad\":%lu,\"overflow\":%lu",
       (unsigned long)Scan.bytes,(unsigned long)Scan.packets,(unsigned long)Scan.bad,(unsigned long)Scan.overflow);
-    (void)finish(true);begin("diag",1,2);
+    (void)finish(true);begin("diag",1,3);
     append("\"alarm\":%lu,\"last_alarm\":%u,\"unit\":\"%s\"",
       (unsigned long)Scan.alarm,(unsigned)Scan.last_alarm,
       Scan.unit==RADAR_UNIT_CM?"cm":Scan.unit==RADAR_UNIT_MM?"mm":"unknown");
+    (void)finish(true);begin("diag",2,3);
+    append("\"tx_done\":%lu,\"tx_errors\":%lu,\"uart_errors\":%lu,\"rx_ready\":%s,\"last_tx\":\"%s\"",
+      (unsigned long)uart.commands_sent,(unsigned long)uart.tx_errors,(unsigned long)uart.uart_errors,
+      uart.rx_ready?"true":"false",uart.last_tx);
     (void)finish(true);return true;
+  }
+  if(n==3U && !strcmp(t[1],"probe") && !strcmp(t[2],"status")){probe_pages(true);return true;}
+  if(n==2U && !strcmp(t[1],"probe")){
+    if(RadarConsole_ScanBusy()) reply(false,"scan_in_progress");
+    else if(!RadarUart_ProbeStart()) reply(false,"probe_busy_or_uart");
+    else {reply(true,"probe_accepted");probe_pages(false);}
+    return true;
   }
   if(n==2U && !strcmp(t[1],"stop")){RadarScan_Stop();reply(true,"scan_stop_requested");return true;}
   if(n==2U && !strcmp(t[1],"scan")){
+    RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
+    if(p.state==RADAR_PROBE_TX || p.state==RADAR_PROBE_WAITING){reply(false,"query_in_progress");return true;}
     if(actuators_busy()) reason="stationary_capture_required";
     else{
       RadarMap_Params_t p=*RadarScan_Params();

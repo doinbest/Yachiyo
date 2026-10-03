@@ -216,9 +216,10 @@ def print_events(bridge, finished):
             if event['kind'] in ('rx', 'radar') and text.startswith('@RADAR '):
                 try:
                     radar = json.loads(text[7:])
-                    if radar.get('k') not in ('status', 'nav'):
+                    if radar.get('k') not in ('status', 'nav', 'probe'):
                         continue
-                    text = f'RADAR {radar.get("k")} {radar.get("state", "")} {radar.get("reason", "")} (snapshot data; raw RX capture available)'
+                    if radar.get('k') != 'probe':
+                        text = f'RADAR {radar.get("k")} {radar.get("state", "")} {radar.get("reason", "")} (snapshot data; raw RX capture available)'
                 except ValueError:
                     text = 'RADAR malformed reply (full line in log)'
             elif event['kind'] == 'rx' and (text.startswith('{') or text.startswith('@CHASSIS ')):

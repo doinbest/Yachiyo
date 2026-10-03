@@ -139,5 +139,13 @@ int main(void)
   tick+=10001;service();RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_ERROR&&!strcmp(s.reason,"scan_timeout"));
   assert(RadarScan_Start(&params,20));configured();full_circle(false,4);RadarScan_StatusGet(&s);
   assert(s.state==RADAR_SCAN_READY&&s.points_valid&&s.alarm==2&&s.last_alarm==1);
+  /* Read-only identity verification retains the complete map, cloud and RAM. */
+  {RadarUart_Probe_t probe;uint32_t mask=RadarScan_Map()->mask;uint16_t threshold=RadarScan_Params()->threshold;
+   id=s.map_id;for(i=0;i<4;i++){tick+=20;service();}
+   assert(RadarUart_ProbeStart());service();service();assert(!strcmp(last_tx,"LUUIDH"));
+   input((const uint8_t *)"PRODUCT SN: ABC123456\r\n",22);for(i=0;i<6;i++)service();
+   RadarUart_ProbeGet(&probe);RadarScan_StatusGet(&s);
+   assert(probe.state==RADAR_PROBE_CONFIRMED&&s.state==RADAR_SCAN_READY&&s.map_id==id&&s.points_valid);
+   assert(RadarScan_Map()->mask==mask&&RadarScan_Params()->threshold==threshold&&RadarScan_Points(&count));}
   puts("radar_scan: commands, full circle, corrupt-frame/unit/DMA recovery, alarms, snapshot retention PASS");return 0;
 }

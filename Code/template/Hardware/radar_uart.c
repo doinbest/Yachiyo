@@ -4,7 +4,9 @@
 #define RADAR_EVENT_QUEUE 2U
 #define RADAR_COMMAND_GAP_MS 20U
 #define RADAR_COMMAND_TIMEOUT_MS 500U
-typedef enum { COMMAND_NONE, COMMAND_START, COMMAND_STOP } CommandMode_t;
+#define RADAR_PROBE_REPLY_MS 2000U
+#define RADAR_PROBE_TEXT_GAP_MS 50U
+typedef enum { COMMAND_NONE, COMMAND_START, COMMAND_STOP, COMMAND_PROBE } CommandMode_t;
 static UART_HandleTypeDef *radar_uart;
 /* The current scatter file places ordinary ZI in DMA-accessible SRAM, not CCM.
  * uint32_t storage also supplies the DMA buffer's alignment. */
@@ -31,6 +33,70 @@ static const char startup[6][7] = {
   "LSTOPH", "LMDMMH", "LOCONH", "LFFF1H", "LSSS1H", "LSTARH"
 };
 static const char stop_command[7] = "LSTOPH";
+static const char probe_command[7] = "LUUIDH";
+static const char sn_header[] = "PRODUCT SN:";
+static RadarUart_Probe_t probe;
+static uint32_t probe_tick, probe_rx_start, probe_parsed, probe_generation, probe_last_byte;
+static uint8_t sn_match, sn_length;
+static bool probe_receiving, sn_collecting, sn_complete;
+
+static bool probe_active(void)
+{
+  return probe.state == RADAR_PROBE_TX || probe.state == RADAR_PROBE_WAITING;
+}
+
+static void probe_snapshot(uint32_t now)
+{
+  probe.elapsed_ms = now - probe_tick;
+  if (probe_receiving) {
+    probe.rx_bytes = produced - probe_rx_start;
+  }
+}
+
+static void probe_finish(RadarUart_ProbeState_t state, const char *reason, uint32_t now)
+{
+  probe_snapshot(now); probe.state = state; probe.reason = reason;
+}
+
+/* Header facts: manufacturer's LDS-50C ROS UART driver queries LUUIDH and
+ * searches PRODUCT SN:. No SDK source is copied. Recognize fragmented text
+ * even amid continuous alarms; an echo or binary reception is not an answer. */
+static void probe_byte(uint8_t byte, uint32_t position, uint32_t now)
+{
+  if (!probe_active() || !probe_receiving || (int32_t)(position - probe_rx_start) < 0) return;
+  probe_parsed++;
+  if (probe.raw_count < sizeof probe.raw) probe.raw[probe.raw_count++] = byte;
+  if (sn_complete) return;
+  if (sn_collecting) {
+    if ((byte >= '0' && byte <= '9') || (byte >= 'A' && byte <= 'Z') ||
+        (byte >= 'a' && byte <= 'z') || byte == '-' || byte == '_') {
+      if (sn_length < sizeof probe.sn - 1U) probe.sn[sn_length++] = (char)byte;
+      probe_last_byte = now;
+    } else if (sn_length) { sn_complete = true; sn_collecting = false; }
+    else if (byte != ' ' && byte != '\t') { sn_collecting = false; sn_match = 0; }
+    return;
+  }
+  if (byte == (uint8_t)sn_header[sn_match]) {
+    if (++sn_match == sizeof sn_header - 1U) { sn_collecting = true; sn_match = 0; }
+  } else sn_match = byte == (uint8_t)sn_header[0] ? 1U : 0U;
+}
+
+static void service_probe(uint32_t now)
+{
+  if (!probe_active()) return;
+  probe_snapshot(now);
+  if (sn_collecting && sn_length && (uint32_t)(now - probe_last_byte) >= RADAR_PROBE_TEXT_GAP_MS)
+    sn_complete = true;
+  if (probe.tx_complete && sn_complete) probe_finish(RADAR_PROBE_CONFIRMED, "sn_reply", now);
+  else if (probe.tx_complete && (uint32_t)(now - tx_completed_tick) >= RADAR_PROBE_REPLY_MS)
+    probe_finish(RADAR_PROBE_UNCONFIRMED,
+      !probe.rx_bytes ? "no_reply" : probe.alarms &&
+        (int32_t)(probe_parsed - probe.alarms * 6U) >= -5 &&
+        (int32_t)(probe_parsed - probe.alarms * 6U) <= 5 ? "alarm_only" : "reply_unknown", now);
+  else if (!tx_active && command_mode == COMMAND_PROBE && (uint32_t)(now - probe_tick) >= RADAR_COMMAND_TIMEOUT_MS) {
+    command_mode = COMMAND_NONE; probe_finish(RADAR_PROBE_ERROR, "tx_busy", now);
+  }
+}
 
 /* Use live NDTR for all three events. A wrap first observed by IDLE/main is
  * inferred once; the subsequently delivered TC merely catches up that epoch.
@@ -65,6 +131,10 @@ static void discard_input(void)
 {
   consumed = producer_snapshot(); work_count = work_at = 0;
   event_head = event_count = 0; LdsParser_Reset(&parser);
+  if (probe_active()) {
+    sn_collecting = sn_complete = false; sn_match = sn_length = 0;
+    memset(probe.sn, 0, sizeof probe.sn);
+  }
 }
 
 static void reset_cursor(void)
@@ -94,6 +164,8 @@ HAL_StatusTypeDef RadarUart_Init(UART_HandleTypeDef *uart)
   command_mode = in_flight_mode = COMMAND_NONE; command_index = 0;
   command_generation = in_flight_generation = 0;
   command_due_tick = HAL_GetTick();
+  memset(&probe, 0, sizeof probe); probe.reason = "not_run";
+  probe_receiving = sn_collecting = sn_complete = false; sn_match = sn_length = 0;
   return start_receive();
 }
 
@@ -118,7 +190,7 @@ void RadarUart_ErrorCallback(UART_HandleTypeDef *uart)
 
 bool RadarUart_StartScan(void)
 {
-  if (!radar_uart) return false;
+  if (!radar_uart || probe_active()) return false;
   discard_input(); command_mode = COMMAND_START; command_index = 0;
   command_generation++;
   diagnostics.configured = false; diagnostics.command_failed = false;
@@ -129,10 +201,31 @@ bool RadarUart_StartScan(void)
 void RadarUart_StopScan(void)
 {
   if (!radar_uart) return;
+  if (probe_active()) probe_finish(RADAR_PROBE_CANCELLED, "operator_stop", HAL_GetTick());
   command_mode = COMMAND_STOP; command_index = 0;
   command_generation++;
   diagnostics.configured = false;
   command_due_tick = HAL_GetTick();
+}
+
+bool RadarUart_ProbeStart(void)
+{
+  uint32_t id = probe.id + 1U;
+  if (!radar_uart || probe_active() || tx_active || command_mode != COMMAND_NONE || diagnostics.configured) return false;
+  memset(&probe, 0, sizeof probe); probe.id = id ? id : 1U;
+  probe.state = RADAR_PROBE_TX; probe.reason = "query_sending";
+  probe_receiving = sn_collecting = sn_complete = false; sn_match = sn_length = 0;
+  probe_parsed = 0;
+  probe_tick = HAL_GetTick(); command_due_tick = probe_tick;
+  command_mode = COMMAND_PROBE; probe_generation = ++command_generation;
+  return true;
+}
+
+void RadarUart_ProbeGet(RadarUart_Probe_t *status)
+{
+  if (!status) return;
+  if (probe_active()) { (void)producer_snapshot(); probe_snapshot(HAL_GetTick()); }
+  *status = probe;
 }
 
 static void service_commands(uint32_t now)
@@ -141,9 +234,14 @@ static void service_commands(uint32_t now)
   const char *command;
   if (tx_done) {
     tx_done = false; tx_active = false; diagnostics.commands_sent++;
+    if (in_flight_mode == COMMAND_PROBE && in_flight_generation == probe_generation) {
+      probe.tx_complete = true;
+      if (probe_active()) { probe.state = RADAR_PROBE_WAITING; probe.reason = "query_waiting"; }
+    }
     command_due_tick = tx_completed_tick + RADAR_COMMAND_GAP_MS;
     if (in_flight_mode == command_mode && in_flight_generation == command_generation) {
       if (command_mode == COMMAND_STOP) command_mode = COMMAND_NONE;
+      else if (command_mode == COMMAND_PROBE) command_mode = COMMAND_NONE;
       else if (++command_index == 6U) {
         command_mode = COMMAND_NONE; diagnostics.configured = true;
       }
@@ -153,18 +251,29 @@ static void service_commands(uint32_t now)
     if ((uint32_t)(now - tx_started_tick) < RADAR_COMMAND_TIMEOUT_MS) return;
     HAL_UART_AbortTransmit(radar_uart); tx_active = false;
     diagnostics.tx_errors++; diagnostics.command_failed = true;
+    if (probe_active()) probe_finish(RADAR_PROBE_ERROR, "tx_timeout", now);
     command_mode = COMMAND_NONE; diagnostics.configured = false;
     return;
   }
   if (command_mode == COMMAND_NONE || (int32_t)(now - command_due_tick) < 0) return;
-  command = command_mode == COMMAND_START ? startup[command_index] : stop_command;
+  command = command_mode == COMMAND_START ? startup[command_index] : command_mode == COMMAND_PROBE ? probe_command : stop_command;
   in_flight_mode = command_mode; in_flight_generation = command_generation;
   tx_active = true; tx_started_tick = now;
+  /* Gate by absolute DMA cursor, excluding old bytes in both work[] and DMA.
+   * Arm before IT transmission: a fast reply may precede main-loop TX service. */
+  if (command_mode == COMMAND_PROBE) {
+    probe_rx_start = producer_snapshot();
+  }
   result = HAL_UART_Transmit_IT(radar_uart, (uint8_t *)command, 6U);
+  if (result == HAL_OK) {
+    memcpy(diagnostics.last_tx, command, sizeof diagnostics.last_tx);
+    if (command_mode == COMMAND_PROBE) probe_receiving = true;
+  }
   if (result != HAL_OK) {
     tx_active = false;
     if (result != HAL_BUSY) {
       diagnostics.tx_errors++; diagnostics.command_failed = true;
+      if (probe_active()) probe_finish(RADAR_PROBE_ERROR, "tx_error", now);
       command_mode = COMMAND_NONE; diagnostics.configured = false;
     }
   }
@@ -174,6 +283,13 @@ static void queue_event(void)
 {
   uint8_t tail = (uint8_t)((event_head + event_count) % RADAR_EVENT_QUEUE);
   events[tail] = *LdsParser_Event(&parser); event_count++;
+  /* Count only frames completed by this query's fresh input. Old buffered
+   * alarms and DMA bytes ahead of the parser must not skew its result. */
+  if (probe_active() && probe_receiving &&
+      (int32_t)(consumed - work_count + work_at - probe_rx_start) > 0 &&
+      events[tail].kind == LDS_EVENT_ALARM) {
+    probe.alarms++; probe.last_alarm = events[tail].data.alarm_code;
+  }
 }
 
 void RadarUart_Process(void)
@@ -192,16 +308,16 @@ void RadarUart_Process(void)
    * scan's timeout and published map rather than consuming a recovery quota. */
   if (!diagnostics.rx_ready) {
     if (start_receive() == HAL_OK) diagnostics.restarts++;
-    else { diagnostics.restart_failures++; return; }
+    else { diagnostics.restart_failures++; service_probe(HAL_GetTick()); return; }
   }
   producer = producer_snapshot(); available = producer - consumed;
   if (available > RADAR_UART_RX_BYTES) {
     diagnostics.overwritten_bytes += available - RADAR_UART_RX_BYTES;
     diagnostics.overflow_events++; diagnostics.loss_generation++;
-    discard_input(); return;
+    discard_input(); service_probe(HAL_GetTick()); return;
   }
   while (budget) {
-    if (event_count == RADAR_EVENT_QUEUE) { diagnostics.queue_full++; return; }
+    if (event_count == RADAR_EVENT_QUEUE) { diagnostics.queue_full++; break; }
     if (LdsParser_Poll(&parser)) { queue_event(); continue; }
     if (work_at == work_count) {
       producer = producer_snapshot(); available = producer - consumed;
@@ -209,7 +325,7 @@ void RadarUart_Process(void)
       if (available > RADAR_UART_RX_BYTES) {
         diagnostics.overwritten_bytes += available - RADAR_UART_RX_BYTES;
         diagnostics.overflow_events++; diagnostics.loss_generation++;
-        discard_input(); return;
+        discard_input(); service_probe(HAL_GetTick()); return;
       }
       take = (uint16_t)(available < budget ? available : budget);
       read_start = consumed;
@@ -221,13 +337,15 @@ void RadarUart_Process(void)
       if (producer - read_start > RADAR_UART_RX_BYTES) {
         diagnostics.overwritten_bytes += producer - read_start - RADAR_UART_RX_BYTES;
         diagnostics.overflow_events++; diagnostics.loss_generation++;
-        discard_input(); return;
+        discard_input(); service_probe(HAL_GetTick()); return;
       }
       consumed += take; work_count = take; work_at = 0;
     }
+    probe_byte(work[work_at], consumed - work_count + work_at, HAL_GetTick());
     if (LdsParser_FeedByte(&parser, work[work_at++])) queue_event();
     diagnostics.parsed_bytes++; budget--;
   }
+  service_probe(HAL_GetTick());
 }
 
 bool RadarUart_ReadEvent(LdsEvent_t *event)
