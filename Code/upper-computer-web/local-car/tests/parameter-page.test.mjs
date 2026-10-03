@@ -6,6 +6,17 @@ import {parameterSurface} from './parameter-surface.mjs';
 import {RadarModel,RadarExchange} from '../radar-model.mjs';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
+test('saving browser-only route speed preserves an active radar parameter occupation',async()=>{
+  const ui=parameterSurface(),wires=[],occupations=[],saved=[];let occupied=true;
+  try{
+    const page=mountParameterPage({root:ui.root,send:async wire=>{wires.push(wire);return true;},canSend:()=>!occupied,onBusy:value=>{occupations.push(value);occupied=value;},onRouteSpeed:value=>saved.push(value)});
+    page.selectTab('radar');const speed=ui.input('local','route_speed');speed.value='250';speed.oninput();
+    await page.apply();
+    assert.deepEqual(saved,[250]);assert.deepEqual(wires,[]);
+    assert.equal(occupied,true);assert.deepEqual(occupations,[]);
+  }finally{ui.restore();}
+});
+
 test('read all refreshes successful fields and unset, keeps failed input, gets radar once',async()=>{
   const ui=parameterSurface(),wires=[];let page,radarGets=0;
   try{
@@ -251,4 +262,25 @@ test('applying radar installation writes only zero_deg through the existing acce
     assert.ok(ui.all().some(e=>e.textContent.includes('已应用并读回一致')));
     assert.doesNotMatch(ui.root.querySelector('#parameter-radar-installation-status').textContent,/待应用/);
   }finally{exchange?.cancel();ui.restore();}
+});
+
+test('map-side radar parameter readback updates the parameter page only as a complete live snapshot and keeps drafts',()=>{
+  const ui=parameterSurface(),model=new RadarModel(),wires=[];
+  try{
+    model.connection(true);
+    const page=mountParameterPage({root:ui.root,canSend:()=>false,send:async wire=>wires.push(wire),radarModel:model});
+    assert.equal(typeof page.refreshRadarParameters,'function');
+    const base={v:1,k:'params',session:7,origin:0,scan:0,map:0,plan:0,pages:2,rev:1};
+    const receive=value=>{model.accept('@RADAR '+JSON.stringify({...base,...value}));page.refreshRadarParameters();};
+    receive({page:0,key:'zero_deg',value:90});assert.equal(ui.input('radar','zero_deg').value,'');
+    receive({page:1,key:'lidar_x_mm',value:2170});assert.equal(ui.input('radar','zero_deg').value,'90');
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction');assert.equal(direction.value,'front');
+    direction.value='left';direction.onchange();
+    receive({rev:2,page:0,key:'zero_deg',value:0});receive({rev:2,page:1,key:'lidar_x_mm',value:2180});
+    assert.equal(ui.input('radar','zero_deg').value,'180');assert.equal(direction.value,'left');
+    assert.match(ui.input('radar','zero_deg').title,/设备值：0/);
+    assert.equal(ui.input('radar','lidar_x_mm').value,'2180');
+    assert.equal(ui.root.querySelector('#parameter-row-radar-zero_deg').dataset.state,'draft');
+    assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
 });

@@ -9,7 +9,7 @@ const notes={material:'最高处 Z=0，下降为正、抬升从夹取处算；�
 /** Persistent drafts; mounting, tab changes and navigation never transmit. */
 export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=200,onRouteSpeed=()=>{},radarExchange,radarModel}){
   const exchange=createParameterExchange({send}),rows=new Map(),values={grab:{},turntable:{},arm:{},radar:{}},panels=new Map(),buttons=new Map(),actions=[];
-  const historicalValues=new Set();let tab='material',busy=false,revision=0,successes=0,failures=0,installation=null;
+  const historicalValues=new Set();let tab='material',busy=false,revision=0,successes=0,failures=0,installation=null,radarParameterSnapshot=null;
   root.className='parameter-workspace';
   const toolbar=el('div',undefined,'parameter-toolbar'),back=el('a','','parameter-back');back.hidden=true;
   const readAll=el('button','读取当前全部参数','primary'),apply=el('button','应用本页修改');readAll.type=apply.type='button';
@@ -169,10 +169,10 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
   function showError(kind,key,error){const affected=[...rows.values()].filter(row=>row.field.kind===kind&&(row.field.key===key||kind==='arm'&&row.field.axis===key||kind==='radar'&&key==='all'));for(const row of affected){fieldState(row,/unknown|unsupported|invalid_key|not_found|unknown_key|未支持/.test(error.message)?'未支持':error.message,'failed');row.state.title=error.message;}}
   async function run(work,localOnly=false,operation='读取完成'){
     if(busy||(!localOnly&&!canSend('grab get z_grab')))return;
-    busy=true;successes=failures=0;const token=revision;onBusy(true);update();
+    busy=true;successes=failures=0;const token=revision;if(!localOnly)onBusy(true);update();
     try{await work(token);resultLine.textContent=(failures?'部分完成':operation)+' · 成功 '+successes+' 项'+(failures?'，失败 '+failures+' 项':'');}
     catch(error){resultLine.textContent=error.message;}
-    finally{busy=false;if(token===revision)progress.textContent=successes+' 项成功'+(failures?' · '+failures+' 项失败':'')+(historicalValues.size?' · '+historicalValues.size+' 项历史值':'');onBusy(false);update();}
+    finally{busy=false;if(token===revision)progress.textContent=successes+' 项成功'+(failures?' · '+failures+' 项失败':'')+(historicalValues.size?' · '+historicalValues.size+' 项历史值':'');if(!localOnly)onBusy(false);update();}
   }
   async function readRequest(request,preserve=false){
     if(request.kind==='arm'){const result=await exchange.readArm(request.key);for(const part of ['rpm','acc','limit'])accept('arm',request.key+'_'+part,result[part],preserve);return 3;}
@@ -251,5 +251,12 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
     return consumed;
   }
   function setRouteSpeed(speed){routeSpeed=speed;const row=rowFor('local','route_speed');repaint(row,row.dirty);row.input.title='浏览器本地：'+speed+' mm/s';update();}
-  selectTab();return {receive,cancel,update,selectTab,setReturn,setRouteSpeed,readAll:()=>readAll.onclick(),apply:()=>apply.onclick(),get tab(){return tab;},get busy(){return busy;}};
+  function refreshRadarParameters(){
+    const snapshot=radarModel?.snapshots.params;
+    if(!radarModel?.connected||!radarModel.paramsLive||!snapshot||snapshot.historical||snapshot===radarParameterSnapshot)return;
+    radarParameterSnapshot=snapshot;
+    for(const row of rows.values())if(row.field.kind==='radar'&&Object.hasOwn(snapshot.params,row.field.key))accept('radar',row.field.key,snapshot.params[row.field.key],row.dirty);
+    update();
+  }
+  selectTab();return {receive,cancel,update,selectTab,setReturn,setRouteSpeed,refreshRadarParameters,readAll:()=>readAll.onclick(),apply:()=>apply.onclick(),get tab(){return tab;},get busy(){return busy;}};
 }

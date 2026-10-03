@@ -22,7 +22,8 @@ static ChassisRoute_Status_t route;
 static char reply[4096],page[257];
 static char foreground[6][257];
 static unsigned foreground_count;
-static unsigned scans,auto_scans,stops,moves;
+static unsigned scans,auto_scans,manual_scans,stops,moves;
+static RadarStart_Id_t requested_start;
 static float submitted_speed;
 static bool busy,bulk_ready=true;
 #ifdef RADAR_CONSOLE_PLAN_FIXTURE
@@ -55,6 +56,9 @@ const RadarMap_Params_t *RadarScan_MapParams(void){return &captured;}
 const RadarSample_t *RadarScan_Points(uint16_t *n){*n=360;return scan.points_valid?samples:NULL;}
 bool RadarScan_Start(const RadarMap_Params_t *p,uint32_t origin){(void)origin;captured=*p;scans++;scan.state=RADAR_SCAN_COLLECTING;return true;}
 bool RadarScan_StartAuto(const RadarMap_Params_t *p,uint32_t origin){auto_scans++;return RadarScan_Start(p,origin);}
+bool RadarScan_StartAt(const RadarMap_Params_t *p,uint32_t origin,RadarStart_Id_t start){
+  requested_start=start;manual_scans++;return RadarScan_Start(p,origin);
+}
 bool RadarScan_SelectStart(RadarStart_Id_t start){
   if(!start_status.scan_id || !start_status.automatic || RadarConsole_ScanBusy() || start==RADAR_START_UNKNOWN)return false;
   start_status.result.start_id=(uint8_t)start;start_status.result.reason="manual_selection";
@@ -272,5 +276,41 @@ int main(void)
   path_pages=fetch_path(4,true);
   printf("int16/uint8 boundary path pages: %u (%u items)\n",path_pages,RADAR_PLAN_MAX_POINTS);
 #endif
+  /* A manually chosen corner can capture its first circle without auto history.
+   * The caller passes the lower installation reference, never observer feedback. */
+  params.zero_deg=90;location.observer.feedback.x_mm=1200;location.observer.feedback.y_mm=1200;
+  location.observer.feedback.yaw_rad=3.14159265358979323846f;
+  scan.state=RADAR_SCAN_IDLE;scan.map_valid=false;scan.scan_id=scan.map_id=0;
+  memset(&start_status,0,sizeof start_status);start_status.result.reason="not_scanned";
+  RadarConsole_Init();command("radar scan upper");
+  assert(manual_scans==1 && requested_start==RADAR_START_UPPER &&
+    captured.lidar_x_mm==2170 && captured.lidar_y_mm==230 && captured.zero_deg==90);
+  assert(foreground_count==2 && strstr(foreground[0],"scan_accepted") &&
+    strstr(foreground[1],"\"state\":\"collecting\""));
+  assert(moves==movement_count);
+  /* A completed explicit upper scan is manual_reference with upper planning. */
+  scan.state=RADAR_SCAN_READY;scan.reason="complete";scan.map_valid=scan.map_applicable=scan.points_valid=true;
+  scan.scan_id=scan.map_id=scan.points_map_id=1;scan.origin_generation=location.generation;
+  start_status.scan_id=1;start_status.automatic=false;
+  start_status.result.start_id=RADAR_START_UPPER;start_status.result.reason="manual_reference";
+  captured.lidar_x_mm=2330;captured.lidar_y_mm=2170;captured.zero_deg=270;
+#ifdef RADAR_CONSOLE_PLAN_FIXTURE
+  edge_plan=false;
+#endif
+  fast_pump();fetch("path",1,0);
+  assert(page_field("start")==RADAR_START_UPPER && strstr(page,"[2250,2250,1,0]"));
+  unsigned upper_pages=page_field("pages");
+  for(unsigned number=1;number<upper_pages;number++){
+    fetch("path",1,number);assert(page_field("start")==RADAR_START_UPPER);
+  }
+  assert(strstr(page,"[2250,2250,1,8]"));
+  command("radar nav start");assert(strstr(reply,"upper_start_plan_only") && moves==movement_count);
+  command("radar task start");assert(strstr(reply,"upper_start_plan_only") && moves==movement_count);
+  command("radar scan lower");
+  assert(manual_scans==2 && requested_start==RADAR_START_LOWER &&
+    captured.lidar_x_mm==2170 && captured.lidar_y_mm==230 && captured.zero_deg==90);
+  command("radar stop");busy=true;command("radar scan upper");
+  assert(manual_scans==2 && strstr(reply,"stationary_capture_required"));busy=false;
+  command("radar scan sideways");assert(manual_scans==2 && strstr(reply,"format"));
   puts("radar_console_test: PASS (paging, pose, first scan, no implicit drive, origin and parameter validity)");
 }

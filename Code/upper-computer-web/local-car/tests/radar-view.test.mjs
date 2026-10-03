@@ -80,6 +80,125 @@ function liveWorkspace(ui,{respond=true,canSend=()=>true}={}){
   return {workspace,model,exchange,wires,busy,reply,setRespond:value=>{answer=value;},async close(){exchange.cancel();await flush();ui.restore();}};
 }
 
+const headingChoices=ui=>ui.get('radar-heading-options').children.filter(child=>child.dataset.worldAngle!==undefined);
+const chooseHeading=(ui,angle)=>headingChoices(ui).find(child=>Number(child.dataset.worldAngle)===angle).onclick();
+function headingReplies(h,{value=90,reject=false}={}){
+  h.exchange.send=async wire=>{h.wires.push(wire);queueMicrotask(()=>h.workspace.receive(wire.startsWith('radar set ')?(reject?'ERR radar scan_busy_or_parameters':'OK radar parameter_updated_ram'):frame({k:'params',rev:3,key:'zero_deg',value})));return true;};
+}
+
+test('map start selection is local before a first scan and offers only inward zero-degree arrows',async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{canSend:()=>false});
+  try{
+    h.workspace.connection(false);h.workspace.selectTab('radar');
+    assert.equal(typeof ui.get('radar-select-lower').onclick,'function');ui.get('radar-select-lower').onclick();
+    assert.deepEqual(headingChoices(ui).map(child=>Number(child.dataset.worldAngle)),[90,180]);
+    assert.match(headingChoices(ui)[0].attributes.transform,/translate\(2250 150\)/);
+    assert.ok(headingChoices(ui).every(child=>child.attributes['aria-pressed']==='false'));
+    chooseHeading(ui,90);assert.match(ui.get('radar-heading-status').textContent,/90°.*待应用/);
+    ui.get('radar-select-upper').onclick();assert.deepEqual(headingChoices(ui).map(child=>Number(child.dataset.worldAngle)),[270,180]);
+    assert.match(headingChoices(ui)[0].attributes.transform,/translate\(2250 2250\)/);
+    const left=headingChoices(ui)[1],event={key:'Enter',preventDefault(){}};left.events.keydown(event);
+    assert.match(ui.get('radar-heading-status').textContent,/180°.*待应用/);assert.deepEqual(h.wires,[]);
+    h.workspace.selectTab('monitor');h.workspace.connection(true);h.workspace.receive(frame({k:'status',session:10,state:'idle'}));h.workspace.selectTab('radar');
+    assert.match(ui.get('radar-heading-status').textContent,/180°.*待应用/);assert.deepEqual(h.wires,[]);
+    ui.get('radar-select-lower').onclick();assert.match(ui.get('radar-heading-status').textContent,/90°.*待应用/);
+  }finally{await h.close();}
+});
+
+for(const [corner,world,value]of [['upper',270,90],['upper',180,0],['lower',180,180]])test(`explicit ${corner} ${world} heading writes lower reference ${value} and confirms readback`,async()=>{
+  const ui=surface(),h=liveWorkspace(ui);headingReplies(h,{value});
+  try{
+    assert.equal(typeof ui.get(`radar-select-${corner}`).onclick,'function');ui.get(`radar-select-${corner}`).onclick();chooseHeading(ui,world);
+    assert.deepEqual(h.wires,[]);assert.equal(ui.get('radar-scan-selected').disabled,true);
+    ui.get('radar-heading-apply').onclick();await flush();
+    assert.deepEqual(h.wires,[`radar set zero_deg ${value}`,'radar get']);assert.deepEqual(h.busy,[true,false]);
+    assert.match(ui.get('radar-heading-status').textContent,/读回一致.*新扫描/);assert.equal(ui.get('radar-scan-selected').disabled,false);
+    ui.get('radar-scan-selected').onclick();await flush();assert.equal(h.wires.at(-1),`radar scan ${corner}`);
+  }finally{await h.close();}
+});
+
+test('heading rejection and readback mismatch preserve the draft and completed map',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);headingReplies(h,{reject:true});
+  try{
+    h.workspace.receive(frame({k:'map',mask:4,pose:[2170,230,180],offset:0,counts:Array(25).fill(0)}));const map=h.model.snapshots.map;
+    assert.equal(typeof ui.get('radar-select-upper').onclick,'function');ui.get('radar-select-upper').onclick();chooseHeading(ui,270);ui.get('radar-heading-apply').onclick();await flush();
+    assert.equal(h.model.snapshots.map,map);assert.equal(map.historical,false);assert.match(ui.get('radar-heading-status').textContent,/未确认.*草稿.*新扫描/);assert.equal(ui.get('radar-scan-selected').disabled,true);
+    headingReplies(h,{value:180});ui.get('radar-heading-apply').onclick();await flush();
+    assert.equal(h.model.snapshots.map,map);assert.match(ui.get('radar-heading-status').textContent,/不一致.*草稿/);assert.equal(ui.get('radar-scan-selected').disabled,true);
+    assert.equal(headingChoices(ui).find(child=>child.dataset.worldAngle==='270').attributes['aria-pressed'],'true');
+    h.workspace.connection(false);h.workspace.connection(true);assert.match(ui.get('radar-heading-status').textContent,/历史.*重新应用/);
+  }finally{await h.close();}
+});
+
+test('stop cancels heading readback and retains the selected draft while releasing global parameter busy',async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{respond:false});
+  try{
+    assert.equal(typeof ui.get('radar-select-lower').onclick,'function');ui.get('radar-select-lower').onclick();chooseHeading(ui,90);ui.get('radar-heading-apply').onclick();await flush();
+    assert.deepEqual(h.wires,['radar set zero_deg 90']);assert.deepEqual(h.busy,[true]);assert.equal(ui.get('radar-scan-selected').disabled,true);
+    assert.ok(headingChoices(ui).every(child=>child.attributes['aria-disabled']==='true'));
+    ui.get('radar stop').onclick();h.workspace.receive('OK radar parameter_updated_ram');await flush();
+    assert.deepEqual(h.wires,['radar set zero_deg 90','radar stop']);assert.deepEqual(h.busy,[true,false]);assert.match(ui.get('radar-heading-status').textContent,/未确认.*草稿/);
+    assert.equal(ui.get('radar-select-upper').disabled,false);
+  }finally{await h.close();}
+});
+
+test('accepted heading invalidates old results even when stop cancels the following readback',async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{respond:false});
+  try{
+    h.workspace.receive(frame({k:'status',state:'ready',applicable:true,points_valid:true}));
+    h.workspace.receive(frame({k:'map',mask:4,pose:[2170,230,180],offset:0,counts:Array(25).fill(0)}));
+    h.workspace.receive(frame({k:'path',valid:true,offset:0,points:[[2250,150,1,0]]}));
+    for(const k of ['points','cloud'])h.workspace.receive(frame({k,offset:0,total:1,points:[[900,200,50]]}));
+    const old={...h.model.snapshots};ui.get('radar-select-lower').onclick();chooseHeading(ui,90);ui.get('radar-heading-apply').onclick();await flush();
+    assert.ok(['map','path','points','cloud'].every(k=>old[k].historical===false));
+    h.workspace.receive('OK radar parameter_updated_ram');await flush();assert.deepEqual(h.wires,['radar set zero_deg 90','radar get']);
+    for(const k of ['map','path','points','cloud']){assert.equal(h.model.snapshots[k],old[k]);assert.equal(old[k].historical,true);}
+    assert.match(ui.get('radar-map-age').textContent,/历史.*朝向参数已应用.*新扫描/);
+    ui.get('radar stop').onclick();await flush();
+    assert.deepEqual(h.wires,['radar set zero_deg 90','radar get','radar stop']);assert.deepEqual(h.busy,[true,false]);
+    assert.match(ui.get('radar-heading-status').textContent,/未确认.*草稿保留/);assert.match(ui.get('radar-map-age').textContent,/历史.*新扫描/);
+    assert.ok(['map','path','points','cloud'].every(k=>h.model.snapshots[k]===old[k]&&old[k].historical===true));
+  }finally{await h.close();}
+});
+
+test('selected-start scanning without a heading draft uses the new single-circle entry and keeps unknown direction explicit',async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{respond:false});
+  try{
+    assert.equal(typeof ui.get('radar-select-upper').onclick,'function');ui.get('radar-select-upper').onclick();assert.match(ui.get('radar-heading-status').textContent,/未读取|未知/);
+    ui.get('radar-scan-selected').onclick();await flush();assert.deepEqual(h.wires,['radar scan upper']);
+    h.workspace.receive('ERR radar scan_busy_or_parameters');ui.get('radar-select-lower').onclick();ui.get('radar-scan-selected').onclick();await flush();
+    assert.deepEqual(h.wires,['radar scan upper','radar scan lower']);
+  }finally{await h.close();}
+});
+
+test('the old-circle reuse entry stays disabled before a completed current automatic capture',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);
+  try{
+    assert.equal(ui.get('radar start upper').disabled,true);ui.get('radar start upper').onclick();await flush();assert.deepEqual(h.wires,[]);
+    classification(h);h.workspace.receive(frame({k:'status',scan:4,state:'ready',reason:'start_ambiguous',applicable:false}));
+    assert.equal(ui.get('radar start upper').disabled,false);
+    h.workspace.connection(false);h.workspace.connection(true);assert.equal(ui.get('radar start upper').disabled,true);ui.get('radar start upper').onclick();assert.deepEqual(h.wires,[]);
+  }finally{await h.close();}
+});
+
+test('map arrow targets survive periodic status rendering for keyboard selection',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);
+  try{
+    ui.get('radar-select-lower').onclick();const arrow=headingChoices(ui)[0];h.workspace.render();
+    assert.equal(headingChoices(ui)[0],arrow);h.workspace.receive(frame({k:'status',state:'idle'}));assert.equal(headingChoices(ui)[0],arrow);
+    arrow.events.keydown({key:' ',preventDefault(){}});assert.match(ui.get('radar-heading-status').textContent,/90°.*待应用/);assert.deepEqual(h.wires,[]);
+  }finally{await h.close();}
+});
+
+test('a parameter readback uses the selected map frame and a controller restart makes it historical without discarding the draft',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);
+  try{
+    ui.get('radar-select-upper').onclick();chooseHeading(ui,270);h.workspace.receive(frame({k:'params',key:'zero_deg',value:90,rev:1}));
+    assert.match(ui.get('radar-heading-status').textContent,/设备参数读回：地图 270°.*读回一致/);assert.equal(ui.get('radar-scan-selected').disabled,false);
+    h.workspace.receive(frame({k:'status',session:10,state:'idle'}));assert.match(ui.get('radar-heading-status').textContent,/历史参数读回.*待应用/);assert.equal(ui.get('radar-scan-selected').disabled,true);assert.deepEqual(h.wires,[]);
+  }finally{await h.close();}
+});
+
 test('a completed observed scan automatically displays compact map and path exactly once',async()=>{
   const ui=surface(),h=liveWorkspace(ui);
   try{

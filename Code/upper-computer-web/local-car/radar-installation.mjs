@@ -20,3 +20,13 @@ export function radarInstallationFromZero(value){
   const preset=RADAR_INSTALLATION_DIRECTIONS.find(item=>Math.abs(item.relativeDeg-relativeDeg)<1e-8);
   return {direction:preset?.key??'custom',relativeDeg};
 }
+
+/** Map heading at the chosen nominal start to the firmware's lower reference. */
+export function radarLowerReferenceFromWorld(start,value){
+  const angle=numeric(value);return angle===null||!['upper','lower'].includes(start)?null:normalize(angle-(start==='upper'?180:0));
+}
+
+/** Interpret a lower-reference readback at a chosen start, without physical confirmation. */
+export function radarWorldFromLowerReference(start,value){
+  const angle=numeric(value);return angle===null||!['upper','lower'].includes(start)?null:normalize(angle+(start==='upper'?180:0));
+}

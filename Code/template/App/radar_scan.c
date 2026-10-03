@@ -14,6 +14,7 @@ static LdsPacket_t pending_packet;
 static LdsEvent_t incoming;
 static bool have_pending, have_previous;
 static bool capture_auto,selection_available;
+static RadarStart_Id_t capture_start;
 static uint16_t previous_start;
 static uint32_t progress, pending_progress, start_tick, capture_origin;
 static uint32_t capture_completed_tick;
@@ -44,6 +45,7 @@ HAL_StatusTypeDef RadarScan_Init(UART_HandleTypeDef *uart)
   status.state = RADAR_SCAN_IDLE; status.reason = "idle";
   have_pending = have_previous = false;
   capture_auto=selection_available=false;
+  capture_start=RADAR_START_LOWER;
   parameter_revision = capture_revision = 0;
   return RadarUart_Init(uart);
 }
@@ -58,19 +60,23 @@ static void reset_circle(const char *reason)
   status.state = RADAR_SCAN_WAIT_WRAP; status.reason = reason;
 }
 
-static bool start_capture(const RadarMap_Params_t *params, uint32_t origin_generation,bool automatic)
+static bool start_capture(const RadarMap_Params_t *params, uint32_t origin_generation,
+                          bool automatic,RadarStart_Id_t start_id)
 {
   RadarUart_Status_t uart_status;
   if (active() || !RadarMap_ParamsValid(params)) return false;
   if (!RadarUart_StartScan()) return false;
   capture_parameters = *params; capture_revision = parameter_revision;
-  capture_auto=automatic;
+  capture_auto=automatic;capture_start=start_id;
   selection_available=false;
   capture_origin = origin_generation; start_tick = HAL_GetTick();
   RadarUart_StatusGet(&uart_status); seen_bad = uart_status.bad; seen_loss = uart_status.loss_generation;
   have_previous = have_pending = false; progress = pending_progress = 0;
   RadarMap_Reset(&working_map);
-  if(capture_auto)RadarStart_Begin(&start_candidates,&capture_parameters);
+  if(capture_auto || capture_start==RADAR_START_UPPER){
+    RadarStart_Begin(&start_candidates,&capture_parameters);
+    if(!capture_auto)capture_parameters=*RadarStart_Params(&start_candidates,capture_start);
+  }
   status.state = RADAR_SCAN_PREPARING; status.reason = "configuring";
   status.points_valid = false; status.point_count = 0; status.truncated = false;
   status.unit = RADAR_UNIT_UNKNOWN; status.elapsed_ms = 0; status.raw_points = 0;
@@ -80,9 +86,14 @@ static bool start_capture(const RadarMap_Params_t *params, uint32_t origin_gener
 }
 
 bool RadarScan_Start(const RadarMap_Params_t *params,uint32_t origin_generation)
-{ return start_capture(params,origin_generation,false); }
+{ return start_capture(params,origin_generation,false,RADAR_START_LOWER); }
 bool RadarScan_StartAuto(const RadarMap_Params_t *params,uint32_t origin_generation)
-{ return start_capture(params,origin_generation,true); }
+{ return start_capture(params,origin_generation,true,RADAR_START_UNKNOWN); }
+bool RadarScan_StartAt(const RadarMap_Params_t *params,uint32_t origin_generation,RadarStart_Id_t start_id)
+{
+  if(start_id!=RADAR_START_UPPER && start_id!=RADAR_START_LOWER)return false;
+  return start_capture(params,origin_generation,false,start_id);
+}
 static void publish_map(const RadarMap_t *map,const RadarMap_Params_t *params)
 {
   published_map=*map;published_parameters=*params;
@@ -155,10 +166,11 @@ static void publish(void)
       status.reason=!strcmp(start_status.result.reason,"both_conflict")?"start_both_conflict":"start_ambiguous";
     }
   } else {
+    unsigned index=capture_start==RADAR_START_UPPER?0U:1U;
     RadarMap_FinishRaw(&working_map,&capture_parameters);
-    start_status.result.start_id=RADAR_START_LOWER;start_status.result.reason="manual_reference";
-    start_status.result.qr_counts[1]=working_map.counts[14];start_status.result.raw_counts[1]=working_map.counts[22];
-    start_status.result.conflict_mask[1]=working_map.mask&RADAR_MAP_REQUIRED_CLEAR_MASK;
+    start_status.result.start_id=(uint8_t)capture_start;start_status.result.reason="manual_reference";
+    start_status.result.qr_counts[index]=working_map.counts[14];start_status.result.raw_counts[index]=working_map.counts[22];
+    start_status.result.conflict_mask[index]=working_map.mask&RADAR_MAP_REQUIRED_CLEAR_MASK;
     publish_map(&working_map,&capture_parameters);
   }
   have_pending = have_previous = false; RadarUart_StopScan();

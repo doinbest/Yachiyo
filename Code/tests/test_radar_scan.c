@@ -73,6 +73,85 @@ static void board_circle(bool upper,bool lower,bool beyond_cloud)
   if(lower)point_packet(1033,3,1000); /* Lower physical board conflicts only under upper. */
   point_packet(2700,1,0);point_packet(0,1,0);
 }
+
+/* zero_deg=90 in the lower reference means 270 at the upper corner.
+ * Independent 0.1deg/mm samples land in both protected front cells. */
+static void manual_circle(RadarStart_Id_t start)
+{
+  point_packet(2700,1,0);point_packet(0,1,0);
+  if(start==RADAR_START_UPPER){
+    point_packet(133,3,1000);point_packet(864,3,1130);point_packet(2700,1,0);
+  }else{
+    point_packet(2700,1,0);point_packet(3326,3,2110);point_packet(3559,3,970);
+  }
+  point_packet(0,1,0);
+}
+
+static void test_nominal_manual_start(void)
+{
+  RadarMap_Params_t reference;RadarScan_Status_t s;RadarScan_StartStatus_t selected;
+  RadarMap_Defaults(&reference);reference.zero_deg=90;
+  assert(RadarScan_Init(&uart)==HAL_OK);
+  assert(!RadarScan_StartAt(&reference,31,RADAR_START_UNKNOWN));
+  assert(!RadarScan_StartAt(&reference,31,(RadarStart_Id_t)99));
+  RadarScan_StartStatusGet(&selected);
+  assert(!selected.scan_id && !strcmp(selected.result.reason,"not_scanned"));
+  for(unsigned id=RADAR_START_UPPER;id<=RADAR_START_LOWER;id++){
+    assert(RadarScan_StartAt(&reference,31+id,(RadarStart_Id_t)id));
+    assert(!RadarScan_SelectStart(RADAR_START_LOWER));configured();
+    if(id==RADAR_START_UPPER){
+      /* Bad-frame recapture keeps the chosen corner, discards partial counts. */
+      point_packet(2700,1,0);point_packet(0,1,0);point_packet(133,3,1000);
+      measure(true,1800,4,true);
+    }
+    manual_circle((RadarStart_Id_t)id);
+    RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&selected);
+    assert(s.state==RADAR_SCAN_READY && s.scan_id==id && s.map_id==id &&
+      s.map_valid && s.map_applicable && s.points_valid && s.points_map_id==s.map_id);
+    assert(s.origin_generation==31+id && s.coverage_tenths==3600 && s.raw_points==8);
+    assert(selected.scan_id==id && !selected.automatic && selected.result.start_id==id &&
+      !strcmp(selected.result.reason,"manual_reference"));
+    unsigned index=id-1U;
+    assert(selected.result.qr_counts[index]==3 && selected.result.raw_counts[index]==3 &&
+      selected.result.conflict_mask[index]==RADAR_MAP_REQUIRED_CLEAR_MASK);
+    assert(selected.result.qr_counts[1U-index]==0 && selected.result.raw_counts[1U-index]==0 &&
+      selected.result.conflict_mask[1U-index]==0);
+    assert(RadarScan_Map()->counts[14]==3 && RadarScan_Map()->counts[22]==3 &&
+      RadarScan_Map()->mask==RADAR_MAP_FIXED_MASK);
+    const RadarMap_Params_t *pose=RadarScan_MapParams();
+    assert(pose->lidar_x_mm==(id==RADAR_START_UPPER?2330:2170) &&
+      pose->lidar_y_mm==(id==RADAR_START_UPPER?2170:230) &&
+      pose->zero_deg==(id==RADAR_START_UPPER?270:90));
+    assert(RadarScan_Params()->zero_deg==180 && RadarScan_Params()->lidar_x_mm==2170);
+    assert(!RadarScan_SelectStart(RADAR_START_UPPER));
+    /* Extra packets after this one circle cannot publish another result. */
+    full_circle(false,4);RadarScan_StatusGet(&s);assert(s.scan_id==id && s.map_id==id);
+  }
+  /* Invalid explicit input cannot destroy retained complete auto candidates. */
+  assert(RadarScan_StartAuto(&reference,34));configured();board_circle(false,false,false);
+  RadarScan_StartStatusGet(&selected);assert(selected.automatic && selected.result.start_id==RADAR_START_UNKNOWN);
+  assert(!RadarScan_StartAt(&reference,34,RADAR_START_UNKNOWN));
+  assert(RadarScan_SelectStart(RADAR_START_UPPER));assert(RadarScan_SelectStart(RADAR_START_LOWER));
+  RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&selected);
+  RadarMap_t historical=*RadarScan_Map();RadarMap_Params_t historical_pose=*RadarScan_MapParams();
+  uint32_t old_map=s.map_id,old_scan=s.scan_id;
+  /* New explicit capture follows the same candidate/cloud cancellation rules. */
+  assert(RadarScan_StartAt(&reference,35,RADAR_START_UPPER));
+  RadarScan_StartStatus_t during;RadarScan_StartStatusGet(&during);
+  assert(during.scan_id==selected.scan_id && during.automatic &&
+    during.result.start_id==selected.result.start_id);
+  assert(!RadarScan_SelectStart(RADAR_START_LOWER));RadarScan_Stop();
+  RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&during);
+  assert(s.map_id==old_map && s.scan_id==old_scan && s.map_valid && !s.points_valid);
+  assert(!memcmp(RadarScan_Map(),&historical,sizeof historical) &&
+    !memcmp(RadarScan_MapParams(),&historical_pose,sizeof historical_pose));
+  assert(during.scan_id==selected.scan_id && during.result.start_id==selected.result.start_id);
+  assert(!RadarScan_SelectStart(RADAR_START_LOWER));
+  assert(RadarScan_StartAt(&reference,36,RADAR_START_UPPER));configured();tick+=10001;service();
+  RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&during);
+  assert(s.state==RADAR_SCAN_ERROR && s.map_id==old_map && s.scan_id==old_scan &&
+    s.map_valid && during.scan_id==selected.scan_id && during.result.start_id==selected.result.start_id);
+}
 int main(void)
 {
   RadarScan_Status_t s;RadarUart_Status_t us;RadarMap_Params_t params;
@@ -207,5 +286,6 @@ int main(void)
   assert(RadarScan_StartAuto(&params,25));configured();point_packet(2700,1,0);point_packet(0,1,0);point_packet(859,3,970);
   measure(true,1800,4,true);board_circle(false,false,false);RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
   assert(s.state==RADAR_SCAN_READY && s.circle_restarts && start_status.result.start_id==RADAR_START_UNKNOWN && !start_status.result.qr_counts[1]);
-  puts("radar_scan: commands, full circle, corrupt-frame/unit/DMA recovery, alarms, snapshot retention PASS");return 0;
+  test_nominal_manual_start();
+  puts("radar_scan: commands, full circle, manual corners, corrupt-frame/unit/DMA recovery, alarms, snapshot retention PASS");return 0;
 }

@@ -39,6 +39,14 @@ bool RadarScan_Start(const RadarMap_Params_t *params, uint32_t origin_generation
 /** @brief Capture both nominal start hypotheses with the lower installation reference.
  * @return Accepted capture; only a unique result publishes its map automatically. */
 bool RadarScan_StartAuto(const RadarMap_Params_t *lower_reference, uint32_t origin_generation);
+/** @brief Capture one nominal corner using the lower installation reference.
+ * @param lower_reference Frozen lower-start radar world reference and filters.
+ * @param start_id Explicit upper/lower corner; no completed auto scan is required.
+ * @return Accepted capture; publishes that corner after one complete circle.
+ * Upper derives the same installation rotated 180deg; neither follows feedback.
+ */
+bool RadarScan_StartAt(const RadarMap_Params_t *lower_reference, uint32_t origin_generation,
+                      RadarStart_Id_t start_id);
 /** @brief Publish one retained candidate from the last completed automatic circle.
  * @return False during/new capture or before a complete automatic circle. */
 bool RadarScan_SelectStart(RadarStart_Id_t start_id);

@@ -92,7 +92,7 @@ static float param_value(unsigned i)
 }
 static bool build_plan(void)
 {
-  RadarStart_Id_t start=Start.automatic?(RadarStart_Id_t)Start.result.start_id:RADAR_START_LOWER;
+  RadarStart_Id_t start=(RadarStart_Id_t)Start.result.start_id;
   if(!Scan.map_valid || start==RADAR_START_UNKNOWN) return false;
   PlanMap=Scan.map_id;PlanId++;if(!PlanId) PlanId=1U;
   return RadarPlan_BuildFromStart(RadarScan_Map(),start,&Plan);
@@ -291,8 +291,10 @@ bool RadarConsole_Command(unsigned n,char *t[])
     return true;
   }
   if(n==2U && !strcmp(t[1],"stop")){RadarScan_Stop();reply(true,"scan_stop_requested");return true;}
-  if((n==2U || (n==3U && !strcmp(t[2],"auto"))) && !strcmp(t[1],"scan")){
-    bool automatic=n==3U;
+  if((n==2U || (n==3U && (!strcmp(t[2],"auto") || !strcmp(t[2],"upper") ||
+                          !strcmp(t[2],"lower")))) && !strcmp(t[1],"scan")){
+    bool automatic=n==3U && !strcmp(t[2],"auto");
+    RadarStart_Id_t start=n==3U && !strcmp(t[2],"upper")?RADAR_START_UPPER:RADAR_START_LOWER;
     RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
     if(p.state==RADAR_PROBE_TX || p.state==RADAR_PROBE_WAITING){reply(false,"query_in_progress");return true;}
     if(actuators_busy()) reason="stationary_capture_required";
@@ -300,14 +302,16 @@ bool RadarConsole_Command(unsigned n,char *t[])
       RadarMap_Params_t p=*RadarScan_Params();
       /* Registered reference pose is expressed at the validated chassis origin.
        * Only the sensor pose follows actual feedback; IMU/motor axes stay intact. */
-      if(!automatic && Location.origin_valid && Location.feedback_valid){
+      if(n==2U && Location.origin_valid && Location.feedback_valid){
         float yaw=Location.observer.feedback.yaw_rad-CHASSIS_MODEL_PI/2.0f;
         float dx=p.lidar_x_mm-2250.0f,dy=p.lidar_y_mm-150.0f;
         p.lidar_x_mm=Location.observer.feedback.x_mm+cosf(yaw)*dx-sinf(yaw)*dy;
         p.lidar_y_mm=Location.observer.feedback.y_mm+sinf(yaw)*dx+cosf(yaw)*dy;
         p.zero_deg+=yaw*180.0f/CHASSIS_MODEL_PI;
       }
-      ok=automatic?RadarScan_StartAuto(&p,Location.generation):RadarScan_Start(&p,Location.generation);
+      if(automatic)ok=RadarScan_StartAuto(&p,Location.generation);
+      else if(n==3U)ok=RadarScan_StartAt(&p,Location.generation,start);
+      else ok=RadarScan_Start(&p,Location.generation);
       reason=ok?"scan_accepted":"scan_busy_or_parameters";
       if(ok) CaptureOrigin=Location.generation;
     }
