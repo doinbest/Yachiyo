@@ -41,6 +41,13 @@ int main(void)
 {
   MotorBus_Recovery_t s;uint8_t move[]={5,0xfd,0x6b};
   assert(MotorBus_Init(&uart)==HAL_OK);
+  /* Exercise recovery from a runtime FE, after the startup-only exception ends. */
+  {
+    const uint8_t query[]={7,0x3a,0x6b}; MotorBus_Event_t event;
+    assert(MotorBus_Submit(MOTOR_BUS_ARM,query,sizeof query,4,1,false));
+    MotorBus_Process(); step();
+    assert(MotorBus_EventGet(MOTOR_BUS_ARM,&event) && event.result==MOTOR_BUS_REPLY);
+  }
   uart.ErrorCode=4;MotorBus_ErrorCallback(&uart);MotorBus_Process();
   assert(MotorBus_IsQuarantined());
   assert(MotorBus_RecoveryStart());

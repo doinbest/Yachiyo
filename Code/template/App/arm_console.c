@@ -688,6 +688,10 @@ static void ArmConsole_MotorBusShow(void)
                    (unsigned)Diagnostic.address, (unsigned)Diagnostic.function,
                    (unsigned)Diagnostic.active, (unsigned)Diagnostic.waiting_reply,
                    (unsigned long)Diagnostic.uart_error);
+  if (Diagnostic.startup_fe_recovered)
+    ArmConsole_Printf("[MOTOR BUS STARTUP] recovered_fe=%lu last_ms=%lu rx_restarted=1\r\n",
+                      (unsigned long)Diagnostic.startup_fe_recovered,
+                      (unsigned long)Diagnostic.startup_fe_last_ms);
 }
 
 static void ArmConsole_InfoShow(void)

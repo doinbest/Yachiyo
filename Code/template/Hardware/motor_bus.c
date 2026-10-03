@@ -14,6 +14,10 @@ static MotorBus_Owner_t active_owner;
 static MotorBus_Owner_t reserved_owner = MOTOR_BUS_OWNER_COUNT;
 static bool running, waiting_reply, cancelled, quarantined, gap_valid;
 static bool active_tx_completed;
+/* Startup FE may precede the first request while shared TTL nodes power up.
+ * Never reopen this exception after a TX attempt, including explicit recovery. */
+static bool tx_attempted;
+static uint32_t startup_fe_recovered, startup_fe_last_ms;
 static uint32_t started_ms, gap_ms;
 static volatile bool tx_done, io_error;
 static volatile bool io_overflow;
@@ -300,15 +304,33 @@ void MotorBus_Process(void)
     return;
   if (io_error)
   {
-    if (recovery.active) RecoveryFail("uart_error");
+    uint32_t error_tick, error_code;
+    bool overflow, startup_fe;
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
-    Quarantine(io_overflow ? "rx_overflow" : "uart_error", io_tick_ms, io_uart_error);
+    error_tick = io_tick_ms; error_code = io_uart_error; overflow = io_overflow;
     io_error = false;
     __set_PRIMASK(primask);
+    startup_fe = !tx_attempted && !running && !quarantined && !recovery.active &&
+                 !overflow && error_code == HAL_UART_ERROR_FE;
+    if (recovery.active) RecoveryFail("uart_error");
+    if (!startup_fe) Quarantine(overflow ? "rx_overflow" : "uart_error", error_tick, error_code);
     diagnostic_reads = false;
-    (void)HAL_UART_DMAStop(bus_uart);
-    (void)ReceiveStart();
+    result = HAL_UART_DMAStop(bus_uart);
+    if (startup_fe)
+    {
+      /* No pre-restart fragment can become a response to a later request. */
+      rx_read = rx_write;
+      parse_length = 0;
+      if (result == HAL_OK) result = ReceiveStart();
+      if (result == HAL_OK)
+      {
+        startup_fe_recovered++;
+        startup_fe_last_ms = error_tick;
+      }
+      else Quarantine("rx_restart_failed", error_tick, error_code);
+    }
+    else (void)ReceiveStart();
     if (running)
       Complete(MOTOR_BUS_IO_ERROR, NULL, 0);
     gap_ms = now;
@@ -406,6 +428,7 @@ void MotorBus_Process(void)
         Complete(MOTOR_BUS_CANCELLED, NULL, 0);
         return;
       }
+      tx_attempted = true;
       result = HAL_UART_Transmit_DMA(bus_uart, active.data, active.length);
       if (result != HAL_OK)
       {
@@ -459,6 +482,8 @@ void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out)
     return;
   *out = first_fault;
   out->locked = quarantined;
+  out->startup_fe_recovered = startup_fe_recovered;
+  out->startup_fe_last_ms = startup_fe_last_ms;
   if (!out->reason)
     out->reason = "none";
 }

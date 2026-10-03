@@ -42,6 +42,9 @@ typedef struct
   MotorBus_Owner_t owner;
   uint8_t address, function;
   bool locked, active, waiting_reply;
+  /** Pre-first-TX framing faults successfully recovered without locking the bus.
+   * Counters survive manual recovery; last_ms is MCU uptime of the last FE. */
+  uint32_t startup_fe_recovered, startup_fe_last_ms;
 } MotorBus_Diagnostic_t;
 /** @brief Read first fault without UART traffic, clearing it, or enabling motion.
  * @param out Snapshot destination; NULL is ignored. Call from the main loop.
