@@ -32,7 +32,7 @@
  */
 #define CHASSIS_WHEEL_DIAMETER_MM          80.0f
 
-/* 临时假设1.8°、16细分：200*16=3200命令脉冲/圈；需读回配置确认。 */
+/* 已确认Emm42默认1.8°、16细分：200*16=3200命令脉冲/电机轴圈。 */
 #define CHASSIS_MOTOR_FULL_STEPS_PER_REV   200U
 #define CHASSIS_MOTOR_MICROSTEP            16U
 #define CHASSIS_COMMAND_PULSES_PER_REV     \
@@ -108,7 +108,7 @@
 
 /* Route speed profile; verify acceleration and stopping distance on the chassis. */
 #define CHASSIS_DISTANCE_SPEED_MM_S       50.0f
-#define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  5000.0f
+#define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  200.0f
 #define CHASSIS_ROUTE_AUTO_DWELL_MS       100U
 #define CHASSIS_DISTANCE_KP               2.5f
 #define CHASSIS_DISTANCE_RESPONSE_S       0.25f
@@ -117,7 +117,7 @@
 #define CHASSIS_DISTANCE_CORRECTION_SPEED_MM_S 20.0f
 #define CHASSIS_DISTANCE_CORRECTION_MM   100.0f
 #define CHASSIS_DISTANCE_CORRECTIONS       2U
-#define CHASSIS_DISTANCE_ACCEL_MM_S2      1000.0f
+#define CHASSIS_DISTANCE_ACCEL_MM_S2      300.0f
 #define CHASSIS_DISTANCE_TOLERANCE_MM     10.0f
 #define CHASSIS_DISTANCE_HEADING_DEG      2.0f
 #define CHASSIS_DISTANCE_TIMEOUT_MS      60000U

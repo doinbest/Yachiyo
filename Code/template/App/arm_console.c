@@ -564,10 +564,11 @@ static void ArmConsole_HelpShow(void)
   /* 按命令组入队，由USART1 DMA发送；不占用底盘控制周期等待串口。 */
   ArmConsole_Write(
       "chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n"
-      "chassis route start|auto [10..5000mm/s, default 5000] | next | status | cancel (auto dwell 100ms)\r\n"
+      "chassis route start|auto [10..5000mm/s, default 200] | next | status | cancel (15 targets, auto dwell 100ms)\r\n"
       "chassis run <vx_mm_s> <vy_mm_s> <omega_rad_s> <hold_ms>\r\n"
       "  omega=0: hold starting IMU heading; verified fresh IMU required\r\n"
       "chassis heading <vx_mm_s> <vy_mm_s> <module_heading_deg> <hold_ms>\r\n"
+      "chassis turn <map_heading_deg -180..180> (feedback angle and stopped wheels)\r\n"
       "chassis origin <map_x_mm> <map_y_mm> <map_heading_deg> (verified IMU, stationary)\r\n"
       "chassis profile receive (compatibility only; Emm42 default)\r\n"
       "chassis feedback <0..4> (0=all, 1..4=single, polling stays off)\r\n"
@@ -627,7 +628,7 @@ static void ArmConsole_HelpShow(void)
       "chassis status  heading test state\r\n"
       "wheel <fl|rl|rr|fr> <-100..100rpm>\r\n"
       "wheel stop\r\n");
-  ArmConsole_Write("grab start fixed|align|pick [color 1..6] | grab route <speed_mm_s>\r\n"
+  ArmConsole_Write("grab start fixed|align|pick [color 1..6] | grab route [speed_mm_s, default 200]\r\n"
                    "grab status | grab stop | grab rehome | grab set <key> <value> | grab get <key>\r\n");
 }
 

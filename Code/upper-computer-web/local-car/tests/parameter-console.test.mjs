@@ -114,7 +114,7 @@ test('opening the parameter page sends nothing; route speed stays local until ro
       canSend:()=>false,onBusy:()=>{},onRouteSpeed:speed=>saved.push(speed)});
     assert.deepEqual(wires,[]);
     const input=ui.input('local','route_speed');
-    assert.equal(input.value,'5000');input.value='250';input.oninput();page.selectTab('radar');
+    assert.equal(input.value,'200');page.setRouteSpeed(100);assert.equal(input.value,'100');input.value='250';input.oninput();page.setRouteSpeed(200);assert.equal(input.value,'250');page.selectTab('radar');
     page.apply();
     assert.deepEqual(wires,[]);
     page.cancel('串口已断开');

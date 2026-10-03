@@ -7,6 +7,7 @@
 #include "ArmVision.h"
 #include "MaterialVision.h"
 #include "mechanical_arm.h"
+#include "GrabTask.h"
 #include <math.h>
 #include <string.h>
 
@@ -14,7 +15,7 @@ static ChassisMotion_Status_t Motion;
 static Mecanum_HeadingPid_t HeadingPid;
 static bool WaitingForStop, FinishAsError, ManualRamp, HaveYaw, DistanceBraking;
 static uint32_t LastControlTick, StopRampTick, StopRampMs, LastYawCount, PidSampleCount,
-    PidSampleTick;
+    PidSampleTick, TurnRampTick;
 static float PreviousYaw, AnchorYaw, AnchorMapYaw;
 static ChassisModel_Velocity_t StopFrom;
 static uint32_t DistanceGeneration, DistanceTimeout, DistanceStopTick, StopSequence,
@@ -192,7 +193,7 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
     Motion.reason = "anchor_invalid";
     return false;
   }
-  Motion.distance_mode = Motion.stop_confirmed = false;
+  Motion.distance_mode = Motion.turn_only = Motion.stop_confirmed = false;
   Motion.requested = *t;
   Motion.requested.heading_deg = wrap_deg(t->heading_deg);
   if (t->mode == CHASSIS_MOTION_HOLD_CURRENT)
@@ -250,6 +251,20 @@ bool ChassisMotion_MoveTo(float x, float y, float yaw, float speed, uint32_t tim
   Motion.error_heading_deg = wrap_deg(yaw - Motion.map_yaw_rad*180.0f/CHASSIS_MODEL_PI);
   DistanceGeneration = Position.generation; DistanceTimeout = timeout; DistanceMaxSpeed = speed;
   MapVx = MapVy = 0; StableGroups = 0; DistanceCorrections = 0;
+  return true;
+}
+bool ChassisMotion_TurnTo(float yaw, uint32_t timeout)
+{
+  if (ChassisMotion_IsBusy()) return false;
+  if (!isfinite(yaw) || yaw < -180.0f || yaw > 180.0f)
+  { Motion.reason="invalid_target";return false; }
+  if (GrabTask_IsBusy())
+  { Motion.reason="grab_task_busy";return false; }
+  ChassisLocalization_Get(&Position);
+  if (!ChassisMotion_MoveTo(Position.observer.feedback.x_mm,
+      Position.observer.feedback.y_mm,yaw,CHASSIS_DISTANCE_SPEED_MM_S,timeout)) return false;
+  Motion.turn_only=true;
+  TurnRampTick=Motion.start_tick;
   return true;
 }
 static bool request_stop(const char *reason, bool error)
@@ -487,7 +502,7 @@ static bool distance_feedback_check(uint32_t now)
 }
 static bool in_target(void)
 {
-  return hypotf(Motion.error_x_mm,Motion.error_y_mm)<=CHASSIS_DISTANCE_TOLERANCE_MM &&
+  return (Motion.turn_only || hypotf(Motion.error_x_mm,Motion.error_y_mm)<=CHASSIS_DISTANCE_TOLERANCE_MM) &&
          fabsf(Motion.error_heading_deg)<=CHASSIS_DISTANCE_HEADING_DEG;
 }
 /* Only complete groups received after the stop request count as stop evidence. */
@@ -514,6 +529,22 @@ static bool stopped_feedback(uint32_t now)
   StableGroups++;
   return StableGroups>=CHASSIS_DISTANCE_STOP_GROUPS && (uint32_t)(now-StableSince)>=CHASSIS_DISTANCE_STOP_STABLE_MS;
 }
+static bool distance_heading_command(ChassisModel_Velocity_t *command)
+{
+  if(LastYawCount!=PidSampleCount)
+  {
+    uint32_t elapsed=Motion.heading_sample_tick-PidSampleTick;
+    if(elapsed>CHASSIS_MOTION_MAX_GAP_MS) return false;
+    if(elapsed)
+    {
+      HeadingPid.sample_time_s=elapsed/1000.0f;
+      HeadingPid.output_rad_s=Mecanum_HeadingPid_Update(&HeadingPid,Motion.current_deg);
+      PidSampleTick=Motion.heading_sample_tick;PidSampleCount=LastYawCount;
+    }
+  }
+  command->omega_rad_s=HeadingPid.output_rad_s;
+  return isfinite(command->omega_rad_s);
+}
 static bool distance_command(uint32_t dt, ChassisModel_Velocity_t *command)
 {
   float vx=Motion.error_x_mm*CHASSIS_DISTANCE_KP, vy=Motion.error_y_mm*CHASSIS_DISTANCE_KP;
@@ -527,6 +558,13 @@ static bool distance_command(uint32_t dt, ChassisModel_Velocity_t *command)
   ChassisModel_Velocity_t feedback;
   unsigned i;
   uint32_t age=0, now=HAL_GetTick();
+  if(Motion.turn_only)
+  {
+    command->vx_mm_s=command->vy_mm_s=0;
+    if(!distance_heading_command(command)) return false;
+    command->omega_rad_s*=half_cosine((float)(now-TurnRampTick)/CHASSIS_MOTION_DEFAULT_RAMP_MS);
+    return true;
+  }
   for(i=0;i<4;i++)
   {
     uint32_t speed_age=(uint32_t)(now-Position.wheels[i].speed_ms);
@@ -556,19 +594,7 @@ static bool distance_command(uint32_t dt, ChassisModel_Velocity_t *command)
   MapVx+=dx;MapVy+=dy;
   command->vx_mm_s=cosf(Motion.map_yaw_rad)*MapVx+sinf(Motion.map_yaw_rad)*MapVy;
   command->vy_mm_s=-sinf(Motion.map_yaw_rad)*MapVx+cosf(Motion.map_yaw_rad)*MapVy;
-  if(LastYawCount!=PidSampleCount)
-  {
-    uint32_t elapsed=Motion.heading_sample_tick-PidSampleTick;
-    if(elapsed>CHASSIS_MOTION_MAX_GAP_MS) return false;
-    if(elapsed)
-    {
-      HeadingPid.sample_time_s=elapsed/1000.0f;
-      HeadingPid.output_rad_s=Mecanum_HeadingPid_Update(&HeadingPid,Motion.current_deg);
-      PidSampleTick=Motion.heading_sample_tick;PidSampleCount=LastYawCount;
-    }
-  }
-  command->omega_rad_s=HeadingPid.output_rad_s;
-  return isfinite(command->omega_rad_s);
+  return distance_heading_command(command);
 }
 void ChassisMotion_Process(void)
 {
@@ -646,7 +672,16 @@ void ChassisMotion_Process(void)
         {
           /* Keep the action ID, original deadline and normal motion guards.
              Corrections begin only after fresh physical stop evidence. */
-          if(DistanceCorrections<CHASSIS_DISTANCE_CORRECTIONS &&
+          if(Motion.turn_only && (uint32_t)(now-Motion.start_tick)<DistanceTimeout && !bus.locked)
+          {
+            MapVx=MapVy=0;HeadingPid.output_rad_s=0;
+            WaitingForStop=false;Motion.stop_confirmed=false;
+            LastControlTick=TurnRampTick=now;
+            PidSampleTick=Motion.heading_sample_tick;PidSampleCount=LastYawCount;
+            Motion.state=CHASSIS_MOTION_RUNNING;Motion.reason="heading_correcting";
+            return;
+          }
+          if(!Motion.turn_only && DistanceCorrections<CHASSIS_DISTANCE_CORRECTIONS &&
              hypotf(Motion.error_x_mm,Motion.error_y_mm)<=CHASSIS_DISTANCE_CORRECTION_MM &&
              fabsf(Motion.error_heading_deg)<=CHASSIS_DISTANCE_HEADING_DEG &&
              (uint32_t)(now-Motion.start_tick)<DistanceTimeout && !bus.locked)
@@ -657,7 +692,7 @@ void ChassisMotion_Process(void)
             Motion.state=CHASSIS_MOTION_RUNNING;Motion.reason="position_correcting";
             return;
           }
-          Motion.state=CHASSIS_MOTION_ERROR;Motion.reason="position_not_reached";
+          Motion.state=CHASSIS_MOTION_ERROR;Motion.reason=Motion.turn_only?"turn_not_reached":"position_not_reached";
           WaitingForStop=false;return;
         }
         Motion.reason = "feedback_arrived";
@@ -702,7 +737,7 @@ void ChassisMotion_Process(void)
   Motion.elapsed_ms = elapsed;
   if (Motion.distance_mode)
   {
-    if(elapsed>=DistanceTimeout) { request_stop("distance_timeout",true);return; }
+    if(elapsed>=DistanceTimeout) { request_stop(Motion.turn_only?"turn_timeout":"distance_timeout",true);return; }
     if(in_target()) { request_stop("position_reached",false);return; }
     if(!distance_command(dt,&command)) { request_stop("heading_invalid",true);return; }
   }

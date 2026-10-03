@@ -224,6 +224,33 @@ static bool append_leg(const RadarMap_t *m,int16_t sx,int16_t sy,int16_t ex,int1
   return append_point(p,ex,y,0U,0U) && append_point(p,ex,ey,station,visit);
 }
 
+/* Closed cell rectangles include their edges and corners. The shortcut is only
+ * accepted when the complete segment stays outside every occupied rectangle. */
+static bool segment_clear(uint32_t mask,int16_t sx,int16_t sy,int16_t ex,int16_t ey)
+{
+  const float origin[2]={(float)sx,(float)sy},delta[2]={(float)(ex-sx),(float)(ey-sy)};
+  unsigned cell,axis;
+  for(cell=0U;cell<RADAR_MAP_CELL_COUNT;cell++) if(mask&(1UL<<cell)) {
+    const unsigned index[2]={cell%5U,cell/5U};
+    float enter=0.0f,leave=1.0f;
+    bool intersects=true;
+    for(axis=0U;axis<2U;axis++) {
+      float low=(float)GridLines[index[axis]],high=(float)GridLines[index[axis]+1U];
+      if(delta[axis]==0.0f) {
+        if(origin[axis]<low || origin[axis]>high){intersects=false;break;}
+      } else {
+        float a=(low-origin[axis])/delta[axis],b=(high-origin[axis])/delta[axis],swap;
+        if(a>b){swap=a;a=b;b=swap;}
+        if(a>enter)enter=a;
+        if(b<leave)leave=b;
+        if(enter>leave){intersects=false;break;}
+      }
+    }
+    if(intersects)return false;
+  }
+  return true;
+}
+
 bool RadarPlan_Build(const RadarMap_t *m,RadarPlan_t *p)
 {
   unsigned leg;
@@ -233,8 +260,18 @@ bool RadarPlan_Build(const RadarMap_t *m,RadarPlan_t *p)
   if(!append_point(p,Stations[0][0],Stations[0][1],1U,0U)) return false;
   for(leg=0U;leg+1U<RADAR_PLAN_MISSION_VISITS;leg++) {
     uint8_t from=MissionOrder[leg],to=MissionOrder[leg+1U];
-    if(!append_leg(m,Stations[from-1U][0],Stations[from-1U][1],
-                   Stations[to-1U][0],Stations[to-1U][1],to,(uint8_t)(leg+1U),p)) {
+    bool ok;
+    if(leg==0U && segment_clear((m->mask|RADAR_MAP_FIXED_MASK)&RADAR_MAP_ALL_CELLS,
+                               2250,150,2100,1200)) {
+      ok=append_point(p,2100,1200,5U,1U);
+    } else if(leg+2U==RADAR_PLAN_MISSION_VISITS) {
+      ok=append_leg(m,Stations[from-1U][0],Stations[from-1U][1],2100,300,0U,0U,p) &&
+         append_point(p,2250,150,1U,8U);
+    } else {
+      ok=append_leg(m,Stations[from-1U][0],Stations[from-1U][1],
+                    Stations[to-1U][0],Stations[to-1U][1],to,(uint8_t)(leg+1U),p);
+    }
+    if(!ok) {
       p->count=0U;p->failed_leg=(uint8_t)(leg+1U);return false;
     }
   }

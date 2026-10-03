@@ -11,10 +11,12 @@ import {mountParameterPage} from './parameter-page.mjs?v=parameter-page-20261001
 import {RadarModel,RadarExchange,parseRadar,radarStateText,radarReasonText} from './radar-model.mjs';
 import {mountRadarWorkspace} from './radar-view.mjs';
 import {parsePageRoute,createNavigationMemory} from './page-navigation.mjs';
+import {migrateRoutePreferences,bindRouteSpeed} from './route-settings.mjs';
 const $=id=>document.getElementById(id);
 const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
 const titles={system:'系统与标定',chassis:'底盘',map:'地图与遥测',qr:'二维码',vision:'视觉任务',params:'参数调试',arm:'机械臂与夹爪'};
 const storageKey='sky-atelier-v1';let prefs={};try{prefs=JSON.parse(localStorage.getItem(storageKey)||'{}')||{};}catch{}
+prefs=migrateRoutePreferences(prefs);try{localStorage.setItem(storageKey,JSON.stringify(prefs));}catch{}
 $('quiet-grab-log').checked=prefs.quietGrabLog!==false;
 $('log-format').value=prefs.logFormat==='raw'?'raw':'chinese';
 const chineseLogs=()=>$('log-format').value!=='raw';
@@ -192,7 +194,7 @@ function buildGrabPanel(body){
   }body.append(sequence);
   const external=node('section',undefined,'grab-preparation');external.append(node('h3','4 · 粗加工取回与车载取出'),node('p','先完成外部水平对准。粗加工取回使用独立夹取和抬升距离；取出可释放到粗加工、暂存第一层或第二层，仅竖直放置。','form-note'));
   external.append(controlForm('grab-store-proc'),controlForm('grab-take'));actions(external,[['grab-return','返回外侧观察姿态']]);external.append(parameterLink('调整取放参数','material','z_proc_grab'));body.append(external);
-  const route=node('details',undefined,'advanced');route.append(node('summary','5 · 前四段路线与模拟扫码'));route.append(controlForm('grab-route'));body.append(route);
+  const route=node('details',undefined,'advanced');route.append(node('summary','5 · 扫码位 → 首原料首件'));route.append(controlForm('grab-route'));body.append(route);
   actions(body,[['grab-status'],['grab-stop']]);
   grabPanel=node('section',undefined,'grab-status');grabPanel.id='grab-task-status';grabPanel.setAttribute('aria-label','单件抓取反馈快照');body.append(grabPanel);renderGrabStatus();
 }
@@ -222,9 +224,9 @@ ch.append(controlForm('chassis-run',{label:'整车平移与转向'}));
 ch.append(node('p','前向速度：正数前进，负数后退；左向速度：正数左移，负数右移。角速度：正数逆时针。角速度为 0 时保持起步朝向，需 IMU 验证通过。','form-note'));
 const wheelSection=node('details',undefined,'advanced');wheelSection.append(node('summary','四轮状态 · 查看反馈快照'));
 actions(wheelSection,[['feedback-read','刷新四轮快照']]);wheelView=mountWheelFeedback(wheelSection);ch.append(wheelSection);
-const realRoute=node('details',undefined,'glass map-controls map-details real-route-panel');realRoute.id='real-route-panel';realRoute.append(node('summary','16 段实车路线 · 准备与执行'));
+const realRoute=node('details',undefined,'glass map-controls map-details real-route-panel');realRoute.id='real-route-panel';realRoute.append(node('summary','15 个目标固定路线 · 准备与执行'));
 prepView=mountPreparation({root:realRoute,send:wire=>send(wire,true),beginTelemetry:nonce=>mapView.beginPreparedTelemetry(nonce),telemetry:()=>mapView?.snapshot(),getConfig:()=>bridge.config,saveConfig:c=>bridge.saveConfig(c),configAvailable:()=>bridge.available,isStopped:stopped,acquire:()=>bridge.acquirePreparation(),release:()=>bridge.releasePreparation(),changed:updateControls});
-realRoute.append(node('p','从 (2250,150,90°) 出发，按地图默认16个站点经过扫码位、原料区、粗加工区、暂存区，最终返回起点。选择手动逐段或自动停稳0.1秒后继续；不自动执行扫码与抓放。','form-note'));
+realRoute.append(node('p','从 (2250,150,90°) 出发，按固定15个目标经过扫码位、原料区、粗加工区、暂存区，最终返回起点。固件按阶段转向、移动与对接。选择手动逐目标或自动停稳0.1秒后继续；扫码和抓放分别启动。','form-note'));
 realRoute.append(controlForm('chassis-route-start',{label:'手动分段运行'}));
 realRoute.append(controlForm('chassis-route-auto'),parameterLink('调整路线参数','radar','route_speed','地图 · 实车监控'));
 actions(realRoute,[['chassis-route-next','手动下一段'],['chassis-route-cancel','取消路线'],['chassis-route-status','查询实车路线']]);
@@ -235,7 +237,7 @@ const routeWorkspace=node('div',undefined,'route-workspace'),routeOps=node('div'
 $('simulation-actions').classList.add('map-action-grid');$('sim-controls').querySelector('.simulation-options').before($('simulation-actions'));$('route-editor').classList.add('map-details');$('sim-controls').append($('route-editor'));const speedLab=node('details',undefined,'map-details');speedLab.append(node('summary','速度曲线与模拟说明'),$('speed-lab-note'));$('sim-controls').append(speedLab);
 const advancedMotion=node('details',undefined,'advanced');advancedMotion.append(node('summary','高级运动 · 指定航向与地图位移'));
 advancedMotion.append(node('p','指定航向使用 HWT101 模块角度；地图位移使用场地坐标。先完成准备跑图，再使用这些操作。','form-note'));
-advancedMotion.append(controlForm('chassis-heading',{label:'保持指定模块航向'}),controlForm('chassis-move',{label:'地图相对位移 · 最长 300 mm'}),controlForm('chassis-origin',{label:'手动设置地图位姿 · 不移动小车'}));ch.append(advancedMotion);
+advancedMotion.append(controlForm('chassis-turn'),controlForm('chassis-heading',{label:'保持指定模块航向'}),controlForm('chassis-move',{label:'地图相对位移 · 最长 300 mm'}),controlForm('chassis-origin',{label:'手动设置地图位姿 · 不移动小车'}));ch.append(advancedMotion);
 const recovery=node('details',undefined,'advanced');recovery.append(node('summary','故障恢复 · 实物驱动已复位后使用'));
 recovery.append(node('p','用于驱动器已实际复位后的总线恢复，不会复位硬件。先停止四轮采集并等待在途事务结束，再确认恢复。底部“解除停止锁定”仅解除网页软件停车锁，两者不同。','form-note'));
 actions(recovery,[['feedback-off','停止四轮采集'],['reset-confirmed','确认驱动已复位']]);ch.append(recovery);
@@ -244,18 +246,11 @@ buildVisualHistory(pages.vision);
 const sys=pages.system;const bootNote=node('p',bootStage||'启动状态：尚未收到本次启动报告','form-note');bootNote.id='boot-status';sys.append(bootNote);actions(sys,[['bus-recover','一键恢复电机总线'],['bus-status','查看恢复结果']]);sys.append(node('p','误操作或通信错误后使用：停止任务、检查全部电机，成功后由你重新启动。不会重启主控、自动归零或续跑；恢复结果见终端。','form-note'));actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','上电先完成 Z/X/Base 回零，再静止验证 5 秒；失败后可手动重新验证。原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','重新验证 5 秒'],['imu-cal-cancel','取消标定/验证']]);sys.append(node('p','Z 轴角度清零：把当前朝向设为 0°，不消除漂移、不标定零偏。保持静止操作；跑图前重新验证 IMU 并设置地图起点。','form-note'));
 actions(sys,[['imu-zero','Z 轴角度清零']]);
 advanced(sys,'IMU 连续角度输出',['imu-stream-on','imu-stream-off']);
-const savedRouteSpeed=Number(prefs.routeSpeed);
-const routeSpeed=Number.isInteger(savedRouteSpeed)&&savedRouteSpeed>=10&&savedRouteSpeed<=5000?savedRouteSpeed:5000;
-  const useRouteSpeed=speed=>{
-    buildCommand('chassis-route-start',{speed});
-    prefs.routeSpeed=speed;save();
-    for(const id of ['chassis-route-start-speed','chassis-route-auto-speed']){
-      const input=$(id);if(input){input.value=String(speed);input.dispatchEvent(new Event('input'));}
-    }
-  };
-  if(routeSpeed!==5000)useRouteSpeed(routeSpeed);
+const routeSpeed=prefs.routeSpeed;
+  const routeSpeeds=bindRouteSpeed({prefs,save,inputs:['chassis-route-start-speed','chassis-route-auto-speed','grab-route-speed','radar-nav-speed','route-preview-speed'].map($).filter(Boolean),onChange:speed=>paramsView?.setRouteSpeed(speed)});
+  if(prefs.previousRouteSpeed!==undefined)realRoute.append(node('p',`旧版启动速度 ${prefs.previousRouteSpeed} mm/s 已迁移为 200 mm/s，请核对；之后显式保存的 10～5000 mm/s 仍可使用。`,'form-note'));
   paramsView=mountParameterPage({root:pages.params,send:wire=>executeSend(wire,false,true,true),canSend,radarExchange,radarModel,
-    onBusy:busy=>{parameterBusy=busy;updateControls();},routeSpeed,onRouteSpeed:useRouteSpeed});
+    onBusy:busy=>{parameterBusy=busy;updateControls();},routeSpeed,onRouteSpeed:speed=>routeSpeeds.set(speed)});
   qrView=mountQr({root:pages.qr,send,notify:toast,canSend});}
 function route(){
   const next=parsePageRoute(location.hash),content=document.querySelector('.page-content');

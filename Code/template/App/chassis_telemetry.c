@@ -119,6 +119,16 @@ bool ChassisTelemetry_ConfirmPositionUnits(uint32_t value)
 }
 /* v2 array order is documented in docs/上位机协议.md and checked against the
    production browser decoder. All values/validity timestamps retain v1 units. */
+static void route_metadata(const ChassisRoute_Status_t *r)
+{
+  append("\"route_meta\":{\"action_id\":%lu,\"total\":%lu,\"station\":%lu,\"visit\":%lu,"
+         "\"phase\":\"%s\",\"direction\":\"%s\",\"speed_mm_s\":%.1f,\"phase_speed_mm_s\":%.1f,"
+         "\"phase_target\":[%.3f,%.3f,%.3f],\"planned\":%s},",
+         (unsigned long)r->action_id,(unsigned long)r->total,(unsigned long)r->station,(unsigned long)r->visit,
+         r->phase?r->phase:"idle",r->direction?r->direction:"none",(double)r->speed_mm_s,
+         (double)r->phase_speed_mm_s,(double)r->phase_target_x_mm,(double)r->phase_target_y_mm,
+         (double)r->phase_target_yaw_deg,boolean(r->planned));
+}
 static void compact_state(uint32_t now, const ChassisMotion_Status_t *m,
                           const Mecanum_Status_t *tx, const ChassisLocalization_Status_t *l,
                           const ChassisRoute_Status_t *r, const char *state)
@@ -151,6 +161,7 @@ static void compact_state(uint32_t now, const ChassisMotion_Status_t *m,
     r->state?r->state:"idle",r->reason?r->reason:"none",(unsigned long)r->segment,(unsigned long)r->action_id,
     (double)r->target_x_mm,(double)r->target_y_mm,(double)r->target_yaw_deg,
     (double)r->error_x_mm,(double)r->error_y_mm,(double)r->error_heading_deg,boolean(r->feedback_valid),boolean(r->stop_confirmed));
+  route_metadata(r);
   if (m->distance_mode)
     append("\"distance\":[%s,\"%s\",\"%s\",%lu,[%.3f,%.3f,%.3f],[%.3f,%.3f,%.3f],%s,%s],",
       boolean(ChassisMotion_IsBusy()),state,m->reason?m->reason:"none",(unsigned long)m->action_id,
@@ -233,6 +244,7 @@ static void emit_state(bool detailed)
          (double)route.target_x_mm, (double)route.target_y_mm, (double)route.target_yaw_deg,
          (double)route.error_x_mm, (double)route.error_y_mm, (double)route.error_heading_deg,
          boolean(route.feedback_valid), boolean(route.stop_confirmed));
+  route_metadata(&route);
   if(motion.distance_mode)
   {
     append("\"distance\":{\"active\":%s,\"state\":\"%s\",\"reason\":\"%s\",\"action_id\":%lu,"
@@ -287,7 +299,7 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
   if ((ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) &&
       (!strcmp(t[1], "origin") || !strcmp(t[1], "units") ||
        !strcmp(t[1], "profile") || (!strcmp(t[1], "feedback") && n > 2) ||
-       !strcmp(t[1], "run") || !strcmp(t[1], "heading") || !strcmp(t[1], "reset-confirmed")))
+       !strcmp(t[1], "run") || !strcmp(t[1], "heading") || !strcmp(t[1], "turn") || !strcmp(t[1], "reset-confirmed")))
   {
     reply("ERR chassis task reserved; stop/cancel before changing control settings\r\n");
     return true;
@@ -346,6 +358,11 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
   {
     if (n == 2 && !ChassisMotion_IsBusy())
       ok = Mecanum_RecoveryAfterReset();
+  }
+  else if (!strcmp(t[1], "turn"))
+  {
+    if (n==3 && number(t[2],&z) && z>=-180.0f && z<=180.0f)
+      ok=ChassisMotion_TurnTo(z,CHASSIS_DISTANCE_TIMEOUT_MS);
   }
   else if (!strcmp(t[1], "run") || !strcmp(t[1], "heading"))
   {

@@ -6,7 +6,7 @@ const el=(tag,text,cls)=>{const out=document.createElement(tag);if(text!==undefi
 const notes={material:'最高处 Z=0，下降为正、抬升从夹取处算；车载退出再分度；第二层下降=第一层下降−下层实高。',turntable:'ID 8 · 三仓 · 1∶1 直连；人工对齐首仓建立参考，二、三仓待标定。',vision:'普通停止保留参数；观察姿态改变后按设备状态恢复参考。',motion:'手动轴与自动取放速度独立；Z 手动脉冲限制固定不限。',radar:'雷达参数作用于下次扫描；路线速度仅存浏览器。'};
 
 /** Persistent drafts; mounting, tab changes and navigation never transmit. */
-export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5000,onRouteSpeed=()=>{},radarExchange,radarModel}){
+export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=200,onRouteSpeed=()=>{},radarExchange,radarModel}){
   const exchange=createParameterExchange({send}),rows=new Map(),values={grab:{},turntable:{},arm:{},radar:{}},panels=new Map(),buttons=new Map(),actions=[];
   const historicalValues=new Set();let tab='material',busy=false,revision=0,successes=0,failures=0;
   root.className='parameter-workspace';
@@ -213,5 +213,6 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=5
     if(/^ERR turntable\b/.test(line)){resultLine.textContent='设备拒绝：'+line.slice(4);detailLine.textContent='请按设备原因处理后再操作';}
     return consumed;
   }
-  selectTab();return {receive,cancel,update,selectTab,setReturn,readAll:()=>readAll.onclick(),apply:()=>apply.onclick(),get tab(){return tab;},get busy(){return busy;}};
+  function setRouteSpeed(speed){routeSpeed=speed;const row=rowFor('local','route_speed');repaint(row,row.dirty);row.input.title='浏览器本地：'+speed+' mm/s';update();}
+  selectTab();return {receive,cancel,update,selectTab,setReturn,setRouteSpeed,readAll:()=>readAll.onclick(),apply:()=>apply.onclick(),get tab(){return tab;},get busy(){return busy;}};
 }

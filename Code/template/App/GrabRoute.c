@@ -1,6 +1,7 @@
 #include "GrabRoute.h"
 #include "GrabTask.h"
 #include "chassis_route.h"
+#include "chassis_config.h"
 #include "contest_screen.h"
 #include "QR.h"
 #include "console_tx.h"
@@ -92,9 +93,9 @@ void GrabRoute_Process(void)
   {
     if(strcmp(Route.state,"station")) return;
     if(!Route.stop_confirmed) { Fail("station_stop_unconfirmed");return; }
-    if(Route.planned?(Route.station==5U && Route.visit==1U):Route.segment==2U)
+    if(Route.station==5U && Route.visit==1U)
     { State=GR_SCAN_WAIT;WaitTick=HAL_GetTick();Reason="simulated_scan_wait";Report(0U); }
-    else if(Route.planned?(Route.station==4U && Route.visit==2U):Route.segment==4U)
+    else if(Route.station==4U && Route.visit==2U)
     {
       if(!ChassisRoute_StationFinish()) { Fail("handoff_failed");return; }
       if(!GrabTask_Start("pick")) { Fail("grab_start_failed");return; }
@@ -103,7 +104,7 @@ void GrabRoute_Process(void)
     return;
   }
   if(strcmp(Route.state,"station") ||
-     (Route.planned?(Route.station!=5U || Route.visit!=1U):Route.segment!=2U) || !Route.stop_confirmed)
+     Route.station!=5U || Route.visit!=1U || !Route.stop_confirmed)
   { Fail("station_lost");return; }
   if(State==GR_SCAN_WAIT && HAL_GetTick()-WaitTick>=1000U)
   {
@@ -134,10 +135,14 @@ bool GrabRoute_Command(unsigned Count,char *Tokens[])
   if(strcmp(Tokens[1],"route")) return false;
   if(GrabRoute_IsBusy() || GrabTask_IsBusy() || ChassisRoute_IsBusy())
   { static const char Busy[]="ERR grab route busy\r\n";(void)ConsoleTx_Write((const uint8_t*)Busy,sizeof(Busy)-1U);return true; }
-  if(Count!=3U) { Reason="format";Report(1U);return true; }
-  Speed=strtof(Tokens[2],&End);
-  if(End==Tokens[2] || *End || !isfinite(Speed) || Speed<10.0f || Speed>5000.0f)
-  { Reason="speed_range";Report(1U);return true; }
+  if(Count!=2U && Count!=3U) { Reason="format";Report(1U);return true; }
+  Speed=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
+  if(Count==3U)
+  {
+    Speed=strtof(Tokens[2],&End);
+    if(End==Tokens[2] || *End || !isfinite(Speed) || Speed<10.0f || Speed>CHASSIS_MOTION_MAX_LINEAR_MM_S)
+    { Reason="speed_range";Report(1U);return true; }
+  }
   if(!GrabTask_ConfigReady("pick")) { Reason="grab_config_missing";Report(1U);return true; }
   if(!ChassisRoute_StationStart(Speed)) { Reason="route_not_ready";Report(1U);return true; }
   StartTick=HAL_GetTick();CodeSequence=0U;State=GR_DRIVING;Reason="to_scan";Report(0U);

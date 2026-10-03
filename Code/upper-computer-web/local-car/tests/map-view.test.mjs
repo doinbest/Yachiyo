@@ -73,11 +73,24 @@ test('legend toggles only visibility and preserves preferences and collected tra
 test('offline route remains a separate simulation and changing mode pauses until manual resume',()=>{
   const ui=surface(),wires=[];try{
     const view=mountMap({send:async wire=>{wires.push(wire);return true;}});view.setSource('offline');ui.start();ui.frame();
-    const simulated=ui.get('sim-path').attributes.d;assert.ok(simulated.startsWith('M2250.00,150.00 L'));assert.match(ui.get('map-source-label').textContent,/离线/);
+    const simulated=ui.get('sim-path').attributes.d;assert.ok(simulated.startsWith('M2250.00,150.00 L'));assert.match(ui.get('map-source-label').textContent,/历史16段时间示意/);
     view.setSource('feedback');ui.frame();assert.equal(ui.get('sim-path').style.display,'none');
     view.setSource('offline');ui.frame();assert.equal(ui.get('sim-path').attributes.d,simulated);assert.equal(ui.get('sim-resume').disabled,false);
     ui.click('sim-resume');ui.frame();assert.notEqual(ui.get('sim-path').attributes.d,simulated);
     ui.click('sim-reset');assert.equal(ui.get('sim-path').attributes.d,'M2250.00,150.00 ');assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+
+test('current C profile playback preserves historical editor rows and displays its stages without TX',()=>{
+  const ui=surface(),wires=[];try{
+    const view=mountMap({send:async wire=>{wires.push(wire);return true;}}),rows=ui.get('route-rows').children;
+    const profile={points:[[2100,300,0,0]],speed_mm_s:200,phases:[{kind:'move',phase:'dock',direction:'forward',segment:3,station:5,visit:1,target:[2100,1200,90],speed_mm_s:100}]};
+    assert.equal(typeof view.setPreviewSource,'function');view.setSource('offline');view.setPreviewSource(profile);
+    assert.match(ui.get('map-source-label').textContent,/当前固件 C.*未播放/);assert.deepEqual(wires,[]);
+    view.startProfile(profile);ui.frame();assert.match(ui.get('map-source-label').textContent,/当前固件 C/);
+    assert.match(ui.get('route-progress').textContent,/目标 3.*对接.*100/);assert.equal(ui.get('route-rows').children,rows);
+    for(let i=0;i<100;i++)ui.frame();assert.match(ui.get('sim-status').textContent,/外框检查通过/);
+    assert.match(ui.get('map-pose').textContent,/X 2100\.0 · Y 1200\.0/);assert.deepEqual(wires,[]);
   }finally{ui.restore();}
 });
 

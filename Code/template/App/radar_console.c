@@ -236,7 +236,7 @@ bool RadarConsole_Command(unsigned n,char *t[])
       reason="navigation_stop_requested";
     }
     else if((n==3U || n==4U) && !strcmp(t[2],"start") && (n==3U || number(t[3],&value))){
-      if(n==3U) value=CHASSIS_DISTANCE_SPEED_MM_S;
+      if(n==3U) value=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
       if(RadarConsole_ScanBusy()) reason="scan_in_progress";
       else if(!applicable() || PlanMap!=Scan.map_id) reason="map_origin_or_parameters_changed";
       else if(!Plan.valid) reason="leg_unreachable";

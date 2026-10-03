@@ -69,7 +69,9 @@ bool RadarMap_Add(RadarMap_t *map, const RadarMap_Params_t *params,
 void RadarMap_Finish(RadarMap_t *map, const RadarMap_Params_t *params);
 /** @brief 在当前图规划1→5→4→2→3→4→2→3→1；同向直线点合并。
  * 中转点station=0；业务站点station为1..5、visit为0..8；起点1/0。
- * 格中心采用毫米曼哈顿代价；格内连接和输出路段均沿地图X/Y轴。
+ * 格中心采用毫米曼哈顿代价；通常采用地图X/Y轴连接。首腿直连可通行时
+ * 使用起点到扫码的斜线，返程经(2100,300)接驳后斜向进入原起点。
+ * valid表示格路可达，车体旋转扫掠净空仍由离线诊断及实车验收核对。
  * @return 完整可达为true；失败时valid=false、count=0并报告failed_leg。
  */
 bool RadarPlan_Build(const RadarMap_t *map, RadarPlan_t *plan);

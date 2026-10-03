@@ -9,17 +9,23 @@
  * Then sample_count triples: angle_tenths distance_mm energy.
  * N=0 plans a manual mask; N>0 counts the cloud, then ORs manual_mask.
  * stdout: one JSON object with algorithm, valid, failed_leg, mask, counts,
- * points[[x_mm,y_mm,station,visit],...]. No-path is a normal result (exit 0).
+ * points[[x_mm,y_mm,station,visit],...] and route_profiles from the shared route
+ * phase core. Optional --speed mm/s defaults to the firmware route speed.
+ * No-path is a normal result (exit 0).
  * Malformed input/invalid params give {"error":"..."} and exit 2.
  *
  * Build from repository root:
  * gcc -std=c99 -O2 -Wall -Wextra -Werror -ICode/template/App
- *   Code/tools/radar_plan_cli.c Code/template/App/radar_map.c -lm -o radar_plan_cli
+ *   Code/tools/radar_plan_cli.c Code/template/App/radar_map.c
+ *   Code/template/App/chassis_route_profile.c -lm -o radar_plan_cli
  */
 #include "radar_map.h"
+#include "chassis_route_profile.h"
+#include "chassis_config.h"
 
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,29 +71,73 @@ static int read_params(RadarMap_Params_t *p)
   return 1;
 }
 
-static void print_result(const RadarMap_t *map,const RadarPlan_t *plan)
+static void print_points(const RadarPlan_Point_t *points,unsigned count)
 {
   unsigned i;
-  printf("{\"algorithm\":\"radar_map_c_v1\",\"valid\":%s,\"failed_leg\":%u,\"mask\":%" PRIu32 ",\"counts\":[",
-         plan->valid?"true":"false",(unsigned)plan->failed_leg,map->mask);
-  for(i=0U;i<RADAR_MAP_CELL_COUNT;i++) printf("%s%u",i?",":"",(unsigned)map->counts[i]);
-  printf("],\"points\":[");
-  for(i=0U;i<plan->count;i++) {
-    const RadarPlan_Point_t *point=&plan->points[i];
+  putchar('[');
+  for(i=0U;i<count;i++) {
+    const RadarPlan_Point_t *point=&points[i];
     printf("%s[%d,%d,%u,%u]",i?",":"",(int)point->x_mm,(int)point->y_mm,
            (unsigned)point->station,(unsigned)point->visit);
   }
-  puts("]}");
+  putchar(']');
 }
 
-int main(void)
+static void print_profile(const RadarPlan_Point_t *points,unsigned count,float speed)
+{
+  unsigned segment,index,emitted=0U;
+  float yaw=90.0f;
+  bool first_scan_leg=true;
+  ChassisRoute_Profile_t profile;
+  printf("{\"points\":");print_points(points,count);printf(",\"phases\":[");
+  for(segment=1U;segment<count;segment++) {
+    const RadarPlan_Point_t *to=&points[segment];
+    if(!ChassisRouteProfile_Build(&points[segment-1U],to,yaw,speed,first_scan_leg,&profile)) break;
+    for(index=0U;index<profile.count;index++) {
+      const ChassisRoute_Phase_t *phase=&profile.phases[index];
+      printf("%s{\"kind\":\"%s\",\"phase\":\"%s\",\"direction\":\"%s\",\"segment\":%u,"
+             "\"station\":%u,\"visit\":%u,\"target\":[%.6g,%.6g,%.6g],\"speed_mm_s\":%.6g}",
+             emitted++?",":"",phase->turn?"turn":"move",phase->phase,phase->direction,segment,
+             (unsigned)to->station,(unsigned)to->visit,(double)phase->x_mm,(double)phase->y_mm,
+             (double)phase->yaw_deg,(double)phase->speed_mm_s);
+    }
+    yaw=profile.final_yaw_deg;
+    if(to->station==5U && to->visit==1U) first_scan_leg=false;
+  }
+  printf("],\"speed_mm_s\":%.6g}",(double)speed);
+}
+
+static void print_result(const RadarMap_t *map,const RadarPlan_t *plan,float speed)
+{
+  unsigned i;
+  RadarPlan_Point_t fixed[CHASSIS_ROUTE_TARGET_COUNT+1U];
+  printf("{\"algorithm\":\"radar_map_c_v1\",\"valid\":%s,\"failed_leg\":%u,\"mask\":%" PRIu32 ",\"counts\":[",
+         plan->valid?"true":"false",(unsigned)plan->failed_leg,map->mask);
+  for(i=0U;i<RADAR_MAP_CELL_COUNT;i++) printf("%s%u",i?",":"",(unsigned)map->counts[i]);
+  printf("],\"points\":");print_points(plan->points,plan->count);
+  for(i=0U;i<=CHASSIS_ROUTE_TARGET_COUNT;i++) (void)ChassisRouteProfile_FixedPoint(i,&fixed[i]);
+  printf(",\"route_profiles\":{\"fixed\":");
+  print_profile(fixed,CHASSIS_ROUTE_TARGET_COUNT+1U,speed);
+  printf(",\"planned\":");print_profile(plan->points,plan->valid?plan->count:0U,speed);
+  puts("}}");
+}
+
+int main(int argc,char *argv[])
 {
   char word[96];
+  float speed=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
   uint32_t manual_mask,sample_count,i,angle,distance,energy;
   RadarMap_Params_t params;
   RadarMap_t map;
   RadarPlan_t plan;
   RadarSample_t sample;
+  if(argc!=1) {
+    char *end;
+    if(argc!=3 || strcmp(argv[1],"--speed")) return input_error("speed_option");
+    errno=0;speed=strtof(argv[2],&end);
+    if(errno || end==argv[2] || *end || !isfinite(speed) || speed<10.0f || speed>5000.0f)
+      return input_error("speed_range");
+  }
   if(!read_word(word) || strcmp(word,"RADAR1") ||
      !read_uint(RADAR_MAP_ALL_CELLS,&manual_mask) || !read_uint(UINT32_MAX,&sample_count) ||
      !read_params(&params)) return input_error("input_format");
@@ -102,5 +152,5 @@ int main(void)
   if(read_word(word)) return input_error("input_format");
   RadarMap_Finish(&map,&params);map.mask|=manual_mask;
   (void)RadarPlan_Build(&map,&plan);
-  print_result(&map,&plan);return 0;
+  print_result(&map,&plan,speed);return 0;
 }

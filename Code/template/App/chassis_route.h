@@ -1,5 +1,5 @@
 /** @file chassis_route.h
- * @brief Sixteen fixed map stops, each advanced by an explicit operator request.
+ * @brief Fifteen map targets with internally sequenced travel and docking phases.
  */
 #ifndef CHASSIS_ROUTE_H
 #define CHASSIS_ROUTE_H
@@ -8,12 +8,15 @@
 #include "radar_map.h"
 typedef struct {
   const char *state, *reason;
+  const char *phase, *direction;
   uint32_t segment, action_id;
   float target_x_mm, target_y_mm, target_yaw_deg;
   float error_x_mm, error_y_mm, error_heading_deg;
   bool feedback_valid, stop_confirmed;
   bool planned;
   uint32_t total, station, visit;
+  float speed_mm_s, phase_speed_mm_s;
+  float phase_target_x_mm, phase_target_y_mm, phase_target_yaw_deg;
 } ChassisRoute_Status_t;
 /** @brief Initialize RAM before commands are accepted; never stops motors. */
 void ChassisRoute_Init(void);
@@ -25,14 +28,14 @@ bool ChassisRoute_IsSubmitting(void);
 bool ChassisRoute_Start(void);
 bool ChassisRoute_Next(void);
 bool ChassisRoute_Cancel(void);
-/** @brief 前四段组合测试：第2/4段到点停车后交接，speed单位mm/s。 */
+/** @brief 扫码visit1/原料visit2到点姿态及停车确认后交接；speed为mm/s。 */
 bool ChassisRoute_StationStart(float speed);
 /** @brief Copy a completed radar plan and execute it explicitly; station_mode
  * pauses at QR visit1 and RAW visit2 for the existing first-pick test. */
 bool ChassisRoute_PlanStart(const RadarPlan_t *plan, float speed, bool station_mode);
-/** @brief 仅第2段station允许续跑；重新检查到点与反馈资格。 */
+/** @brief 仅扫码station5/visit1允许续跑；重新检查到点与反馈资格。 */
 bool ChassisRoute_StationResume(void);
-/** @brief 第4段station结束路线所有权，不提交第5段。 */
+/** @brief 原料station4/visit2结束路线所有权，不提交下一个目标。 */
 bool ChassisRoute_StationFinish(void);
 /** @brief 组合路线是否仍保留站点任务所有权。 */
 bool ChassisRoute_StationReserved(void);

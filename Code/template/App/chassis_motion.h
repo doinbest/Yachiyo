@@ -1,5 +1,5 @@
 /** @file chassis_motion.h
- * @brief 主循环20ms有限时长低速任务。完成仅表示时间结束且停车发送完成。
+ * @brief 主循环20ms运动任务；距离及转向完成需要反馈到位和实际停车证据。
  */
 #ifndef CHASSIS_MOTION_H
 #define CHASSIS_MOTION_H
@@ -36,7 +36,7 @@ typedef struct
   float rpm_unquantized[4];
   int16_t rpm_command[4];
   float rpm_scale;
-  bool distance_mode, stop_confirmed;
+  bool distance_mode, turn_only, stop_confirmed;
   float target_x_mm, target_y_mm, target_map_yaw_deg;
   float error_x_mm, error_y_mm, error_heading_deg;
   bool heading_valid, map_anchor_valid;
@@ -49,7 +49,7 @@ void ChassisMotion_Init(void);
 /** @brief 0目标、角速度模式、500ms过渡/1000ms保持/500ms减速。 */
 void ChassisMotion_TargetDefaults(ChassisMotion_Target_t *target);
 /** @brief 仅空闲且视觉/机械臂/校准/底盘无冲突时接受任务；不阻塞。
- * @param target 车体mm/s、rad/s；线速度模长<=100、角速度<=0.15。
+ * @param target 车体mm/s、rad/s；线速度模长<=5000、角速度<=0.15。
  * @return true为RAM目标接受，非发送完成或到位；失败原因见状态。
  * @pre 主循环调用；heading模式要求本次静止验证通过、角度新鲜且已AnchorSet。
  * HOLD_CURRENT只要求验证后的新鲜角度，不建立或修改地图锚点。
@@ -60,6 +60,13 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *target);
  */
 bool ChassisMotion_MoveTo(float x_mm, float y_mm, float map_yaw_deg,
                           float max_speed_mm_s, uint32_t timeout_ms);
+/** @brief 原地转至绝对地图航向，只输出角速度，不修正XY漂移。
+ * @param map_yaw_deg 地图角度，-180..180 deg；+X为0，逆时针为正。
+ * @param timeout_ms 同一动作及角度修正的总时限，20..400000 ms。
+ * @return true仅表示受理；完成需要IMU到角及新鲜四轮停车反馈。
+ * @pre 有效地图原点、已验证IMU、四轮新鲜静止反馈；抓取任务空闲。
+ */
+bool ChassisMotion_TurnTo(float map_yaw_deg, uint32_t timeout_ms);
 /** @brief Refresh heading before localization sampling, without sending targets. */
 void ChassisMotion_HeadingProcess(void);
 /** @brief 半余弦减速后请求停车；stop_ms=0立即取消并请求异步停车。 */

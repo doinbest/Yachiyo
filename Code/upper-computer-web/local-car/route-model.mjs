@@ -58,14 +58,21 @@ function overlaps(corners,box,yaw){
   }
   return true;
 }
-export function footprintIssue(p){
+export function footprintDiagnostic(p,{mask=0}={}){
   const corners=bodyCorners(p);
-  if(corners.some(c=>c.some(v=>v < -1e-7||v > 2400+1e-7)))return 'boundary';
-  if(turntableGap(p)<=0)return 'turntable';
+  if(corners.some(c=>c.some(v=>v < -1e-7||v > 2400+1e-7)))return {reason:'boundary',obstacle:'场地边界'};
+  if(turntableGap(p)<=0)return {reason:'turntable',obstacle:'原料转盘'};
   const boxes=[...FIELD.blocks.map(b=>({...b,w:450,h:450})),{x:0,y:910,w:150,h:580},{x:910,y:0,w:580,h:150}];
-  if(boxes.some(b=>overlaps(corners,b,p.yaw_rad)))return 'forbidden_area';
+  const fixed=boxes.findIndex(b=>overlaps(corners,b,p.yaw_rad));
+  if(fixed>=0)return {reason:'forbidden_area',obstacle:`非行车区 ${fixed+1}`};
+  const grid=[150,550,1000,1400,1850,2250];
+  for(let i=0;i<25;i++)if(mask&(1<<i)){
+    const row=Math.floor(i/5),col=i%5,box={x:grid[col],y:grid[row],w:grid[col+1]-grid[col],h:grid[row+1]-grid[row]};
+    if(overlaps(corners,box,p.yaw_rad))return {reason:'forbidden_area',obstacle:`地图障碍 R${row+1}C${col+1}`};
+  }
   return null;
 }
+export function footprintIssue(p,options){return footprintDiagnostic(p,options)?.reason??null;}
 const keys=['accel','hold','decel','dwell'];
 
 export function validateRoute(rows){

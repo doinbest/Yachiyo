@@ -15,9 +15,9 @@ bool ChassisRoute_IsBusy(void){return route_busy;}
 bool ChassisRoute_IsSubmitting(void){return route_submitting;}
 bool Mecanum_CanStopCleanly(void){return true;}
 static uint32_t tick;
-static bool valid,cal_busy,vision_busy,arm_busy,material_busy,motor_busy,accept=true;
+static bool valid,cal_busy,vision_busy,arm_busy,material_busy,motor_busy,grab_busy,proportional_pid,accept=true;
 static unsigned sends,stops,pid_calls;
-static float sent_vx,sent_omega,pid_current;
+static float sent_vx,sent_vy,sent_omega,pid_current;
 static HWT101_Angle_t angle;
 static Mecanum_Status_t bus;
 uint32_t HAL_GetTick(void){return tick;}
@@ -27,19 +27,26 @@ uint8_t ArmVision_IsBusy(void){return vision_busy;}
 uint8_t MaterialVision_IsBusy(void){return material_busy;}
 uint8_t MechanicalArm_IsBusy(void){return arm_busy;}
 bool Mecanum_IsBusy(void){return motor_busy;}
+bool GrabTask_IsBusy(void){return grab_busy;}
 void Mecanum_StatusGet(Mecanum_Status_t *out){*out=bus;}
 bool Mecanum_Velocity_Request(float vx,float vy,float w,uint8_t acc)
-{(void)vy;assert(acc==0);sends++;sent_vx=vx;sent_omega=w;return accept;}
+{assert(acc==0);sends++;sent_vx=vx;sent_vy=vy;sent_omega=w;return accept;}
 bool Mecanum_Test_Stop(void){stops++;bus.stop_sequence++;bus.tx_complete=false;bus.stage=MECANUM_STAGE_STOPPING;bus.stop_pending=true;return accept;}
 /* PID math has its own real-module regression; here inspect the units passed to it. */
 void Mecanum_HeadingPid_Init(Mecanum_HeadingPid_t *p,float kp,float ki,float kd,float dt,float il,float ol)
 {(void)kp;(void)ki;(void)kd;(void)il;memset(p,0,sizeof(*p));p->sample_time_s=dt;p->output_limit=ol;}
 void Mecanum_HeadingPid_Set_Target(Mecanum_HeadingPid_t *p,float target){p->target_yaw_deg=target;}
 float Mecanum_HeadingPid_Update(Mecanum_HeadingPid_t *p,float current)
-{assert(p->sample_time_s>0&&p->sample_time_s<=.1f);pid_current=current;pid_calls++;return -.04f;}
+{
+  float error;
+  assert(p->sample_time_s>0&&p->sample_time_s<=.1f);pid_current=current;pid_calls++;
+  if(!proportional_pid)return -.04f;
+  error=fmodf(p->target_yaw_deg-current+540,360)-180;
+  return fmaxf(-p->output_limit,fminf(p->output_limit,.02f*error));
+}
 static void reading(uint32_t now,float yaw){tick=now;angle.yaw=yaw;angle.last_update_ms=now;angle.update_count++;}
 static ChassisMotion_Status_t status(void){ChassisMotion_Status_t s;ChassisMotion_StatusGet(&s);return s;}
-static void reset(void){memset(&location,0,sizeof(location));route_busy=route_submitting=false;tick=0;sends=stops=pid_calls=0;valid=cal_busy=vision_busy=arm_busy=material_busy=motor_busy=false;accept=true;memset(&bus,0,sizeof(bus));bus.ack_profile=MECANUM_ACK_NONE;memset(&angle,0,sizeof(angle));ChassisMotion_Init();}
+static void reset(void){memset(&location,0,sizeof(location));route_busy=route_submitting=false;tick=0;sends=stops=pid_calls=0;valid=cal_busy=vision_busy=arm_busy=material_busy=motor_busy=grab_busy=proportional_pid=false;accept=true;memset(&bus,0,sizeof(bus));bus.ack_profile=MECANUM_ACK_NONE;memset(&angle,0,sizeof(angle));ChassisMotion_Init();}
 static void complete_stop(void){bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;ChassisMotion_Process();}
 int main(void)
 {

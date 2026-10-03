@@ -82,3 +82,24 @@ test('radar parameter group mounts without writes and preserves pending inputs o
     model.connection(false);group.cancel();assert.match(root.children[0].children[2].children[2].textContent,/历史设备值/);
   }finally{ui.restore();}
 });
+
+test('offline current preview renders only C-supplied phases, separates grid and footprint checks, and sends no TX',async()=>{
+  const ui=surface(),wires=[],requests=[],previews=[];
+  try{
+    ui.get('radar-nav-speed').value='200';ui.get('route-profile-choice').value='fixed';
+    const phase={kind:'turn',phase:'arrival_turn',direction:'ccw',segment:5,station:4,visit:1,target:[350,1200,0],speed_mm_s:100};
+    const fixed={points:[[350,1200,0,0],[350,1200,4,1]],phases:[phase],speed_mm_s:200};
+    const planned={points:[[2100,300,0,0],[2100,1200,5,1]],phases:[{...phase,kind:'move',phase:'dock',direction:'forward',target:[2100,1200,90]}],speed_mm_s:200};
+    const workspace=mountRadarWorkspace({model:new RadarModel(),exchange:new RadarExchange({send:async wire=>{wires.push(wire);return true;}}),send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource(){},startProfile:(profile,options)=>previews.push({profile,options})},api:async(path,body)=>{requests.push({path,body});return {valid:true,algorithm:'radar_map_c_v1',mask:0,points:planned.points,route_profiles:{fixed,planned}};}});
+    workspace.selectTab('offline');await ui.get('radar-offline-plan').onclick();
+    assert.equal(requests[0].body.speed_mm_s,200);assert.match(ui.get('route-profile-grid').textContent,/网格可达/);
+    assert.match(ui.get('route-profile-phases').children[0].textContent,/目标 5.*到站转向.*100/);
+    assert.match(ui.get('route-profile-status').textContent,/目标 5.*到站转向.*非行车区/);
+    ui.get('route-profile-start').onclick();assert.equal(previews[0].profile,fixed);assert.deepEqual(wires,[]);
+    ui.get('route-profile-choice').value='planned';ui.get('route-profile-choice').onchange();
+    assert.match(ui.get('route-profile-status').textContent,/外框检查通过/);assert.equal(ui.get('radar-offline-path').attributes.d,'M2100,300 L2100,1200');
+    ui.get('route-profile-start').onclick();assert.equal(previews[1].profile,planned);assert.deepEqual(wires,[]);
+    const obstacle=ui.get('radar-mask-cells').querySelectorAll('input')[0];obstacle.checked=true;obstacle.onchange();
+    assert.equal(ui.get('route-profile-start').disabled,true);assert.equal(ui.get('radar-offline-path').attributes.d,'');assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});

@@ -35,6 +35,28 @@ static void test_direction_and_history(void)
   CHECK(RadarMap_LegacyMask(0x404405U)==0x404414U);
 }
 
+/* The same world obstacles must be counted identically after sensor rotation. */
+static void test_rotated_world_obstacles(void)
+{
+  const int yaw[]={0,90,180,270,450,-90};
+  const uint16_t world_angles[]={0,900,1800,2700};
+  RadarMap_Params_t p;RadarMap_t m,reference;RadarSample_t s={0,700,80};
+  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;p.threshold=1;
+  for(unsigned rotation=0;rotation<sizeof(yaw)/sizeof(yaw[0]);rotation++) {
+    p.zero_deg=(float)yaw[rotation];RadarMap_Reset(&m);
+    for(unsigned obstacle=0;obstacle<4;obstacle++) {
+      int local=(yaw[rotation]*10-(int)world_angles[obstacle])%3600;
+      if(local<0)local+=3600;
+      s.angle_tenths=(uint16_t)local;
+      CHECK(RadarMap_Add(&m,&p,&s));
+    }
+    RadarMap_Finish(&m,&p);
+    CHECK(m.counts[14]==1 && m.counts[22]==1 && m.counts[10]==1 && m.counts[2]==1);
+    if(!rotation)reference=m;
+    else CHECK(m.mask==reference.mask && !memcmp(m.counts,reference.counts,sizeof(m.counts)));
+  }
+}
+
 /* Catch ignored filters, threshold off-by-one and blanket mission-cell exemption. */
 static void test_map_filters_and_station_obstacle(void)
 {
@@ -79,17 +101,20 @@ static int cell_at(int x,int y)
   return r<0||c<0?-1:r*5+c;
 }
 
-/* Independently sample the planned segments; diagonal shortcuts would hit this. */
-static void check_clear_axis_path(const RadarPlan_t *p,uint32_t mask)
+/* Only the mission's explicit entry and final parking approach may be diagonal. */
+static void check_clear_path(const RadarPlan_t *p,uint32_t mask,bool mission)
 {
   for(unsigned i=1;i<p->count;i++) {
     int x=p->points[i-1].x_mm,y=p->points[i-1].y_mm;
     int dx=p->points[i].x_mm-x,dy=p->points[i].y_mm-y;
-    CHECK((dx==0)!=(dy==0));
+    bool shortcut=mission && i==1 && x==2250 && y==150 &&
+      p->points[i].x_mm==2100 && p->points[i].y_mm==1200 && p->points[i].station==5;
+    bool final=mission && i+1==p->count && x==2100 && y==300 &&
+      p->points[i].x_mm==2250 && p->points[i].y_mm==150 && p->points[i].station==1;
+    CHECK((dx==0)!=(dy==0) || shortcut || final);
     int steps=abs(dx)+abs(dy);
-    int sx=(dx>0)-(dx<0),sy=(dy>0)-(dy<0);
-    for(int n=0;n<=steps;n++,x+=sx,y+=sy) {
-      int cell=cell_at(x,y);
+    for(int n=0;n<=steps;n++) {
+      int cell=cell_at(x+dx*n/steps,y+dy*n/steps);
       if(cell>=0)CHECK(!(mask&(1U<<cell)));
     }
   }
@@ -114,22 +139,43 @@ static void test_mission_and_detour(void)
       p.points[i].station==expected[visit][2] && p.points[i].visit==visit);
     visit++;
   }
-  CHECK(visit==9);check_clear_axis_path(&p,m.mask);
+  CHECK(visit==9);check_clear_path(&p,m.mask,true);
   CHECK(RadarPlan_Build(&m,&q));CHECK(p.count==q.count && !memcmp(p.points,q.points,p.count*sizeof(p.points[0])));
   m.mask|=1U<<12;CHECK(RadarPlan_Build(&m,&q));CHECK(q.valid);
-  check_clear_axis_path(&q,m.mask);
+  check_clear_path(&q,m.mask,true);
   CHECK(p.count!=q.count || memcmp(p.points,q.points,p.count*sizeof(p.points[0])));
   m.mask=0x50140U|(1U<<14);CHECK(!RadarPlan_Build(&m,&q));CHECK(q.failed_leg==1 && !q.valid && !q.count);
   m.mask=0x50140U|0x3E0U;CHECK(!RadarPlan_Build(&m,&q));CHECK(q.failed_leg==1);
   RadarMap_Reset(&m);
-  CHECK(RadarPlan_BuildLeg(&m,2250,150,2100,1200,&q));check_clear_axis_path(&q,m.mask);
+  CHECK(RadarPlan_BuildLeg(&m,2250,150,2100,1200,&q));check_clear_path(&q,m.mask,false);
   if(q.count)CHECK(q.points[0].x_mm==2250 && q.points[0].y_mm==150 && q.points[q.count-1].x_mm==2100 && q.points[q.count-1].y_mm==1200);
   CHECK(!RadarPlan_BuildLeg(&m,100,100,2100,1200,&q));
 }
 
+/* A middle blocked cell must stop the shortcut even when both endpoints are free. */
+static void test_first_shortcut_and_final_staging(void)
+{
+  RadarMap_t m;RadarPlan_t p,q;
+  RadarMap_Reset(&m);CHECK(RadarPlan_Build(&m,&p));
+  CHECK(p.points[1].x_mm==2100 && p.points[1].y_mm==1200 &&
+        p.points[1].station==5 && p.points[1].visit==1);
+  CHECK(p.count>=3 && p.points[p.count-2].x_mm==2100 && p.points[p.count-2].y_mm==300 &&
+        p.points[p.count-2].station==0 && p.points[p.count-2].visit==0);
+  CHECK(p.points[p.count-1].x_mm==2250 && p.points[p.count-1].y_mm==150 &&
+        p.points[p.count-1].station==1 && p.points[p.count-1].visit==8);
+  m.mask|=1U<<9;CHECK(RadarPlan_Build(&m,&q));
+  CHECK(q.points[1].x_mm!=2100 || q.points[1].y_mm!=1200 || !q.points[1].station);
+  check_clear_path(&q,m.mask,true);
+  RadarMap_Reset(&m);m.mask|=1U<<4;
+  CHECK(!RadarPlan_Build(&m,&q) && q.failed_leg==1 && !q.valid && q.count==0);
+  RadarMap_Reset(&m);m.mask|=1U<<14;
+  CHECK(!RadarPlan_Build(&m,&q) && q.failed_leg==1 && !q.valid && q.count==0);
+}
+
 int main(void)
 {
-  test_direction_and_history();test_map_filters_and_station_obstacle();test_mission_and_detour();
+  test_direction_and_history();test_rotated_world_obstacles();
+  test_map_filters_and_station_obstacle();test_mission_and_detour();test_first_shortcut_and_final_staging();
   printf("Radar map/planner: %u checks, %u failures\n",checks,failures);
   return failures?1:0;
 }

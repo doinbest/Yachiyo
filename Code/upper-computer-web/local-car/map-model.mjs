@@ -28,7 +28,13 @@ const validPose=p=>p?.valid===true&&['x_mm','y_mm','yaw_rad'].every(k=>Number.is
 const routeStates={idle:'待命',running:'当前段运行中',stopping:'正在停车',waiting:'等待手动下一段',station:'站点任务交接',done:'完整路线结束',error:'执行错误',cancelled:'已取消'};
 const distanceStates={idle:'待命',running:'运行中',stopping:'正在停车',done:'结束',error:'执行错误'};
 const validMotion=r=>!!r&&typeof r.reason==='string'&&u32(r.action_id)&&vector(r.target,3)&&vector(r.error,3)&&typeof r.feedback_valid==='boolean'&&typeof r.stop_confirmed==='boolean';
-const validRoute=r=>validMotion(r)&&typeof r.state==='string'&&Object.hasOwn(routeStates,r.state)&&Number.isInteger(r.segment)&&r.segment>=0&&r.segment<=16;
+const validRoute=r=>validMotion(r)&&typeof r.state==='string'&&Object.hasOwn(routeStates,r.state)&&Number.isInteger(r.segment)&&r.segment>=0&&r.segment<=192;
+export const routePhaseText=value=>({turn:'转向',move:'移动',arrival_turn:'到站转向',dock_approach:'靠站接近',dock:'对接',undock:'退出工位',waiting:'等待',station:'工位交接'})[value]??value;
+export const routeDirectionText=value=>({forward:'前进',backward:'后退',reverse:'后退',lateral:'侧移',turn:'原地转向',left:'左移',right:'右移',diagonal:'斜移',cw:'顺时针',ccw:'逆时针',none:'静止'})[value]??value;
+function mergeRouteMeta(route,meta){
+  if(!validRoute(route)||!meta||meta.action_id!==route.action_id||!Number.isInteger(meta.total)||meta.total<0||meta.total>192||meta.total<route.segment||!Number.isInteger(meta.station)||!Number.isInteger(meta.visit)||typeof meta.phase!=='string'||typeof meta.direction!=='string'||!Number.isFinite(meta.speed_mm_s)||!Number.isFinite(meta.phase_speed_mm_s)||!vector(meta.phase_target,3)||typeof meta.planned!=='boolean')return route;
+  return {...route,...meta};
+}
 const validDistance=r=>validMotion(r)&&typeof r.active==='boolean'&&typeof r.state==='string'&&Object.hasOwn(distanceStates,r.state);
 // v2 uses positional arrays on the wire only. The UI retains named fields and
 // the same freshness/stop checks as v1; malformed arrays are never defaulted.
@@ -62,12 +68,14 @@ function motionDetails(motion){
   const reason=({position_correcting:'低速修正位置',position_not_reached:'已停稳，但位置或航向未到位',stop_unconfirmed:'停车反馈未在规定时间内确认'})[motion.reason]??motion.reason;
   return `目标 X ${x.toFixed(1)} · Y ${y.toFixed(1)} mm · θ ${heading.toFixed(1)}°\n${error}\n${motion.stop_confirmed?'已确认停止':'未确认停止'} · 原因 ${reason} · 编码器反馈估计，非视觉精对准`;
 }
-export function routeStatusText(route){
+export function routeStatusText(route,feedbackYaw=null){
   if(!validRoute(route))return '实车路线状态不可用 · 请在地图页手动开启遥测；查询回复见收发记录。';
-  return `${route.state==='done'&&route.reason==='station_handoff'?'前四段已交接抓取':route.reason==='auto_dwell'?'停稳后等待0.1秒，自动继续':routeStates[route.state]} · 第 ${route.segment} / 16 段 · 动作 ${route.action_id}\n${motionDetails(route)}`;
+  const progress=route.total!==undefined?`第 ${route.segment} / ${route.total} 个目标`:`第 ${route.segment} 个目标`;
+  const phase=route.phase!==undefined?`\n阶段 ${routePhaseText(route.phase)} · ${routeDirectionText(route.direction)} · 启动 ${route.speed_mm_s} / 阶段上限 ${route.phase_speed_mm_s} mm/s · 工位 ${route.station} / 访问 ${route.visit}\n阶段目标 X ${route.phase_target[0].toFixed(1)} · Y ${route.phase_target[1].toFixed(1)} mm · 航向 ${route.phase_target[2].toFixed(1)}° / 反馈 ${Number.isFinite(feedbackYaw)?feedbackYaw.toFixed(1)+'°':'不可用'}`:'';
+  return `${route.state==='done'&&route.reason==='station_handoff'?'首次原料区已交接首件抓取':route.reason==='auto_dwell'?'停稳后等待0.1秒，自动继续':routeStates[route.state]} · ${progress} · 动作 ${route.action_id}${phase}\n${motionDetails(route)}`;
 }
-export function motionDisplay(route,distance){
-  if(validRoute(route)&&route.segment>0)return {text:routeStatusText(route),target:route.target,label:`实车目标 ${route.segment}`};
+export function motionDisplay(route,distance,feedbackYaw=null){
+  if(validRoute(route)&&route.segment>0)return {text:routeStatusText(route,feedbackYaw),target:route.phase_target??route.target,label:`实车目标 ${route.segment}`};
   if(validRoute(route)&&route.segment===0&&validDistance(distance))return {text:`单段位移 · ${distanceStates[distance.state]} · ${distance.active?'任务活动':'任务非活动'} · 动作 ${distance.action_id}\n${motionDetails(distance)}`,target:distance.target,label:'单段位移目标'};
   return {text:routeStatusText(route),target:null,label:''};
 }
@@ -105,6 +113,7 @@ export class Telemetry {
     if(delta!==null&&(delta===0||delta>=0x80000000))return true;
     if((delta!==null&&delta>Math.max(300,this.periodMs*1.5))||(this.traceSeq!==null&&this.traceSeq!==r.trace_seq))this.breakPaths();
     this.traceSeq=r.trace_seq??null;
+    r.route=mergeRouteMeta(r.route,r.route_meta);
     this.lastTime=r.t_ms;this.receivedAt=now;this.state=r;this.stale=false;
     this.command=validPose(r.pose?.command)?r.pose.command:null;
     const fresh=r.feedback.position_valid.every((v,i)=>v&&((r.t_ms-r.feedback.position_ms[i])>>>0)<=600);
