@@ -4,7 +4,7 @@ import {footprintIssue} from '../route-model.mjs';
 import {DEFAULT_GEOMETRY} from '../map-model.mjs';
 const module=await import('../route-profile.mjs').catch(()=>({}));
 const phase=(kind,target,extra={})=>({kind,phase:kind,direction:kind==='turn'?'ccw':'forward',segment:1,station:0,visit:0,target,speed_mm_s:200,...extra});
-const make=(phases,points=[[2100,300,0,0]])=>({points,phases,speed_mm_s:200});
+const make=(phases,points=[[2100,300,0,0]])=>({points,phases,speed_mm_s:200,turn_speed_deg_s:100});
 test('current profile follows supplied C turn and move phases, with distance/angle completion',()=>{
   assert.equal(typeof module.RouteProfileRunner,'function');
   for(const integer of [false,true]){
@@ -85,8 +85,19 @@ const fixedCPhases=[
 ].map(([kind,phase,direction,segment,station,visit,target,speed_mm_s])=>({kind,phase,direction,segment,station,visit,target,speed_mm_s}));
 test("default fixed15 C profile clears the complete swept footprint in both playback models",()=>{
   for(const integer of [false,true]){
-    const r=new module.RouteProfileRunner({points:[[2250,150,1,0]],speed_mm_s:200,phases:fixedCPhases},{integer});
+    const r=new module.RouteProfileRunner({points:[[2250,150,1,0]],speed_mm_s:200,turn_speed_deg_s:100,phases:fixedCPhases},{integer});
     r.advance(1000);assert.equal(r.state,"done");assert.equal(r.issue,null);assert.equal(r.rows.at(-1).segment,15);
     assert.deepEqual([r.pose.x_mm,r.pose.y_mm],[2250,150]);assert.ok(r.path.every(p=>footprintIssue(p)===null));
+  }
+});
+
+
+test('preview consumes the turn speed supplied by C instead of the old 0.15 rad/s ceiling',()=>{
+  for(const limit of [60,100]) {
+    const profile=make([phase('turn',[1200,1200,-90])],[[1200,1200,0,0]]);
+    profile.turn_speed_deg_s=limit;
+    const r=new module.RouteProfileRunner(profile);let peak=0;
+    for(let i=0;i<300 && r.state==='running';i++){r.advance(.02);peak=Math.max(peak,Math.abs(r.body[2]));}
+    assert.equal(r.state,'done');assert.ok(peak>1);assert.ok(peak<=limit*Math.PI/180+1e-8);
   }
 });

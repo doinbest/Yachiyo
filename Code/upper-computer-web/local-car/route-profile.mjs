@@ -17,6 +17,7 @@ export class RouteProfileRunner{
   constructor(profile,{geometry=DEFAULT_GEOMETRY,integer=false,mask=0}={}){
     if(!profile||!Array.isArray(profile.points)||!profile.points.length||!profile.points[0].slice(0,2).every(Number.isFinite)||!Array.isArray(profile.phases)||!profile.phases.length||!validGeometry(geometry))throw new Error('当前固件 C 阶段预览不可用，请先重新规划');
     for(const p of profile.phases)if(!['move','turn'].includes(p.kind)||!finiteTarget(p.target)||!Number.isFinite(p.speed_mm_s)||p.speed_mm_s<0||typeof p.phase!=='string'||typeof p.direction!=='string'||!Number.isInteger(p.segment))throw new Error('C 阶段记录无效');
+    if(!Number.isFinite(profile.turn_speed_deg_s)||profile.turn_speed_deg_s<=0)throw new Error('请重新规划以获取当前固件转向速度');
     this.profile=profile;this.rows=profile.phases;this.geometry={...geometry};this.integer=integer;this.mask=mask;
     this.pose={x_mm:profile.points[0][0],y_mm:profile.points[0][1],yaw_rad:Math.PI/2};this.path=[{...this.pose}];
     this.index=0;this.elapsed=0;this.distance=0;this.speed=0;this.body=[0,0,0];this.rpm=[0,0,0,0];this.stops=[];this.state='running';this.issue=null;
@@ -48,7 +49,7 @@ export class RouteProfileRunner{
       const p=this.rows[this.index],dt=Math.min(.02,seconds),turn=p.kind==='turn';
       const dx=p.target[0]-this.pose.x_mm,dy=p.target[1]-this.pose.y_mm,remaining=turn?angle(radians(p.target[2])-this.pose.yaw_rad):Math.hypot(dx,dy);
       if(Math.abs(remaining)<1e-8){this.finishPhase();continue;}
-      const limit=turn?.15:p.speed_mm_s;
+      const limit=turn?radians(this.profile.turn_speed_deg_s):p.speed_mm_s;
       if(limit<=0)throw new Error('移动阶段速度必须大于 0');
       this.speed=Math.min(limit,this.speed+(turn?.8:PROFILE_ACCEL_MM_S2)*dt,Math.sqrt(2*(turn?.8:PROFILE_ACCEL_MM_S2)*Math.abs(remaining)));
       const travel=Math.min(this.speed*dt,Math.abs(remaining));

@@ -211,7 +211,7 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
   if (t->mode != CHASSIS_MOTION_ANGULAR_VELOCITY)
   {
     Mecanum_HeadingPid_Init(&HeadingPid, CHASSIS_HEADING_TEST_KP, 0, 0,
-                            CHASSIS_MOTION_PERIOD_MS / 1000.0f, 0, CHASSIS_MOTION_MAX_OMEGA_RAD_S);
+                            CHASSIS_MOTION_PERIOD_MS / 1000.0f, 0, CHASSIS_HEADING_TEST_OUTPUT_LIMIT);
     Mecanum_HeadingPid_Set_Target(&HeadingPid, Motion.requested.heading_deg);
     PidSampleTick = Motion.heading_sample_tick;
     PidSampleCount = LastYawCount;
@@ -264,6 +264,7 @@ bool ChassisMotion_TurnTo(float yaw, uint32_t timeout)
   if (!ChassisMotion_MoveTo(Position.observer.feedback.x_mm,
       Position.observer.feedback.y_mm,yaw,CHASSIS_DISTANCE_SPEED_MM_S,timeout)) return false;
   Motion.turn_only=true;
+  HeadingPid.output_limit=CHASSIS_MOTION_MAX_OMEGA_RAD_S;
   TurnRampTick=Motion.start_tick;
   return true;
 }

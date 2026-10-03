@@ -84,7 +84,7 @@ test('offline route remains a separate simulation and changing mode pauses until
 test('current C profile playback preserves historical editor rows and displays its stages without TX',()=>{
   const ui=surface(),wires=[];try{
     const view=mountMap({send:async wire=>{wires.push(wire);return true;}}),rows=ui.get('route-rows').children;
-    const profile={points:[[2100,300,0,0]],speed_mm_s:200,phases:[{kind:'move',phase:'dock',direction:'forward',segment:3,station:5,visit:1,target:[2100,1200,90],speed_mm_s:100}]};
+    const profile={points:[[2100,300,0,0]],speed_mm_s:200,turn_speed_deg_s:100,phases:[{kind:'move',phase:'dock',direction:'forward',segment:3,station:5,visit:1,target:[2100,1200,90],speed_mm_s:100}]};
     assert.equal(typeof view.setPreviewSource,'function');view.setSource('offline');view.setPreviewSource(profile);
     assert.match(ui.get('map-source-label').textContent,/当前固件 C.*未播放/);assert.deepEqual(wires,[]);
     view.startProfile(profile);ui.frame();assert.match(ui.get('map-source-label').textContent,/当前固件 C/);
@@ -104,5 +104,16 @@ test('simulation legend hides stop footprints and labels while keeping the vehic
     assert.ok(ui.get('map-car').children.length>0);assert.equal(ui.get('map-pose').textContent,position);
     ui.legend('sim');assert.notEqual(ui.get('sim-path').style.display,'none');assert.notEqual(ui.get('route-stops').style.display,'none');
     assert.ok(ui.get('route-stops').children.some(node=>node.tag==='text'));
+  }finally{ui.restore();}
+});
+
+
+test('map angular speed is displayed in degrees per second without changing telemetry units',()=>{
+  const ui=surface();try{
+    const view=mountMap({send:async()=>true});online(view);
+    const packet=state(40);packet.target.body[2]=Math.PI/6;receive(view,packet);ui.frame();
+    assert.match(ui.get('map-body-speed').textContent,/ω 30\.0 °\/s/);
+    view.setSource('offline');ui.start();ui.frame();
+    assert.match(ui.get('map-body-speed').textContent,/°\/s/);
   }finally{ui.restore();}
 });

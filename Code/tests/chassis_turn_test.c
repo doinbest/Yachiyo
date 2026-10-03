@@ -67,13 +67,14 @@ static void turn_plant(float initial,float target)
   printf("turn plant %.0f->%.0f time=%.2fs batches=%u error=%.2f reason=%s\n",
       initial,target,steps*.02f,batches,deg_error(target,yaw),status().reason);
   assert(status().state==CHASSIS_MOTION_DONE && status().stop_confirmed);
-  assert(fabsf(deg_error(target,yaw))<=2 && max_omega<=.150001f);
+  assert(fabsf(deg_error(target,yaw))<=2 && max_omega<=1.745330f);
   assert(location.observer.feedback.x_mm==1215 && location.observer.feedback.y_mm==1180);
   assert(status().map_anchor_valid);
+  if(fabsf(deg_error(target,initial))>=90) {assert(steps*.02f<6);assert(max_omega>.8f);}
 }
 int main(void)
 {
-  turn_plant(90,180);turn_plant(180,90);turn_plant(170,-170);
+  turn_plant(90,180);turn_plant(180,90);turn_plant(170,-170);turn_plant(0,180);turn_plant(90,95);
   setup();grab_busy=true;assert(!ChassisMotion_TurnTo(180,60000));
   assert(!strcmp(status().reason,"grab_task_busy"));
   setup();assert(!ChassisMotion_TurnTo(NAN,60000));

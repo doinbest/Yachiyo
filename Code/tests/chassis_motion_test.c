@@ -51,6 +51,14 @@ static void complete_stop(void){bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending
 int main(void)
 {
   ChassisMotion_Target_t t;
+  /* UI 100 deg/s boundary remains radians on the wire. */
+  reset();ChassisMotion_TargetDefaults(&t);t.transition_ms=0;t.omega_rad_s=1.745329f;
+  assert(ChassisMotion_Start(&t));tick=20;ChassisMotion_Process();assert(fabsf(sent_omega-1.745329f)<.00001f);
+  reset();t.omega_rad_s=-1.745329f;assert(ChassisMotion_Start(&t));
+  /* Straight heading correction must not inherit the faster pure-turn ceiling. */
+  reset();valid=true;proportional_pid=true;reading(0,0);ChassisMotion_TargetDefaults(&t);
+  t.mode=CHASSIS_MOTION_HOLD_CURRENT;t.vx_mm_s=100;t.transition_ms=0;
+  assert(ChassisMotion_Start(&t));reading(20,-30);ChassisMotion_Process();assert(fabsf(sent_omega-.15f)<.00001f);
   /* A timed straight task captures module yaw; no artificial map origin. */
   reset();ChassisMotion_TargetDefaults(&t);t.mode=CHASSIS_MOTION_HOLD_CURRENT;
   t.vx_mm_s=50;t.transition_ms=0;
@@ -87,7 +95,7 @@ int main(void)
   reset();ChassisMotion_TargetDefaults(&t);t.vx_mm_s=1000;t.transition_ms=0;
   assert(ChassisMotion_Start(&t));tick=20;ChassisMotion_Process();assert(fabsf(sent_vx-1000)<.01f);
   reset();t.vx_mm_s=4000;t.vy_mm_s=4000;assert(!ChassisMotion_Start(&t));t.vy_mm_s=0;t.vx_mm_s=NAN;assert(!ChassisMotion_Start(&t));
-  t.vx_mm_s=50;t.omega_rad_s=.16f;assert(!ChassisMotion_Start(&t));t.omega_rad_s=0;
+  t.vx_mm_s=50;t.omega_rad_s=1.746f;assert(!ChassisMotion_Start(&t));t.omega_rad_s=0;
   vision_busy=true;assert(!ChassisMotion_Start(&t));vision_busy=false;
   material_busy=true;assert(!ChassisMotion_Start(&t));material_busy=false;
   arm_busy=true;assert(!ChassisMotion_Start(&t));arm_busy=false;

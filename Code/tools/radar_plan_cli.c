@@ -104,7 +104,7 @@ static void print_profile(const RadarPlan_Point_t *points,unsigned count,float s
     yaw=profile.final_yaw_deg;
     if(to->station==5U && to->visit==1U) first_scan_leg=false;
   }
-  printf("],\"speed_mm_s\":%.6g}",(double)speed);
+  printf("],\"speed_mm_s\":%.6g,\"turn_speed_deg_s\":%.6g}",(double)speed,(double)CHASSIS_MOTION_MAX_OMEGA_DEG_S);
 }
 
 static void print_result(const RadarMap_t *map,const RadarPlan_t *plan,float speed)

@@ -46,7 +46,7 @@ int main(void)
   assert(!strcmp(p.phases[2].phase,"arrival_turn"));close_to(p.phases[2].x_mm,425);close_to(p.phases[2].yaw_deg,90);
   assert(!strcmp(p.phases[3].phase,"dock") && !strcmp(p.phases[3].direction,"lateral"));
   close_to(p.phases[3].x_mm,350);close_to(p.phases[3].speed_mm_s,50);
-  close_to(p.nominal_time_s,775.0f/200+75.0f/50+3.14159265358979323846f/0.15f);
+  close_to(p.nominal_time_s,775.0f/200+75.0f/50+180.0f/100.0f);
   p=build((RadarPlan_Point_t){350,1200,3,4},(RadarPlan_Point_t){1200,1200,0,0},90,false);
   assert(p.count==3 && !strcmp(p.phases[0].phase,"undock"));close_to(p.phases[0].x_mm,425);close_to(p.phases[0].yaw_deg,90);close_to(p.phases[0].speed_mm_s,50);
   assert(p.phases[1].turn);close_to(p.phases[1].x_mm,425);close_to(p.phases[1].yaw_deg,180);

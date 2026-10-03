@@ -49,7 +49,7 @@ void ChassisMotion_Init(void);
 /** @brief 0目标、角速度模式、500ms过渡/1000ms保持/500ms减速。 */
 void ChassisMotion_TargetDefaults(ChassisMotion_Target_t *target);
 /** @brief 仅空闲且视觉/机械臂/校准/底盘无冲突时接受任务；不阻塞。
- * @param target 车体mm/s、rad/s；线速度模长<=5000、角速度<=0.15。
+ * @param target 车体mm/s、rad/s；线速度模长<=5000、角速度<=100°/s（约1.745329 rad/s）。
  * @return true为RAM目标接受，非发送完成或到位；失败原因见状态。
  * @pre 主循环调用；heading模式要求本次静止验证通过、角度新鲜且已AnchorSet。
  * HOLD_CURRENT只要求验证后的新鲜角度，不建立或修改地图锚点。

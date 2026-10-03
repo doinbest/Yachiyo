@@ -52,6 +52,8 @@ class RadarServiceTests(unittest.TestCase):
         profiles=result['route_profiles']
         fixed=profiles['fixed'];planned=profiles['planned']
         self.assertEqual(fixed['speed_mm_s'],200)
+        self.assertEqual(fixed['turn_speed_deg_s'],100)
+        self.assertEqual(planned['turn_speed_deg_s'],100)
         self.assertEqual(len(fixed['points']),16)
         self.assertEqual(fixed['points'][0],[2250,150,1,0])
         self.assertEqual(fixed['points'][-2:],[ [2100,300,0,0], [2250,150,1,8] ])

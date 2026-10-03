@@ -204,7 +204,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
     const approx=offline?quantize(target):null;
     $('wheel-body').replaceChildren(...names.map((name,i)=>{const tr=document.createElement('tr');const fresh=!!r?.feedback.speed_valid[i]&&((r.t_ms-r.feedback.speed_ms[i])>>>0)<=600;const posFresh=!!r?.feedback.position_valid[i]&&((r.t_ms-r.feedback.position_ms[i])>>>0)<=600;for(const value of [name,fmt(target?.[i],2),offline?fmt(approx[i],0):fresh?fmt(r.feedback.rpm[i],2):'不可用',offline?'—':posFresh?fmt(r.feedback.pos[i],0):'不可用']){const td=document.createElement('td');td.textContent=value;tr.append(td);}return tr;}));
     $('wheel-approx-title').textContent=offline?'整数 RPM':telemetry.config?.feedback_sign==='motor_raw'?'原始反馈 RPM':'反馈 RPM';
-    $('map-body-speed').textContent=offline?`输入 vx ${fmt(body[0])} · vy ${fmt(body[1])} mm/s · ω ${fmt(body[2],3)} rad/s`:r?`目标 vx ${fmt(r.target.body[0])} · vy ${fmt(r.target.body[1])} mm/s · ω ${fmt(r.target.body[2],3)} rad/s`:'目标速度不可用';
+    $('map-body-speed').textContent=offline?`输入 vx ${fmt(body[0])} · vy ${fmt(body[1])} mm/s · ω ${fmt(body[2]*180/Math.PI,1)} °/s`:r?`目标 vx ${fmt(r.target.body[0])} · vy ${fmt(r.target.body[1])} mm/s · ω ${fmt(r.target.body[2]*180/Math.PI,1)} °/s`:'目标速度不可用';
   }
   function frame(now){
     const elapsed=now-last;last=now;telemetry.tick(now);

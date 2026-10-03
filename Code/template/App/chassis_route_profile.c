@@ -1,4 +1,5 @@
 #include "chassis_route_profile.h"
+#include "chassis_config.h"
 #include <math.h>
 #include <string.h>
 
@@ -38,7 +39,7 @@ static void add(ChassisRoute_Profile_t *out,bool turn,const char *name,
   phase->turn=turn;phase->phase=name;
   phase->direction=turn?"turn":direction(tx-*x,ty-*y,heading);
   phase->x_mm=tx;phase->y_mm=ty;phase->yaw_deg=heading;phase->speed_mm_s=turn?0:speed;
-  out->nominal_time_s+=turn?rotation*ROUTE_PI/180.0f/0.15f:distance/speed;
+  out->nominal_time_s+=turn?rotation/CHASSIS_MOTION_MAX_OMEGA_DEG_S:distance/speed;
   *x=tx;*y=ty;*yaw=heading;
 }
 
