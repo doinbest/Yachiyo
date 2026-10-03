@@ -130,5 +130,14 @@ int main(void)
   assert(RadarScan_Start(&params,18));configured();measure(false,2650,4,false);measure(false,100,4,false);
   measure(false,1000,4,false);measure(false,1900,4,false);measure(false,2800,4,false);measure(false,100,4,false);
   RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_READY);
-  puts("radar_scan: commands, full circle, corrupt-frame/unit/DMA recovery, snapshot retention PASS");return 0;
+  /* Real fault signature: every received byte belongs to a six-byte alarm.
+   * Expose its code; later valid measurements can still complete a new scan. */
+  assert(RadarScan_Init(&uart)==HAL_OK);assert(RadarScan_Start(&params,19));configured();
+  {uint8_t alarm[]={0xce,0xce,0xce,0xce,1,0};input(alarm,sizeof alarm);service();input(alarm,sizeof alarm);service();}
+  RadarScan_StatusGet(&s);assert(s.bytes==12&&s.alarm==2&&s.last_alarm==1&&s.packets==0);
+  assert(s.state==RADAR_SCAN_WAIT_WRAP&&s.unit==RADAR_UNIT_UNKNOWN&&!s.points_valid);
+  tick+=10001;service();RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_ERROR&&!strcmp(s.reason,"scan_timeout"));
+  assert(RadarScan_Start(&params,20));configured();full_circle(false,4);RadarScan_StatusGet(&s);
+  assert(s.state==RADAR_SCAN_READY&&s.points_valid&&s.alarm==2&&s.last_alarm==1);
+  puts("radar_scan: commands, full circle, corrupt-frame/unit/DMA recovery, alarms, snapshot retention PASS");return 0;
 }

@@ -188,10 +188,14 @@ bool RadarConsole_Command(unsigned n,char *t[])
   if(n<2U || strcmp(t[0],"radar")) return false;
   refresh();Watching=true;
   if(n==2U && !strcmp(t[1],"status")){
-    status_page(true);begin("diag",0,1);
-    append("\"bytes\":%lu,\"packets\":%lu,\"bad\":%lu,\"overflow\":%lu,\"alarm\":%lu,\"unit\":\"%s\"",
-      (unsigned long)Scan.bytes,(unsigned long)Scan.packets,(unsigned long)Scan.bad,(unsigned long)Scan.overflow,
-      (unsigned long)Scan.alarm,Scan.unit==RADAR_UNIT_CM?"cm":Scan.unit==RADAR_UNIT_MM?"mm":"unknown");
+    /* Split diagnostics so full uint32 counters and identities fit 256 bytes. */
+    status_page(true);begin("diag",0,2);
+    append("\"bytes\":%lu,\"packets\":%lu,\"bad\":%lu,\"overflow\":%lu",
+      (unsigned long)Scan.bytes,(unsigned long)Scan.packets,(unsigned long)Scan.bad,(unsigned long)Scan.overflow);
+    (void)finish(true);begin("diag",1,2);
+    append("\"alarm\":%lu,\"last_alarm\":%u,\"unit\":\"%s\"",
+      (unsigned long)Scan.alarm,(unsigned)Scan.last_alarm,
+      Scan.unit==RADAR_UNIT_CM?"cm":Scan.unit==RADAR_UNIT_MM?"mm":"unknown");
     (void)finish(true);return true;
   }
   if(n==2U && !strcmp(t[1],"stop")){RadarScan_Stop();reply(true,"scan_stop_requested");return true;}

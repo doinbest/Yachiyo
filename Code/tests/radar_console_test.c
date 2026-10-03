@@ -18,11 +18,13 @@ static RadarSample_t samples[360];
 static ChassisLocalization_Status_t location;
 static ChassisRoute_Status_t route;
 static char reply[4096],page[257];
+static char foreground[4][257];
+static unsigned foreground_count;
 static unsigned scans,stops,moves;
 static float submitted_speed;
 static bool busy;
 uint32_t HAL_GetTick(void){return tick;}
-bool ConsoleTx_Write(const uint8_t *d,uint16_t n){assert(n<sizeof(reply));memcpy(reply,d,n);reply[n]=0;return true;}
+bool ConsoleTx_Write(const uint8_t *d,uint16_t n){assert(n<=256);if(foreground_count<4){memcpy(foreground[foreground_count],d,n);foreground[foreground_count++][n]=0;}memcpy(reply,d,n);reply[n]=0;return true;}
 bool ConsoleTx_BulkReady(void){return true;}
 bool ConsoleTx_Bulk(const char *d,uint16_t n){assert(n<=256);memcpy(page,d,n);page[n]=0;puts(page);return true;}
 void RadarScan_StatusGet(RadarScan_Status_t *s){*s=scan;}
@@ -51,7 +53,7 @@ void GrabRoute_Stop(void){}
 bool ChassisRoute_Cancel(void){stops++;return true;}
 static void command(const char *s)
 {
-  char text[64],*t[6],*p;unsigned n=0;assert(strlen(s)<sizeof(text));strcpy(text,s);
+  char text[64],*t[6],*p;unsigned n=0;foreground_count=0;assert(strlen(s)<sizeof(text));strcpy(text,s);
   for(p=strtok(text," ");p && n<6;p=strtok(NULL," "))t[n++]=p;
   assert(RadarConsole_Command(n,t));
 }
@@ -67,6 +69,8 @@ int main(void)
   route.state=route.reason="idle";
   for(unsigned i=0;i<360;i++)samples[i]=(RadarSample_t){(uint16_t)(i*10),65535,255};
   RadarConsole_Init();command("radar status");assert(!moves && !scans);
+  assert(foreground_count==3 && strstr(foreground[1],"\"page\":0,\"pages\":2"));
+  assert(strstr(foreground[2],"\"last_alarm\":0") && strstr(foreground[2],"\"unit\":\"unknown\""));
   pump();command("radar fetch map 4 0");pump();assert(strstr(page,"\"mask\":328000"));
   assert(strstr(page,"\"pose\":[2170.0,230.0,180.0]"));
   for(unsigned i=1;i<6;i++){char cmd[64];snprintf(cmd,sizeof(cmd),"radar fetch map 4 %u",i);command(cmd);pump();assert(strstr(page,"\"counts\":["));}
@@ -107,5 +111,11 @@ int main(void)
   command("radar nav status");
   assert(strlen(reply)<=256 && strstr(reply,"\"k\":\"nav\"") && strstr(reply,"\"reason\":\"dock_approach\""));
   assert(strstr(reply,"\"index\":193,\"total\":193,\"station\":5,\"visit\":8,\"stopped\":false"));
+  scan.bytes=scan.packets=scan.bad=scan.overflow=scan.alarm=UINT32_MAX;
+  scan.last_alarm=UINT16_MAX;
+  command("radar status");
+  assert(foreground_count==3 && !strstr(reply,"page_size"));
+  assert(strstr(foreground[1],"\"bytes\":4294967295") && strstr(foreground[1],"\"overflow\":4294967295"));
+  assert(strstr(foreground[2],"\"alarm\":4294967295") && strstr(foreground[2],"\"last_alarm\":65535"));
   puts("radar_console_test: PASS (paging, pose, first scan, no implicit drive, origin and parameter validity)");
 }

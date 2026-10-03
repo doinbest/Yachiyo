@@ -200,7 +200,7 @@ void RadarScan_StatusGet(RadarScan_Status_t *out)
   *out = status; RadarUart_StatusGet(&uart_status);
   out->bytes = uart_status.received_bytes; out->packets = uart_status.packets;
   out->bad = uart_status.bad; out->overflow = uart_status.overwritten_bytes;
-  out->alarm = uart_status.alarms;
+  out->alarm = uart_status.alarms; out->last_alarm = uart_status.last_alarm;
   if (active()) out->elapsed_ms = HAL_GetTick() - start_tick;
 }
 

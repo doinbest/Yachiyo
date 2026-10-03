@@ -66,3 +66,19 @@ test('Chinese radar diagnostic summary exposes reception, corruption and overflo
   assert.match(summary,/有效测量包\s*20/);assert.match(summary,/校验\/长度异常\s*9/);
   assert.match(summary,/溢出\s*123/);assert.match(summary,/单位\s*mm/);
 });
+
+test('split diagnostics retain every counter and display the actual alarm code',()=>{
+  const ui=receiver(),rx={...diagFrame,pages:2};
+  delete rx.alarm;delete rx.unit;
+  const alarm={...identity,k:'diag',page:1,pages:2,alarm:223286,last_alarm:1,unit:'unknown'};
+  ui.receive(wire(rx));ui.receive('arm> '+wire(alarm));ui.receive(wire(statusFrame));
+  assert.equal(ui.model.status.bytes,45000);assert.equal(ui.model.status.last_alarm,1);
+  assert.equal(ui.logs.length,2);
+  const reception=chineseTerminalLine(wire(rx));
+  assert.match(reception,/45000/);assert.doesNotMatch(reception,/—|单位/);
+  const fault=chineseTerminalLine(wire(alarm));
+  assert.match(fault,/223286/);assert.match(fault,/0x0001/);assert.match(fault,/电源故障/);
+  assert.doesNotMatch(fault,/—|有效测量包/);
+  const unknown=chineseTerminalLine(wire({...alarm,last_alarm:0xcece}));
+  assert.match(unknown,/0xCECE/);assert.doesNotMatch(unknown,/电源故障/);
+});

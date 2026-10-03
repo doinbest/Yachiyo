@@ -20,6 +20,7 @@ typedef struct {
   uint32_t raw_points, circle_restarts, unit_changes, unit_overflows;
   bool map_valid, points_valid, truncated, map_applicable;
   uint16_t point_count, coverage_tenths;
+  uint16_t last_alarm; /**< Latest LDS alarm code, little-endian on the sensor wire. */
   RadarScan_Unit_t unit;
 } RadarScan_Status_t;
 HAL_StatusTypeDef RadarScan_Init(UART_HandleTypeDef *uart);
