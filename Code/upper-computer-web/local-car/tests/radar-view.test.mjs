@@ -336,6 +336,21 @@ test('first auto scan with a foreground active status accepts its fresh complete
   }finally{await h.close();}
 });
 
+test('an unresolved completed circle names the retained historical map rather than claiming the current map is ready',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);
+  try{
+    h.workspace.receive(frame({k:'status',state:'ready',reason:'start_ambiguous',scan:4,map:2,plan:2,applicable:false,points_valid:true}));
+    assert.match(ui.get('radar-status').textContent,/本圈采集完成/);
+    assert.match(ui.get('radar-status').textContent,/扫描 4.*历史地图 2.*规划 2/);
+    assert.match(ui.get('radar-status').textContent,/不适用本圈/);
+    assert.doesNotMatch(ui.get('radar-status').textContent,/完整地图就绪/);
+    h.workspace.receive(frame({k:'status',state:'ready',reason:'start_both_conflict',scan:1,map:0,plan:0,applicable:false,points_valid:true}));
+    assert.match(ui.get('radar-status').textContent,/尚未发布本圈地图和规划/);
+    assert.doesNotMatch(ui.get('radar-status').textContent,/历史地图 0/);
+    assert.deepEqual(h.wires,[]);
+  }finally{await h.close();}
+});
+
 test('upper copy and export/import preserve the corner, lower reference parameters, geometric path and manual obstacles',async()=>{
   const ui=surface(),model=new RadarModel(),wires=[],requests=[],previews=[];let exported;
   const originalCreate=URL.createObjectURL,originalRevoke=URL.revokeObjectURL;

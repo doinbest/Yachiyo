@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mountParameterPage} from '../parameter-page.mjs';
 import {parameterFields} from '../parameter-schema.mjs';
 import {parameterSurface} from './parameter-surface.mjs';
+import {RadarModel,RadarExchange} from '../radar-model.mjs';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
 test('read all refreshes successful fields and unset, keeps failed input, gets radar once',async()=>{
@@ -175,4 +176,79 @@ test('material height fields stay in six aligned scenarios with all parameter in
     assert.ok(all.some(e=>e.className==='parameter-unit'&&e.textContent==='ms'));
     assert.ok(all.some(e=>e.textContent.includes('发出开合指令后')));
   }finally{ui.restore();}
+});
+
+test('radar installation choices start unknown and fill only the existing zero draft without TX',()=>{
+  const ui=parameterSurface(),wires=[];
+  try{
+    const page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);return true;}});
+    page.selectTab('radar');
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction'),angle=ui.root.querySelector('#parameter-radar-installation-angle'),zero=ui.input('radar','zero_deg');
+    assert.ok(direction,'installation direction control is available');assert.ok(angle);
+    assert.equal(direction.value,'');assert.equal(angle.value,'');assert.equal(zero.value,'');
+    assert.match(ui.root.querySelector('#parameter-radar-installation-status').textContent,/未读取|未知/);
+    for(const [choice,relative,world]of [['front',0,90],['right',-90,0],['rear',180,270],['left',90,180]]){
+      direction.value=choice;direction.onchange();
+      assert.equal(Number(angle.value),relative);assert.equal(Number(zero.value),world);
+      assert.equal(ui.root.querySelector('#parameter-row-radar-zero_deg').dataset.state,'draft');
+    }
+    page.selectTab('motion');page.selectTab('radar');page.cancel('停止');
+    assert.equal(direction.value,'left');assert.equal(zero.value,'180');assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+
+test('radar installation custom angle and direct zero editing synchronize wrapped directions without TX',()=>{
+  const ui=parameterSurface(),wires=[];
+  try{
+    mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);return true;}});
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction'),angle=ui.root.querySelector('#parameter-radar-installation-angle'),zero=ui.input('radar','zero_deg');
+    assert.ok(direction);direction.value='custom';direction.onchange();
+    angle.value='37.5';angle.oninput();assert.equal(zero.value,'127.5');assert.equal(direction.value,'custom');
+    angle.value='37.4';angle.oninput();assert.equal(zero.value,'127.4');
+    angle.value='-90.1';angle.oninput();assert.equal(zero.value,'359.9');
+    angle.value='-220';angle.oninput();assert.equal(zero.value,'230');assert.equal(direction.value,'custom');
+    for(const [world,choice,relative]of [[-180,'left',90],[360,'right',-90],[270,'rear',180],[45,'custom',-45],[89.9,'custom',-0.1],[0.1,'custom',-89.9]]){
+      zero.value=String(world);zero.oninput();assert.equal(direction.value,choice);assert.equal(Number(angle.value),relative);
+    }
+    zero.value='';zero.oninput();assert.equal(direction.value,'');assert.equal(angle.value,'');assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+
+test('radar zero readback derives installation direction while a pending installation draft survives readback',async()=>{
+  const ui=parameterSurface(),wires=[];let page;
+  try{
+    page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{
+      wires.push(wire);queueMicrotask(()=>{
+        const [kind,,key]=wire.split(' ');
+        if(kind==='config')page.receive(`OK config ${wire.split(' ')[1]} rpm=30 acc=8 limit_pulses=${wire==='config z'?'unlimited':'3200'}`);
+        else page.receive(`OK ${kind} config key=${key} value=${key==='z_grab'?'-80':key==='z_lift'?'-40':'1'}`);
+      });return true;
+    },radarExchange:{async get(){return parameterFields.filter(p=>p.kind==='radar').map(p=>({key:p.key,value:p.key==='zero_deg'?180:5}));},cancel(){}}});
+    await page.readAll();
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction'),zero=ui.input('radar','zero_deg');assert.ok(direction);assert.equal(direction.value,'left');
+    assert.match(ui.root.querySelector('#parameter-radar-installation-status').textContent,/参数.*折算/);
+    direction.value='right';direction.onchange();await page.readAll();
+    assert.equal(direction.value,'right');assert.equal(zero.value,'0');assert.equal(ui.root.querySelector('#parameter-row-radar-zero_deg').dataset.state,'draft');
+    assert.equal(wires.some(w=>w.includes(' set ')),false);
+  }finally{ui.restore();}
+});
+
+test('applying radar installation writes only zero_deg through the existing accepted/readback comparison',async()=>{
+  const ui=parameterSurface(),wires=[],model=new RadarModel();let page,exchange,deviceZero=180;
+  try{
+    exchange=new RadarExchange({send:async wire=>{
+      wires.push(wire);queueMicrotask(()=>{
+        let reply;
+        if(wire.startsWith('radar set zero_deg ')){deviceZero=Number(wire.split(' ').at(-1));reply='OK radar parameter_updated_ram';}
+        else{assert.equal(wire,'radar get');reply='@RADAR '+JSON.stringify({v:1,k:'params',session:1,origin:1,scan:1,map:1,plan:1,page:0,pages:1,rev:2,key:'zero_deg',value:deviceZero});}
+        model.accept(reply);exchange.receive(reply);page.receive(reply);
+      });return true;
+    }});
+    page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);return true;},radarExchange:exchange,radarModel:model});page.selectTab('radar');
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction');assert.ok(direction);direction.value='right';direction.onchange();assert.deepEqual(wires,[]);
+    await page.apply();assert.deepEqual(wires,['radar set zero_deg 0','radar get']);assert.equal(deviceZero,0);assert.equal(direction.value,'right');
+    assert.equal(ui.root.querySelector('#parameter-row-radar-zero_deg').dataset.state,'read');
+    assert.ok(ui.all().some(e=>e.textContent.includes('已应用并读回一致')));
+    assert.doesNotMatch(ui.root.querySelector('#parameter-radar-installation-status').textContent,/待应用/);
+  }finally{exchange?.cancel();ui.restore();}
 });

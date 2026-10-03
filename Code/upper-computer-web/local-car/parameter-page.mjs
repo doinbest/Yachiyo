@@ -2,13 +2,14 @@ import {buildCommand} from './protocol.mjs';
 import {createParameterExchange,sameNumber} from './parameter-console.mjs';
 import {parameterTabs,parameterFields,materialScenarios,displayValue,fieldWrites,deviceRequests} from './parameter-schema.mjs';
 import {GRAB_TEST_PRESET} from './grab-params.mjs';
+import {RADAR_INSTALLATION_DIRECTIONS,radarZeroFromRelative,radarInstallationFromZero} from './radar-installation.mjs';
 const el=(tag,text,cls)=>{const out=document.createElement(tag);if(text!==undefined)out.textContent=text;if(cls)out.className=cls;return out;};
 const notes={material:'最高处 Z=0，下降为正、抬升从夹取处算；车载退出再分度；第二层下降=第一层下降−下层实高。',turntable:'ID 8 · 三仓 · 1∶1 直连；人工对齐首仓建立参考，二、三仓待标定。',vision:'普通停止保留参数；观察姿态改变后按设备状态恢复参考。',motion:'手动轴与自动取放速度独立；Z 手动脉冲限制固定不限。',radar:'雷达参数作用于下次扫描；路线速度仅存浏览器。'};
 
 /** Persistent drafts; mounting, tab changes and navigation never transmit. */
 export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=200,onRouteSpeed=()=>{},radarExchange,radarModel}){
   const exchange=createParameterExchange({send}),rows=new Map(),values={grab:{},turntable:{},arm:{},radar:{}},panels=new Map(),buttons=new Map(),actions=[];
-  const historicalValues=new Set();let tab='material',busy=false,revision=0,successes=0,failures=0;
+  const historicalValues=new Set();let tab='material',busy=false,revision=0,successes=0,failures=0,installation=null;
   root.className='parameter-workspace';
   const toolbar=el('div',undefined,'parameter-toolbar'),back=el('a','','parameter-back');back.hidden=true;
   const readAll=el('button','读取当前全部参数','primary'),apply=el('button','应用本页修改');readAll.type=apply.type='button';
@@ -37,6 +38,7 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
       const matches=fieldMatches(row);
       fieldState(row,row.dirty&&!matches?'待应用':value===null?'未设置':'',row.dirty&&!matches?'draft':value===null?'unset':'read');
     }
+    if(row.field.kind==='radar'&&row.field.key==='zero_deg')syncRadarInstallation(preserve);
   }
   function createField(field,shortLabel){
     const row=el('div',undefined,'parameter-field'),label=el('label',shortLabel??field.label),input=el('input'),control=el('div',undefined,'parameter-input-control'),state=el('span','','parameter-field-state');label.title=field.label;
@@ -45,7 +47,7 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
     const unit=el('span',field.unit||'—','parameter-unit');unit.setAttribute('aria-hidden','true');control.append(input,unit);
     if(field.readOnly){input.setAttribute('aria-readonly','true');input.placeholder=field.key==='z_limit'?'固定不限脉冲':'参考 0°';}
     const entry={field,input,state,dirty:false,root:row};rows.set(field.kind+':'+field.key,entry);
-    input.oninput=()=>{entry.dirty=true;fieldState(entry,'待应用','draft');update();};
+    input.oninput=()=>{entry.dirty=true;fieldState(entry,'待应用','draft');if(field.kind==='radar'&&field.key==='zero_deg')syncRadarInstallation();update();};
     row.id='parameter-row-'+field.kind+'-'+field.key;row.append(label,control,state);fieldState(entry,'');
     input.title=field.kind==='local'?'浏览器本地：'+routeSpeed+' mm/s':'尚未读取设备参数';
     if(field.kind==='local')input.value=String(routeSpeed);
@@ -54,6 +56,39 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
   function cardHeading(card,title,note){
     const heading=el('div',undefined,'parameter-card-heading');heading.append(el('h3',title));
     if(note){const helper=el('span',note,'parameter-card-note');helper.title=note;heading.append(helper);}card.append(heading);
+  }
+  function syncRadarInstallation(keepCustom=false){
+    if(!installation)return;
+    const row=rowFor('radar','zero_deg'),draft=radarInstallationFromZero(row.input.value),keep=keepCustom&&installation.custom;
+    if(!keep){installation.direction.value=draft?.direction??'';installation.angle.value=draft?String(draft.relativeDeg):'';installation.custom=draft?.direction==='custom';}
+    installation.angle.readOnly=installation.direction.value!=='custom';
+    if(!draft){installation.status.textContent=keep?'请填写自定义相对角，仅填草稿':'尚未读取角度，安装朝向未知；请选择实物雷达0°朝向';return;}
+    const history=historicalValues.has('radar:zero_deg'),label=RADAR_INSTALLATION_DIRECTIONS.find(item=>item.key===draft.direction)?.label??`相对车头 ${draft.relativeDeg}°`;
+    installation.status.textContent=row.dirty?`安装朝向草稿：${label} · 待应用`:`${history?'历史设备':'设备'}参数折算：${label}；实物安装请核对`;
+  }
+  function mountRadarInstallation(card){
+    const section=el('div',undefined,'parameter-group-fields'),directionRow=el('div',undefined,'parameter-field'),angleRow=el('div',undefined,'parameter-field');
+    const direction=el('select'),angle=el('input'),status=el('p','','form-note');
+    direction.id='parameter-radar-installation-direction';angle.id='parameter-radar-installation-angle';status.id='parameter-radar-installation-status';
+    const label=el('label','雷达0°安装朝向（俯视）');label.htmlFor=direction.id;
+    direction.setAttribute('aria-label','雷达0°安装朝向（俯视）');
+    const unknown=el('option','未读取 / 未选择');unknown.value='';unknown.disabled=true;direction.append(unknown);
+    for(const item of [...RADAR_INSTALLATION_DIRECTIONS,{key:'custom',label:'自定义相对角'}]){const option=el('option',item.label);option.value=item.key;direction.append(option);}direction.value='';
+    directionRow.append(label,direction);
+    const angleLabel=el('label','自定义相对车头角'),control=el('div',undefined,'parameter-input-control');angleLabel.htmlFor=angle.id;
+    Object.assign(angle,{type:'number',step:.1,readOnly:true});angle.setAttribute('aria-label','自定义相对车头角（°）');control.append(angle,el('span','°','parameter-unit'));angleRow.append(angleLabel,control);
+    installation={direction,angle,status,custom:false};
+    direction.onchange=()=>{
+      const row=rowFor('radar','zero_deg');
+      if(direction.value==='custom'){installation.custom=true;angle.value=String(radarInstallationFromZero(row.input.value)?.relativeDeg??'');syncRadarInstallation(true);return;}
+      const choice=RADAR_INSTALLATION_DIRECTIONS.find(item=>item.key===direction.value);if(!choice)return;
+      row.input.value=String(radarZeroFromRelative(choice.relativeDeg));row.input.oninput();
+    };
+    angle.oninput=()=>{
+      const row=rowFor('radar','zero_deg'),zero=radarZeroFromRelative(angle.value);installation.custom=true;
+      row.input.value=zero===null?'':String(zero);row.dirty=true;fieldState(row,'待应用','draft');syncRadarInstallation(true);update();
+    };
+    section.append(directionRow,angleRow);card.append(section,status,el('p','右下名义车头为地图90°；车左为正、车右为负。选择仅填写零角草稿，应用后主动读回比较。','form-note'));syncRadarInstallation();
   }
   function mountMaterialScenarios(grid,fields){
     const card=el('section',undefined,'parameter-card parameter-height-card');cardHeading(card,'Z 场景距离',notes.material);
@@ -84,6 +119,7 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
       const card=el('section',undefined,'parameter-card');cardHeading(card,group,key!=='material'&&firstGroup?notes[key]:undefined);firstGroup=false;
       const fieldGrid=el('div',undefined,'parameter-group-fields');
       for(const field of fields.filter(f=>f.group===group))fieldGrid.append(createField(field));
+      if(group==='雷达下次静止扫描')mountRadarInstallation(card);
       card.append(fieldGrid);
       for(const field of fields.filter(f=>f.group===group&&f.note))card.append(el('p',field.note,'form-note'));
       if(group==='雷达下次静止扫描')card.append(el('p','安装参考 2170 / 230 / 180 对应起点 2250 / 150 / 90；仍需实测。分页读取一次取得整组。','form-note'));
@@ -145,7 +181,7 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
       const previousProgress=radarExchange.onProgress;radarExchange.onProgress=({page,pages})=>{progress.textContent='读取雷达参数 · '+page+'/'+pages+' 页';detailLine.textContent=progress.textContent;previousProgress?.({kind:'params',page,pages});};
       let pages;try{pages=await radarExchange.get();}finally{radarExchange.onProgress=previousProgress;}
       const params=Object.assign({},...pages.filter(p=>p.key).map(p=>({[p.key]:p.value})));
-      let count=0;for(const row of rows.values())if(row.field.kind==='radar'){if(!Object.hasOwn(params,row.field.key)){showError('radar',row.field.key,new Error('设备未报告'));failures++;continue;}accept('radar',row.field.key,params[row.field.key],preserve);count++;}return count;
+      let count=0;for(const row of rows.values())if(row.field.kind==='radar'){if(!Object.hasOwn(params,row.field.key)){showError('radar',row.field.key,new Error('设备未报告'));failures++;continue;}accept('radar',row.field.key,params[row.field.key],preserve||row.field.key==='zero_deg'&&row.dirty);count++;}return count;
     }
     const result=await (request.kind==='grab'?exchange.readGrab(request.key):exchange.readTurntable(request.key));accept(request.kind,request.key,result.value,preserve);return 1;
   }
@@ -184,6 +220,7 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
     },localOnly,localOnly?'本地设置已保存':'已应用并读回一致');
   };
   function update(){
+    syncRadarInstallation(true);
     const changed=[...rows.values()].filter(row=>row.field.tab===tab&&row.dirty);
     readAll.disabled=busy||!canSend('grab get z_grab');apply.disabled=busy||!changed.length||(!changed.every(row=>row.field.kind==='local')&&!canSend('grab get z_grab'));
     for(const {button,wire}of actions){try{button.disabled=busy||!canSend(typeof wire==='function'?wire():wire);}catch{button.disabled=true;}}
