@@ -60,7 +60,8 @@ export function chineseTerminalLine(original){
         if(Object.hasOwn(frame,key))parts.push(`${label} ${frame[key]}${unit}`);
       if(Number.isInteger(frame.last_alarm)&&frame.last_alarm>=0&&frame.last_alarm<=65535){
         const code='0x'+frame.last_alarm.toString(16).toUpperCase().padStart(4,'0');
-        parts.push(`最近报警 ${code}${frame.alarm>0&&frame.last_alarm===1?'（电源故障）':''}`);
+        // Manual wire example CE CE CE CE 00 01 decodes to 0x0100.
+        parts.push(`最近报警 ${code}${frame.alarm>0&&frame.last_alarm===0x0100?'（电源故障）':''}`);
       }
       if(Object.hasOwn(frame,'unit'))parts.push(`单位 ${frame.unit}`);
       return `雷达诊断：${parts.join(' · ')}`;
