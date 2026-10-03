@@ -68,7 +68,7 @@ typedef struct {
   RadarPlan_Point_t points[RADAR_PLAN_MAX_POINTS];
 } RadarPlan_t;
 
-/** @brief 载入下起点区域中心(2250,150,180°)、顺时针0..90°和2点物体阈值。 */
+/** @brief 载入下起点区域中心(2250,150,180°)、顺时针0..90°和1点物体阈值。 */
 void RadarMap_Defaults(RadarMap_Params_t *params);
 /** @return 数值有限、筛选范围合法且阈值至少1时为true。 */
 bool RadarMap_ParamsValid(const RadarMap_Params_t *params);

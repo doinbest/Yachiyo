@@ -19,7 +19,7 @@ from serial_bridge import SerialBridge
 _planner_lock = threading.Lock()
 RADAR_DEFAULTS = dict(lidar_x_mm=2250, lidar_y_mm=150, zero_deg=180,
                      distance_min_mm=100, distance_max_mm=40000, angle_min_tenths=0,
-                     angle_max_tenths=900, threshold=2, energy_min=0, energy_max=255)
+                     angle_max_tenths=900, threshold=1, energy_min=0, energy_max=255)
 
 
 def plan_radar_offline(body):

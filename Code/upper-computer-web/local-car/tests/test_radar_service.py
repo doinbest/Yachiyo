@@ -18,6 +18,11 @@ import serve
 
 
 class RadarServiceTests(unittest.TestCase):
+    def test_default_keeps_single_return_obstacle_like_firmware(self):
+        result=serve.plan_radar_offline({'points':[[400,1500,30]]})
+        self.assertEqual(result['counts'][12],1)
+        self.assertEqual(result['mask'],0x50140|(1<<12))
+
     def test_partial_cloud_cannot_replace_map_but_existing_mask_can_still_plan(self):
         with patch.object(serve.subprocess, 'run', return_value=subprocess.CompletedProcess([],0,stdout='{}',stderr='')) as run:
             with self.assertRaisesRegex(ValueError, '完整点云'):

@@ -58,7 +58,7 @@ test('radar workspace fits the full field without intercepting zoom or drag, kee
     workspace.receive('@RADAR '+JSON.stringify({...base,k:'nav',page:0,pages:1,state:'stopping',reason:'cancelled',index:1,total:8,station:5,visit:1,stopped:true}));
     assert.match(ui.get('radar-nav-status').textContent,/停车已确认/);
     await ui.get('radar-offline-plan').onclick();assert.equal(requests[0].path,'radar/plan');assert.equal(requests[0].body.points.length,0);assert.deepEqual(wires,[]);
-    assert.deepEqual(['lidar_x_mm','lidar_y_mm','zero_deg','angle_max_tenths','threshold'].map(key=>requests[0].body.params[key]),[2250,150,180,900,2]);
+    assert.deepEqual(['lidar_x_mm','lidar_y_mm','zero_deg','angle_max_tenths','threshold'].map(key=>requests[0].body.params[key]),[2250,150,180,900,1]);
     assert.equal(ui.get('radar-offline-path').attributes.d,'M2250,150');
     await ui.get('radar-offline-plan').onclick();assert.match(ui.get('radar-offline-status').textContent,/第 2 路段/);
     workspace.connection(false);workspace.connection(true);workspace.selectTab('radar');

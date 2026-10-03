@@ -11,7 +11,7 @@ const GRID=RADAR_GRID;
 
 export function mountRadarParameters({root,exchange,model,canSend,onBusy}){
   const section=element('details');section.className='parameter-group';section.append(element('summary','雷达 · 下次静止扫描参数'));
-  section.append(element('p','下方雷达中心预设(2250,150)，0°向左180°；右上中心(2250,2250)，0°向下270°。建图使用原始0°→顺时针90°，默认格内2点；位置、方向和过滤仍可调。应用并读回只修改当前RAM，旧图按扫描时姿态保留。'));
+  section.append(element('p','下方雷达中心预设(2250,150)，0°向左180°；右上中心(2250,2250)，0°向下270°。建图使用原始0°→顺时针90°，默认物体阈值1点，沿用F1已验证值；位置、方向和过滤仍可调。应用并读回只修改当前RAM，旧图按扫描时姿态保留。'));
   const rows=[];
   async function work(status,task){onBusy(true);status.textContent='等待设备参数…';update();try{await task();}catch(error){status.textContent=error.message;}finally{onBusy(false);update();}}
   for(const p of RADAR_PARAMETERS){

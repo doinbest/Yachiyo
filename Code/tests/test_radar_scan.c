@@ -378,7 +378,7 @@ int main(void)
   assert(!RadarScan_SelectStart(RADAR_START_LOWER));
   RadarMap_Defaults(&params);
   assert(params.lidar_x_mm==2250 && params.lidar_y_mm==150 && params.zero_deg==180 &&
-    params.angle_min_tenths==0 && params.angle_max_tenths==900 && params.threshold==2);
+    params.angle_min_tenths==0 && params.angle_max_tenths==900 && params.threshold==1);
   assert(RadarScan_Start(&params,7));force_busy=true;service();assert(tx_count==0);
   force_busy=false;configured();assert(tx_count==6);
   for(i=1;i<6;i++)assert(tx_ticks[i]-tx_ticks[i-1]>=20);
@@ -397,7 +397,7 @@ int main(void)
   RadarScan_StatusGet(&s);assert(s.unit==RADAR_UNIT_CM&&s.state==RADAR_SCAN_WAIT_WRAP&&s.unit_changes==1);
   full_circle(false,4);points=RadarScan_Points(&count);assert(points&&points[0].distance_mm==1000);
   assert(RadarScan_SetParam("threshold",5));RadarScan_StatusGet(&s);assert(s.map_valid&&!s.map_applicable);
-  assert(!RadarScan_SetParam("threshold",0));assert(RadarScan_MapParams()->threshold==2);
+  assert(!RadarScan_SetParam("threshold",0));assert(RadarScan_MapParams()->threshold==1);
   assert(RadarScan_Start(RadarScan_Params(),10));configured();full_circle(false,4);RadarScan_StatusGet(&s);assert(s.map_applicable);
   /* DMA overwrites must be counted by absolute TC epochs, even while main stalls. */
   assert(RadarScan_Start(&params,11));configured();measure(true,2700,4,false);measure(true,0,4,false);

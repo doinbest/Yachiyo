@@ -5,7 +5,7 @@ export const RADAR_PARAMETERS=[
   ['lidar_x_mm','下方参考雷达 X / mm',2250,0,2400],['lidar_y_mm','下方参考雷达 Y / mm',150,0,2400],
   ['zero_deg','起点雷达零角 / °',180,-360,360],['distance_min_mm','距离下限 / mm',100,0,65535],
   ['distance_max_mm','距离上限 / mm',40000,0,65535],['angle_min_tenths','角度下限 / 0.1°',0,0,3600],
-  ['angle_max_tenths','顺时针角度上限 / 0.1°',900,0,3600],['threshold','连续物体点数阈值',2,1,65535],
+  ['angle_max_tenths','顺时针角度上限 / 0.1°',900,0,3600],['threshold','连续物体点数阈值',1,1,65535],
   ['energy_min','能量下限',0,0,255],['energy_max','能量上限',255,0,255]
 ].map(([key,label,value,min,max])=>({key,label,value,min,max}));
 export const STATIONS={1:'启停区',2:'粗加工区',3:'暂存区',4:'原料区',5:'扫码区'};

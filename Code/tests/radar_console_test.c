@@ -295,7 +295,7 @@ int main(void)
 {
   RadarMap_Defaults(&params);captured=params;RadarMap_Reset(&map);
   assert(params.lidar_x_mm==2250 && params.lidar_y_mm==150 && params.zero_deg==180 &&
-    params.angle_min_tenths==0 && params.angle_max_tenths==900 && params.threshold==2);
+    params.angle_min_tenths==0 && params.angle_max_tenths==900 && params.threshold==1);
   scan.state=RADAR_SCAN_READY;scan.reason="complete";scan.map_valid=scan.map_applicable=scan.points_valid=true;
   scan.map_id=scan.scan_id=4;scan.origin_generation=7;scan.coverage_tenths=3600;
   scan.points_map_id=4;start_status.scan_id=4;start_status.result.start_id=RADAR_START_LOWER;start_status.result.reason="manual_reference";

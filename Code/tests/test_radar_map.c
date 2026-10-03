@@ -17,7 +17,7 @@ static void test_direction_and_history(void)
   float x=0,y=0;
   const float expected[4][2]={{1250,150},{2250,1150},{3250,150},{2250,-850}};
   RadarMap_Defaults(&p);
-  CHECK(p.angle_min_tenths==0 && p.angle_max_tenths==900 && p.threshold==2);
+  CHECK(p.angle_min_tenths==0 && p.angle_max_tenths==900 && p.threshold==1);
   for(unsigned i=0;i<4;i++) {
     s.angle_tenths=(uint16_t)(i*900);
     CHECK(RadarMap_Project(&p,&s,&x,&y));
@@ -115,6 +115,19 @@ static RadarSample_t world_sample(float x,float y,const RadarMap_Params_t *p)
   return s;
 }
 
+/* A thin foreground with one valid return must remain blocked by default. */
+static void test_default_keeps_single_return_obstacle(void)
+{
+  RadarMap_Params_t p;RadarMap_t m;
+  const RadarSample_t one[]={{400,1500,30}};
+  RadarMap_Defaults(&p);
+  build_cloud(&m,&p,one,1);
+  CHECK(m.counts[12]==1 && m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<12)));
+  RadarMap_Reset(&m);
+  CHECK(RadarMap_Add(&m,&p,&one[0]));RadarMap_Finish(&m,&p);
+  CHECK(m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<12)));
+}
+
 /* A measured exterior-connected wall is background; two nearer objects stay. */
 static void test_cloud_exterior_contour_and_occlusions(void)
 {
@@ -196,6 +209,7 @@ static void test_cloud_cyclic_start_and_sector_boundaries(void)
   static RadarSample_t ordered[360],rotated[360];
   RadarMap_Params_t p;RadarMap_t reference,m;
   RadarMap_Defaults(&p);
+  p.threshold=2; /* Explicit two-point setting exercises cross-boundary support. */
   for(unsigned i=0;i<360;i++) {
     unsigned angle=i*10;
     uint16_t distance=angle==90 || angle==100?800:angle==400?1500:0;
@@ -373,6 +387,7 @@ int main(void)
   test_cloud_exterior_contour_and_occlusions();
   test_cloud_interior_objects_and_real_distance();
   test_cloud_object_threshold_and_filters();
+  test_default_keeps_single_return_obstacle();
   test_cloud_cyclic_start_and_sector_boundaries();
   printf("Radar map/planner: %u checks, %u failures\n",checks,failures);
   return failures?1:0;

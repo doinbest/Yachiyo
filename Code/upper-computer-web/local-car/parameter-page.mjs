@@ -122,7 +122,7 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
       if(group==='雷达下次静止扫描')mountRadarInstallation(card);
       card.append(fieldGrid);
       for(const field of fields.filter(f=>f.group===group&&f.note))card.append(el('p',field.note,'form-note'));
-      if(group==='雷达下次静止扫描')card.append(el('p','下方参考雷达中心2250 / 150、0°向左180°；右上中心2250 / 2250、0°向下270°。原始0°→顺时针90°建图，默认格内2点；当前RAM参数可调。地图页“应用本次建图设置”写入中心、角域及所选方向，保留自选点数阈值。','form-note'));
+      if(group==='雷达下次静止扫描')card.append(el('p','下方参考雷达中心2250 / 150、0°向左180°；右上中心2250 / 2250、0°向下270°。原始0°→顺时针90°建图，默认物体阈值1点，沿用F1已验证值；当前RAM参数可调。地图页“应用本次建图设置”写入中心、角域及所选方向，保留自选点数阈值。','form-note'));
       grid.append(card);
     }
     if(key==='turntable')mountTurntableControls(panel);

@@ -28,7 +28,7 @@ void RadarMap_Defaults(RadarMap_Params_t *p)
   p->lidar_x_mm=2250.0f;p->lidar_y_mm=150.0f;p->zero_deg=180.0f;
   p->distance_min_mm=100U;p->distance_max_mm=40000U;
   p->angle_min_tenths=0U;p->angle_max_tenths=900U;
-  p->threshold=2U;p->energy_min=0U;p->energy_max=255U;
+  p->threshold=1U;p->energy_min=0U;p->energy_max=255U;
 }
 
 bool RadarMap_ParamsValid(const RadarMap_Params_t *p)

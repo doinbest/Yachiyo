@@ -66,7 +66,7 @@ static void test_reference_and_poses(void)
   if(upper && lower) {
     CHECK(near(upper->lidar_x_mm,2250) && near(upper->lidar_y_mm,2250) && near(upper->zero_deg,270));
     CHECK(near(lower->lidar_x_mm,2250) && near(lower->lidar_y_mm,150) && near(lower->zero_deg,180));
-    CHECK(upper->threshold==2 && lower->threshold==2 && lower->angle_max_tenths==900);
+    CHECK(upper->threshold==1 && lower->threshold==1 && lower->angle_max_tenths==900);
   }
   CHECK(reference.lidar_x_mm==2250 && reference.lidar_y_mm==150 && reference.zero_deg==180);
   reference.lidar_x_mm=2100;reference.lidar_y_mm=300;reference.zero_deg=-90;
@@ -107,7 +107,8 @@ static void test_ambiguity_and_conflicts(void)
   CHECK(context.maps[0].counts[12]==2 && context.maps[1].counts[12]==2);
   RadarStart_Begin(&context,&params);
   board(&context,RADAR_START_LOWER,1);RadarStart_Finish(&context,&result);
-  CHECK(result.start_id==RADAR_START_UNKNOWN && result.qr_counts[0]==1);
+  CHECK(result.start_id==RADAR_START_LOWER && result.qr_counts[0]==1 &&
+    !strcmp(result.reason,"clear_regions"));
   board(&context,RADAR_START_UPPER,2);board(&context,RADAR_START_LOWER,1);
   RadarStart_Finish(&context,&result);
   CHECK(result.start_id==RADAR_START_UNKNOWN && !strcmp(result.reason,"both_conflict"));
