@@ -133,6 +133,16 @@ class RadarServiceTests(unittest.TestCase):
             self.assertIsNotNone(serial_bridge.PRIORITY_STOP.fullmatch(command),command)
         self.assertIsNone(serial_bridge.READ_COMMAND.fullmatch('radar task start 100'))
 
+    def test_f407_host_transport_is_read_only_only_for_queries(self):
+        for command in ('radar host status','radar host get active','radar host get draft',
+                        'radar host live status','radar host fetch config:1 0','radar host fetch cloud:7 33'):
+            self.assertIsNotNone(serial_bridge.READ_COMMAND.fullmatch(command),command)
+        for command in ('radar host stop','radar host live stop'):
+            self.assertIsNotNone(serial_bridge.PRIORITY_STOP.fullmatch(command),command)
+        for command in ('radar host start','radar host scan','radar host live start',
+                        'radar host draft reset','radar host set threshold 1','radar host apply 1'):
+            self.assertIsNone(serial_bridge.READ_COMMAND.fullmatch(command),command)
+
     def test_same_c_planner_offline_returns_station_path_without_a_serial_owner(self):
         result=serve.plan_radar_offline({'mask':0,'params':{'zero_deg':180},'points':[]})
         self.assertEqual(result['algorithm'],'radar_map_c_v1')

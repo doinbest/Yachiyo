@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from serial_bridge import SerialBridge, READ_COMMAND
+from serial_bridge import SerialBridge, READ_COMMAND, PRIORITY_STOP
 from serve import make_server, print_events, console_command
 import serve
 
@@ -60,6 +60,21 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_f407_host_reads_stops_and_mutations_are_classified_exactly(self):
+        for command in ('radar host status','radar host get active','radar host get draft',
+                        'radar host live status','radar host fetch cloud:4294967295 65535'):
+            self.assertIsNotNone(READ_COMMAND.fullmatch(command),command)
+        for command in ('radar host stop','radar host live stop'):
+            self.assertIsNotNone(PRIORITY_STOP.fullmatch(command),command)
+        for command in ('radar host start','radar host scan','radar host live start',
+                        'radar host draft reset','radar host set threshold 1','radar host apply 1'):
+            self.assertIsNone(READ_COMMAND.fullmatch(command),command)
+        port = self.connect()
+        host_line = '@RADAR {"v":1,"profile":"f1_host","k":"host_status","session":1,"config":1,"scan":0,"map":0,"plan":0}'
+        port.rx.put((host_line+'\r\n').encode())
+        wait_for(lambda: any(e['kind']=='radar' and e.get('text')==host_line for e in self.bridge.events))
+        self.assertNotIn('f1_host',Path(self.bridge.event_file.name).read_text(encoding='utf-8'))
+
     def test_live_radar_stop_has_priority_and_stream_reaches_browser_channel(self):
         port = self.connect()
         with self.bridge.cv:

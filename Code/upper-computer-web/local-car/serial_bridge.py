@@ -21,12 +21,13 @@ READ_COMMAND = re.compile(
     r'(?:vision|camera|material|imu|qr|grab) status|qr read|grab get [a-z][a-z0-9_]*|'
     r'turntable (?:status|inventory|get [a-z][a-z0-9_]*)|'
     r'chassis (?:task|status|snapshot|feedback|stop-status|route status)|'
+    r'radar host (?:status|get (?:active|draft)|live status|fetch (?:config|map|path|preview|cloud):\d+ \d+)|'
     r'radar (?:status|get|probe(?: status)?|nav status|start status|debug status|live status|fetch (?:map|path|points|cloud|params|raw) \d+ \d+)|map status)')
 PREPARATION_COMMAND = re.compile(
     r'(?:chassis (?:units 65536|feedback (?:0|on)|'
     r'origin 2250 150 90|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')
-CANCEL_COMMAND = re.compile(r'(?:bus recover|radar (?:stop|live stop|nav cancel)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|(?:vision|material|camera|grab) stop)')
-PRIORITY_STOP = re.compile(r'(?:radar (?:stop|live stop|nav cancel)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|(?:vision|material|camera|grab) stop)')
+CANCEL_COMMAND = re.compile(r'(?:bus recover|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|(?:vision|material|camera|grab) stop)')
+PRIORITY_STOP = re.compile(r'(?:radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|(?:vision|material|camera|grab) stop)')
 TERMINAL_STOP = {'confirmed', 'timeout', 'disconnected'}
 
 

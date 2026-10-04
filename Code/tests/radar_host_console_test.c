@@ -204,6 +204,24 @@ static void test_automatic_order(void)
   assert(saw_config && saw_map && saw_path && saw_cloud);
 }
 
+#ifdef RADAR_HOST_WIRE_FIXTURE
+int main(void)
+{
+  memset(&HostStatus,0,sizeof HostStatus);memset(&Result,0,sizeof Result);
+  RadarHostMap_Defaults(&Active);Draft=Active;
+  assert(RadarHostMap_Build(&Active,NULL,0U,&Result));assert(Result.waypoint_count==33U);
+  HostStatus.session_id=41U;HostStatus.config_id=1U;HostStatus.reason="idle";
+  RadarHostConsole_Init();
+  CloudCount=3U;Cloud[0]=(RadarSample_t){0U,100U,7U};Cloud[1]=(RadarSample_t){901U,65535U,255U};Cloud[2]=(RadarSample_t){3599U,230U,1U};
+  HostStatus.scan_id=2U;HostStatus.map_id=3U;HostStatus.plan_id=4U;
+  HostStatus.map_valid=HostStatus.path_valid=HostStatus.cloud_valid=true;HostStatus.reason="complete";
+  for(unsigned i=0U;i<200U;i++){
+    unsigned before=PageCount;RadarHostConsole_Process();
+    if(PageCount!=before)fwrite(Page,1U,strlen(Page),stdout);
+  }
+  return 0;
+}
+#else
 int main(void)
 {
   memset(&HostStatus,0,sizeof HostStatus);memset(&Active,0,sizeof Active);memset(&Result,0,sizeof Result);
@@ -222,3 +240,4 @@ int main(void)
   RadarHostConsole_Init();fetch_cloud(0U);fetch_cloud(1U);fetch_cloud(37U);fetch_cloud(4096U);
   printf("radar_host_console_test: PASS (%u bounded pages, full cloud CRC)\n",PageCount);
 }
+#endif

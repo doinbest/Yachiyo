@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {BridgeLink,readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
+test('F407 radar host reads and scoped stops keep the global stop latch',()=>{
+  for(const wire of ['radar host status','radar host get active','radar host get draft','radar host live status','radar host fetch map:4294967295 65535'])assert.equal(readOnlyCommand(wire),true,wire);
+  for(const wire of ['radar host stop','radar host live stop'])assert.equal(scopedStopCommand(wire),true,wire);
+  for(const wire of ['radar host start','radar host scan','radar host live start','radar host draft reset','radar host set threshold 1','radar host apply 1'])assert.equal(readOnlyCommand(wire),false,wire);
+});
 test('live radar status is readable and live stop bypasses a stop latch without enabling motion',async()=>{
   assert.equal(readOnlyCommand('radar live status'),true);
   assert.equal(scopedStopCommand('radar live stop'),true);
