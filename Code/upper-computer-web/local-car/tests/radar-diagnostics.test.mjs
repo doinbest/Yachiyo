@@ -54,7 +54,7 @@ function receiver(raw=false){
   const model=new RadarModel();model.connection(true);
   const live=new RadarLiveModel();live.connection(true);
   const logs=[],elements=new Map(),context={
-    radarModel:model,radarView:{receive:line=>{
+    radarModel:model,radarDirectView:null,radarHostClient:null,radarView:{receive:line=>{
       const before=live.state;
       if(live.accept(line)){if(before!==live.state)context.receiveRadarLiveState(live.state);return true;}
       return model.accept(line);

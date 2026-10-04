@@ -1,6 +1,4 @@
-import {RadarDirectClient} from './radar-direct-client.mjs';
 import {
-  classifyObstacleCells,
   createGrid,
   filterRadarPoints,
   loadRadarDirectPreferences,
@@ -10,29 +8,29 @@ import {
   toFieldPoint,
 } from './radar-direct-model.mjs';
 import {
-  buildWaypointRows,
   formatMissionRoute,
   parseMissionRoute,
-  planMissionRoute,
-  planPointToPoint,
   resolveMissionPoints,
   resolvePlanningEndpoint,
 } from './radar-direct-planner.mjs';
 import {mountRadarDirectMap} from './radar-direct-map.mjs';
 
-const directionText = value => ({north: '向北', east: '向东', south: '向南', west: '向西'})[value] || '—';
-const turnText = value => ({start: '起步', straight: '直行', left: '左转', right: '右转', reverse: '掉头'})[value] || '到达';
+const directionText = value => ['向北', '向东', '向南', '向西'][value] || '—';
+const turnText = value => ['起步', '直行', '左转', '右转', '掉头'][value] || '到达';
 const clone = value => structuredClone(value);
 
-/** Mount the phase-one USB-UART LDS50C host. All hardware writes are button driven. */
+/** Mount the F407-owned radar host page. All hardware writes are button driven. */
 export function mountRadarDirectHost({
   root,
-  api,
   storage = globalThis.localStorage,
-  clientFactory = hooks => new RadarDirectClient({api, ...hooks}),
+  hostClient,
+  connectionController,
   mapFactory = options => mountRadarDirectMap(options),
 } = {}) {
-  if (!root || typeof api !== 'function') throw new TypeError('Direct radar host needs a root and api');
+  if (!root || !hostClient?.model || typeof hostClient.receive !== 'function' ||
+      typeof connectionController?.listPorts !== 'function') {
+    throw new TypeError('F407 radar host needs a root, hostClient and shared connectionController');
+  }
   const document = root.ownerDocument || globalThis.document;
   const refs = {};
   const el = (tag, {id, cls, type, value, text, title} = {}) => {
@@ -68,8 +66,11 @@ export function mountRadarDirectHost({
 
   const loaded = loadRadarDirectPreferences(storage);
   let config = loaded.config;
-  let state = {connected: false, operation: 'idle', continuous: false, scan_revision: 0, parser: {}, radar_status: null};
-  let scan = null;
+  let connectionState = {
+    state: connectionController.state || 'disconnected',
+    port: connectionController.port || '',
+    baudrate: 115200,
+  };
   let derived = null;
   let busy = false;
   let disposed = false;
@@ -77,14 +78,15 @@ export function mountRadarDirectHost({
 
   root.className = 'radar-direct-host';
   const hero = el('header', {cls: 'radar-direct-hero'});
-  const heroCopy = el('div'); heroCopy.append(el('span', {cls: 'radar-direct-kicker', text: 'LDS-50C · ONE-SCAN MAPPING'}), el('h1', {text: '雷达建图与路径规划'}), el('p', {text: '一次扫描冻结原始点云，实时重筛选、重分区并规划 5 × 5 场地路径。'}));
+  const heroCopy = el('div'); heroCopy.append(el('span', {cls: 'radar-direct-kicker', text: 'F407 · LDS-50C · ONE-SCAN MAPPING'}), el('h1', {text: '雷达建图与路径规划'}), el('p', {text: 'F407 接收完整扫描圈并按 F1 规则筛选、分区和规划 5 × 5 场地路径。'}));
   const heroStatus = el('div', {cls: 'radar-direct-hero-status'}); heroStatus.append(el('span', {cls: 'radar-direct-status-dot'}), el('strong', {id: 'radar-direct-freeze', text: '等待扫描'}), el('small', {id: 'radar-direct-point-summary', text: '0 个显示点 / 0 个接收点'}));
   hero.append(heroCopy, heroStatus);
 
   const connection = el('section', {cls: 'radar-direct-connection glass'}); connection.append(panelHeading('SERIAL WORKFLOW', '设备与扫描'));
   const connectionFields = el('div', {cls: 'radar-direct-connection-fields'});
   const port = field(connectionFields, 'radar-direct-port', '串口', config.radarPort, {values: [['', '未选择串口']]});
-  const baud = field(connectionFields, 'radar-direct-baud', '波特率', config.radarBaudrate, {values: [384000, 500000, 768000, 921600].map(value => [value, value])});
+  const baud = field(connectionFields, 'radar-direct-baud', '波特率', 115200, {values: [[115200, 115200]]});
+  baud.disabled = true;
   const refreshPortsButton = button('radar-direct-refresh-ports', '↻', 'button button-ghost radar-direct-icon-button');
   connectionFields.append(refreshPortsButton); connection.append(connectionFields);
   const actions = el('div', {cls: 'radar-direct-actions'});
@@ -168,7 +170,7 @@ export function mountRadarDirectHost({
     refs['radar-direct-logs'].replaceChildren(...logs.slice(-6).reverse().map(line => el('p', {text: line})));
   }
 
-  function setConfig(next) {
+  function setLocalConfig(next) {
     config = normalizeRadarConfig(next);
     syncInputs();
     render();
@@ -182,7 +184,7 @@ export function mountRadarDirectHost({
       'radar-direct-radar-x': config.map.radarXmm, 'radar-direct-radar-y': config.map.radarYmm,
       'radar-direct-threshold': config.map.obstaclePointThreshold, 'radar-direct-planning-mode': config.planningMode,
       'radar-direct-mission-route': formatMissionRoute(config.missionRoute), 'radar-direct-start-cell': endpointValue(config.start),
-      'radar-direct-goal-cell': endpointValue(config.goal), 'radar-direct-baud': config.radarBaudrate,
+      'radar-direct-goal-cell': endpointValue(config.goal), 'radar-direct-baud': 115200,
     };
     for (const axis of ['x', 'y']) for (let index = 1; index <= 4; index += 1) values[`radar-direct-${axis}${index}`] = config.map[`${axis}Lines`][index];
     for (const [id, value] of Object.entries(values)) refs[id].value = String(value);
@@ -191,110 +193,213 @@ export function mountRadarDirectHost({
     missionRoute.parentElement.hidden = config.planningMode !== 'mission';
   }
 
+  const anchorName = value => value === 1 || value === 'radar' ? 'radar' :
+    value === 2 || value === 'goal' || value === 'goal-zone-one' ? 'goal-zone-one' : 'cell';
+  const deviceEndpoint = endpoint => ({
+    row: endpoint.row,
+    column: endpoint.column,
+    anchor: endpoint.anchor === 'goal-zone-one' ? 'goal' : endpoint.anchor,
+  });
+  const sameIdentity = (left, right) => !!left && !!right &&
+    ['session', 'config', 'scan', 'map', 'plan'].every(key => left[key] === right[key]);
+  let activeConfigId = null;
+  function syncActiveConfig() {
+    const device = hostClient.model.snapshots.config;
+    if (!device || device.source !== 'active' || device.config === activeConfigId) return;
+    activeConfigId = device.config;
+    config = normalizeRadarConfig({
+      filter: {
+        minAngleDeg: device.angle_min / 10,
+        maxAngleDeg: device.angle_max / 10,
+        minDistanceMm: device.distance_min,
+        maxDistanceMm: device.distance_max,
+        minEnergy: device.energy_min,
+        maxEnergy: device.energy_max,
+      },
+      map: {
+        radarXmm: device.radar_x,
+        radarYmm: device.radar_y,
+        xLines: [150, device.x1, device.x2, device.x3, device.x4, 2250],
+        yLines: [150, device.y1, device.y2, device.y3, device.y4, 2250],
+        obstaclePointThreshold: device.threshold,
+        fixedBlockedMask: device.fixed_mask,
+        manualBlockedMask: device.manual_mask,
+      },
+      planningMode: device.planning_mode === 'point' ? 'point-to-point' : 'mission',
+      missionRoute: device.mission,
+      start: {...device.start, anchor: anchorName(device.start?.anchor)},
+      goal: {...device.goal, anchor: anchorName(device.goal?.anchor)},
+      displayMode: config.displayMode,
+      theme: config.theme,
+      radarPort: config.radarPort,
+      radarBaudrate: config.radarBaudrate,
+    });
+    syncInputs();
+  }
+
+  function cellsFromDevice(grid, deviceMap, deviceConfig) {
+    const fixedMask = (deviceConfig?.fixed_mask ?? grid.fixedBlockedMask) >>> 0;
+    const protectedMask = (deviceConfig?.protected_mask ?? 0x00404405) >>> 0;
+    const manualMask = (deviceMap?.manual_mask ?? config.map.manualBlockedMask) >>> 0;
+    const scannedMask = (deviceMap?.scanned_mask ?? 0) >>> 0;
+    const effectiveMask = (deviceMap?.effective_mask ?? fixedMask) >>> 0;
+    return grid.cells.map(cell => {
+      const bit = (1 << cell.bitIndex) >>> 0;
+      const fixed = !!(fixedMask & bit), protectedCell = !!(protectedMask & bit);
+      const manual = !protectedCell && !!(manualMask & bit), scanned = !protectedCell && !!(scannedMask & bit);
+      return {...cell, flags: {fixed, manual, scanned}, protected: protectedCell,
+        scannedPointCount: deviceMap?.counts?.[cell.bitIndex] ?? 0, blocked: !!(effectiveMask & bit)};
+    });
+  }
+
+  function planFromDevice(deviceMap, devicePath) {
+    const points = sameIdentity(deviceMap, devicePath) ? devicePath.points || [] : [];
+    const waypoints = points.map(([xmm, ymm, nextDistanceMm, row, column, direction, turn]) =>
+      ({xmm, ymm, nextDistanceMm, row, column, direction, turn}));
+    return {
+      success: !!deviceMap?.path_valid && !!devicePath?.path_valid && waypoints.length > 0,
+      waypoints,
+      totalDistanceMm: waypoints.reduce((sum, point) => sum + point.nextDistanceMm, 0),
+      failureReason: deviceMap ? `第 ${deviceMap.failed_from_task || '—'} 到 ${deviceMap.failed_to_task || '—'} 个任务点之间不可达` : '等待 F407 地图与路径',
+    };
+  }
+
   function render() {
     if (disposed) return;
-    const rawPoints = scan?.points || [];
-    const filteredPoints = filterRadarPoints(rawPoints, config.filter);
+    syncActiveConfig();
+    const snapshots = hostClient.model.snapshots;
+    const status = hostClient.model.status;
+    const deviceConfig = snapshots.config?.source === 'active' ? snapshots.config : null;
+    const deviceMap = snapshots.map || null;
+    const devicePath = snapshots.path || null;
+    const matchingCloud = sameIdentity(deviceMap || status, snapshots.cloud) ? snapshots.cloud : null;
+    const preview = snapshots.preview && (!status || snapshots.preview.session === status.session) ? snapshots.preview : null;
+    const sourcePoints = matchingCloud?.points || preview?.points || [];
+    const rawPoints = sourcePoints;
+    const filteredPoints = matchingCloud ? filterRadarPoints(rawPoints, config.filter) : rawPoints;
     const grid = createGrid(config.map);
-    const fieldPoints = filteredPoints.map(point => toFieldPoint(point, {x: config.map.radarXmm, y: config.map.radarYmm}));
-    const obstacles = classifyObstacleCells(grid, fieldPoints, config.map.obstaclePointThreshold, config.map.manualBlockedMask);
-    const plan = config.planningMode === 'mission'
-      ? planMissionRoute({grid, blockedMask: obstacles.blockedMask, route: config.missionRoute, radar: grid.radar})
-      : planPointToPoint({grid, blockedMask: obstacles.blockedMask, start: config.start, goal: config.goal, radar: grid.radar});
+    const cells = cellsFromDevice(grid, deviceMap, deviceConfig);
+    const plan = planFromDevice(deviceMap, devicePath);
     const displayed = config.displayMode === 'raw' ? rawPoints : filteredPoints;
     const displayFieldPoints = displayed.map(point => toFieldPoint(point, grid.radar));
     const missionPoints = resolveMissionPoints(grid, grid.radar);
-    derived = {rawPoints, filteredPoints, grid, obstacles, plan, displayedPoints: displayed, missionPoints};
+    derived = {rawPoints, filteredPoints, grid, cells, plan, displayedPoints: displayed, missionPoints,
+      deviceMap, devicePath, matchingCloud, preview};
     root.dataset.theme = config.theme;
     refs['radar-direct-show-raw'].dataset.active = String(config.displayMode === 'raw'); refs['radar-direct-show-filtered'].dataset.active = String(config.displayMode === 'filtered');
     refs['radar-direct-theme-dark'].dataset.active = String(config.theme === 'dark'); refs['radar-direct-theme-light'].dataset.active = String(config.theme === 'light');
     const pointStart = config.planningMode === 'point-to-point' ? resolvePlanningEndpoint({grid, endpoint: config.start}) : null;
     const pointGoal = config.planningMode === 'point-to-point' ? resolvePlanningEndpoint({grid, endpoint: config.goal}) : null;
-    mapRenderer.render({fieldSize: grid.fieldSize, activeMin: grid.activeMinimum, activeMax: grid.activeMaximum, xLines: grid.xLines, yLines: grid.yLines, radar: grid.radar, points: displayFieldPoints, cells: obstacles.cells, path: plan.success ? plan.waypoints.map(point => ({x: point.xmm, y: point.ymm})) : [], missionPoints: missionPoints.map(point => ({number: point.number, row: point.endpoint.row, column: point.endpoint.column, x: point.xmm, y: point.ymm})), start: pointStart, goal: pointGoal, theme: config.theme});
-    refs['radar-direct-freeze'].textContent = scan ? '地图已冻结' : '等待扫描';
-    refs['radar-direct-freeze'].parentElement.dataset.ready = String(!!scan);
-    refs['radar-direct-point-summary'].textContent = `${displayed.length} 个显示点 / ${rawPoints.length} 个接收点`;
-    refs['radar-direct-metric-raw'].textContent = String(rawPoints.length); refs['radar-direct-metric-filtered'].textContent = String(filteredPoints.length);
-    refs['radar-direct-metric-blocked'].textContent = String(obstacles.cells.filter(cell => cell.blocked).length); refs['radar-direct-metric-distance'].textContent = plan.success ? plan.totalDistanceMm.toFixed(0) : '—';
-    const parser = state.parser || {};
-    refs['radar-direct-counters'].replaceChildren(...[['有效帧', parser.valid_frames || 0], ['校验错误', parser.checksum_errors || 0], ['长度错误', parser.length_errors || 0], ['丢弃字节', parser.discarded_bytes || 0]].map(([name, value]) => { const row = el('div'); row.append(el('dt', {text: name}), el('dd', {text: String(value)})); return row; }));
-    const actual = state.radar_status;
-    refs['radar-direct-flags'].replaceChildren(...[['距离单位', actual ? actual.uses_millimetres ? '毫米' : '厘米（预期毫米）' : '等待状态'], ['能量数据', actual ? actual.energy_enabled ? '开启' : '关闭（预期开启）' : '等待状态'], ['去拖点', actual ? actual.trailing_removal_enabled ? '开启' : '关闭（预期开启）' : '等待状态'], ['雷达滤波', actual ? actual.filter_enabled ? '开启' : '关闭（预期开启）' : '等待状态']].map(([name, value]) => { const row = el('div'); row.append(el('dt', {text: name}), el('dd', {text: value})); return row; }));
-    const routeSummary = refs['radar-direct-route-summary']; routeSummary.replaceChildren(el('h3', {text: `路径规划 · ${plan.success ? '可通行' : '无可用路径'}`}), el('p', {text: plan.success ? `${plan.cells.length} 个展开格，${plan.waypoints.length} 个坐标点，总距离 ${plan.totalDistanceMm.toFixed(0)} mm` : plan.failureReason}), ...(config.planningMode === 'mission' ? [el('strong', {text: `任务顺序 ${formatMissionRoute(config.missionRoute)}`})] : []));
-    refs['radar-direct-waypoints'].replaceChildren(...buildWaypointRows(plan).map(row => { const tr = el('tr'); for (const value of [row.sequence, row.cell, row.xmm, row.ymm, row.nextDistanceMm ?? '—', directionText(row.nextDirection), turnText(row.nextTurn)]) tr.append(el('td', {text: String(value)})); return tr; }));
-    refs['radar-direct-preview-title'].textContent = `${config.displayMode === 'raw' ? '接收原始点' : '上位机筛选点'}预览 · 前 12 条`;
-    refs['radar-direct-preview'].replaceChildren(...displayed.slice(0, 12).map(point => { const tr = el('tr'); for (const value of [`${point.angle_deg.toFixed(2)}°`, point.distance_mm, point.energy]) tr.append(el('td', {text: String(value)})); return tr; }));
-    refs['radar-direct-csv'].disabled = !scan;
-    const connected = !!state.connected, continuous = !!state.continuous || state.operation === 'continuous';
-    port.disabled = connected || busy; baud.disabled = connected || busy; refreshPortsButton.disabled = connected || busy;
+    mapRenderer.render({fieldSize: grid.fieldSize, activeMin: grid.activeMinimum, activeMax: grid.activeMaximum, xLines: grid.xLines, yLines: grid.yLines, radar: grid.radar, points: displayFieldPoints, cells, path: plan.success ? plan.waypoints.map(point => ({x: point.xmm, y: point.ymm})) : [], missionPoints: missionPoints.map(point => ({number: point.number, row: point.endpoint.row, column: point.endpoint.column, x: point.xmm, y: point.ymm})), start: pointStart, goal: pointGoal, theme: config.theme});
+    refs['radar-direct-freeze'].textContent = deviceMap ? `${deviceMap.historical ? '历史 · ' : ''}设备地图已冻结` : '等待扫描';
+    refs['radar-direct-freeze'].parentElement.dataset.ready = String(!!deviceMap);
+    refs['radar-direct-point-summary'].textContent = `${displayed.length} 个当前显示点 / F407 原始 ${deviceMap?.raw_points ?? 0} · 筛选 ${deviceMap?.filtered_points ?? 0}`;
+    refs['radar-direct-metric-raw'].textContent = String(deviceMap?.raw_points ?? 0); refs['radar-direct-metric-filtered'].textContent = String(deviceMap?.filtered_points ?? 0);
+    refs['radar-direct-metric-blocked'].textContent = String(cells.filter(cell => cell.blocked).length); refs['radar-direct-metric-distance'].textContent = plan.success ? plan.totalDistanceMm.toFixed(0) : '—';
+    refs['radar-direct-counters'].replaceChildren(...[['原始点', deviceMap?.raw_points ?? 0], ['筛选点', deviceMap?.filtered_points ?? 0], ['场外点', deviceMap?.outside_points ?? 0], ['分页校验', hostClient.model.lastError || '正常']].map(([name, value]) => { const row = el('div'); row.append(el('dt', {text: name}), el('dd', {text: String(value)})); return row; }));
+    const scanNames = ['空闲', '准备', '等待整圈', '采集中', '完成', '已停止', '错误'];
+    const liveNames = ['准备', '等待整圈', '实时更新', '已停止', '错误'];
+    refs['radar-direct-flags'].replaceChildren(...[['扫描状态', status ? scanNames[status.ss] || status.ss : '等待状态'], ['实时状态', status ? liveNames[status.ls] || status.ls : '等待状态'], ['完整点云', matchingCloud ? `${matchingCloud.points.length} 点` : '后台读取中'], ['实时预览', preview ? `${preview.points.length} 点` : '尚无预览']].map(([name, value]) => { const row = el('div'); row.append(el('dt', {text: name}), el('dd', {text: String(value)})); return row; }));
+    const routeSummary = refs['radar-direct-route-summary']; routeSummary.replaceChildren(el('h3', {text: `路径规划 · ${plan.success ? '可通行' : '无可用路径'}`}), el('p', {text: plan.success ? `${plan.waypoints.length} 个坐标点，总距离 ${plan.totalDistanceMm.toFixed(0)} mm` : plan.failureReason}), ...(config.planningMode === 'mission' ? [el('strong', {text: `任务顺序 ${formatMissionRoute(config.missionRoute)}`})] : []));
+    refs['radar-direct-waypoints'].replaceChildren(...plan.waypoints.map((point, index) => { const tr = el('tr'); for (const value of [index + 1, `R${point.row}C${point.column}`, point.xmm, point.ymm, point.nextDistanceMm || '—', directionText(point.direction), turnText(point.turn)]) tr.append(el('td', {text: String(value)})); return tr; }));
+    refs['radar-direct-preview-title'].textContent = `${matchingCloud ? (config.displayMode === 'raw' ? '完整原始点' : '完整点云本地显示筛选') : 'F407 实时预览'} · 前 12 条`;
+    refs['radar-direct-preview'].replaceChildren(...displayed.slice(0, 12).map(point => { const tr = el('tr'); for (const value of [`${point.angle_deg.toFixed(2)}°`, point.distance_mm, point.energy ?? '—']) tr.append(el('td', {text: String(value)})); return tr; }));
+    refs['radar-direct-csv'].disabled = !matchingCloud;
+    const connected = connectionState.state === 'connected', compatible = connected && Number(connectionState.baudrate) === 115200;
+    const continuous = status?.l === 1 || status?.l === true;
+    port.disabled = connectionState.state !== 'disconnected' || busy; baud.disabled = true; refreshPortsButton.disabled = connectionState.state !== 'disconnected' || busy;
     refs['radar-direct-connect'].disabled = connected || busy || !port.value; refs['radar-direct-disconnect'].disabled = !connected || busy;
-    for (const id of ['radar-direct-start', 'radar-direct-stop', 'radar-direct-single']) refs[id].disabled = !connected || busy || continuous;
-    refs['radar-direct-continuous'].disabled = !connected || busy; refs['radar-direct-continuous'].textContent = continuous ? '停止持续扫描' : '持续扫描';
-    refs['radar-direct-connection-status'].textContent = busy ? '正在处理…' : continuous ? `持续扫描中：最新 ${rawPoints.length} 个原始点` : connected ? `已连接 ${state.port || port.value} / ${state.baudrate || baud.value}` : '设备未连接 · 已保留最后完整扫描';
+    for (const id of ['radar-direct-start', 'radar-direct-stop', 'radar-direct-single']) refs[id].disabled = !compatible || busy;
+    refs['radar-direct-continuous'].disabled = !compatible || busy; refs['radar-direct-continuous'].textContent = continuous ? '停止持续扫描' : '持续扫描';
+    refs['radar-direct-connection-status'].textContent = busy ? '正在处理…' : continuous ? `F407 实时预览中：最新 ${preview?.points.length ?? 0} 点` : compatible ? `共享串口已连接 ${connectionState.port || port.value} / 115200` : connected ? `共享串口当前为 ${connectionState.baudrate}，雷达页需断开后以 115200 重连` : '设备未连接 · 已保留最后完整设备结果';
   }
 
   const mapRenderer = mapFactory({canvas, onBoundaryDragged(axis, index, millimetres) {
-    try { const next = clone(config); next.map[`${axis.toLowerCase()}Lines`][index + 1] = millimetres; setConfig(next); refs['radar-direct-settings-status'].textContent = `${axis}${index + 1} 已更新为 ${millimetres} mm`; } catch (error) { refs['radar-direct-settings-status'].textContent = error.message; }
+    return applyDeviceConfig({[`${axis.toLowerCase()}${index + 1}`]: millimetres}, `${axis}${index + 1} 已由设备读回为 ${millimetres} mm`);
   }, onCellClicked(row, column) {
     const cell = derived?.grid.getCell(row, column); if (!cell) return;
-    const classified = derived.obstacles.cells[cell.bitIndex]; if (classified.protected || classified.flags.fixed) { refs['radar-direct-settings-status'].textContent = classified.protected ? '任务点所在格受保护，不能设为障碍。' : '固定禁区不能手工取消。'; return; }
-    const next = clone(config), bit = (1 << cell.bitIndex) >>> 0; next.map.manualBlockedMask = (next.map.manualBlockedMask ^ bit) >>> 0; setConfig(next);
+    const classified = derived.cells[cell.bitIndex]; if (classified.protected || classified.flags.fixed) { refs['radar-direct-settings-status'].textContent = classified.protected ? '任务点所在格受保护，不能设为障碍。' : '固定禁区不能手工取消。'; return; }
+    const bit = (1 << cell.bitIndex) >>> 0, manual = (hostClient.model.snapshots.map?.manual_mask ?? config.map.manualBlockedMask) >>> 0;
+    return applyDeviceConfig({manual_mask: (manual ^ bit) >>> 0}, `R${row}C${column} 手动障碍已由设备确认`);
   }});
-  const client = clientFactory({
-    onState(value) { state = value; render(); },
-    onScan(value) { if (value?.points) { scan = value; log(`完整扫描圈 ${value.revision}：${value.points.length} 个原始点`); render(); } },
-    onEvents(events) { for (const event of events) log(event.text || event.kind || '雷达事件'); },
-    onError(error) { log(`本地服务：${error.message}`); refs['radar-direct-connection-status'].textContent = `本地服务暂不可用：${error.message}`; },
-  });
 
-  async function run(action, body = {}) {
+  async function runHost(action) {
     if (busy) return;
     busy = true; render();
-    try { await client.command(action, body); log(`操作完成：${action}`); }
+    try { await hostClient.command(action); log(`操作已写出：${action}`); }
     catch (error) { log(`操作失败：${error.message}`); refs['radar-direct-connection-status'].textContent = error.message; }
+    finally { busy = false; render(); }
+  }
+  async function runConnection(action) {
+    if (busy) return;
+    busy = true; render();
+    try {
+      if (action === 'connect') await connectionController.connect(port.value, 115200);
+      else await connectionController.disconnect();
+    } catch (error) { log(`串口操作失败：${error.message}`); refs['radar-direct-connection-status'].textContent = error.message; }
+    finally { busy = false; render(); }
+  }
+  async function applyDeviceConfig(values, successText) {
+    if (busy) return;
+    busy = true; refs['radar-direct-settings-status'].textContent = '正在写入 F407 RAM 并等待有效配置读回…'; render();
+    try {
+      await hostClient.applyConfig(values); syncActiveConfig(); render();
+      refs['radar-direct-settings-status'].textContent = successText || 'F407 已应用并读回配置；地图与路径来自设备重算结果。';
+    } catch (error) { refs['radar-direct-settings-status'].textContent = error.message; log(`配置未完成：${error.message}`); }
     finally { busy = false; render(); }
   }
   async function refreshPorts() {
     try {
-      const result = await api('radar-direct/ports');
-      const chosen = port.value || config.radarPort;
-      port.replaceChildren(el('option', {value: '', text: result.ports?.length ? '请选择串口' : '未发现串口'}), ...(result.ports || []).map(item => el('option', {value: item.device, text: item.description ? `${item.device} · ${item.description}` : item.device})));
-      if ((result.ports || []).some(item => item.device === chosen)) port.value = chosen;
+      const result = await connectionController.listPorts(), ports = Array.isArray(result) ? result : result?.ports || [];
+      const chosen = port.value || connectionState.port || config.radarPort;
+      port.replaceChildren(el('option', {value: '', text: ports.length ? '请选择串口' : '未发现串口'}), ...ports.map(item => el('option', {value: item.device, text: item.description ? `${item.device} · ${item.description}` : item.device})));
+      if (ports.some(item => item.device === chosen)) port.value = chosen;
       render();
     } catch (error) { log(`刷新串口失败：${error.message}`); }
   }
 
   refreshPortsButton.onclick = () => refreshPorts();
-  refs['radar-direct-connect'].onclick = () => run('connect', {port: port.value, baudrate: Number(baud.value)});
-  refs['radar-direct-disconnect'].onclick = () => run('disconnect'); refs['radar-direct-start'].onclick = () => run('start'); refs['radar-direct-stop'].onclick = () => run('stop'); refs['radar-direct-single'].onclick = () => run('scan');
-  refs['radar-direct-continuous'].onclick = () => run(state.continuous || state.operation === 'continuous' ? 'continuous-stop' : 'continuous-start');
-  refs['radar-direct-show-raw'].onclick = () => { setConfig({...config, displayMode: 'raw'}); };
-  refs['radar-direct-show-filtered'].onclick = () => { setConfig({...config, displayMode: 'filtered'}); };
-  refs['radar-direct-theme-dark'].onclick = () => { setConfig({...config, theme: 'dark'}); mapRenderer.setTheme?.('dark'); };
-  refs['radar-direct-theme-light'].onclick = () => { setConfig({...config, theme: 'light'}); mapRenderer.setTheme?.('light'); };
+  port.onchange = () => render();
+  refs['radar-direct-connect'].onclick = () => runConnection('connect');
+  refs['radar-direct-disconnect'].onclick = () => runConnection('disconnect'); refs['radar-direct-start'].onclick = () => runHost('start'); refs['radar-direct-stop'].onclick = () => runHost('stop'); refs['radar-direct-single'].onclick = () => runHost('scan');
+  refs['radar-direct-continuous'].onclick = () => runHost(hostClient.model.status?.l ? 'live-stop' : 'live-start');
+  refs['radar-direct-show-raw'].onclick = () => { setLocalConfig({...config, displayMode: 'raw'}); };
+  refs['radar-direct-show-filtered'].onclick = () => { setLocalConfig({...config, displayMode: 'filtered'}); };
+  refs['radar-direct-theme-dark'].onclick = () => { setLocalConfig({...config, theme: 'dark'}); mapRenderer.setTheme?.('dark'); };
+  refs['radar-direct-theme-light'].onclick = () => { setLocalConfig({...config, theme: 'light'}); mapRenderer.setTheme?.('light'); };
   refs['radar-direct-apply-filter'].onclick = () => {
-    try { const next = clone(config); next.filter = {minAngleDeg: Number(refs['radar-direct-min-angle'].value), maxAngleDeg: Number(refs['radar-direct-max-angle'].value), minDistanceMm: Number(refs['radar-direct-min-distance'].value), maxDistanceMm: Number(refs['radar-direct-max-distance'].value), minEnergy: Number(refs['radar-direct-min-energy'].value), maxEnergy: Number(refs['radar-direct-max-energy'].value)}; setConfig(next); refs['radar-direct-settings-status'].textContent = '已对当前完整扫描圈重新筛选。'; } catch (error) { refs['radar-direct-settings-status'].textContent = error.message; }
+    const values = {angle_min: Math.round(Number(refs['radar-direct-min-angle'].value) * 10), angle_max: Math.round(Number(refs['radar-direct-max-angle'].value) * 10), distance_min: Number(refs['radar-direct-min-distance'].value), distance_max: Number(refs['radar-direct-max-distance'].value), energy_min: Number(refs['radar-direct-min-energy'].value), energy_max: Number(refs['radar-direct-max-energy'].value)};
+    return applyDeviceConfig(values, '筛选配置已由 F407 应用并读回；无需重新扫描。');
   };
   refs['radar-direct-apply-map'].onclick = () => {
     try {
       const parsed = parseMissionRoute(refs['radar-direct-mission-route'].value); if (planningMode.value === 'mission' && !parsed.ok) throw new Error(parsed.error);
-      const next = clone(config); next.map.radarXmm = Number(refs['radar-direct-radar-x'].value); next.map.radarYmm = Number(refs['radar-direct-radar-y'].value); next.map.obstaclePointThreshold = Number(refs['radar-direct-threshold'].value);
-      next.map.xLines = [150, ...[1, 2, 3, 4].map(index => Number(refs[`radar-direct-x${index}`].value)), 2250]; next.map.yLines = [150, ...[1, 2, 3, 4].map(index => Number(refs[`radar-direct-y${index}`].value)), 2250];
-      next.planningMode = planningMode.value; if (parsed.ok) next.missionRoute = parsed.route; next.start = endpointFromValue(refs['radar-direct-start-cell'].value, next.start); next.goal = endpointFromValue(refs['radar-direct-goal-cell'].value, next.goal); setConfig(next); refs['radar-direct-settings-status'].textContent = '场地、障碍格与路径已从当前冻结圈重新计算。';
+      const start = endpointFromValue(refs['radar-direct-start-cell'].value, config.start), goal = endpointFromValue(refs['radar-direct-goal-cell'].value, config.goal);
+      const values = {radar_x: Number(refs['radar-direct-radar-x'].value), radar_y: Number(refs['radar-direct-radar-y'].value), threshold: Number(refs['radar-direct-threshold'].value), planning_mode: planningMode.value === 'mission' ? 'mission' : 'point', mission: parsed.ok ? parsed.route : config.missionRoute, start: deviceEndpoint(start), goal: deviceEndpoint(goal)};
+      for (const axis of ['x', 'y']) for (let index = 1; index <= 4; index += 1) values[`${axis}${index}`] = Number(refs[`radar-direct-${axis}${index}`].value);
+      return applyDeviceConfig(values, '场地、障碍格与路径已由 F407 从当前冻结圈重新计算。');
     } catch (error) { refs['radar-direct-settings-status'].textContent = error.message; }
   };
-  planningMode.onchange = () => { const next = clone(config); next.planningMode = planningMode.value; setConfig(next); };
-  refs['radar-direct-save'].onclick = () => { const next = clone(config); next.radarPort = port.value; next.radarBaudrate = Number(baud.value); const result = saveRadarDirectPreferences(storage, next); if (result.ok) { config = normalizeRadarConfig(next); log('本机配置已保存'); } else log(`保存失败：${result.error}`); };
+  planningMode.onchange = () => { refs['radar-direct-endpoints'].hidden = planningMode.value !== 'point-to-point'; missionRoute.parentElement.hidden = planningMode.value !== 'mission'; };
+  refs['radar-direct-save'].onclick = () => { const next = clone(config); next.radarPort = port.value; const result = saveRadarDirectPreferences(storage, next); if (result.ok) { config = normalizeRadarConfig(next); log('本机显示与串口选择已保存；未向 F407 发送指令'); } else log(`保存失败：${result.error}`); };
   refs['radar-direct-csv'].onclick = () => {
-    if (!scan) return; const url = URL.createObjectURL(new Blob([scanToCsv(scan.points)], {type: 'text/csv;charset=utf-8'})); const link = el('a'); link.href = url; link.download = `lds50c-scan-${scan.revision}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const cloud = derived?.matchingCloud; if (!cloud) return; const url = URL.createObjectURL(new Blob([scanToCsv(cloud.points)], {type: 'text/csv;charset=utf-8'})); const link = el('a'); link.href = url; link.download = `lds50c-f407-scan-${cloud.scan}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   if (loaded.warning) log(loaded.warning);
-  syncInputs(); render(); void refreshPorts(); void client.start();
+  syncInputs(); render(); void refreshPorts();
   return {
+    receive(line) { const accepted = hostClient.receive(line); if (accepted) render(); return accepted; },
+    connection(snapshot) {
+      connectionState = typeof snapshot === 'object' ? {...connectionState, ...snapshot} : {state: snapshot ? 'connected' : 'disconnected', port: connectionState.port, baudrate: connectionState.baudrate};
+      hostClient.connection(connectionState);
+      if (connectionState.port && !Array.from(port.children || []).some(option => option.value === connectionState.port)) port.append(el('option', {value: connectionState.port, text: connectionState.port}));
+      if (connectionState.port) port.value = connectionState.port;
+      render();
+    },
     setVisible(value) { root.hidden = !value; },
-    refresh() { return client.refresh(); },
-    dispose() { if (disposed) return; disposed = true; client.suspend(); mapRenderer.dispose(); },
-    snapshot() { return {config: clone(config), state: clone(state), scan: scan ? clone(scan) : null, rawPoints: clone(derived?.rawPoints || []), filteredPoints: clone(derived?.filteredPoints || []), obstacles: clone(derived?.obstacles || null), plan: clone(derived?.plan || null)}; },
+    refresh() { render(); },
+    dispose() { if (disposed) return; hostClient.cancelTransfer?.(); mapRenderer.dispose(); disposed = true; },
+    snapshot() { return {config: clone(config), connection: clone(connectionState), deviceMap: clone(derived?.deviceMap || null), devicePath: clone(derived?.devicePath || null), scan: clone(derived?.matchingCloud || null), rawPoints: clone(derived?.rawPoints || []), filteredPoints: clone(derived?.filteredPoints || []), displayedPoints: clone(derived?.displayedPoints || []), obstacles: clone(derived?.cells || []), plan: clone(derived?.plan || null)}; },
   };
 }

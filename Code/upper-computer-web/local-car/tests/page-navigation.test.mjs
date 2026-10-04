@@ -18,3 +18,8 @@ test('legacy visual links select historical diagnostics while ordinary links ret
   memory.save('#vision/legacy',450);memory.enterParameters({hash:'#vision/legacy',label:'历史视觉诊断'});
   assert.equal(memory.restore(memory.source.hash),450);
 });
+test('radar, monitor and offline hashes remain distinct display-only tabs',()=>{
+  assert.deepEqual(parsePageRoute('#map/radar'),{page:'map',tab:'radar',key:undefined});
+  assert.deepEqual(parsePageRoute('#map/monitor'),{page:'map',tab:'monitor',key:undefined});
+  assert.deepEqual(parsePageRoute('#map/offline'),{page:'map',tab:'offline',key:undefined});
+});

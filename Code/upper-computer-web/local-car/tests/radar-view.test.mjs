@@ -67,6 +67,30 @@ test('radar workspace fits the full field without intercepting zoom or drag, kee
   }finally{ui.restore();}
 });
 
+test('F1 host-profile frames cannot mutate the legacy monitor or its execution state',()=>{
+  const ui=surface(),wires=[],sources=[],model=new RadarModel();
+  try{
+    const workspace=mountRadarWorkspace({model,exchange:new RadarExchange({send:async()=>true}),send:wire=>wires.push(wire),canSend:()=>true,mapView:{setSource:value=>sources.push(value)},api:async()=>({})});
+    const base={v:1,session:4,origin:2,scan:3,map:7,plan:8};
+    workspace.receive('@RADAR '+JSON.stringify({...base,k:'map',page:0,pages:1,offset:0,mask:4,pose:[2250,150,180],counts:Array(25).fill(0)}));
+    workspace.receive('@RADAR '+JSON.stringify({...base,k:'path',page:0,pages:1,offset:0,valid:true,points:[[2250,150,1,0],[2100,1200,5,1]]}));
+    workspace.receive('@RADAR '+JSON.stringify({...base,k:'nav',state:'ready',reason:'complete',index:0,total:2,station:0,visit:0,stopped:true}));
+    const before={snapshots:structuredClone(model.snapshots),path:ui.get('radar-device-path').attributes.d,source:[...sources],nav:ui.get('radar-nav-status').textContent,navDisabled:ui.get('radar-nav-start').disabled,taskDisabled:ui.get('radar-task-start').disabled};
+
+    workspace.receive('@RADAR '+JSON.stringify({v:1,profile:'f1_host',k:'host_status',session:9,config:1,scan:12,map:13,plan:14,a:0,l:0,ss:4,ls:3,cloud:120,preview:0,reason:'complete'}));
+    workspace.receive('@RADAR '+JSON.stringify({v:1,profile:'f1_host',k:'host_map',session:9,config:1,scan:12,map:13,plan:14,page:0,pages:1,offset:0,total:1,data:'s,120,100,0'}));
+    workspace.selectTab('radar');workspace.selectTab('monitor');
+
+    assert.deepEqual(model.snapshots,before.snapshots);
+    assert.equal(ui.get('radar-device-path').attributes.d,before.path);
+    assert.equal(sources.at(-1),before.source.at(-1));
+    assert.equal(ui.get('radar-nav-status').textContent,before.nav);
+    assert.equal(ui.get('radar-nav-start').disabled,before.navDisabled);
+    assert.equal(ui.get('radar-task-start').disabled,before.taskDisabled);
+    assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+
 const frame=value=>'@RADAR '+JSON.stringify({v:1,session:9,origin:2,scan:3,map:7,plan:8,page:0,pages:1,...value});
 const flush=()=>new Promise(setImmediate);
 function liveWorkspace(ui,{respond=true,canSend=()=>true}={}){

@@ -44,121 +44,172 @@ function surface() {
   return {document, root: document.createElement('section'), get: id => document.getElementById(id)};
 }
 
+const configSnapshot = (overrides = {}) => ({
+  k: 'host_config', source: 'active', session: 1, config: 1, scan: 2, map: 3, plan: 4,
+  width: 2400, height: 2400, x1: 550, x2: 1000, x3: 1400, x4: 1850,
+  y1: 550, y2: 1000, y3: 1400, y4: 1850, radar_x: 230, radar_y: 230,
+  angle_min: 0, angle_max: 3600, distance_min: 100, distance_max: 40000,
+  energy_min: 0, energy_max: 255, threshold: 1, fixed_mask: 0x00050140,
+  manual_mask: 0, protected_mask: 0x00404405, planning_mode: 'mission',
+  mission: [1, 5, 4, 2, 3, 4, 2, 3, 1],
+  start: {row: 1, column: 1, anchor: 1}, goal: {row: 1, column: 5, anchor: 2},
+  complete: true, historical: false, ...overrides,
+});
+const mapSnapshot = (overrides = {}) => ({
+  k: 'host_map', session: 1, config: 1, scan: 2, map: 3, plan: 4,
+  raw_points: 1616, filtered_points: 1581, outside_points: 0,
+  scanned_mask: 0, manual_mask: 0, effective_mask: 0x00050140,
+  path_valid: true, failed_from_task: 0, failed_to_task: 0,
+  counts: Array(25).fill(0), complete: true, historical: false, ...overrides,
+});
+const pathSnapshot = (overrides = {}) => ({
+  k: 'host_path', session: 1, config: 1, scan: 2, map: 3, plan: 4,
+  path_valid: true, points: [
+    [230, 230, 545, 1, 1, 1, 0],
+    [775, 230, 0, 1, 2, 255, 255],
+  ], complete: true, historical: false, ...overrides,
+});
+
 function harness(ui) {
-  const commands = [], maps = [], clientInstances = [];
-  const clientFactory = hooks => {
-    const client = {
-      started: 0,
-      suspended: 0,
-      async start() { this.started += 1; },
-      suspend() { this.suspended += 1; },
-      async refresh() {},
-      async command(action, body) { commands.push({action, body}); },
-      emitState(value) { hooks.onState(value); },
-      emitScan(value) { hooks.onScan(value); },
-      emitEvents(value) { hooks.onEvents(value); },
-      emitError(value) { hooks.onError(value); },
-    };
-    clientInstances.push(client);
-    return client;
+  const commands = [], applications = [], maps = [], mapOptions = [], connectionCalls = [], received = [];
+  const hostClient = {
+    model: {snapshots: {}, status: null, connected: false, lastError: null},
+    connection(value) { this.model.connected = value?.state === 'connected' || value?.connected === true || value === true; },
+    receive(line) { received.push(line); return line.startsWith('@RADAR {"v":1,"profile":"f1_host"'); },
+    async command(action) { commands.push(action); },
+    async applyConfig(values) { applications.push(structuredClone(values)); return this.model.snapshots.config; },
+    cancelTransfer() {},
   };
-  const mapFactory = () => ({render: model => maps.push(model), setTheme() {}, dispose() {}});
+  const connectionController = {
+    state: 'disconnected', port: '', baudrate: 115200,
+    async listPorts() { connectionCalls.push(['list']); return [{device: 'COM7', description: 'USB UART'}]; },
+    async connect(port, baudrate) { connectionCalls.push(['connect', port, baudrate]); },
+    async disconnect() { connectionCalls.push(['disconnect']); },
+  };
+  const mapFactory = options => {
+    mapOptions.push(options);
+    return {render: model => maps.push(model), setTheme() {}, dispose() {}};
+  };
   const values = new Map();
   const storage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value)};
-  const apiCalls = [];
-  const api = async path => { apiCalls.push(path); return {ports: [{device: 'COM7', description: 'USB UART'}]}; };
-  const view = mountRadarDirectHost({root: ui.root, api, storage, clientFactory, mapFactory});
-  return {view, commands, maps, client: clientInstances[0], storage: values, apiCalls};
+  const view = mountRadarDirectHost({root: ui.root, storage, hostClient, connectionController, mapFactory});
+  return {view, commands, applications, maps, mapOptions, hostClient, connectionController, connectionCalls, storage: values, received};
 }
 
-test('mount reproduces the direct-radar workflow without STM32 controls or automatic writes', async () => {
-  const ui = surface(), h = harness(ui);
-  await new Promise(setImmediate);
+const flush = () => new Promise(setImmediate);
 
-  assert.equal(h.client.started, 1);
+test('mount uses the shared serial owner at fixed 115200 without automatic radar writes', async () => {
+  const ui = surface(), h = harness(ui);
+  await flush();
+
   assert.deepEqual(h.commands, []);
-  assert.deepEqual(h.apiCalls, ['radar-direct/ports']);
-  assert.ok(ui.get('radar-direct-port'));
-  assert.ok(ui.get('radar-direct-connect'));
+  assert.deepEqual(h.applications, []);
+  assert.deepEqual(h.connectionCalls, [['list']]);
+  assert.equal(ui.get('radar-direct-baud').value, '115200');
+  assert.equal(ui.get('radar-direct-baud').disabled, true);
+  assert.ok(ui.get('radar-direct-port').children.some(option => option.value === 'COM7'));
   assert.ok(ui.get('radar-direct-single'));
   assert.ok(ui.get('radar-direct-continuous'));
   assert.ok(ui.get('radar-direct-save'));
   assert.ok(ui.get('radar-direct-csv'));
-  assert.doesNotMatch(ui.root.textContent + ui.root.children.map(child => child.textContent).join(' '), /STM32|Flash|下载、应用/);
+
+  h.view.setVisible(false);
+  h.view.setVisible(true);
+  await ui.get('radar-direct-refresh-ports').click();
+  await ui.get('radar-direct-theme-light').click();
+  await ui.get('radar-direct-save').click();
+  h.view.connection({state: 'connected', port: 'COM7', baudrate: 115200});
+  h.view.connection({state: 'disconnected', port: '', baudrate: 115200});
+  assert.deepEqual(h.commands, []);
+  assert.deepEqual(h.applications, []);
+  assert.equal(h.connectionCalls.filter(call => call[0] !== 'list').length, 0);
 });
 
-test('hardware mutations happen only from their explicit buttons', async () => {
+test('shared connect and explicit radar controls are the only hardware mutations', async () => {
   const ui = surface(), h = harness(ui);
+  await flush();
   ui.get('radar-direct-port').value = 'COM7';
-  ui.get('radar-direct-baud').value = '921600';
 
   await ui.get('radar-direct-connect').click();
+  h.view.connection({state: 'connected', port: 'COM7', baudrate: 115200});
   await ui.get('radar-direct-start').click();
   await ui.get('radar-direct-stop').click();
   await ui.get('radar-direct-single').click();
   await ui.get('radar-direct-continuous').click();
-  h.client.emitState({connected: true, operation: 'continuous', continuous: true, scan_revision: 0, parser: {}});
+  h.hostClient.model.status = {l: 1, ls: 2, scan: 2, map: 3, plan: 4}; h.view.refresh();
   await ui.get('radar-direct-continuous').click();
   await ui.get('radar-direct-disconnect').click();
 
-  assert.deepEqual(h.commands, [
-    {action: 'connect', body: {port: 'COM7', baudrate: 921600}},
-    {action: 'start', body: {}},
-    {action: 'stop', body: {}},
-    {action: 'scan', body: {}},
-    {action: 'continuous-start', body: {}},
-    {action: 'continuous-stop', body: {}},
-    {action: 'disconnect', body: {}},
+  assert.deepEqual(h.connectionCalls.filter(call => call[0] !== 'list'), [
+    ['connect', 'COM7', 115200], ['disconnect'],
   ]);
+  assert.deepEqual(h.commands, ['start', 'stop', 'scan', 'live-start', 'live-stop']);
 });
 
-test('one frozen scan can be refiltered, remapped and planned without another scan', async () => {
+test('filter and map buttons stage device configuration without replacing device results locally', async () => {
   const ui = surface(), h = harness(ui);
-  h.client.emitScan({revision: 1, received_at: '2026-10-04T00:00:00Z', points: [
-    {angle_deg: 0, distance_mm: 1000, energy: 100},
-    {angle_deg: 180, distance_mm: 90, energy: 100},
-  ]});
-  assert.equal(h.view.snapshot().rawPoints.length, 2);
-  assert.equal(h.view.snapshot().filteredPoints.length, 1);
+  h.hostClient.model.snapshots = {config: configSnapshot(), map: mapSnapshot(), path: pathSnapshot()};
+  h.view.refresh();
+  const mapBefore = h.view.snapshot().deviceMap;
 
   ui.get('radar-direct-min-distance').value = '50';
   await ui.get('radar-direct-apply-filter').click();
-
-  assert.equal(h.view.snapshot().rawPoints.length, 2);
-  assert.equal(h.view.snapshot().filteredPoints.length, 2);
-  assert.equal(h.commands.length, 0);
-  assert.ok(h.view.snapshot().plan);
-  assert.ok(h.maps.length >= 2);
-});
-
-test('point-to-point map receives finite physical coordinates for anchored endpoints', async () => {
-  const ui = surface(), h = harness(ui);
-  ui.get('radar-direct-planning-mode').value = 'point-to-point';
-
+  ui.get('radar-direct-threshold').value = '2';
   await ui.get('radar-direct-apply-map').click();
 
-  const map = h.maps.at(-1);
-  assert.deepEqual(map.start, {xmm: 230, ymm: 230, row: 1, column: 1});
-  assert.deepEqual(map.goal, {xmm: 2250, ymm: 150, row: 1, column: 5});
-  assert.ok([map.start.xmm, map.start.ymm, map.goal.xmm, map.goal.ymm].every(Number.isFinite));
+  assert.equal(h.applications[0].distance_min, 50);
+  assert.equal(h.applications[0].angle_max, 3600);
+  assert.equal(h.applications[1].threshold, 2);
+  assert.deepEqual(h.view.snapshot().deviceMap, mapBefore);
+  assert.equal(h.view.snapshot().config.map.obstaclePointThreshold, 1);
 });
 
-test('settings are persisted only by explicit save and last scan survives disconnect state', async () => {
+test('device map and path render before cloud; preview is replaced only by a matching full cloud', () => {
   const ui = surface(), h = harness(ui);
-  ui.get('radar-direct-radar-x').value = '240';
-  await ui.get('radar-direct-apply-map').click();
-  assert.equal(h.storage.size, 0);
+  h.hostClient.model.status = {session: 1, config: 1, scan: 2, map: 3, plan: 4, ss: 4, ls: 3, l: 0};
+  h.hostClient.model.snapshots = {
+    config: configSnapshot(), map: mapSnapshot({scanned_mask: 2, effective_mask: 0x00050142, counts: [0, 4, ...Array(23).fill(0)]}),
+    path: pathSnapshot(),
+    preview: {k: 'host_preview', session: 1, config: 1, scan: 2, map: 3, plan: 4, points: [{angle_deg: 10, distance_mm: 500}], complete: true},
+    cloud: {k: 'host_cloud', session: 1, config: 1, scan: 1, map: 2, plan: 3, points: [{angle_deg: 20, distance_mm: 600, energy: 4}], complete: true},
+  };
+  h.view.refresh();
 
-  await ui.get('radar-direct-save').click();
-  assert.equal(JSON.parse([...h.storage.values()][0]).map.radarXmm, 240);
+  assert.deepEqual(h.maps.at(-1).path, [{x: 230, y: 230}, {x: 775, y: 230}]);
+  assert.equal(h.maps.at(-1).cells[1].flags.scanned, true);
+  assert.equal(h.view.snapshot().displayedPoints[0].angle_deg, 10);
+  assert.equal(ui.get('radar-direct-csv').disabled, true);
 
-  h.client.emitScan({revision: 7, points: [{angle_deg: 0, distance_mm: 500, energy: 20}]});
-  h.client.emitState({connected: false, operation: 'idle', scan_revision: 7, parser: {}});
-  assert.equal(h.view.snapshot().rawPoints.length, 1);
+  h.hostClient.model.snapshots.cloud = {k: 'host_cloud', session: 1, config: 1, scan: 2, map: 3, plan: 4, points: [
+    {angle_deg: 20, distance_mm: 600, energy: 4}, {angle_deg: 30, distance_mm: 700, energy: 5},
+  ], complete: true};
+  h.view.refresh();
+  assert.equal(h.view.snapshot().displayedPoints.length, 2);
+  assert.equal(ui.get('radar-direct-csv').disabled, false);
+});
 
-  h.view.setVisible(false);
-  assert.equal(ui.root.hidden, true);
-  assert.equal(h.client.suspended, 0);
+test('R1C1 stays protected and disconnect preserves completed device history', async () => {
+  const ui = surface(), h = harness(ui);
+  h.hostClient.model.snapshots = {config: configSnapshot(), map: mapSnapshot(), path: pathSnapshot()};
+  h.view.refresh();
+  assert.equal(h.maps.at(-1).cells[0].protected, true);
+
+  await h.mapOptions[0].onCellClicked(1, 1);
+  assert.equal(h.applications.length, 0);
+  assert.match(ui.get('radar-direct-settings-status').textContent, /受保护/);
+
+  h.view.connection({state: 'disconnected', port: '', baudrate: 115200});
+  assert.equal(h.view.snapshot().deviceMap.map, 3);
+  assert.equal(h.maps.at(-1).path.length, 2);
+  assert.match(ui.get('radar-direct-connection-status').textContent, /保留最后完整/);
+});
+
+test('host frames are accepted before legacy routing and disposal sends no stop', () => {
+  const ui = surface(), h = harness(ui);
+  const host = '@RADAR {"v":1,"profile":"f1_host","k":"host_status"}';
+  assert.equal(h.view.receive(host), true);
+  assert.equal(h.view.receive('OK radar ready'), false);
   h.view.dispose();
-  assert.equal(h.client.suspended, 1);
+  assert.deepEqual(h.commands, []);
+  assert.equal(h.connectionCalls.filter(call => call[0] !== 'list').length, 0);
 });
