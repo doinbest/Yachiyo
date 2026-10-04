@@ -18,6 +18,12 @@ extern "C" {
 #define RADAR_MAP_ALL_CELLS        0x01FFFFFFUL
 #define RADAR_PLAN_MAX_POINTS      193U
 #define RADAR_PLAN_MISSION_VISITS  9U
+#define RADAR_GRID_BOUNDARY_COUNT  6U
+
+typedef struct {
+  int16_t x_mm[RADAR_GRID_BOUNDARY_COUNT];
+  int16_t y_mm[RADAR_GRID_BOUNDARY_COUNT];
+} RadarGrid_t;
 
 typedef enum {
   RADAR_START_UNKNOWN=0,
@@ -67,6 +73,18 @@ typedef struct {
   bool valid;
   RadarPlan_Point_t points[RADAR_PLAN_MAX_POINTS];
 } RadarPlan_t;
+
+/** @brief 载入当前赛事5×5网格边界：150,550,1000,1400,1850,2250 mm。 */
+void RadarGrid_Default(RadarGrid_t *grid);
+/** @return 外边界为150/2250且每个格宽、高至少50 mm时为true。 */
+bool RadarGrid_Valid(const RadarGrid_t *grid);
+/** @brief 查找0基25格索引；endpoint允许坐标等于最末边界2250。 */
+int8_t RadarGrid_FindCell(const RadarGrid_t *grid,float x_mm,float y_mm,bool endpoint);
+/** @brief 读取0基格中心坐标。 */
+bool RadarGrid_CellCenter(const RadarGrid_t *grid,uint8_t cell,int16_t *x_mm,int16_t *y_mm);
+/** @brief 在给定低25位障碍掩码上执行确定性的北、东、南、西四邻域A*。 */
+bool RadarGrid_Path(const RadarGrid_t *grid,uint32_t blocked_mask,uint8_t start,uint8_t goal,
+                    uint8_t path[RADAR_MAP_CELL_COUNT],uint8_t *count);
 
 /** @brief 载入下起点区域中心(2250,150,180°)、顺时针0..90°和1点物体阈值。 */
 void RadarMap_Defaults(RadarMap_Params_t *params);

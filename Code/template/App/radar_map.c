@@ -14,7 +14,10 @@
 #define RADAR_CELL_NONE  0xFFU
 #define RADAR_COST_MAX   0xFFFFFFFFUL
 
-static const int16_t GridLines[6] = {150,550,1000,1400,1850,2250};
+static const RadarGrid_t DefaultGrid = {
+  {150,550,1000,1400,1850,2250},
+  {150,550,1000,1400,1850,2250}
+};
 static const uint8_t MissionOrder[RADAR_PLAN_MISSION_VISITS] = {1,5,4,2,3,4,2,3,1};
 /* Indexed by station-1: START, ROUGH, STORE, RAW, QR. Vehicle-center targets. */
 static const int16_t Stations[5][2] = {
@@ -57,19 +60,41 @@ bool RadarMap_Project(const RadarMap_Params_t *p,const RadarSample_t *s,float *x
   *x=px;*y=py;return true;
 }
 
-static int axis_cell(float value,bool endpoint)
+void RadarGrid_Default(RadarGrid_t *grid)
+{
+  if(grid!=NULL) *grid=DefaultGrid;
+}
+
+bool RadarGrid_Valid(const RadarGrid_t *grid)
 {
   unsigned i;
-  if(!isfinite(value) || value<150.0f || value>2250.0f) return -1;
-  if(value==2250.0f) return endpoint?4:-1;
-  for(i=0U;i<5U;i++) if(value<(float)GridLines[i+1U]) return (int)i;
+  if(grid==NULL || grid->x_mm[0]!=150 || grid->x_mm[5]!=2250 ||
+     grid->y_mm[0]!=150 || grid->y_mm[5]!=2250) return false;
+  for(i=0U;i<5U;i++)
+    if(grid->x_mm[i+1U]-grid->x_mm[i]<50 || grid->y_mm[i+1U]-grid->y_mm[i]<50) return false;
+  return true;
+}
+
+static int axis_cell(const int16_t lines[RADAR_GRID_BOUNDARY_COUNT],float value,bool endpoint)
+{
+  unsigned i;
+  if(!isfinite(value) || value<(float)lines[0] || value>(float)lines[5]) return -1;
+  if(value==(float)lines[5]) return endpoint?4:-1;
+  for(i=0U;i<5U;i++) if(value<(float)lines[i+1U]) return (int)i;
   return -1;
+}
+
+int8_t RadarGrid_FindCell(const RadarGrid_t *grid,float x,float y,bool endpoint)
+{
+  int c,r;
+  if(!RadarGrid_Valid(grid)) return -1;
+  c=axis_cell(grid->x_mm,x,endpoint);r=axis_cell(grid->y_mm,y,endpoint);
+  return (int8_t)(c<0 || r<0?-1:r*5+c);
 }
 
 static int find_cell(float x,float y,bool endpoint)
 {
-  int c=axis_cell(x,endpoint),r=axis_cell(y,endpoint);
-  return c<0 || r<0?-1:r*5+c;
+  return (int)RadarGrid_FindCell(&DefaultGrid,x,y,endpoint);
 }
 
 static bool sample_allowed(const RadarMap_Params_t *p,const RadarSample_t *s)
@@ -317,18 +342,25 @@ uint32_t RadarMap_LegacyMask(uint32_t old_mask)
   return mask;
 }
 
-static void cell_center(uint8_t cell,int16_t *x,int16_t *y)
+bool RadarGrid_CellCenter(const RadarGrid_t *grid,uint8_t cell,int16_t *x,int16_t *y)
 {
   unsigned r=cell/5U,c=cell%5U;
-  *x=(int16_t)((GridLines[c]+GridLines[c+1U])/2);
-  *y=(int16_t)((GridLines[r]+GridLines[r+1U])/2);
+  if(!RadarGrid_Valid(grid) || cell>=RADAR_MAP_CELL_COUNT || x==NULL || y==NULL) return false;
+  *x=(int16_t)((grid->x_mm[c]+grid->x_mm[c+1U])/2);
+  *y=(int16_t)((grid->y_mm[r]+grid->y_mm[r+1U])/2);
+  return true;
 }
 
-static uint32_t cell_distance(uint8_t a,uint8_t b)
+static void cell_center(uint8_t cell,int16_t *x,int16_t *y)
+{
+  (void)RadarGrid_CellCenter(&DefaultGrid,cell,x,y);
+}
+
+static uint32_t cell_distance(const RadarGrid_t *grid,uint8_t a,uint8_t b)
 {
   int16_t ax,ay,bx,by;
   int dx,dy;
-  cell_center(a,&ax,&ay);cell_center(b,&bx,&by);
+  (void)RadarGrid_CellCenter(grid,a,&ax,&ay);(void)RadarGrid_CellCenter(grid,b,&bx,&by);
   dx=ax-bx;dy=ay-by;
   return (uint32_t)((dx<0?-dx:dx)+(dy<0?-dy:dy));
 }
@@ -342,13 +374,17 @@ static bool cell_neighbor(uint8_t cell,unsigned dir,uint8_t *next)
 }
 
 /* 25 nodes: linear open-set selection is small, bounded, and deterministic. */
-static bool cell_path(uint32_t mask,uint8_t start,uint8_t goal,uint8_t path[25],uint8_t *count)
+bool RadarGrid_Path(const RadarGrid_t *grid,uint32_t mask,uint8_t start,uint8_t goal,
+                    uint8_t path[RADAR_MAP_CELL_COUNT],uint8_t *count)
 {
   uint32_t cost[25];
   uint8_t parent[25],open[25]={0},closed[25]={0},order[25],next_order=0U;
   uint8_t current,best,i,n;
   unsigned dir;
+  if(count==NULL || path==NULL) return false;
   *count=0U;
+  if(!RadarGrid_Valid(grid) || start>=RADAR_MAP_CELL_COUNT || goal>=RADAR_MAP_CELL_COUNT) return false;
+  mask&=RADAR_MAP_ALL_CELLS;
   if(mask&((1UL<<start)|(1UL<<goal))) return false;
   for(i=0U;i<25U;i++){cost[i]=RADAR_COST_MAX;parent[i]=RADAR_CELL_NONE;order[i]=RADAR_CELL_NONE;}
   cost[start]=0U;open[start]=1U;order[start]=next_order++;
@@ -356,7 +392,7 @@ static bool cell_path(uint32_t mask,uint8_t start,uint8_t goal,uint8_t path[25],
     uint32_t best_f=RADAR_COST_MAX,best_h=RADAR_COST_MAX;
     best=RADAR_CELL_NONE;
     for(i=0U;i<25U;i++) if(open[i]) {
-      uint32_t h=cell_distance(i,goal),f=cost[i]+h;
+      uint32_t h=cell_distance(grid,i,goal),f=cost[i]+h;
       if(best==RADAR_CELL_NONE || f<best_f || (f==best_f && h<best_h) ||
          (f==best_f && h==best_h && order[i]<order[best])) {best=i;best_f=f;best_h=h;}
     }
@@ -365,7 +401,7 @@ static bool cell_path(uint32_t mask,uint8_t start,uint8_t goal,uint8_t path[25],
     if(current==goal) break;
     open[current]=0U;closed[current]=1U;
     for(dir=0U;dir<4U;dir++) if(cell_neighbor(current,dir,&n) && !closed[n] && !(mask&(1UL<<n))) {
-      uint32_t tentative=cost[current]+cell_distance(current,n);
+      uint32_t tentative=cost[current]+cell_distance(grid,current,n);
       if(tentative<cost[n]) {
         cost[n]=tentative;parent[n]=current;
         if(!open[n]){open[n]=1U;order[n]=next_order++;}
@@ -382,6 +418,11 @@ static bool cell_path(uint32_t mask,uint8_t start,uint8_t goal,uint8_t path[25],
   if(path[*count-1U]!=start) return false;
   for(i=0U;i<*count/2U;i++){n=path[i];path[i]=path[*count-1U-i];path[*count-1U-i]=n;}
   return true;
+}
+
+static bool cell_path(uint32_t mask,uint8_t start,uint8_t goal,uint8_t path[25],uint8_t *count)
+{
+  return RadarGrid_Path(&DefaultGrid,mask,start,goal,path,count);
 }
 
 static bool append_point(RadarPlan_t *p,int16_t x,int16_t y,uint8_t station,uint8_t visit)
@@ -438,7 +479,8 @@ static bool segment_clear(uint32_t mask,int16_t sx,int16_t sy,int16_t ex,int16_t
     float enter=0.0f,leave=1.0f;
     bool intersects=true;
     for(axis=0U;axis<2U;axis++) {
-      float low=(float)GridLines[index[axis]],high=(float)GridLines[index[axis]+1U];
+      const int16_t *lines=axis==0U?DefaultGrid.x_mm:DefaultGrid.y_mm;
+      float low=(float)lines[index[axis]],high=(float)lines[index[axis]+1U];
       if(delta[axis]==0.0f) {
         if(origin[axis]<low || origin[axis]>high){intersects=false;break;}
       } else {

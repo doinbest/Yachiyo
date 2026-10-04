@@ -9,6 +9,31 @@ static unsigned checks, failures;
   printf("FAIL line %d: %s\n", __LINE__, #c); } } while (0)
 static int near(float a, float b) { return fabsf(a-b) < 0.02f; }
 
+static void test_generic_grid_core(void)
+{
+  RadarGrid_t grid;
+  uint8_t path[RADAR_MAP_CELL_COUNT],count=0;
+  int16_t x=0,y=0;
+
+  RadarGrid_Default(&grid);
+  CHECK(RadarGrid_Valid(&grid));
+  CHECK(RadarGrid_FindCell(&grid,150.0f,150.0f,false)==0);
+  CHECK(RadarGrid_FindCell(&grid,2249.0f,2249.0f,false)==24);
+  CHECK(RadarGrid_FindCell(&grid,2250.0f,2250.0f,false)<0);
+  CHECK(RadarGrid_FindCell(&grid,2250.0f,2250.0f,true)==24);
+  CHECK(RadarGrid_CellCenter(&grid,0,&x,&y) && x==350 && y==350);
+  CHECK(RadarGrid_CellCenter(&grid,24,&x,&y) && x==2050 && y==2050);
+  CHECK(RadarGrid_Path(&grid,RADAR_MAP_FIXED_MASK,0,4,path,&count));
+  CHECK(count==5 && path[0]==0 && path[1]==1 && path[2]==2 && path[3]==3 && path[4]==4);
+
+  grid.x_mm[1]=650;grid.y_mm[2]=1100;
+  CHECK(RadarGrid_Valid(&grid));
+  CHECK(RadarGrid_FindCell(&grid,650.0f,1100.0f,false)==11);
+  CHECK(RadarGrid_CellCenter(&grid,1,&x,&y) && x==825 && y==350);
+  grid.x_mm[2]=699;
+  CHECK(!RadarGrid_Valid(&grid));
+}
+
 /* Catch rotation/reflection mistakes and double application of the map yaw. */
 static void test_direction_and_history(void)
 {
@@ -380,6 +405,7 @@ static void test_dual_start_missions(void)
 
 int main(void)
 {
+  test_generic_grid_core();
   test_direction_and_history();test_rotated_world_obstacles();
   test_map_filters_and_station_obstacle();test_mission_and_detour();test_first_shortcut_and_final_staging();
   test_scanned_required_clear_cells();
