@@ -2170,6 +2170,36 @@
               <FileType>5</FileType>
               <FilePath>../App/radar_console.h</FilePath>
             </File>
+            <File>
+              <FileName>radar_host_map.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/radar_host_map.c</FilePath>
+            </File>
+            <File>
+              <FileName>radar_host_map.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../App/radar_host_map.h</FilePath>
+            </File>
+            <File>
+              <FileName>radar_host.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/radar_host.c</FilePath>
+            </File>
+            <File>
+              <FileName>radar_host.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../App/radar_host.h</FilePath>
+            </File>
+            <File>
+              <FileName>radar_host_console.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/radar_host_console.c</FilePath>
+            </File>
+            <File>
+              <FileName>radar_host_console.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../App/radar_host_console.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

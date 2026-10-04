@@ -1,4 +1,5 @@
 #include "radar_console.h"
+#include "radar_host_console.h"
 #include "radar_scan.h"
 #include "chassis_route.h"
 #include "chassis_localization.h"
@@ -331,9 +332,11 @@ void RadarConsole_Init(void)
   RawSession=Session;RawReportedId=0;RawReportedState=RADAR_SCAN_IDLE;
   LiveTxId=LiveTxSequence=LiveReportedId=0;LivePart=0;LiveSending=false;
   LiveFrameTick=HAL_GetTick()-1000U;LiveStateTick=0;LiveReportedState=RADAR_LIVE_STOPPED;
+  RadarHostConsole_Init();
 }
 void RadarConsole_Process(void)
 {
+  RadarHostConsole_Process();
   uint32_t now=HAL_GetTick();refresh();
   if(RadarConsole_ScanBusy() && (ChassisMotion_IsBusy() || Mecanum_IsBusy() ||
       CaptureOrigin!=Location.generation)){RadarScan_Stop();refresh();}
@@ -380,6 +383,7 @@ bool RadarConsole_Command(unsigned n,char *t[])
 {
   float value;uint32_t id,page;bool ok=false;const char *reason="format";
   if(n<2U || strcmp(t[0],"radar")) return false;
+  if(!strcmp(t[1],"host"))return RadarHostConsole_Command(n,t);
   refresh();Watching=true;
   if(n==3U && !strcmp(t[1],"live") && !strcmp(t[2],"status")){live_state_page();return true;}
   if(n==3U && !strcmp(t[1],"live") && !strcmp(t[2],"stop")){

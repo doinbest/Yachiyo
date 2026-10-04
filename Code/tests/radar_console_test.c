@@ -44,6 +44,10 @@ static unsigned debug_scans;
 static RadarScan_LiveStatus_t live_fixture;
 static RadarLive_Point_t live_points[RADAR_LIVE_BINS];
 static unsigned live_starts,live_stops,live_copies;
+static unsigned host_inits,host_processes,host_commands;
+void RadarHostConsole_Init(void){host_inits++;}
+void RadarHostConsole_Process(void){host_processes++;}
+bool RadarHostConsole_Command(unsigned n,char *t[]){(void)n;(void)t;host_commands++;return true;}
 void RadarScan_LiveStatusGet(RadarScan_LiveStatus_t *s){*s=live_fixture;}
 const char *RadarScan_LiveStateName(RadarScan_LiveState_t state){
   static const char *const names[]={"preparing","waiting","streaming","stopped","error"};return names[state];
@@ -305,6 +309,8 @@ int main(void)
   route.state=route.reason="idle";
   for(unsigned i=0;i<360;i++)samples[i]=(RadarSample_t){(uint16_t)(i*10),65535,255};
   RadarConsole_Init();command("radar status");assert(!moves && !scans);
+  command("radar host status");assert(host_inits==1U && host_commands==1U && !moves && !scans);
+  command("radar status");
   assert(foreground_count==6 && strstr(foreground[1],"\"page\":0,\"pages\":3"));
   assert(strstr(foreground[2],"\"last_alarm\":0") && strstr(foreground[2],"\"unit\":\"unknown\""));
   assert(strstr(foreground[4],"\"k\":\"start\"") && strstr(foreground[4],"\"selected\":2") && strstr(foreground[5],"\"conflicts\":[0,0]"));
