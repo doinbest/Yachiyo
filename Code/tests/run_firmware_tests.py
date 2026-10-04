@@ -24,7 +24,7 @@ def run(args):
 
 def build_test(name, *sources):
     exe = OUT / (name + ".exe")
-    flags = [BASE[0], "-Itests/radar_stubs", *BASE[1:]] if name in ("test_radar_scan", "test_radar_probe") else BASE
+    flags = [BASE[0], "-Itests/radar_stubs", *BASE[1:]] if name in ("test_radar_scan", "test_radar_probe", "test_radar_host") else BASE
     run(flags + ["tests/" + name + ".c", *sources, "-lm", "-o", exe])
     run([exe])
 
@@ -55,6 +55,7 @@ if __name__ == "__main__":
     build_test("test_radar_parser", "template/Hardware/lds_parser.c")
     build_test("test_radar_map", "template/App/radar_map.c")
     build_test("test_radar_host_map", "template/App/radar_host_map.c", "template/App/radar_map.c")
+    build_test("test_radar_host", "template/App/radar_host.c", "template/App/radar_host_map.c", "template/App/radar_map.c")
     build_test("test_radar_start", "template/App/radar_start.c", "template/App/radar_map.c")
     build_test("test_radar_scan", "template/Hardware/lds_parser.c", "template/Hardware/radar_uart.c",
                "template/App/radar_scan.c", "template/App/radar_map.c", "template/App/radar_start.c")
