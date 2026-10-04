@@ -13,6 +13,7 @@ import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
+from radar_direct_bridge import RadarDirectBridge
 from serial_bridge import SerialBridge
 
 
@@ -152,6 +153,32 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
                 self._json(200, self.server.bridge.get_events(after))
             except ValueError as error:
                 self._json(400, {'error':str(error)})
+        elif path.path in ('/api/radar-direct/ports', '/api/radar-direct/status',
+                            '/api/radar-direct/scan', '/api/radar-direct/events'):
+            radar_bridge = self.server.radar_bridge
+            if radar_bridge is None:
+                self._json(503, {'error':'Direct radar service is unavailable'})
+                return
+            try:
+                if path.path == '/api/radar-direct/ports':
+                    self._json(200, {'ports':available_ports()})
+                elif path.path == '/api/radar-direct/status':
+                    self._json(200, radar_bridge.status())
+                else:
+                    try:
+                        after = int(parse_qs(path.query).get('after', ['0'])[0])
+                    except (TypeError, ValueError) as error:
+                        raise ValueError('after must be a nonnegative integer') from error
+                    if after < 0:
+                        raise ValueError('after must be a nonnegative integer')
+                    if path.path == '/api/radar-direct/scan':
+                        self._json(200, radar_bridge.latest_scan(after))
+                    else:
+                        self._json(200, radar_bridge.get_events(after))
+            except ValueError as error:
+                self._json(400, {'error':str(error)})
+            except OSError as error:
+                self._json(503, {'error':str(error)})
         elif path.path.startswith('/api/'):
             self._json(404, {'error':'Unknown API'})
         else:
@@ -177,6 +204,28 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
             path = urlsplit(self.path).path
             if path == '/api/radar/plan':
                 result = plan_radar_offline(body)
+            elif path in ('/api/radar-direct/connect', '/api/radar-direct/disconnect',
+                           '/api/radar-direct/start', '/api/radar-direct/stop',
+                           '/api/radar-direct/scan', '/api/radar-direct/continuous/start',
+                           '/api/radar-direct/continuous/stop'):
+                radar_bridge = self.server.radar_bridge
+                if radar_bridge is None:
+                    self._json(503, {'error':'Direct radar service is unavailable'})
+                    return
+                if path == '/api/radar-direct/connect':
+                    result = radar_bridge.connect(body.get('port'), body.get('baudrate'))
+                elif path == '/api/radar-direct/disconnect':
+                    result = radar_bridge.disconnect()
+                elif path == '/api/radar-direct/start':
+                    result = radar_bridge.start_rotation()
+                elif path == '/api/radar-direct/stop':
+                    result = radar_bridge.stop_rotation()
+                elif path == '/api/radar-direct/scan':
+                    result = radar_bridge.capture_single()
+                elif path == '/api/radar-direct/continuous/start':
+                    result = radar_bridge.start_continuous()
+                else:
+                    result = radar_bridge.stop_continuous()
             elif path == '/api/connect':
                 result = bridge.connect(body.get('port'), body.get('baudrate'))
             elif path == '/api/send':
@@ -199,10 +248,11 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
             self._json(400, {'error':str(error)})
 
 
-def make_server(bridge, root, port=8765):
+def make_server(bridge, root, port=8765, radar_bridge=None):
     server = ThreadingHTTPServer(('127.0.0.1', port), partial(ConsoleHandler, directory=str(root)))
     server.daemon_threads = True
     server.bridge = bridge
+    server.radar_bridge = radar_bridge
     server.console_origin = f'http://127.0.0.1:{server.server_port}'
     return server
 
@@ -285,10 +335,14 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parent
     bridge = SerialBridge(root.parents[2] / '.embeddedskills')
+    radar_bridge = RadarDirectBridge()
     try:
-        server = make_server(bridge, root, args.port)
+        server = make_server(bridge, root, args.port, radar_bridge=radar_bridge)
     except OSError as error:
-        bridge.close()
+        try:
+            radar_bridge.close()
+        finally:
+            bridge.close()
         print(f'Cannot start local server: {error}\nUse the existing console or choose --port 8766.', flush=True)
         return 1
     url = server.console_origin + '/'
@@ -333,13 +387,16 @@ def main():
     finally:
         quitting = True
         try:
-            bridge.close()
+            radar_bridge.close()
         finally:
-            finished.set()
-            server.shutdown()
-            server.server_close()
-            output_thread.join(1)
-            signal.signal(signal.SIGINT, old_sigint)
+            try:
+                bridge.close()
+            finally:
+                finished.set()
+                server.shutdown()
+                server.server_close()
+                output_thread.join(1)
+                signal.signal(signal.SIGINT, old_sigint)
     return 0
 
 
