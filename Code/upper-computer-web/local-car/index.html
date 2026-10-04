@@ -4,7 +4,7 @@
 <title>八千代·巡航｜智能搬运控制台</title>
 <meta name="description" content="本地智能搬运串口控制台">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23007d82'/%3E%3Ctext x='14' y='46' font-size='43' fill='white'%3E千%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="styles.css?v=theme-20261003"><script type="module" src="app.mjs?v=theme-20261003"></script>
+<link rel="stylesheet" href="styles.css?v=radar-direct-20261004"><script type="module" src="app.mjs?v=radar-direct-20261004"></script>
 </head><body class="dark" data-theme="blue">
 <div class="app-shell">
 <header class="topbar"><a class="brand" href="#system"><span class="brand-icon">千</span><span><strong>八千代<span>·</span>巡航</strong><small>INTELLIGENT MATERIAL HANDLING · 2027</small></span></a>
@@ -22,7 +22,7 @@
         <div class="route-table-wrap"><table class="route-table"><thead><tr><th>段</th><th>停车状态</th><th>vx</th><th>vy</th><th>ω</th><th>起步 / s</th><th>运行 / s</th><th>停车 / s</th><th>停留 / s</th><th>操作</th></tr></thead><tbody id="route-rows"></tbody></table></div><p id="route-live" class="map-note"></p>
       </details>
       <p id="speed-lab-note" class="map-note"><a href="speed-lab.html" target="_blank" rel="noopener">打开速度曲线实验：在同一地图对比三角／梯形与半余弦加减速 ↗</a> · 独立离线演示，可拖动时间查看速度、加速度与假设牵引上限。</p>
-      <div class="map-layout">
+      <div id="legacy-map-layout" class="map-layout">
         <article class="glass map-stage"><div class="map-stage-toolbar"><div class="map-readout"><strong id="map-pose"></strong><span id="map-cursor">完整场地 · 等比适配</span></div><div class="map-view-tools"><label><input id="radar-show-obstacles" type="checkbox" checked>障碍</label><label><input id="radar-show-points" type="checkbox">点云</label><label><input id="radar-show-counts" type="checkbox">格内点数</label></div></div>
           <div id="map-legend" class="map-legend" role="group" aria-label="轨迹图例，点击显示或隐藏">
             <span class="map-legend-caption">轨迹 · 点击显隐</span>
@@ -60,6 +60,7 @@
           <details class="glass map-controls map-details map-wheel-details"><summary>四轮反馈与速度</summary><p id="map-body-speed" class="map-note"></p><div class="wheel-table-wrap"><table class="wheel-table"><thead><tr><th>轮子</th><th>目标 RPM</th><th id="wheel-approx-title">整数 RPM</th><th>位置原值</th></tr></thead><tbody id="wheel-body"></tbody></table></div><p class="map-note">轮序：左前 1、左后 2、右后 3、右前 4。正 RPM 表示该轮向车头方向滚动；反馈不可用时不以目标补齐。</p></details>
         </aside>
       </div>
+      <section id="radar-direct-workspace" hidden aria-label="LDS50C USB转串口直连上位机"></section>
     </section>
 </div>
 </main>
