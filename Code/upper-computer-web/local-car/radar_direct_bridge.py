@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import re
 import threading
 import time
+import uuid
 
 from radar_direct_protocol import (
     AlarmFrame,
@@ -52,6 +53,7 @@ class RadarDirectBridge:
         self._lifecycle_lock = threading.RLock()
         self._serial_factory = serial_factory
         self._first_scan_timeout = float(first_scan_timeout)
+        self._instance_id = uuid.uuid4().hex
         self._events = deque(maxlen=event_limit)
         self._serial = None
         self._cancel = threading.Event()
@@ -134,7 +136,7 @@ class RadarDirectBridge:
         return self._manual_command(b"LSTARH", "Radar rotation started")
 
     def stop_rotation(self) -> dict:
-        return self._manual_command(STOP_COMMAND, "Radar rotation stopped")
+        return self._manual_command(STOP_COMMAND, "Radar stop command sent")
 
     def capture_single(self) -> dict:
         with self._lifecycle_lock:
@@ -187,6 +189,7 @@ class RadarDirectBridge:
                     for point in self._latest_points
                 ]
             return {
+                "instance_id": self._instance_id,
                 "revision": self._scan_revision,
                 "received_at": self._scan_received_at,
                 "points": points,
@@ -204,6 +207,7 @@ class RadarDirectBridge:
                     timeout=min(float(timeout), 1.0),
                 )
             return {
+                "instance_id": self._instance_id,
                 "events": [dict(event) for event in self._events if event["id"] > after],
                 "last_event_id": self._last_event_id,
                 "gap": bool(self._events and after < self._events[0]["id"] - 1),
@@ -435,6 +439,7 @@ class RadarDirectBridge:
 
     def _status_locked(self) -> dict:
         return {
+            "instance_id": self._instance_id,
             "connected": self._connected,
             "port": self._port,
             "baudrate": self._baudrate,

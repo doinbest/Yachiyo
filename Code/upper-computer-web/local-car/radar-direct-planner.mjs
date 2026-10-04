@@ -154,6 +154,13 @@ function resolveEndpoint(endpoint, cell, radar) {
   };
 }
 
+export function resolvePlanningEndpoint({grid, endpoint, radar = grid?.radar}) {
+  if (!grid || typeof grid.getCell !== 'function') throw new TypeError('A 5 x 5 grid is required.');
+  if (!isCell(endpoint)) throw new RangeError('Endpoint cell is outside the 5 x 5 map.');
+  if (!radar || !Number.isFinite(radar.x) || !Number.isFinite(radar.y)) throw new RangeError('Radar coordinates must be finite.');
+  return resolveEndpoint(endpoint, grid.getCell(endpoint.row, endpoint.column), radar);
+}
+
 function popLowest(open) {
   let selected = 0;
   for (let index = 1; index < open.length; index += 1) {

@@ -131,6 +131,18 @@ test('one frozen scan can be refiltered, remapped and planned without another sc
   assert.ok(h.maps.length >= 2);
 });
 
+test('point-to-point map receives finite physical coordinates for anchored endpoints', async () => {
+  const ui = surface(), h = harness(ui);
+  ui.get('radar-direct-planning-mode').value = 'point-to-point';
+
+  await ui.get('radar-direct-apply-map').click();
+
+  const map = h.maps.at(-1);
+  assert.deepEqual(map.start, {xmm: 230, ymm: 230, row: 1, column: 1});
+  assert.deepEqual(map.goal, {xmm: 2250, ymm: 150, row: 1, column: 5});
+  assert.ok([map.start.xmm, map.start.ymm, map.goal.xmm, map.goal.ymm].every(Number.isFinite));
+});
+
 test('settings are persisted only by explicit save and last scan survives disconnect state', async () => {
   const ui = surface(), h = harness(ui);
   ui.get('radar-direct-radar-x').value = '240';

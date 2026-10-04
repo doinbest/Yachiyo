@@ -48,6 +48,58 @@ test('unchanged revisions do not redownload the scan', async () => {
   assert.equal(calls.filter(path => path.startsWith('radar-direct/scan?')).length, 1);
 });
 
+test('service restart resets transport cursors while retaining and then replacing the displayed scan', async () => {
+  let service = 'old';
+  const calls = [], scans = [], events = [];
+  const api = async path => {
+    calls.push(path);
+    const old = service === 'old';
+    if (path === 'radar-direct/status') return {instance_id: old ? 'old-service' : 'new-service', connected: false, scan_revision: old ? 7 : 1, last_event_id: old ? 20 : 2};
+    if (path.startsWith('radar-direct/scan?')) return {instance_id: old ? 'old-service' : 'new-service', revision: old ? 7 : 1, points: [{angle_deg: old ? 7 : 1, distance_mm: 100, energy: 1}]};
+    if (path.startsWith('radar-direct/events?')) return {instance_id: old ? 'old-service' : 'new-service', events: [{id: old ? 20 : 2, kind: 'scan'}], last_event_id: old ? 20 : 2, gap: false};
+    throw new Error(path);
+  };
+  const client = new RadarDirectClient({api, onScan: scan => scans.push(scan), onEvents: batch => events.push(...batch)});
+
+  await client.refresh();
+  service = 'new';
+  await client.refresh();
+
+  assert.deepEqual(scans.map(scan => scan.revision), [7, 1]);
+  assert.deepEqual(events.map(event => event.id), [20, 2]);
+  assert.equal(client.scanRevision, 1);
+  assert.equal(client.eventCursor, 2);
+  assert.ok(calls.includes('radar-direct/scan?after=0'));
+  assert.equal(calls.filter(path => path === 'radar-direct/events?after=0').length, 2);
+});
+
+test('a delayed scan from the retired service instance cannot replace the new instance', async () => {
+  let service = 'old', oldRevision = 7, releaseRetired;
+  const retired = new Promise(resolve => { releaseRetired = resolve; });
+  const scans = [];
+  const api = async path => {
+    const old = service === 'old';
+    if (path === 'radar-direct/status') return {instance_id: old ? 'old-service' : 'new-service', connected: false, scan_revision: old ? oldRevision : 1, last_event_id: old ? 20 : 2};
+    if (path === 'radar-direct/scan?after=7') return retired;
+    if (path.startsWith('radar-direct/scan?')) return {instance_id: old ? 'old-service' : 'new-service', revision: old ? 7 : 1, points: [{angle_deg: old ? 7 : 1, distance_mm: 100, energy: 1}]};
+    if (path.startsWith('radar-direct/events?')) return {instance_id: old ? 'old-service' : 'new-service', events: [], last_event_id: old ? 20 : 2, gap: false};
+    throw new Error(path);
+  };
+  const client = new RadarDirectClient({api, onScan: scan => scans.push(scan)});
+
+  await client.refresh();
+  oldRevision = 8;
+  const staleRefresh = client.refresh();
+  await flush();
+  service = 'new';
+  await client.refresh();
+  releaseRetired({instance_id: 'old-service', revision: 8, points: [{angle_deg: 8, distance_mm: 100, energy: 1}]});
+  await staleRefresh;
+
+  assert.deepEqual(scans.map(scan => [scan.instance_id, scan.revision]), [['old-service', 7], ['new-service', 1]]);
+  assert.equal(client.scanRevision, 1);
+});
+
 test('a delayed older scan cannot replace a newer revision', async () => {
   let statusCall = 0, scanCall = 0, releaseOld;
   const old = new Promise(resolve => { releaseOld = resolve; });

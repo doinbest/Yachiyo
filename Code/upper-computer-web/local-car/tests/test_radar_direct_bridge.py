@@ -126,6 +126,18 @@ class RadarDirectBridgeTests(unittest.TestCase):
         self.addCleanup(bridge.close)
         return bridge, factory
 
+    def test_instance_identity_is_stable_for_one_service_and_unique_after_restart(self):
+        first, _ = self.create_bridge()
+        second, _ = self.create_bridge()
+
+        identity = first.status()["instance_id"]
+
+        self.assertTrue(identity)
+        self.assertEqual(first.latest_scan()["instance_id"], identity)
+        self.assertEqual(first.get_events()["instance_id"], identity)
+        self.assertEqual(first.status()["instance_id"], identity)
+        self.assertNotEqual(second.status()["instance_id"], identity)
+
     def test_connect_validates_port_and_reference_baud_and_opens_8n1(self):
         bridge, factory = self.create_bridge()
 

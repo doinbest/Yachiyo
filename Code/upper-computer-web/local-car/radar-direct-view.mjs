@@ -16,6 +16,7 @@ import {
   planMissionRoute,
   planPointToPoint,
   resolveMissionPoints,
+  resolvePlanningEndpoint,
 } from './radar-direct-planner.mjs';
 import {mountRadarDirectMap} from './radar-direct-map.mjs';
 
@@ -207,7 +208,9 @@ export function mountRadarDirectHost({
     root.dataset.theme = config.theme;
     refs['radar-direct-show-raw'].dataset.active = String(config.displayMode === 'raw'); refs['radar-direct-show-filtered'].dataset.active = String(config.displayMode === 'filtered');
     refs['radar-direct-theme-dark'].dataset.active = String(config.theme === 'dark'); refs['radar-direct-theme-light'].dataset.active = String(config.theme === 'light');
-    mapRenderer.render({fieldSize: grid.fieldSize, activeMin: grid.activeMinimum, activeMax: grid.activeMaximum, xLines: grid.xLines, yLines: grid.yLines, radar: grid.radar, points: displayFieldPoints, cells: obstacles.cells, path: plan.success ? plan.waypoints.map(point => ({x: point.xmm, y: point.ymm})) : [], missionPoints: missionPoints.map(point => ({number: point.number, row: point.endpoint.row, column: point.endpoint.column, x: point.xmm, y: point.ymm})), start: config.planningMode === 'point-to-point' ? config.start : null, goal: config.planningMode === 'point-to-point' ? config.goal : null, theme: config.theme});
+    const pointStart = config.planningMode === 'point-to-point' ? resolvePlanningEndpoint({grid, endpoint: config.start}) : null;
+    const pointGoal = config.planningMode === 'point-to-point' ? resolvePlanningEndpoint({grid, endpoint: config.goal}) : null;
+    mapRenderer.render({fieldSize: grid.fieldSize, activeMin: grid.activeMinimum, activeMax: grid.activeMaximum, xLines: grid.xLines, yLines: grid.yLines, radar: grid.radar, points: displayFieldPoints, cells: obstacles.cells, path: plan.success ? plan.waypoints.map(point => ({x: point.xmm, y: point.ymm})) : [], missionPoints: missionPoints.map(point => ({number: point.number, row: point.endpoint.row, column: point.endpoint.column, x: point.xmm, y: point.ymm})), start: pointStart, goal: pointGoal, theme: config.theme});
     refs['radar-direct-freeze'].textContent = scan ? '地图已冻结' : '等待扫描';
     refs['radar-direct-freeze'].parentElement.dataset.ready = String(!!scan);
     refs['radar-direct-point-summary'].textContent = `${displayed.length} 个显示点 / ${rawPoints.length} 个接收点`;
