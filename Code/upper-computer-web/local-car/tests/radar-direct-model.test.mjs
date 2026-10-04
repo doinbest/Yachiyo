@@ -34,7 +34,7 @@ test('approved direct-host defaults are reproduced exactly and cloned', () => {
       radarYmm: 230,
       xLines: [150, 550, 1000, 1400, 1850, 2250],
       yLines: [150, 550, 1000, 1400, 1850, 2250],
-      obstaclePointThreshold: 3,
+      obstaclePointThreshold: 1,
       fixedBlockedMask: 328000,
       manualBlockedMask: 0,
     },
@@ -129,8 +129,9 @@ test('obstacle classification preserves counts and applies fixed manual scanned 
   const config = createDefaultRadarConfig();
   const grid = createGrid(config.map);
   const bit = (row, column) => 1 << ((row - 1) * 5 + column - 1);
-  const manualMask = bit(1, 2) | bit(1, 3) | (1 << 30);
+  const manualMask = bit(1, 1) | bit(1, 2) | bit(1, 3) | (1 << 30);
   const points = [
+    {x: 350, y: 350},
     ...[1200, 1210, 1220].map(x => ({x, y: 350})),
     ...[775, 785, 795].map(x => ({x, y: 350})),
     ...[780, 790, 800].map(x => ({x, y: 780})),
@@ -139,7 +140,12 @@ test('obstacle classification preserves counts and applies fixed manual scanned 
   const result = classifyObstacleCells(grid, points, 3, manualMask);
   const cell = (row, column) => result.cells[(row - 1) * 5 + column - 1];
 
+  assert.ok((MISSION_PROTECTED_MASK & bit(1, 1)) !== 0);
   assert.equal(result.manualMask, bit(1, 2));
+  assert.equal(cell(1, 1).scannedPointCount, 1);
+  assert.equal(cell(1, 1).protected, true);
+  assert.equal(cell(1, 1).blocked, false);
+  assert.deepEqual(cell(1, 1).flags, {fixed: false, manual: false, scanned: false});
   assert.equal(cell(1, 3).scannedPointCount, 3);
   assert.equal(cell(1, 3).protected, true);
   assert.equal(cell(1, 3).blocked, false);

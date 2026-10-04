@@ -9,6 +9,7 @@ const SUPPORTED_BAUDRATES = new Set([384000, 500000, 768000, 921600]);
 const bitFor = (row, column) => 1 << ((row - 1) * 5 + column - 1);
 
 export const MISSION_PROTECTED_MASK = (
+  bitFor(1, 1) |
   bitFor(3, 1) |
   bitFor(5, 3) |
   bitFor(3, 5) |
@@ -29,7 +30,7 @@ const DEFAULT_VALUE = {
     radarYmm: 230,
     xLines: [150, 550, 1000, 1400, 1850, 2250],
     yLines: [150, 550, 1000, 1400, 1850, 2250],
-    obstaclePointThreshold: 3,
+    obstaclePointThreshold: 1,
     fixedBlockedMask: 328000,
     manualBlockedMask: 0,
   },

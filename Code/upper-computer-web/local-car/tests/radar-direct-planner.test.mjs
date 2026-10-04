@@ -170,7 +170,10 @@ test('default mission preserves ordered checkpoints, repeated cells, and total d
   });
 
   assert.equal(plan.success, true, plan.failureReason);
-  assert.ok(plan.cells.length > 25);
+  const rows = [1,1,1,2,3,3,3,3,3,3,3,4,5,5,5,5,5,4,3,3,3,3,3,4,5,5,5,4,3,2,1,1,1];
+  const columns = [1,2,3,3,3,4,5,4,3,2,1,1,1,2,3,4,5,5,5,4,3,2,1,1,1,2,3,3,3,3,3,2,1];
+  assert.deepEqual(plan.cells.map(cell => cell.row), rows);
+  assert.deepEqual(plan.cells.map(cell => cell.column), columns);
   assert.deepEqual(plan.waypoints[0], {xmm: 230, ymm: 230, row: 1, column: 1});
   assert.deepEqual(plan.waypoints.at(-1), {xmm: 230, ymm: 230, row: 1, column: 1});
   assert.ok(plan.totalDistanceMm > 0);
