@@ -367,6 +367,82 @@ static void test_live_cloud(void)
   assert(RadarScan_LiveCopy(points));for(unsigned i=0;i<120;i++)assert(!points[i].distance_mm);
   RadarScan_LiveStop();
 }
+
+static void test_host_scan_isolation(void)
+{
+  RadarMap_Params_t vehicle_params,host_params;
+  RadarScan_Status_t vehicle_status,after;
+  RadarScan_StartStatus_t vehicle_start,after_start;
+  RadarScan_HostStatus_t host;
+  RadarScan_LiveStatus_t legacy_live,legacy_live_after;
+  RadarMap_t vehicle_map;
+  RadarMap_Params_t vehicle_map_params;
+  RadarLive_Point_t preview[RADAR_LIVE_BINS];
+  const RadarSample_t *points;
+  uint16_t count;
+  uint8_t junk[4096];
+
+  memset(junk,0x21,sizeof junk);
+  assert(RadarScan_Init(&uart)==HAL_OK);RadarMap_Defaults(&vehicle_params);
+  assert(RadarScan_Start(&vehicle_params,901));configured();full_circle(false,4);
+  RadarScan_StatusGet(&vehicle_status);RadarScan_StartStatusGet(&vehicle_start);
+  vehicle_map=*RadarScan_Map();vehicle_map_params=*RadarScan_MapParams();
+  assert(vehicle_status.map_valid && vehicle_status.points_valid && RadarScan_Points(&count));
+
+  host_params=vehicle_params;host_params.lidar_x_mm=230;host_params.lidar_y_mm=230;
+  host_params.zero_deg=90;host_params.angle_max_tenths=3600;
+  assert(RadarScan_HostStart(&host_params));
+  assert(!RadarScan_Start(&vehicle_params,902) && !RadarScan_LiveStart(&vehicle_params,902,RADAR_START_LOWER));
+  RadarScan_StatusGet(&after);RadarScan_StartStatusGet(&after_start);
+  assert(after.map_id==vehicle_status.map_id && after.scan_id==vehicle_status.scan_id && after.map_valid && !after.points_valid);
+  assert(after_start.scan_id==vehicle_start.scan_id && !RadarScan_Points(&count));
+  configured();
+  for(unsigned retry=0;retry<12;retry++)measure(false,(retry*173U)%3600U,4,true);
+  input(junk,sizeof junk);input(junk,sizeof junk);input(junk,sizeof junk);service();
+  full_circle(false,4);RadarScan_HostStatusGet(&host);
+  assert(host.state==RADAR_SCAN_READY && host.scan_id==1 && host.points_valid && !host.truncated);
+  assert(host.circle_restarts>=12 && host.point_count==16);
+  points=RadarScan_HostPoints(&count);assert(points && count==16);
+  RadarScan_StatusGet(&after);RadarScan_StartStatusGet(&after_start);
+  assert(after.map_id==vehicle_status.map_id && after.scan_id==vehicle_status.scan_id && after.map_valid && !after.points_valid);
+  assert(after_start.scan_id==vehicle_start.scan_id);
+  assert(!memcmp(RadarScan_Map(),&vehicle_map,sizeof vehicle_map));
+  assert(!memcmp(RadarScan_MapParams(),&vehicle_map_params,sizeof vehicle_map_params));
+  assert(!RadarScan_Points(&count));
+
+  assert(RadarScan_HostStart(&host_params));configured();
+  measure(false,2700,4,false);measure(false,0,4,false);
+  {uint8_t cm[]={0x53,0x54,0x0e,0,0,0,0x45,0x44};input(cm,sizeof cm);service();}
+  RadarScan_HostStatusGet(&host);assert(host.unit==RADAR_UNIT_CM && host.unit_changes==1 && host.circle_restarts);
+  full_circle(false,4);RadarScan_HostStatusGet(&host);assert(host.scan_id==2 && host.points_valid);
+
+  assert(RadarScan_HostStart(&host_params));configured();tick+=RADAR_SCAN_TIMEOUT_MS+1U;service();
+  RadarScan_HostStatusGet(&host);assert(host.state==RADAR_SCAN_ERROR && !strcmp(host.reason,"scan_timeout") && host.scan_id==2);
+  assert(RadarScan_HostStart(&host_params));configured();RadarScan_HostStop();
+  RadarScan_HostStatusGet(&host);assert(host.state==RADAR_SCAN_STOPPED && !strcmp(host.reason,"operator_stop") && host.scan_id==2);
+
+  assert(RadarScan_HostStart(&host_params));RadarScan_Process();assert(tx_busy);
+  tick+=501;RadarScan_Process();RadarScan_HostStatusGet(&host);
+  assert(host.state==RADAR_SCAN_ERROR && !strcmp(host.reason,"command_failed") && host.scan_id==2);
+
+  assert(RadarScan_HostStart(&host_params));configured();
+  measure(false,2700,256,false);measure(false,0,256,false);
+  for(unsigned angle=100;angle<3600;angle+=100)measure(false,angle,256,false);
+  measure(false,0,256,false);RadarScan_HostStatusGet(&host);
+  assert(host.state==RADAR_SCAN_READY && host.scan_id==3 && host.truncated && !host.points_valid && host.raw_points==9216);
+  assert(!RadarScan_HostPoints(&count));
+
+  RadarScan_LiveStatusGet(&legacy_live);
+  assert(RadarScan_HostLiveStart(&host_params));configured();full_circle(false,4);
+  RadarScan_HostStatusGet(&host);assert(host.live_active && host.live_sequence==1 && host.live_points==16);
+  assert(RadarScan_HostLiveCopy(preview));assert(!RadarScan_LiveCopy(preview));
+  RadarScan_LiveStatusGet(&legacy_live_after);
+  assert(legacy_live_after.id==legacy_live.id && legacy_live_after.sequence==legacy_live.sequence &&
+    legacy_live_after.state==legacy_live.state && legacy_live_after.active==legacy_live.active);
+  RadarScan_HostLiveStop();RadarScan_HostStatusGet(&host);
+  assert(!host.live_active && !strcmp(host.live_reason,"operator_stop"));
+  assert(!memcmp(RadarScan_Map(),&vehicle_map,sizeof vehicle_map));
+}
 int main(void)
 {
   RadarScan_Status_t s;RadarUart_Status_t us;RadarMap_Params_t params;
@@ -504,6 +580,6 @@ int main(void)
   assert(RadarScan_StartAuto(&params,25));configured();point_packet(2700,1,0);point_packet(0,1,0);point_packet(611,3,2171);
   measure(true,1800,4,true);board_circle(false,false,false);RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
   assert(s.state==RADAR_SCAN_READY && s.circle_restarts && start_status.result.start_id==RADAR_START_UNKNOWN && !start_status.result.raw_counts[1]);
-  test_complete_cloud_mapping();test_nominal_manual_start();test_debug_raw();test_live_cloud();
+  test_complete_cloud_mapping();test_nominal_manual_start();test_debug_raw();test_live_cloud();test_host_scan_isolation();
   puts("radar_scan: static/raw CE/CF replay, continuous live bins/unit/filter/recovery/history, commands and snapshot retention PASS");return 0;
 }

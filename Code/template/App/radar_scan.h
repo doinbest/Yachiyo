@@ -44,6 +44,23 @@ typedef enum {
   RADAR_SCAN_READY, RADAR_SCAN_STOPPED, RADAR_SCAN_ERROR
 } RadarScan_State_t;
 typedef struct {
+  RadarMap_Params_t parameters;
+  RadarScan_State_t state;
+  const char *reason;
+  RadarScan_Unit_t unit;
+  uint32_t scan_id,completed_tick,elapsed_ms,raw_points;
+  uint32_t circle_restarts,unit_changes,unit_overflows;
+  uint16_t point_count,coverage_tenths;
+  bool active,points_valid,truncated;
+  uint32_t live_id,live_sequence,live_completed_tick;
+  uint32_t live_circle_restarts,live_unit_changes,live_unit_overflows;
+  uint16_t live_points;
+  bool live_active;
+  RadarScan_LiveState_t live_state;
+  RadarScan_Unit_t live_unit;
+  const char *live_reason;
+} RadarScan_HostStatus_t;
+typedef struct {
   RadarScan_State_t state;
   const char *reason;
   uint32_t bytes, packets, bad, overflow, alarm, elapsed_ms;
@@ -118,6 +135,17 @@ const char *RadarScan_UnitName(RadarScan_Unit_t unit);
 /** @brief Complete cloud only. Recapture reuses its single buffer, so returns NULL
  * until completion; points_map_id identifies the associated published map. */
 const RadarSample_t *RadarScan_Points(uint16_t *count);
+/** @brief 使用页面提供的冻结参数采集完整一圈；不发布实车地图或起点结果。 */
+bool RadarScan_HostStart(const RadarMap_Params_t *params);
+/** @brief 停止页面单圈或持续预览；保留最后完整主机结果。 */
+void RadarScan_HostStop(void);
+void RadarScan_HostStatusGet(RadarScan_HostStatus_t *status);
+/** @return 仅当唯一点云缓存当前属于完整、未截断的主机圈时返回。 */
+const RadarSample_t *RadarScan_HostPoints(uint16_t *count);
+/** @brief 使用共享120分区缓存启动页面持续预览，不改变实车实时状态。 */
+bool RadarScan_HostLiveStart(const RadarMap_Params_t *params);
+void RadarScan_HostLiveStop(void);
+bool RadarScan_HostLiveCopy(RadarLive_Point_t points[RADAR_LIVE_BINS]);
 /** @brief Update the next capture's RAM parameters; never starts or clears a map. */
 bool RadarScan_SetParam(const char *key, float value);
 const RadarMap_Params_t *RadarScan_Params(void);
