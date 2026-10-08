@@ -63,23 +63,6 @@
 #define CHASSIS_POLARITY_TEST_MAX_MM        200U  /* 单次前后测试最大距离。 */
 #define CHASSIS_WHEEL_TEST_MAX_RPM          100U  /* 单轮连续测试最大转速。 */
 
-/* 按键测试的航向保持任务周期和初始PID参数，必须在实车上重新整定。 */
-#define CHASSIS_KEY_HEADING_PERIOD_MS      50U
-#define CHASSIS_KEY_HEADING_KP             0.02f
-#define CHASSIS_KEY_HEADING_KI             0.0f
-#define CHASSIS_KEY_HEADING_KD             0.001f
-#define CHASSIS_KEY_HEADING_INTEGRAL_LIMIT 20.0f
-#define CHASSIS_KEY_HEADING_OUTPUT_LIMIT   0.5f
-
-/* 将原按键测试的120RPM换算为车体前向线速度，保持原测试速度不变。 */
-#define CHASSIS_KEY_TEST_SPEED_MM_S \
-  ((float)CHASSIS_TEST_SPEED_RPM * 3.14159265358979323846f * \
-   CHASSIS_WHEEL_DIAMETER_MM / \
-   (60.0f * CHASSIS_MOTOR_TO_WHEEL_RATIO))
-
-#define CHASSIS_KEY_TEST_DISTANCE_MM       1000.0f
-#define CHASSIS_MOVE_FINISH_MARGIN_MS      1000U
-
 /* 独立补偿直行测试：先核对正方向，再进行落地调试。 */
 #define CHASSIS_HEADING_TEST_YAW_SIGN      1.0f /* HWT逆时针角度增大用+1，否则-1。 */
 #define CHASSIS_HEADING_TEST_KP            0.02f

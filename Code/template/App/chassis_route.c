@@ -313,11 +313,12 @@ static bool number(const char *s,float *n)
 }
 bool ChassisRoute_Command(unsigned n,char *t[])
 {
-  bool ok=false;char text[640];int length;float dx,dy;const char *reject="invalid_displacement";
+  bool ok=false;char text[640];int length;float dx,dy;const char *reject=NULL;
   if(n<2 || strcmp(t[0],"chassis")) return false;
   if(!strcmp(t[1],"stop") && n==2 && ChassisRoute_IsBusy()) ok=ChassisRoute_Cancel();
   else if(!strcmp(t[1],"move"))
   {
+    reject="invalid_displacement";
     if(ChassisRoute_IsBusy()) reject="route_reserved";
     else if(ChassisMotion_IsBusy()) reject="motion_busy";
     else if(n==4 && number(t[2],&dx) && number(t[3],&dy) && hypotf(dx,dy)>0 && hypotf(dx,dy)<=300 && !ChassisRoute_IsBusy())
@@ -336,20 +337,33 @@ bool ChassisRoute_Command(unsigned n,char *t[])
   }
   else if(!strcmp(t[1],"route"))
   {
-    if(n==4 && (!strcmp(t[2],"start") || !strcmp(t[2],"auto")) && number(t[3],&dx)) ok=start_at_speed(dx,!strcmp(t[2],"auto"),false);
+    reject="format";
+    if(n>=3 && (!strcmp(t[2],"start") || !strcmp(t[2],"auto")))
+    {
+      dx=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
+      if((n==3 || (n==4 && number(t[3],&dx))))
+      {
+        if(dx<10.0f || dx>CHASSIS_MOTION_MAX_LINEAR_MM_S) reject="speed_range";
+        else if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved()) reject="route_reserved";
+        else if(ChassisMotion_IsBusy()) reject="motion_busy";
+        else {reject=NULL;ok=start_at_speed(dx,!strcmp(t[2],"auto"),false);}
+      }
+    }
     else if(n==3)
     {
-      if(!strcmp(t[2],"start")) ok=ChassisRoute_Start();
-      else if(!strcmp(t[2],"auto")) ok=start_at_speed(CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,true,false);
-      else if(!strcmp(t[2],"next")) ok=ChassisRoute_Next();
-      else if(!strcmp(t[2],"cancel")) ok=ChassisRoute_Cancel();
+      if(!strcmp(t[2],"next"))
+      {
+        if(Automatic || !Route.state || strcmp(Route.state,"waiting")) reject="next_requires_waiting";
+        else {reject=NULL;ok=ChassisRoute_Next();}
+      }
+      else if(!strcmp(t[2],"cancel")) {ok=ChassisRoute_Cancel();reject="stop_failed";}
       else if(!strcmp(t[2],"status")) ok=true;
     }
   }
   else return false;
   ChassisRoute_StatusGet(&Route);
   length=snprintf(text,sizeof(text),"%s chassis route state=%s segment=%lu id=%lu reason=%s error_mm=%.1f,%.1f heading_error_deg=%.2f feedback_valid=%u stop_confirmed=%u speed_mm_s=%.1f auto=%u total=%lu dwell_ms=%lu phase=%s direction=%s phase_speed_mm_s=%.1f phase_target=%.1f,%.1f,%.1f station=%lu visit=%lu\r\n",
-      ok?"OK":"ERR",Route.state,(unsigned long)Route.segment,(unsigned long)Route.action_id,Route.reason,
+      ok?"OK":"ERR",Route.state,(unsigned long)Route.segment,(unsigned long)Route.action_id,(!ok && reject)?reject:Route.reason,
       (double)Route.error_x_mm,(double)Route.error_y_mm,(double)Route.error_heading_deg,Route.feedback_valid?1:0,Route.stop_confirmed?1:0,(double)RouteSpeed,Automatic?1:0,(unsigned long)Route.total,(unsigned long)CHASSIS_ROUTE_AUTO_DWELL_MS,
       Route.phase,Route.direction,(double)Route.phase_speed_mm_s,(double)Route.phase_target_x_mm,(double)Route.phase_target_y_mm,(double)Route.phase_target_yaw_deg,(unsigned long)Route.station,(unsigned long)Route.visit);
   if(length>0 && (size_t)length<sizeof(text)) (void)ConsoleTx_Write((const uint8_t*)text,(uint16_t)length);

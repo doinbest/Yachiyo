@@ -19,6 +19,7 @@
 #include "console_tx.h"
 #include "console_rx.h"
 #include "chassis_motion.h"
+#include "chassis_config.h"
 #include "chassis_route.h"
 #include "chassis_telemetry.h"
 #include "radar_console.h"
@@ -575,9 +576,10 @@ static void ArmConsole_HelpShow(void)
   ArmConsole_Write("turntable get/set <key> [value] | enable | disable | save_zero | home | origin | index <slot> | jog <degree> | stop | status\r\n");
   ArmConsole_Write("grab store proc <slot> <color> | grab take <slot> rough|temp1|temp2 | grab return\r\n");
   /* 按命令组入队，由USART1 DMA发送；不占用底盘控制周期等待串口。 */
+  ArmConsole_Write("chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n");
+  ArmConsole_Printf("chassis route start|auto [10..5000mm/s, default 200] | next | status | cancel (15 targets, auto dwell %lums)\r\n",
+                    (unsigned long)CHASSIS_ROUTE_AUTO_DWELL_MS);
   ArmConsole_Write(
-      "chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n"
-      "chassis route start|auto [10..5000mm/s, default 200] | next | status | cancel (15 targets, auto dwell 100ms)\r\n"
       "chassis run <vx_mm_s> <vy_mm_s> <omega_rad_s> <hold_ms>\r\n"
       "  omega=0: hold starting IMU heading; verified fresh IMU required\r\n"
       "chassis heading <vx_mm_s> <vy_mm_s> <module_heading_deg> <hold_ms>\r\n"
@@ -587,7 +589,7 @@ static void ArmConsole_HelpShow(void)
       "chassis feedback <0..4> (0=all, 1..4=single, polling stays off)\r\n"
       "chassis feedback on|off\r\n"
       "chassis feedback (read cached raw values, valid=speed,position,state)\r\n"
-      "chassis units 65536 (after measured revolution) | 0 (unconfirmed)\r\n"
+      "chassis units 65536 (Emm42 protocol units per motor revolution) | 0 (clear confirmation)\r\n"
       "chassis stream on <nonzero_session_u32> | off\r\n"
       "chassis task | stop [client_token] | stop-status; Ctrl+C stops chassis\r\n"
       "chassis reset-confirmed (ONLY after physical driver reset)\r\n");
@@ -1309,15 +1311,29 @@ static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[]
     {
       Camera_SnapshotTypeDef Snapshot;
       MaterialVision_CalibrationDataTypeDef Calibration;
+      Camera_VisualStateTypeDef VisualState;
+      char FrameAge[16];
 
       Camera_SnapshotGet(&Snapshot);
-      if ((Snapshot.HasValidData != 0U) && (Snapshot.TargetValid != 0U))
+      VisualState = Camera_VisualStateGet(&Snapshot);
+      if (Snapshot.HasFrame != 0U)
+      {
+        (void)snprintf(FrameAge, sizeof(FrameAge), "%lu",
+                       (unsigned long)(uint32_t)(HAL_GetTick() - Snapshot.LastFrameTick));
+      }
+      else
+      {
+        (void)strcpy(FrameAge, "na");
+      }
+      if ((VisualState == CAMERA_VIS_OK) && (Snapshot.HasValidData != 0U))
       {
         ArmConsole_Printf("OK material state=%s calibrated=%u error=%s "
+                          "vision=%s age_source=rx frame_age_ms=%s "
                           "cx=%d cy=%d dx=%d dy=%d seq=%lu\r\n",
                           MaterialVision_StateNameGet(),
                           (unsigned int)MaterialVision_IsCalibrated(),
                           MaterialVision_ErrorNameGet(),
+                          Camera_VisualStateNameGet(VisualState), FrameAge,
                           (int)Snapshot.Data.CX, (int)Snapshot.Data.CY,
                           (int)Snapshot.Data.DX, (int)Snapshot.Data.DY,
                           (unsigned long)Snapshot.Data.Sequence);
@@ -1325,10 +1341,12 @@ static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[]
       else
       {
         ArmConsole_Printf("OK material state=%s calibrated=%u error=%s "
-                          "cx=0 cy=0 dx=0 dy=0 seq=0\r\n",
+                          "vision=%s age_source=rx frame_age_ms=%s "
+                          "cx=na cy=na dx=na dy=na seq=na\r\n",
                           MaterialVision_StateNameGet(),
                           (unsigned int)MaterialVision_IsCalibrated(),
-                          MaterialVision_ErrorNameGet());
+                          MaterialVision_ErrorNameGet(),
+                          Camera_VisualStateNameGet(VisualState), FrameAge);
       }
       if (MaterialVision_CalibrationGet(&Calibration) != 0U)
       {
@@ -1415,25 +1433,6 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
     return 1U;
   }
 
-  if ((TokenCount == 2U) &&
-      ((strcmp(Tokens[0], "chassis") == 0) ||
-       (strcmp(Tokens[0], "wheel") == 0)) &&
-      (strcmp(Tokens[1], "stop") == 0))
-  {
-    if (MechanicalArm_IsBusy() != 0U)
-    {
-      ArmConsole_Write("ERR busy use stop all\r\n");
-    }
-    else if (Mecanum_Test_Stop())
-    {
-      ArmConsole_Write("OK chassis stop request accepted; physical stop unconfirmed\r\n");
-    }
-    else
-    {
-      ArmConsole_Write("ERR motor tx\r\n");
-    }
-    return 1U;
-  }
   if ((TokenCount == 2U) &&
       (strcmp(Tokens[0], "chassis") == 0) &&
       (strcmp(Tokens[1], "backward") == 0))
@@ -2472,12 +2471,6 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   if (ChassisTelemetry_Command(TokenCount, Tokens)) return 1U;
   if (ChassisMotion_IsBusy() || ChassisRoute_IsBusy())
   {
-    if (TokenCount == 2U && !strcmp(Tokens[0], "wheel") && !strcmp(Tokens[1], "stop"))
-    {
-      (void)ChassisRoute_Cancel();
-      ArmConsole_Write("OK chassis stop request accepted; physical stop unconfirmed\r\n");
-      return 1U;
-    }
     if (!strcmp(Tokens[0], "stop")) (void)ChassisRoute_Cancel();
     else if (!((TokenCount == 1U && (!strcmp(Tokens[0], "help") || !strcmp(Tokens[0], "info"))) ||
                (TokenCount == 2U && (!strcmp(Tokens[1], "status") || !strcmp(Tokens[1], "stop") || !strcmp(Tokens[0], "state") || !strcmp(Tokens[0], "position") || !strcmp(Tokens[0], "config"))) ||

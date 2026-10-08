@@ -645,43 +645,6 @@ bool Mecanum_Wheel_Speed_Calc(float forward_mm_s, float left_mm_s, float yaw_rad
 }
 
 /**********************************************************
-*** 麦克纳姆轮正运动学解算
-**********************************************************/
-/**
- * @brief    根据四个车轮速度计算车体前向、横向和旋转速度
- * @param    wheel_mm_s   ：四轮速度数组，顺序为左上、左下、右下、右上
- * @param    forward_mm_s ：返回车体前向速度，单位 mm/s
- * @param    left_mm_s    ：返回车体向左速度，单位 mm/s
- * @param    yaw_rad_s    ：返回车体逆时针角速度，单位 rad/s
- * @retval   true  ：正运动学解算完成
- * @retval   false ：参数指针为空，或轴距/轮距未配置导致无法计算角速度
- */
-bool Mecanum_Body_Speed_Calc(const float wheel_mm_s[MECANUM_WHEEL_COUNT], float *forward_mm_s,
-                             float *left_mm_s, float *yaw_rad_s)
-{
-  float rotation_arm_mm;
-
-  if ((wheel_mm_s == NULL) || (forward_mm_s == NULL) || (left_mm_s == NULL) || (yaw_rad_s == NULL))
-  {
-    return false;
-  }
-
-  *forward_mm_s = (wheel_mm_s[0] + wheel_mm_s[1] + wheel_mm_s[2] + wheel_mm_s[3]) * 0.25f;
-  *left_mm_s = (-wheel_mm_s[0] + wheel_mm_s[1] - wheel_mm_s[2] + wheel_mm_s[3]) * 0.25f;
-
-  rotation_arm_mm = (CHASSIS_WHEELBASE_MM + CHASSIS_TRACK_WIDTH_MM) * 0.5f;
-  if (rotation_arm_mm <= 0.0f)
-  {
-    *yaw_rad_s = 0.0f;
-    return false;
-  }
-
-  *yaw_rad_s =
-      (-wheel_mm_s[0] - wheel_mm_s[1] + wheel_mm_s[2] + wheel_mm_s[3]) / (4.0f * rotation_arm_mm);
-  return true;
-}
-
-/**********************************************************
 *** 距离与步进电机计数换算
 **********************************************************/
 /**
@@ -693,45 +656,6 @@ bool Mecanum_Body_Speed_Calc(const float wheel_mm_s[MECANUM_WHEEL_COUNT], float 
 uint32_t Mecanum_Distance_To_Pulse(float distance_mm)
 {
   return Mecanum_Distance_To_Count(distance_mm, CHASSIS_COMMAND_PULSES_PER_REV);
-}
-
-/**
- * @brief    将车轮行驶距离换算成理论编码器计数
- * @param    distance_mm ：车轮行驶距离，单位 mm，可为负数
- * @retval   对应的理论编码器计数绝对值
- * @note     该结果用于反馈校验，不直接作为 Emm 位置命令的 clk 参数
- */
-uint32_t Mecanum_Distance_To_Encoder(float distance_mm)
-{
-  return Mecanum_Distance_To_Count(distance_mm, CHASSIS_ENCODER_COUNTS_PER_REV);
-}
-
-/**********************************************************
-*** 运动时间估算
-**********************************************************/
-/**
- * @brief    根据测试转速估算车轮完成指定路程需要的时间
- * @param    wheel_distance_mm ：车轮行驶距离，单位 mm，可为负数
- * @retval   理论运动时间，单位 ms；参数无效时返回0
- * @note     仅用于按键测试互锁，不代替电机到位反馈
- */
-uint32_t Mecanum_Move_Time_Calc(float wheel_distance_mm)
-{
-  float wheel_circumference_mm;
-  float motor_revolutions;
-  float move_time_ms;
-
-  wheel_circumference_mm = MECANUM_PI * CHASSIS_WHEEL_DIAMETER_MM;
-  if ((wheel_circumference_mm <= 0.0f) || (CHASSIS_TEST_SPEED_RPM == 0U))
-  {
-    return 0U;
-  }
-
-  motor_revolutions = Mecanum_Get_Abs(wheel_distance_mm) / wheel_circumference_mm;
-  motor_revolutions *= CHASSIS_MOTOR_TO_WHEEL_RATIO;
-  move_time_ms = motor_revolutions * 60000.0f / (float)CHASSIS_TEST_SPEED_RPM;
-
-  return (uint32_t)(move_time_ms + 0.5f);
 }
 
 /**********************************************************

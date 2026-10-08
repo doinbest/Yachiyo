@@ -153,8 +153,21 @@ int main(void)
   advance_clock(last_timeout);ChassisRoute_Process();assert(!strcmp(status().reason,"route_timeout") && stops==1);
   setup();char *fast[]={"chassis","route","start","5000"};assert(ChassisRoute_Command(4,fast));assert(last_timeout==60000);
   setup();fast[3]="5001";assert(ChassisRoute_Command(4,fast));assert(!starts && strstr(reply,"ERR"));
+  assert(strstr(reply,"reason=speed_range") && !strcmp(status().state,"idle"));
   fast[3]="nan";assert(ChassisRoute_Command(4,fast));assert(!starts);
+  assert(strstr(reply,"reason=format"));
   fast[3]="9";assert(ChassisRoute_Command(4,fast));assert(!starts);
+  assert(strstr(reply,"reason=speed_range"));
+  char *invalid[]={"chassis","route","oops"};assert(ChassisRoute_Command(3,invalid));
+  assert(strstr(reply,"ERR") && strstr(reply,"reason=format") && !starts);
+  assert(ChassisRoute_Command(2,invalid));assert(strstr(reply,"reason=format"));
+  char *next[]={"chassis","route","next"};assert(ChassisRoute_Command(3,next));
+  assert(strstr(reply,"reason=next_requires_waiting") && !starts);
+  setup();assert(ChassisRoute_Start());unsigned running_starts=starts;
+  fast[3]="200";assert(ChassisRoute_Command(4,fast));
+  assert(strstr(reply,"ERR") && strstr(reply,"reason=route_reserved"));
+  assert(starts==running_starts && status().segment==1 && !strcmp(status().state,"running"));
+  assert(!strcmp(status().reason,"move"));
   setup();char *automatic[]={"chassis","route","auto","200"};assert(ChassisRoute_Command(4,automatic));
   for(unsigned i=1;i<=15;i++){
     assert(status().segment==i);finish_leg();assert(!strcmp(status().reason,"auto_continue"));unsigned count=starts;

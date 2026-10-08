@@ -125,8 +125,15 @@ HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *uart, uint8_t *data, uin
 void OledUi_NoticeSet(const char *text) { if (!text) notice_clears++; }
 void Camera_SnapshotGet(Camera_SnapshotTypeDef *out) { *out = snapshot; }
 Camera_VisualStateTypeDef Camera_VisualStateGet(const Camera_SnapshotTypeDef *data)
-{ return data->HasValidData ? CAMERA_VIS_OK : CAMERA_VIS_LOST; }
-const char *Camera_VisualStateNameGet(Camera_VisualStateTypeDef state) { return state == CAMERA_VIS_OK ? "Ok" : "Lost"; }
+{
+  if (!data->RequestActive) return CAMERA_VIS_IDLE;
+  if (!data->UsbConfigured) return CAMERA_VIS_OFF;
+  if (!data->HasFrame) return CAMERA_VIS_WAIT;
+  if ((uint32_t)(tick-data->LastFrameTick)>CAMERA_DATA_STALE_MS) return CAMERA_VIS_STALE;
+  return data->TargetValid ? CAMERA_VIS_OK : CAMERA_VIS_LOST;
+}
+const char *Camera_VisualStateNameGet(Camera_VisualStateTypeDef state)
+{ static const char *const names[]={"Idle","Off","Wait","Ok","Lost","Stale"};return names[state]; }
 HAL_StatusTypeDef Camera_RingStart(uint8_t ring)
 { return Camera_MaterialStart((Camera_ColorTypeDef)(9U+ring)); }
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef color)
@@ -298,7 +305,21 @@ int main(void)
   assert(strstr(output,"cx=65535") && strstr(output,"dx=-32768") && strstr(output,"seq=7"));
   assert(strstr(output,"last fn=178 target=2") && strstr(output,"frame_age_ms=20"));
   assert(strstr(output,"protocol=B2 age_source=rx"));
+  command("material status\r");
+  assert(strstr(output,"vision=Ok") && strstr(output,"cx=65535") && strstr(output,"seq=7"));
+  assert(strstr(output,"age_source=rx frame_age_ms=20") && camera_calls==0 && motor_calls==0);
+  tick=4980;
+  command("material status\r");
+  assert(strstr(output,"vision=Stale") && strstr(output,"frame_age_ms=4900"));
+  assert(strstr(output,"cx=na cy=na dx=na dy=na seq=na") && !strstr(output,"cx=65535"));
+  tick=100;
   snapshot.HasValidData=snapshot.TargetValid=0;
+  command("material status\r");
+  assert(strstr(output,"vision=Lost") && strstr(output,"cx=na cy=na") && !strstr(output,"cx=0"));
+  snapshot.HasFrame=0;
+  command("material status\r");assert(strstr(output,"vision=Wait") && strstr(output,"frame_age_ms=na"));
+  snapshot.HasFrame=1;
+  command("help\r");assert(strstr(output,"auto dwell 0ms") && !strstr(output,"after measured revolution"));
   command("camera status\r"); assert(strstr(output,"cx=na cy=na") && !strstr(output,"cx=65535"));
   command("imu status\r");assert(strstr(output,"4294967295") && strstr(output,"-12.50"));
   assert(!ArmConsole_ImuStreamEnabled() && strstr(output,"result=NONE"));
