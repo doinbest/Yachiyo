@@ -17,8 +17,8 @@
 #define OLED_UI_ROWS 8U
 #define OLED_UI_REFRESH_MS 200U
 #define OLED_UI_RETRY_MS 1000U
-#define OLED_UI_SERVO_OPEN_US 500U
-#define OLED_UI_SERVO_CATCH_US 700U
+#define OLED_UI_SERVO_OPEN_US ARM_GRIPPER_OPEN_PULSE_US
+#define OLED_UI_SERVO_CATCH_US ARM_GRIPPER_CATCH_PULSE_US
 
 typedef enum
 {
@@ -176,8 +176,8 @@ static void OledUi_ServoBuild(void)
   (void)snprintf(OledUi_Lines[2], sizeof(OledUi_Lines[2]), "Set:%uus",
                  (unsigned)OledUi_ServoPulseUs);
   (void)strcpy(OledUi_Lines[3], "2:Open 3:Catch");
-  (void)strcpy(OledUi_Lines[4], "Open:500us");
-  (void)strcpy(OledUi_Lines[5], "Catch:700us");
+  (void)snprintf(OledUi_Lines[4], sizeof(OledUi_Lines[4]), "Open:%uus", (unsigned)OLED_UI_SERVO_OPEN_US);
+  (void)snprintf(OledUi_Lines[5], sizeof(OledUi_Lines[5]), "Catch:%uus", (unsigned)OLED_UI_SERVO_CATCH_US);
   (void)snprintf(OledUi_Lines[7], sizeof(OledUi_Lines[7]), "2:- 3:+ 4:Exit 5:%s",
                  OledUi_ServoActive ? "Off" : "On");
 }

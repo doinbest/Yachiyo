@@ -2,15 +2,15 @@
 
 #include "Steer.h"
 
-static const float Arm_GripperIdleDuty = 2.50f;  /* 500 us：待机时松开。 */
-static const float Arm_GripperOpenDuty = 2.50f;  /* 500 us：完全松开。 */
-static const float Arm_GripperCatchDuty = 3.50f; /* 700 us：实测夹取位置。 */
+static const float Arm_GripperIdleDuty = (float)ARM_GRIPPER_OPEN_PULSE_US / 200.0f;
+static const float Arm_GripperOpenDuty = (float)ARM_GRIPPER_OPEN_PULSE_US / 200.0f;
+static const float Arm_GripperCatchDuty = (float)ARM_GRIPPER_CATCH_PULSE_US / 200.0f;
 
 /*
  *函数简介:夹爪状态设置
  *参数说明:Status  夹爪目标状态
  *返回类型:无
- *备注:50Hz PWM下，待机/松开为500us，抓紧为700us
+ *备注:50Hz PWM下，待机/松开为2500us(12.5%)，抓紧为1920us(9.6%)
  */
 void Arm_GripperSet(Arm_GripperStatusTypeDef Status)
 {

@@ -17,9 +17,10 @@ test('old firmware uses ASCII lines with CRLF, never the newer # protocol', () =
 test('gripper presets show the calibrated pulse widths and keep the wire commands', () => {
   assert.equal(buildCommand('grip-open'), 'grip open');
   assert.equal(buildCommand('grip-catch'), 'grip catch');
-  assert.match(commands.find(c => c.id === 'grip-open').label, /500 µs/);
-  assert.match(commands.find(c => c.id === 'grip-catch').label, /700 µs/);
-  assert.equal(commands.find(c => c.id === 'grip-duty').fields[0].value, 2.5);
+  assert.match(commands.find(c => c.id === 'grip-open').label, /2500 µs/);
+  assert.match(commands.find(c => c.id === 'grip-catch').label, /1920 µs/);
+  assert.equal(commands.find(c => c.id === 'grip-duty').fields[0].value, 9.6);
+  assert.match(commands.find(c => c.id === 'grip-duty').note, /1920 µs = 9.6%/);
 });
 test('reject missing distance, injection, too-long lines and non-finite values', () => {
   for (const value of ['', 'NaN', 'Infinity', '0', '201', '1.5'])

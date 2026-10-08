@@ -6,7 +6,7 @@ import {mountStacking} from './stack-panel.mjs?v=stack-20261008';
 let stackingPanel;
 import {createAttemptTracker} from './command-attempt.mjs?v=terminal-3';
 import {mountPreparation} from './route-preparation.mjs?v=route-20260925';
-import {commands,buildCommand,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText} from './protocol.mjs?v=calibration-20261009';
+import {commands,buildCommand,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText} from './protocol.mjs?v=gripper-20261009';
 import {BridgeLink,readOnlyCommand,scopedStopCommand} from './bridge.mjs?v=calibration-20261009';
 import {mountMap} from './map-view.mjs?v=route-20260925';
 import {mountQr} from './qr-panel.mjs?v=bridge-1';
@@ -288,7 +288,7 @@ function buildRingPanel(body){
   ring.append(node('h2','编号环放置','vision-title'),node('p','粗加工区 · 先对准编号环，再手动装料放置。','form-note'));
   ring.append(controlForm('grab-ring-align',{compact:true,label:'1 · 视觉对准',executeLabel:'对准后抬高',alternateCommand:{id:'grab-ring-align-stay',label:'对准后保持低位'},note:'先横向接近，再随环心接近准心逐步下降；靠画面边缘时暂缓下降。两个按钮共用上方高度：抬高用于装料，保持低位用于观察识别，完成后均停止运动纠偏。'}));
   const load=node('section',undefined,'vision-card ring-load');load.append(node('h3','2 · 手动装料'),node('p','对准完成、Z抬至最高后，放入物料并闭合夹爪。','form-note'));
-  actions(load,[['grip-open','打开夹爪'],['grip-catch','闭合夹爪']]);ring.append(load);
+  actions(load,[['grip-open','打开夹爪 · 2500 µs'],['grip-catch','闭合夹爪 · 1920 µs']]);ring.append(load);
   ring.append(controlForm('grab-ring-place',{compact:true,label:'3 · 下降放置',executeLabel:'下降、松爪并提起',note:'按所设绝对高度下降，松爪后自动提起。'}));
   ring.append(node('p','“停止并退出”结束当前测试；再次放置前需重新对准。','form-note'));body.append(ring);
 }
@@ -367,7 +367,7 @@ function renderGrabStatus(){
 }
 
 function buildPages(){for(const key of Object.keys(titles).filter(x=>x!=='map')){pages[key]=node('div');pages[key].dataset.page=key;pages[key].hidden=true;$('module-content').append(pages[key]);}
-const arm=pages.arm;arm.append(node('p','先选择电机轴，再使能并执行相对运动。夹爪独立控制。','form-note'));arm.append(node('small','当前对象'));const picker=node('div',undefined,'axis-picker');for(const [value,label] of [['base','底座 Base'],['z','升降 Z'],['x','伸缩 X'],['all','全部轴']]){const b=node('button',label);b.classList.toggle('active',value===axis);b.setAttribute('aria-pressed',String(value===axis));b.onclick=()=>{axis=value;picker.querySelectorAll('button').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b));});updateControls();};picker.append(b);}arm.append(picker);actions(arm,[['enable','使能',{},true],['disable','失能',{},true],['state','读取状态',{},true],['stop','停止所选轴',{},true]]);arm.append(controlForm('pos',{sharedAxis:true}));const grip=node('div',undefined,'grip-row');grip.append(node('h3','夹爪'));actions(grip,[['grip-open','打开 · 500 µs'],['grip-catch','夹取 · 700 µs']]);arm.append(grip);arm.append(parameterLink('调整运动参数','motion','base_rpm','机械臂与夹爪'));advanced(arm,'回零与零点',['home','origin','zero']);
+const arm=pages.arm;arm.append(node('p','先选择电机轴，再使能并执行相对运动。夹爪独立控制。','form-note'));arm.append(node('small','当前对象'));const picker=node('div',undefined,'axis-picker');for(const [value,label] of [['base','底座 Base'],['z','升降 Z'],['x','伸缩 X'],['all','全部轴']]){const b=node('button',label);b.classList.toggle('active',value===axis);b.setAttribute('aria-pressed',String(value===axis));b.onclick=()=>{axis=value;picker.querySelectorAll('button').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b));});updateControls();};picker.append(b);}arm.append(picker);actions(arm,[['enable','使能',{},true],['disable','失能',{},true],['state','读取状态',{},true],['stop','停止所选轴',{},true]]);arm.append(controlForm('pos',{sharedAxis:true}));const grip=node('div',undefined,'grip-row');grip.append(node('h3','夹爪'));actions(grip,[['grip-open','打开 · 2500 µs'],['grip-catch','夹取 · 1920 µs']]);arm.append(grip);arm.append(parameterLink('调整运动参数','motion','base_rpm','机械臂与夹爪'));advanced(arm,'回零与零点',['home','origin','zero']);
 const carTray=node('section',undefined,'car-turntable-controls');
 carTray.append(node('h3','车载转盘 · ID 8'),node('p','与机械臂轴选择独立。首次设零：失能 → 手动对齐第一仓 → 使能 → 保存机械零点。以后点击就近回零，完成后自动恢复第一仓参考。','form-note'));
 actions(carTray,[['turntable-enable','使能转盘'],['turntable-disable','失能转盘'],['turntable-status','读取转盘状态'],['turntable-stop','停止转盘'],['turntable-save_zero','保存机械零点'],['turntable-home','就近回零']]);

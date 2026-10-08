@@ -3,6 +3,10 @@
 
 #include "main.h"
 
+/* 用户2026-10-09反装舵机实测；50Hz PWM，单位us。 */
+#define ARM_GRIPPER_OPEN_PULSE_US 2500U
+#define ARM_GRIPPER_CATCH_PULSE_US 1920U
+
 typedef enum
 {
   ARM_GRIPPER_IDLE = 0,
