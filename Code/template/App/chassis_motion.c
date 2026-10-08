@@ -11,7 +11,23 @@
 #include <string.h>
 
 static ChassisMotion_Status_t Motion;
-static Mecanum_HeadingPid_t HeadingPid;
+/* Every heading task uses the same proportional law (deg -> rad/s).
+ * The old public generic PID had no integral/derivative consumers. */
+static struct { float target_yaw_deg, output_limit, output_rad_s; } HeadingPid;
+static uint8_t DriverAcceleration;
+static uint32_t TaskStopSequence;
+static bool HoldTask;
+static ChassisMotion_HoldStatus_t HoldStatus;
+static bool request_stop(const char *reason, bool error);
+static void hold_status_refresh(void);
+static float heading_update(float current)
+{
+  float error = fmodf(HeadingPid.target_yaw_deg-current,360.0f);
+  if (error>180.0f) error-=360.0f;
+  if (error<-180.0f) error+=360.0f;
+  return fmaxf(-HeadingPid.output_limit, fminf(HeadingPid.output_limit,
+                                           CHASSIS_HEADING_TEST_KP*error));
+}
 static bool WaitingForStop, FinishAsError, ManualRamp, HaveYaw, DistanceBraking;
 static uint32_t LastControlTick, StopRampTick, StopRampMs, LastYawCount, PidSampleCount,
     PidSampleTick, TurnRampTick;
@@ -104,6 +120,8 @@ void ChassisMotion_Init(void)
   StopQuietGroups = 0;
   memset(&HeadingPid, 0, sizeof(HeadingPid));
   Motion.reason = "idle";
+  HoldTask=false;DriverAcceleration=0;
+  memset(&HoldStatus,0,sizeof HoldStatus);HoldStatus.reason="idle";
   Motion.rpm_scale = 1;
   MapVx = MapVy = 0;
   StableGroups = 0;
@@ -129,14 +147,14 @@ void ChassisMotion_StatusGet(ChassisMotion_Status_t *s)
   if (s != NULL)
     *s = Motion;
 }
-static bool target_valid(const ChassisMotion_Target_t *t)
+static bool target_valid(const ChassisMotion_Target_t *t, bool indefinite)
 {
   uint32_t total;
   if (t == NULL || !isfinite(t->vx_mm_s) || !isfinite(t->vy_mm_s) || !isfinite(t->omega_rad_s) ||
       !isfinite(t->heading_deg))
     return false;
   if (hypotf(t->vx_mm_s, t->vy_mm_s) > CHASSIS_MOTION_MAX_LINEAR_MM_S ||
-      fabsf(t->omega_rad_s) > CHASSIS_MOTION_MAX_OMEGA_RAD_S)
+      fabsf(t->omega_rad_s) > (indefinite ? 2.0f*CHASSIS_MODEL_PI : CHASSIS_MOTION_MAX_OMEGA_RAD_S))
     return false;
   if (t->mode != CHASSIS_MOTION_ANGULAR_VELOCITY && t->mode != CHASSIS_MOTION_HEADING &&
       t->mode != CHASSIS_MOTION_HOLD_CURRENT)
@@ -147,9 +165,9 @@ static bool target_valid(const ChassisMotion_Target_t *t)
       t->hold_ms > CHASSIS_MOTION_MAX_DURATION_MS || t->stop_ms > CHASSIS_MOTION_MAX_DURATION_MS)
     return false;
   total = t->transition_ms + t->hold_ms + t->stop_ms;
-  return total >= CHASSIS_MOTION_PERIOD_MS && total <= CHASSIS_MOTION_MAX_DURATION_MS;
+  return indefinite || (total >= CHASSIS_MOTION_PERIOD_MS && total <= CHASSIS_MOTION_MAX_DURATION_MS);
 }
-bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
+static bool start(const ChassisMotion_Target_t *t, bool indefinite)
 {
   uint32_t now = HAL_GetTick();
   Mecanum_Status_t bus;
@@ -160,7 +178,7 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
     Motion.reason = "route_reserved";
     return false;
   }
-  if (!target_valid(t))
+  if (!target_valid(t, indefinite))
   {
     Motion.reason = "invalid_target";
     return false;
@@ -193,6 +211,10 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
     return false;
   }
   Motion.distance_mode = Motion.turn_only = Motion.stop_confirmed = false;
+  Motion.indefinite_velocity = indefinite;
+  hold_status_refresh();
+  DriverAcceleration=0;HoldTask=false;
+  TaskStopSequence=bus.stop_sequence;
   Motion.requested = *t;
   Motion.requested.heading_deg = wrap_deg(t->heading_deg);
   if (t->mode == CHASSIS_MOTION_HOLD_CURRENT)
@@ -209,13 +231,92 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
   WaitingForStop = FinishAsError = ManualRamp = DistanceBraking = false;
   if (t->mode != CHASSIS_MOTION_ANGULAR_VELOCITY)
   {
-    Mecanum_HeadingPid_Init(&HeadingPid, CHASSIS_HEADING_TEST_KP, 0, 0,
-                            CHASSIS_MOTION_PERIOD_MS / 1000.0f, 0, CHASSIS_HEADING_TEST_OUTPUT_LIMIT);
-    Mecanum_HeadingPid_Set_Target(&HeadingPid, Motion.requested.heading_deg);
+    HeadingPid.output_limit=CHASSIS_HEADING_TEST_OUTPUT_LIMIT;
+    HeadingPid.output_rad_s=0;
+    HeadingPid.target_yaw_deg=Motion.requested.heading_deg;
     PidSampleTick = Motion.heading_sample_tick;
     PidSampleCount = LastYawCount;
   }
   return true;
+}
+bool ChassisMotion_Start(const ChassisMotion_Target_t *t) { return start(t,false); }
+/* This sends one initial snapshot, then the shared task process refreshes it. */
+static bool immediate_command(void)
+{
+  ChassisModel_Velocity_t body = {Motion.requested.vx_mm_s,Motion.requested.vy_mm_s,
+                                  Motion.requested.omega_rad_s};
+  ChassisModel_Wheels_t wheels;
+  unsigned i;
+  if (!ChassisModel_Inverse(&Geometry,&body,CHASSIS_MOTION_MAX_WHEEL_RPM,&wheels) ||
+      !Mecanum_Velocity_Request(body.vx_mm_s*wheels.scale,body.vy_mm_s*wheels.scale,
+                               body.omega_rad_s*wheels.scale,DriverAcceleration))
+  { request_stop("velocity_rejected",true);return false; }
+  Motion.body_target=body;
+  Motion.body_target.vx_mm_s*=wheels.scale;
+  Motion.body_target.vy_mm_s*=wheels.scale;
+  Motion.body_target.omega_rad_s*=wheels.scale;
+  Motion.rpm_scale=wheels.scale;
+  for(i=0;i<4;i++) {Motion.rpm_unquantized[i]=wheels.rpm[i];Motion.rpm_command[i]=wheels.command[i];}
+  return true;
+}
+bool ChassisMotion_VelocityStart(float vx,float vy,float omega)
+{
+  ChassisMotion_Target_t target;
+  memset(&target,0,sizeof target);
+  target.vx_mm_s=vx;target.vy_mm_s=vy;target.omega_rad_s=omega;
+  if(!start(&target,true)) return false;
+  DriverAcceleration=CHASSIS_VELOCITY_ACCELERATION;
+  return immediate_command();
+}
+bool ChassisMotion_VelocityUpdate(float vx,float vy,float omega)
+{
+  ChassisMotion_Target_t target=Motion.requested;
+  Mecanum_Status_t bus;
+  Mecanum_StatusGet(&bus);
+  if(bus.stop_pending || bus.stop_sequence!=TaskStopSequence) return false;
+  if(!Motion.indefinite_velocity || Motion.state!=CHASSIS_MOTION_RUNNING || WaitingForStop)
+    return false;
+  target.vx_mm_s=vx;target.vy_mm_s=vy;target.omega_rad_s=omega;
+  if(!target_valid(&target,true)) return false;
+  Motion.requested=target;
+  return immediate_command();
+}
+bool ChassisMotion_HoldStart(float forward,uint32_t duration)
+{
+  ChassisMotion_Target_t target;
+  if(ChassisMotion_IsBusy())
+  { if(!HoldTask) HoldStatus.reason="chassis_busy";return false; }
+  hold_status_refresh();HoldTask=false;
+  if(!isfinite(forward) || fabsf(forward)>100 || duration<1000 || duration>10000)
+  { HoldStatus.reason="range";return false; }
+  memset(&target,0,sizeof target);
+  target.vx_mm_s=forward;target.mode=CHASSIS_MOTION_HOLD_CURRENT;target.hold_ms=duration;
+  if(!start(&target,false))
+  {
+    HoldStatus.reason=!strcmp(Motion.reason,"imu_invalid")?"imu_not_verified":
+        (!strcmp(Motion.reason,"busy")?(HWT101_Cal_IsBusy()?"imu_busy":"chassis_busy"):Motion.reason);
+    return false;
+  }
+  DriverAcceleration=CHASSIS_VELOCITY_ACCELERATION;HoldTask=true;
+  return immediate_command();
+}
+static void hold_status_refresh(void)
+{
+  if(HoldTask)
+  {
+    HoldStatus.active=ChassisMotion_IsBusy() && !WaitingForStop;
+    HoldStatus.reason=!strcmp(Motion.reason,"timed_complete")?"complete":
+        (!strcmp(Motion.reason,"cancelled")?"stopped":Motion.reason);
+    HoldStatus.target_deg=Motion.requested.heading_deg;
+    HoldStatus.current_deg=Motion.current_deg;
+    HoldStatus.output_rad_s=Motion.body_target.omega_rad_s;
+    if(!ChassisMotion_IsBusy()) HoldTask=false;
+  }
+}
+void ChassisMotion_HoldStatusGet(ChassisMotion_HoldStatus_t *out)
+{
+  hold_status_refresh();
+  if(out) *out=HoldStatus;
 }
 bool ChassisMotion_MoveTo(float x, float y, float yaw, float speed, uint32_t timeout)
 {
@@ -542,8 +643,7 @@ static bool distance_heading_command(ChassisModel_Velocity_t *command)
     if(elapsed>CHASSIS_MOTION_MAX_GAP_MS) return false;
     if(elapsed)
     {
-      HeadingPid.sample_time_s=elapsed/1000.0f;
-      HeadingPid.output_rad_s=Mecanum_HeadingPid_Update(&HeadingPid,Motion.current_deg);
+      HeadingPid.output_rad_s=heading_update(Motion.current_deg);
       PidSampleTick=Motion.heading_sample_tick;PidSampleCount=LastYawCount;
     }
   }
@@ -614,6 +714,10 @@ void ChassisMotion_Process(void)
   if (!ChassisMotion_IsBusy())
     return;
   Mecanum_StatusGet(&bus);
+  /* A bus-level emergency stop cancels the owning task as well. It must never
+   * be followed by another refresh of the previous indefinite target. */
+  if (!WaitingForStop && bus.stop_sequence!=TaskStopSequence)
+  { request_stop("cancelled",false);return; }
   if (bus.stage == MECANUM_STAGE_FAULT)
   {
     if (WaitingForStop)
@@ -686,7 +790,7 @@ void ChassisMotion_Process(void)
           if(Motion.turn_only && (uint32_t)(now-Motion.start_tick)<DistanceTimeout && !bus.locked)
           {
             MapVx=MapVy=0;HeadingPid.output_rad_s=0;
-            WaitingForStop=false;Motion.stop_confirmed=false;
+            WaitingForStop=false;Motion.stop_confirmed=false;TaskStopSequence=bus.stop_sequence;
             LastControlTick=TurnRampTick=now;
             PidSampleTick=Motion.heading_sample_tick;PidSampleCount=LastYawCount;
             Motion.state=CHASSIS_MOTION_RUNNING;Motion.reason="heading_correcting";
@@ -698,7 +802,7 @@ void ChassisMotion_Process(void)
              (uint32_t)(now-Motion.start_tick)<DistanceTimeout && !bus.locked)
           {
             DistanceCorrections++;MapVx=MapVy=0;HeadingPid.output_rad_s=0;
-            WaitingForStop=false;Motion.stop_confirmed=false;
+            WaitingForStop=false;Motion.stop_confirmed=false;TaskStopSequence=bus.stop_sequence;
             LastControlTick=now;PidSampleTick=Motion.heading_sample_tick;PidSampleCount=LastYawCount;
             Motion.state=CHASSIS_MOTION_RUNNING;Motion.reason="position_correcting";
             return;
@@ -710,6 +814,7 @@ void ChassisMotion_Process(void)
       }
       Motion.state = FinishAsError ? CHASSIS_MOTION_ERROR : CHASSIS_MOTION_DONE;
       WaitingForStop = false;
+      hold_status_refresh();
     }
     return;
   }
@@ -734,7 +839,10 @@ void ChassisMotion_Process(void)
     return;
   }
   dt = (uint32_t)(now - LastControlTick);
-  if (dt > CHASSIS_MOTION_MAX_GAP_MS)
+  /* Legacy direct velocity/hold do not integrate a motion ramp. Preserve their
+   * continuity through a short scheduling gap; hold still checks fresh IMU and
+   * its real elapsed duration. Planned trajectories retain their existing gap check. */
+  if (dt > CHASSIS_MOTION_MAX_GAP_MS && !Motion.indefinite_velocity && !HoldTask)
   {
     Motion.control_dt_ms = dt;
     request_stop("control_gap", true);
@@ -769,14 +877,14 @@ void ChassisMotion_Process(void)
   {
     stop_start = Motion.requested.transition_ms + Motion.requested.hold_ms;
     total = stop_start + Motion.requested.stop_ms;
-    if (elapsed >= total)
+    if (!Motion.indefinite_velocity && elapsed >= total)
     {
       request_stop("timed_complete", false);
       return;
     }
     if (elapsed < Motion.requested.transition_ms)
       factor = half_cosine((float)elapsed / Motion.requested.transition_ms);
-    else if (elapsed >= stop_start)
+    else if (!Motion.indefinite_velocity && elapsed >= stop_start)
     {
       factor = 1 - half_cosine((float)(elapsed - stop_start) / Motion.requested.stop_ms);
       Motion.state = CHASSIS_MOTION_STOPPING;
@@ -789,15 +897,14 @@ void ChassisMotion_Process(void)
       if (LastYawCount != PidSampleCount)
       {
         uint32_t sample_dt = (uint32_t)(Motion.heading_sample_tick - PidSampleTick);
-        if (sample_dt > CHASSIS_MOTION_MAX_GAP_MS)
+        if (sample_dt > CHASSIS_MOTION_MAX_GAP_MS && !HoldTask)
         {
           request_stop("heading_gap", true);
           return;
         }
         if (sample_dt > 0)
         {
-          HeadingPid.sample_time_s = sample_dt / 1000.0f;
-          heading_output = Mecanum_HeadingPid_Update(&HeadingPid, Motion.current_deg);
+          heading_output = heading_update(Motion.current_deg);
           if (!isfinite(heading_output))
           {
             request_stop("heading_invalid", true);
@@ -826,7 +933,7 @@ void ChassisMotion_Process(void)
     Motion.rpm_unquantized[i] = wheels.rpm[i];
     Motion.rpm_command[i] = wheels.command[i];
   }
-  if (!Mecanum_Velocity_Request(command.vx_mm_s, command.vy_mm_s, command.omega_rad_s, 0))
+  if (!Mecanum_Velocity_Request(command.vx_mm_s, command.vy_mm_s, command.omega_rad_s, DriverAcceleration))
   {
     request_stop("velocity_rejected", true);
     return;

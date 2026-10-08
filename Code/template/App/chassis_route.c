@@ -135,7 +135,6 @@ static bool start_at_speed(float speed, bool automatic, bool planned)
   StartOrigin=Position.origin;StartUnits=Position.units_per_rev;
   return submit(0);
 }
-bool ChassisRoute_Start(void) { return start_at_speed(CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,false,false); }
 bool ChassisRoute_PlanStart(const RadarPlan_t *plan, float speed, bool station_mode)
 {
   unsigned i;
@@ -151,7 +150,7 @@ bool ChassisRoute_PlanStart(const RadarPlan_t *plan, float speed, bool station_m
   Stations=station_mode;
   return true;
 }
-bool ChassisRoute_StationStart(float speed)
+static bool station_start(float speed)
 {
   if (!start_at_speed(speed,true,false)) return false;
   Stations=true;
@@ -161,7 +160,7 @@ bool ChassisRoute_TaskStart(const RadarPlan_t *plan,float speed)
 {
   bool ok;
   RequestTask=true;
-  ok=plan?ChassisRoute_PlanStart(plan,speed,true):ChassisRoute_StationStart(speed);
+  ok=plan?ChassisRoute_PlanStart(plan,speed,true):station_start(speed);
   RequestTask=false;
   return ok;
 }
@@ -206,7 +205,7 @@ bool ChassisRoute_StationFinish(void)
   Route.state="done";Route.reason="station_handoff";Stations=false;
   return true;
 }
-bool ChassisRoute_Next(void)
+static bool route_next(void)
 {
   if(Automatic || !Route.state || strcmp(Route.state,"waiting")) return false;
   ChassisRoute_Process();
@@ -354,7 +353,7 @@ bool ChassisRoute_Command(unsigned n,char *t[])
       if(!strcmp(t[2],"next"))
       {
         if(Automatic || !Route.state || strcmp(Route.state,"waiting")) reject="next_requires_waiting";
-        else {reject=NULL;ok=ChassisRoute_Next();}
+        else {reject=NULL;ok=route_next();}
       }
       else if(!strcmp(t[2],"cancel")) {ok=ChassisRoute_Cancel();reject="stop_failed";}
       else if(!strcmp(t[2],"status")) ok=true;

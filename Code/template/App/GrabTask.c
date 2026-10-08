@@ -51,7 +51,7 @@ enum { DEFAULT_INIT=1, DEFAULT_X_HOME=2, DEFAULT_Z_HOME=4, DEFAULT_VISUAL=8 };
 static const char *const States[] = {"idle","prepare","acquire","align","settle",
   "descend","close","lift","turn","place","release","retract","hold","stopping","error","homing","vision_pause","vision_grace",
   "x_retract","index","car_extend","return_turn","external_extend","observe_z","observe_x","complete",
-  "track_observe","track_match","track_follow","track_pause","route_pose","manual_z"};
+  "track_observe","track_match","track_follow","track_pause","route_pose","manual_z","material_search","calibration"};
 typedef struct
 {
   float mm, speed, target, signed_speed;
@@ -196,6 +196,8 @@ static float clamp(float value, float low, float high)
 static bool fixed_mode(void) { return strcmp(Status.mode, "fixed") == 0; }
 static bool RingTest, RingPlaceActive;
 static bool StaticAlignTest;
+static bool MaterialTask, MaterialCalibration, MaterialReferenceConfirmed;
+static unsigned MaterialLockCount;
 /* Fixed image displacement for manual stacking only. Camera/ref_u/ref_v stay unchanged.
  * User's measured red point minus green reference: CX +39, CY +1 (DY -1). */
 #define GRAB_STACK_COMP_DX 39
@@ -362,6 +364,7 @@ void GrabTask_Init(void)
   Status.reference_cause="boot_pending";
   RingTest=RingPlaceActive=RingLowerSent=RingRaise=RingApproachStarted=false;
   StaticAlignTest=false;
+  MaterialTask=MaterialCalibration=MaterialReferenceConfirmed=false;MaterialLockCount=0;
   StackTest=StackCompensating=false;
   RingStayLow=false;
   RingApproachSequence=RingLowerTick=0;
@@ -421,6 +424,7 @@ static void stop_begin(void)
 static void fault(const char *reason)
 {
   if(Status.state==GRAB_STOPPING || Status.state==GRAB_ERROR) return;
+  if(MaterialCalibration) MaterialVision_CalibrationCancel();
   loss_finish(HAL_GetTick());
   RecoveryWaiting=RecoveryRestartPending=false; RecoveryCount=0;
   invalidate_inventory(); Status.result="failed";
@@ -430,6 +434,7 @@ static void fault(const char *reason)
 void GrabTask_Stop(void)
 {
   if(BootActive) { boot_stop("home_cancelled",false); return; }
+  if(MaterialCalibration) MaterialVision_CalibrationCancel();
   if(Status.state==GRAB_IDLE || Status.state==GRAB_COMPLETE) return;
   loss_finish(HAL_GetTick());
   RecoveryWaiting=RecoveryRestartPending=false; RecoveryCount=0;
@@ -476,6 +481,7 @@ static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOpera
 {
   HWT101_Angle_t angle; Mecanum_Status_t bus; const char *missing;
   if(GrabTask_IsBusy()) return false;
+  MaterialTask=MaterialCalibration=false;MaterialLockCount=0;
   Mecanum_TrackingTiming(false,0); TrackMoving=false;
   /* A rejected request must still identify the requested mode in its diagnostic. */
   if(!valid_mode(mode)) { Status.reason="invalid_mode"; Status.missing="mode"; return false; }
@@ -550,6 +556,44 @@ bool GrabTask_AlignStart(uint8_t target,float z,bool stay)
   Status.operation=ring?"ring_align":"color_align";Status.scene=ring?"rough":"none";
   return true;
 }
+bool GrabTask_MaterialReferenceValid(void)
+{ return MaterialReferenceConfirmed; }
+bool GrabTask_MaterialReferenceSet(void)
+{
+  if(GrabTask_IsBusy() || MechanicalArm_IsBusy() || ChassisRoute_IsBusy() ||
+     ChassisMotion_IsBusy() || Mecanum_IsBusy() || Turntable_IsBusy()) return false;
+  MaterialReferenceConfirmed=true;
+  /* Manual confirmation restores only a missing observation model, never an
+   * existing measured/custom model. Mechanical scales/bounds remain untouched. */
+  if(!isfinite(Config[C_REF_U]) || !isfinite(Config[C_J00])) visual_defaults_restore();
+  Status.reference_cause="observation_pose_confirmed";
+  return true;
+}
+bool GrabTask_MaterialActive(void) { return MaterialTask; }
+bool GrabTask_MaterialCalibrating(void)
+{ return MaterialTask && MaterialCalibration && (Status.state==GRAB_PREPARE || Status.state==GRAB_CALIBRATION); }
+bool GrabTask_VisualResponseSet(float fdx,float fdy,float xdx,float xdy)
+{
+  float degree_per_mm=Config[C_X_PPM]*360.0f/3200.0f;
+  float j02=xdx*degree_per_mm,j12=xdy*degree_per_mm;
+  if(!isfinite(fdx) || !isfinite(fdy) || !isfinite(j02) || !isfinite(j12) ||
+     degree_per_mm<=0 || fabsf(fdx)>10000 || fabsf(fdy)>10000 ||
+     fabsf(j02)>10000 || fabsf(j12)>10000 ||
+     fabsf(fdx*j12-fdy*j02)<.0001f) return false;
+  Config[C_J00]=fdx;Config[C_J10]=fdy;Config[C_J02]=j02;Config[C_J12]=j12;
+  VisualModelCustom=true;
+  return true;
+}
+bool GrabTask_MaterialStart(uint8_t color,bool calibration)
+{
+  if(!GrabTask_MaterialReferenceValid()) { Status.reason="ref_required";return false; }
+  if(!start_operation("align",(Camera_ColorTypeDef)color,OP_ALIGN,SCENE_RAW,0)) return false;
+  MaterialTask=true;MaterialCalibration=calibration;
+  Status.operation=calibration?"calibration":"material_align";
+  /* The confirmed observation pose is already in place. PREPARE only verifies
+   * standstill/feedback; it does not open the claw or reposition any arm axis. */
+  return true;
+}
 static bool start_with_color(const char *mode,Camera_ColorTypeDef color)
 {
   if(!strcmp(mode,"align"))return GrabTask_AlignStart((uint8_t)color,Config[C_Z_OBSERVE],true);
@@ -596,6 +640,7 @@ bool GrabTask_PoseStart(bool work)
   if(ChassisMotion_IsBusy() && (!work || !RearPose))
   { Status.reason="busy";return false; }
   PoseWork=work;PoseStep=0;PollIndex=0;
+  MaterialTask=MaterialCalibration=false;
   Status.mode="fixed";Status.operation="pose";Status.scene="none";
   Status.result="pending";Status.reason=work?"preparing_work":"preparing_travel";
   Status.missing="none";
@@ -733,6 +778,7 @@ uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
     TrackXDispatch.transmitted=true;TrackXDispatch.acknowledged=event->Acknowledged!=0;
   }
   if(BootActive) return boot_event(event);
+  if(Status.state==GRAB_CALIBRATION && MaterialVision_CalibrationEvent(event)) return 1;
   if(PendingAction==MECHANICAL_ARM_ACTION_NONE || event->Action!=PendingAction || event->Axis!=PendingAxis)
   {
     /* Observe reference changes from console AND legacy tasks without consuming
@@ -1028,9 +1074,18 @@ static void visual_stability(uint32_t now)
   CaptureCount++;
   VisualStable=CaptureCount>=Config[C_FRAMES] && now-StableTick>=Config[C_STABLE_MS];
 }
+/* Static alignment and prediction tracking share the same physical output:
+ * software profiles are already computed, so no second task/ramp is inserted. */
+static bool visual_velocity_request(float forward,float left,float heading,float current)
+{
+  float error=fmodf(heading-current+540,360)-180;
+  float yaw=clamp(error*CHASSIS_HEADING_TEST_KP,
+    -CHASSIS_HEADING_TEST_OUTPUT_LIMIT,CHASSIS_HEADING_TEST_OUTPUT_LIMIT);
+  return Mecanum_Velocity_Request(forward,left,yaw,CHASSIS_VELOCITY_ACCELERATION);
+}
 static void align_control(uint32_t now)
 {
-  float v[3], dt, delta, gain=1, xnext, error, yaw; unsigned i; HWT101_Angle_t angle;
+  float v[3], dt, delta, gain=1, xnext; unsigned i; HWT101_Angle_t angle;
   Mecanum_Status_t bus;
   bool grace=Status.state==GRAB_VISION_GRACE;
   if(now-LastControl<GRAB_CONTROL_PERIOD_MS || (!FreshVision && !grace)) return;
@@ -1062,9 +1117,7 @@ static void align_control(uint32_t now)
   for(i=0;i<3;i++) v[i]=PreviousVelocity[i]+gain*(v[i]-PreviousVelocity[i]);
   xnext=clamp(XIntegral+v[2]*dt,Config[C_X_MIN],Config[C_X_MAX]);
   xnext=clamp(xnext,Axes[0].mm-align_parameter(C_LEAD),Axes[0].mm+align_parameter(C_LEAD));
-  error=fmodf(Heading-angle.yaw*CHASSIS_HEADING_TEST_YAW_SIGN+540,360)-180;
-  yaw=clamp(error*CHASSIS_HEADING_TEST_KP,-CHASSIS_HEADING_TEST_OUTPUT_LIMIT,CHASSIS_HEADING_TEST_OUTPUT_LIMIT);
-  if(!Mecanum_Velocity_Request(v[0],v[1],yaw,CHASSIS_VELOCITY_ACCELERATION))
+  if(!visual_velocity_request(v[0],v[1],Heading,angle.yaw*CHASSIS_HEADING_TEST_YAW_SIGN))
   { Mecanum_Status_t bus; Mecanum_StatusGet(&bus); if(bus.locked || bus.stage==MECANUM_STAGE_FAULT) fault("chassis_tx"); return; }
   Status.forward_mm_s=v[0]; Status.left_mm_s=v[1]; memcpy(PreviousVelocity,v,sizeof v);
   if(StaticAlignTest && !grace && !RingApproachStarted)
@@ -1316,6 +1369,17 @@ void GrabTask_Process(void)
   if(!GrabTask_IsBusy()) return;
   Status.elapsed_ms=now-StartTick;
   if(BootActive) { boot_process(now); return; }
+  if(Status.state==GRAB_CALIBRATION)
+  {
+    (void)wheels(now);
+    if(Status.state!=GRAB_CALIBRATION) return;
+    MaterialVision_CalibrationProcess();
+    if(MaterialVision_StateGet()==MATERIAL_VISION_STATE_ERROR)
+      fault(MaterialVision_ErrorNameGet());
+    else if(MaterialVision_StateGet()==MATERIAL_VISION_STATE_ALIGNED)
+    { Status.reason="calibrated";Status.result="calibrated";enter(GRAB_COMPLETE); }
+    return;
+  }
   if(Status.state==GRAB_ROUTE_POSE) { pose_process(now);return; }
   /* No elapsed-time cutoff for task stages. Advance on feedback or explicit stop. */
   if(Status.state==GRAB_PREPARE && !FeedbackSelected)
@@ -1364,6 +1428,28 @@ void GrabTask_Process(void)
         if(Axes[1].mm<Config[C_Z_MIN]-Config[C_POS_TOL] || Axes[1].mm>Config[C_Z_MAX]+Config[C_POS_TOL] ||
           (Axes[0].mm<Config[C_X_MIN]-Config[C_POS_TOL] || Axes[0].mm>Config[C_X_MAX]+Config[C_POS_TOL]))
         { fault("initial_axis_limit"); return; }
+        if(MaterialTask)
+        {
+          HAL_StatusTypeDef result;
+          ObserveX=Axes[0].target=XIntegral=Axes[0].mm;ObserveZ=Axes[1].mm;
+          if(MaterialCalibration)
+          {
+            /* This sampler extends X by five motor degrees. Check the actual
+             * confirmed starting position against the existing X boundary. */
+            if(Axes[0].mm+5*3200/(360*Config[C_X_PPM])>Config[C_X_MAX])
+            { fault("calibration_x_limit");return; }
+            MaterialVision_ResultTypeDef begin=MaterialVision_CalibrationBegin(ActiveColor);
+            if(begin==MATERIAL_VISION_RESULT_OK) enter(GRAB_CALIBRATION);
+            else if(begin!=MATERIAL_VISION_RESULT_BUSY) fault(MaterialVision_ErrorNameGet());
+            return;
+          }
+          result=request_target();
+          if(result==HAL_OK)
+          { Camera_SnapshotTypeDef camera;Camera_SnapshotGet(&camera);LastSequence=camera.Data.Sequence;
+            RequestTick=LastControl=now;Status.stop_requested=Status.stop_confirmed=false;enter(GRAB_MATERIAL_SEARCH); }
+          else if(result!=HAL_BUSY) fault("camera_tx");
+          return;
+        }
         if(Operation==OP_CAR_PLACE)
         {
           OutsideBase=RearBase+90; OutsideReferenceValid=true;
@@ -1415,6 +1501,43 @@ void GrabTask_Process(void)
     }
   }
   else if(Status.state==GRAB_VISION_PAUSE) vision_pause_process(now);
+  else if(Status.state==GRAB_MATERIAL_SEARCH)
+  {
+    Camera_SnapshotTypeDef camera;Mecanum_Status_t tx;
+    Camera_SnapshotGet(&camera);
+    if(!vision_request_valid(&camera)) return;
+    Mecanum_StatusGet(&tx);
+    if(tx.locked || tx.stage==MECANUM_STAGE_FAULT) { fault("chassis_tx");return; }
+    if(MaterialLockCount>=3)
+    {
+      stop_process(now,false);
+      if(Status.stop_confirmed)
+      {
+        LastSequence=camera.Data.Sequence;RequestTick=now;HaveCapture=FreshVision=false;
+        memset(PreviousVelocity,0,sizeof PreviousVelocity);LastControl=now;
+        Status.reason="running";enter(GRAB_ACQUIRE);
+      }
+      poll_axes(now);return;
+    }
+    if(camera.HasValidData && camera.TargetValid && camera.Data.Target==ActiveColor &&
+       camera.Data.Sequence!=LastSequence && now-camera.Data.Tick<=Config[C_AGE_MS])
+    {
+      LastSequence=camera.Data.Sequence;
+      int dx=(int)camera.Data.CX-(int)Config[C_REF_U],dy=(int)Config[C_REF_V]-(int)camera.Data.CY;
+      MaterialLockCount=(abs(dx)<=80 && abs(dy)<=100)?MaterialLockCount+1:0;
+      if(MaterialLockCount>=3)
+      {
+        Status.dx=(int16_t)dx;Status.dy=(int16_t)dy;
+        Status.reason="search_target_stop";stop_begin();return;
+      }
+    }
+    if(now-LastControl>=GRAB_CONTROL_PERIOD_MS &&
+       tx.stage!=MECANUM_STAGE_WHEELS && tx.stage!=MECANUM_STAGE_SYNC && !tx.stop_pending)
+    {
+      if(!Mecanum_Velocity_Request(-30,0,0,20)) { fault("chassis_tx");return; }
+      LastControl=now;Status.forward_mm_s=-30;Status.left_mm_s=0;
+    }
+  }
   else if(Status.state==GRAB_VISION_GRACE) vision_grace_process(now);
   else if(Status.state==GRAB_ACQUIRE || Status.state==GRAB_ALIGN || Status.state==GRAB_SETTLE)
   {
@@ -1451,6 +1574,8 @@ void GrabTask_Process(void)
       {
         if(!strcmp(Status.mode,"align"))
         {
+          if(MaterialTask)
+          { Camera_RequestStop();Status.reason="aligned";Status.result="aligned";enter(GRAB_COMPLETE);return; }
           if(StackTest && !StackCompensating)
           {
             /* First confirm the original green reference. Then use the same
@@ -1534,6 +1659,7 @@ void GrabTask_StatusGet(GrabTask_Status_t *out)
 void GrabTask_BootHomeStart(void)
 {
   if(GrabTask_IsBusy()) return;
+  MaterialTask=MaterialCalibration=false;
   GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_ALL);
   GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_BASE);
   Status.reference_cause="home_verifying";
@@ -2102,7 +2228,7 @@ static void track_process(uint32_t now)
     { Status.dx=(int16_t)TrackInput.error_px[0]; Status.dy=(int16_t)TrackInput.error_px[1]; Vision=camera.Data; HaveCapture=true; }
     if(Status.state!=GRAB_TRACK_OBSERVE)
     {
-      HWT101_Angle_t angle; float yaw=0;
+      HWT101_Angle_t angle;
       if(!window_wait && TrackOutput.visual_pause)
       { if(record)track_log_record(record);track_pause(true);return; }
       if(!TrackOutput.model_valid) { if(record)track_log_record(record);fault("track_model"); return; }
@@ -2123,10 +2249,9 @@ static void track_process(uint32_t now)
       }
       if(!HWT101_Cal_ControlAngleGet(&angle) || now-angle.last_update_ms>HWT101_DATA_FRESH_MS)
       { if(record)track_log_record(record);fault("imu_invalid"); return; }
-      yaw=clamp((fmodf(TrackHeading-angle.yaw*CHASSIS_HEADING_TEST_YAW_SIGN+540,360)-180)*.02f,-.15f,.15f);
       Status.forward_mm_s=TrackOutput.velocity_mm_s[0]; Status.left_mm_s=TrackOutput.velocity_mm_s[1];
       /* Drive grade20 differs from shared software300mm/s². */
-      if(Mecanum_Velocity_Request(Status.forward_mm_s,Status.left_mm_s,yaw,CHASSIS_VELOCITY_ACCELERATION))
+      if(visual_velocity_request(Status.forward_mm_s,Status.left_mm_s,TrackHeading,angle.yaw*CHASSIS_HEADING_TEST_YAW_SIGN))
       {
         TrackLastRequest=now;
         if(Tracking.record_count)Tracking.records[(Tracking.record_head+GRAB_TRACKING_TRACE-1U)%GRAB_TRACKING_TRACE].request_age_ms=0;
@@ -2479,6 +2604,7 @@ static bool track_command(unsigned count,char *tokens[])
     }
     if(pick) { Config[C_Z_GRAB]=pickup;Config[C_Z_PICK_SPEED]=speed; }
     Operation=OP_ALIGN;RingTest=RingPlaceActive=RingRaise=false;
+    MaterialTask=MaterialCalibration=false;
     StackTest=StackCompensating=false;
     TrackAutoStart=automatic;TrackPickArmed=pick;TrackPickParking=false;TrackEntryBudget=budget;
     TrackEntryHaveSample=false;

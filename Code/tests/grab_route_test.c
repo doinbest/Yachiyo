@@ -36,7 +36,6 @@ bool GrabTask_IsBusy(void){return task_busy;}
 bool GrabTask_Start(const char *mode){assert(!strcmp(mode,"pick"));picks++;task_busy=1;grab_status.state=GRAB_PREPARE;grab_status.result="pending";grab_status.reason="running";return true;}
 void GrabTask_Stop(void){task_busy=0;grab_status.state=GRAB_IDLE;grab_status.result="cancelled";grab_status.reason="cancelled";}
 void GrabTask_StatusGet(GrabTask_Status_t *s){*s=grab_status;}
-bool ChassisRoute_StationStart(float speed){route_speed=speed;starts++;route.segment=1;route.state="running";return true;}
 bool ChassisRoute_PlanStart(const RadarPlan_t *p,float speed,bool station_mode){assert(p->valid && speed==50 && station_mode);starts++;route.planned=true;route.segment=1;route.state="running";return true;}
 bool ChassisRoute_StationResume(void){resumes++;route.segment=3;route.state="running";return true;}
 bool ChassisRoute_StationFinish(void){finishes++;route.state="done";return true;}

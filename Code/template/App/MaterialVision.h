@@ -63,12 +63,12 @@ typedef struct
   float XDyPerDegree;
 } MaterialVision_CalibrationDataTypeDef;
 
-/* 主循环先初始化Camera和机械臂；Process推进任务，查询接口不消费数据。 */
+/* 兼容入口仅委托GrabTask；标定采样服务只由GrabTask推进。 */
 void MaterialVision_Init(void);
-/** @brief 人工确认当前安全观察姿态，仅设置本模块RAM参考，不运动或归零。
+/** @brief 人工确认当前安全观察姿态，设置GrabTask共用RAM参考，不运动或归零。
  * @return OK表示确认完成；BUSY表示任务或机械臂正在运行，参考保持原值。 */
 MaterialVision_ResultTypeDef MaterialVision_ReferenceSet(void);
-/** @brief 只读查询本模块观察姿态参考；普通停止保留，上电初始化清除。 */
+/** @brief 只读查询GrabTask共用观察姿态参考；普通停止保留。 */
 uint8_t MaterialVision_IsReferenceValid(void);
 /** @brief 按Color(1~6)启动搜索和对准；Base保持当前位置，先确认机械参考。
  * @return OK表示已受理；BUSY不产生请求或运动，其他值表示参数/准备/发送错误。 */
@@ -76,12 +76,15 @@ MaterialVision_ResultTypeDef MaterialVision_Start(Camera_ColorTypeDef Color);
 /** @brief 启动底盘前后/X响应标定；要求参考有效且视觉任务与电机空闲。 */
 MaterialVision_ResultTypeDef MaterialVision_CalibrationStart(
     Camera_ColorTypeDef Color);
-/** @brief 主循环推进；测试模式不因高层视觉超时自动退出，电机超时保留。 */
-void MaterialVision_Process(void);
 void MaterialVision_Stop(void);
-uint8_t MaterialVision_MotorEventHandle(
+/** @brief GrabTask已取得任务所有权、确认停稳后调用；不重复检查GrabTask忙。
+ * 采样分母为0x36实际轮位移/X电机轴角度；新尝试失败保留旧有效标定。 */
+MaterialVision_ResultTypeDef MaterialVision_CalibrationBegin(Camera_ColorTypeDef Color);
+void MaterialVision_CalibrationProcess(void);
+uint8_t MaterialVision_CalibrationEvent(
     const MechanicalArm_EventTypeDef *Event);
-/* 以下状态/错误/标定查询均只读；MotorEventHandle返回1表示消费该电机事件。 */
+void MaterialVision_CalibrationCancel(void);
+/* 以下查询均只读；CalibrationEvent返回1表示消费该标定电机事件。 */
 uint8_t MaterialVision_IsBusy(void);
 uint8_t MaterialVision_IsCalibrated(void);
 uint8_t MaterialVision_IsCalibrating(void);

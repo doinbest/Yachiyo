@@ -36,7 +36,7 @@ typedef struct
   float rpm_unquantized[4];
   int16_t rpm_command[4];
   float rpm_scale;
-  bool distance_mode, turn_only, stop_confirmed;
+  bool distance_mode, turn_only, stop_confirmed, indefinite_velocity;
   float target_x_mm, target_y_mm, target_map_yaw_deg;
   float error_x_mm, error_y_mm, error_heading_deg;
   bool heading_valid, map_anchor_valid;
@@ -55,6 +55,24 @@ void ChassisMotion_TargetDefaults(ChassisMotion_Target_t *target);
  * HOLD_CURRENT只要求验证后的新鲜角度，不建立或修改地图锚点。
  */
 bool ChassisMotion_Start(const ChassisMotion_Target_t *target);
+/** @brief Indefinite body velocity until explicit stop; immediate target, drive grade20.
+ * Linear speed <=5000 mm/s; legacy debug yaw <=360 deg/s (2*PI rad/s).
+ * Same admission gates as timed tasks, no duration surrogate.
+ */
+bool ChassisMotion_VelocityStart(float vx_mm_s, float vy_mm_s, float omega_rad_s);
+/** @brief Replace only a running indefinite target; preserve action/start tick. */
+bool ChassisMotion_VelocityUpdate(float vx_mm_s, float vy_mm_s, float omega_rad_s);
+/** @brief Legacy module-yaw hold: capture qualified fresh yaw, no map origin.
+ * forward=-100..100 mm/s, duration=1000..10000 ms, immediate target/drive grade20.
+ */
+bool ChassisMotion_HoldStart(float forward_mm_s, uint32_t duration_ms);
+typedef struct
+{
+  bool active;
+  const char *reason;
+  float target_deg, current_deg, output_rad_s;
+} ChassisMotion_HoldStatus_t;
+void ChassisMotion_HoldStatusGet(ChassisMotion_HoldStatus_t *status);
 /** @brief Feedback-position task in map mm/deg; main-loop, qualified fresh IMU,
  * valid origin and four-wheel feedback required. True means accepted only.
  */
@@ -71,8 +89,9 @@ bool ChassisMotion_TurnTo(float map_yaw_deg, uint32_t timeout_ms);
 void ChassisMotion_HeadingProcess(void);
 /** @brief 半余弦减速后请求停车；stop_ms=0立即取消并请求异步停车。 */
 bool ChassisMotion_Stop(uint32_t stop_ms);
-/** @brief HWT101/校准处理之后、Mecanum_Velocity_Process之前循环调用。
- * 超过100ms调度间隔直接停车报错，不补跑积压周期。
+/** @brief HWT101/校准处理之后、Mecanum_Process之前循环调用。
+ * 规划曲线超过100ms调度间隔直接停车报错，不补跑积压周期。
+ * 兼容持续速度/hold无位移积分，短调度间隔恢复后刷新原目标；hold仍检查IMU新鲜度与时长。
  */
 void ChassisMotion_Process(void);
 bool ChassisMotion_IsBusy(void);

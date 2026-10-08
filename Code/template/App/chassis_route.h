@@ -24,12 +24,7 @@ void ChassisRoute_Init(void);
 bool ChassisRoute_IsBusy(void);
 /** @brief Internal admission token for the route's own distance submission. */
 bool ChassisRoute_IsSubmitting(void);
-/** @return Request accepted, not physical movement or arrival. */
-bool ChassisRoute_Start(void);
-bool ChassisRoute_Next(void);
 bool ChassisRoute_Cancel(void);
-/** @brief 扫码visit1/原料visit2到点姿态及停车确认后交接；speed为mm/s。 */
-bool ChassisRoute_StationStart(float speed);
 /** @brief Copy a completed radar plan and execute it explicitly; station_mode
  * pauses at QR visit1 and RAW visit2 for the existing first-pick test. */
 bool ChassisRoute_PlanStart(const RadarPlan_t *plan, float speed, bool station_mode);

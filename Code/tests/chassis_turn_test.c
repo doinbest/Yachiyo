@@ -15,7 +15,7 @@ static void turn_plant(float initial,float target)
   float old_rpm[32][4]={{0}},old_positions[32][4]={{0}};
   float yaw=initial,max_omega=0;
   unsigned steps=0,batches=0;
-  setup();proportional_pid=true;
+  setup();
   assert(ChassisMotion_AnchorSet(initial*CHASSIS_MODEL_PI/180));
   assert(ChassisMotion_TurnTo(target,60000));
   unsigned id=status().action_id;
@@ -80,7 +80,7 @@ int main(void)
   setup();assert(!ChassisMotion_TurnTo(NAN,60000));
   assert(!ChassisMotion_TurnTo(181,60000));assert(!ChassisMotion_TurnTo(90,400001));
   setup();assert(ChassisMotion_TurnTo(180,60000));sample(120);ChassisMotion_Process();
-  assert(fabsf(status().body_target.omega_rad_s)<.001f); /* 500ms startup ramp */
+  assert(status().body_target.omega_rad_s>0 && status().body_target.omega_rad_s<.01f); /* 500ms startup ramp */
   assert(ChassisMotion_Stop(0));complete_stop();assert(!strcmp(status().reason,"cancelled"));
   setup();assert(ChassisMotion_TurnTo(90,60000));sample(120);ChassisMotion_Process();zero_dispatched(140);
   sample(200);ChassisMotion_Process();reading(500,30);ChassisMotion_Process();

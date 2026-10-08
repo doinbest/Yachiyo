@@ -61,7 +61,17 @@ bool Turntable_IsBusy(void) { return tray_moving; }
 void Turntable_Stop(void) { tray_stops++; tray_moving=false; tray_status.moving=false; tray_status.reason="stopped"; }
 void Turntable_StatusGet(Turntable_Status_t *out) { *out=tray_status; out->moving=tray_moving; }
 uint32_t HAL_GetTick(void) { return clock_ms; }
+#ifndef GRAB_REAL_MATERIAL_SERVICE
 uint8_t MaterialVision_IsBusy(void) { return 0; }
+MaterialVision_ResultTypeDef MaterialVision_CalibrationBegin(Camera_ColorTypeDef color)
+{ (void)color;return MATERIAL_VISION_RESULT_OK; }
+void MaterialVision_CalibrationProcess(void) {}
+uint8_t MaterialVision_CalibrationEvent(const MechanicalArm_EventTypeDef *event)
+{ (void)event;return 0; }
+void MaterialVision_CalibrationCancel(void) {}
+MaterialVision_StateTypeDef MaterialVision_StateGet(void) { return MATERIAL_VISION_STATE_COLLECT; }
+const char *MaterialVision_ErrorNameGet(void) { return "none"; }
+#endif
 static bool chassis_pose_route, chassis_pose_motion;
 bool ChassisRoute_IsBusy(void) { return chassis_pose_route; }
 bool ChassisMotion_IsBusy(void) { return chassis_pose_motion; }
@@ -111,10 +121,12 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef a
     destination[2]=(mode==MECHANICAL_ARM_POSITION_ABSOLUTE || base_mode2_absolute?0:physical[2])+pulses*360.0f/3200; base_moves++; positions++;
     return queue(MECHANICAL_ARM_ACTION_POSITION,axis);
   }
-  assert(mode == MECHANICAL_ARM_POSITION_ABSOLUTE);
+  assert(mode == MECHANICAL_ARM_POSITION_ABSOLUTE ||
+    (axis==MECHANICAL_ARM_AXIS_X && mode==MECHANICAL_ARM_POSITION_RELATIVE_CURRENT && GrabTask_MaterialCalibrating()));
   if (pending_valid) return MECHANICAL_ARM_RESULT_BUSY;
   if(axis==MECHANICAL_ARM_AXIS_Z) { z_position_rpm=rpm; z_position_acc=acc; z_position_pulses=pulses; }
-  destination[axis == MECHANICAL_ARM_AXIS_X ? 0 : 1] = pulses / 100.0f;
+  unsigned idx=axis==MECHANICAL_ARM_AXIS_X?0:1;
+  destination[idx]=(mode==MECHANICAL_ARM_POSITION_RELATIVE_CURRENT?physical[idx]:0)+pulses/100.0f;
   positions++; return queue(MECHANICAL_ARM_ACTION_POSITION, axis);
 }
 uint8_t MechanicalArm_ConfigGet(MechanicalArm_AxisTypeDef axis, MechanicalArm_ConfigTypeDef *out)
@@ -251,6 +263,7 @@ static void step(bool new_capture, unsigned phase, int dx, int dy)
   camera.Data.Target = requested_color;
   if(new_capture) { camera.Data.Sequence++; camera.Data.Tick = clock_ms; }
   camera.Data.CX = (uint16_t)((RingTest?378:334) + dx); camera.Data.CY = (uint16_t)((RingTest?333:338) - dy);
+  camera.Data.DX=(int16_t)dx;camera.Data.DY=(int16_t)dy;
 
   GrabTask_Process();
 }
@@ -1179,8 +1192,40 @@ static void black_ring_manual_place(void)
   assert(fabsf(physical[1]-Config[C_Z_MAX])<.11f && tray_inventory[0].state==TURNTABLE_EMPTY);
   GrabTask_Stop(); run_to(GRAB_IDLE,150,1);
 }
+static void material_search_uses_shared_alignment(void)
+{
+  reset(); configure(true); setting("travel_mm","0");
+  assert(!GrabTask_MaterialReferenceValid());
+  assert(!GrabTask_MaterialStart(2,false));
+  assert(GrabTask_MaterialReferenceSet());
+  assert(GrabTask_MaterialStart(2,false));
+  assert(GrabTask_MaterialActive() && GrabTask_IsBusy());
+  run_to(GRAB_MATERIAL_SEARCH,200,0);
+  assert(!positions && !base_moves && !openings && !closures);
+  unsigned before=velocity_requests;
+  step(true,0,40,30); unsigned locked=MaterialLockCount;
+  for(unsigned i=0;i<4;i++) step(false,0,40,30);
+  assert(MaterialLockCount==locked); /* Old coordinates cannot add confirmations. */
+  assert(velocity_requests>before);
+  step(true,0,40,30); step(true,0,40,30);
+  assert(!strcmp(status().reason,"search_target_stop"));
+  run_to(GRAB_ALIGN,200,0);
+  run_to(GRAB_COMPLETE,500,0);
+  assert(!GrabTask_IsBusy() && !strcmp(status().result,"aligned"));
+  assert(!base_moves && !openings && !closures);
+  assert(GrabTask_MaterialReferenceValid());
+  float lateral=Config[C_J11];
+  assert(GrabTask_VisualResponseSet(3,1,2,4));
+  assert(Config[C_J00]==3 && Config[C_J10]==1 && Config[C_J11]==lateral);
+  assert(fabsf(Config[C_J02]-2*Config[C_X_PPM]*360/3200)<.001f);
+  float saved=Config[C_J00];
+  assert(!GrabTask_VisualResponseSet(NAN,0,0,0) && Config[C_J00]==saved);
+  GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_BASE);
+  assert(GrabTask_MaterialReferenceValid()); /* Deferred manual-Base P001 policy is unchanged. */
+}
 int main(void)
 {
+  material_search_uses_shared_alignment();
   reset();
   for(unsigned key=0;key<C_COUNT;key++) {
     const GrabParameter_t *p=&Parameters[key];

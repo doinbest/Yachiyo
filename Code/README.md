@@ -4,7 +4,7 @@
 
 | 目录 | 用途与入口 |
 |---|---|
-| `template/` | F407 主车固件；Keil `MDK-ARM/template.uvprojx`，Target `template` |
+| [template/](template/README.md) | F407 主车固件；Keil `MDK-ARM/template.uvprojx`，Target `template` |
 | [orange_pi/](orange_pi/README.md) | 香橙派最新视觉源码 `vision.py`，使用 USB CDC B2；本地更新不等于实机部署 |
 | [HMI/](HMI/README.md) | 串口屏 `display.HMI` 和字库资源 |
 | [物料台转盘/](物料台转盘/README.md) | 独立 F103 转盘固件及原始压缩包 |

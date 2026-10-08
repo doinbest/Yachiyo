@@ -550,14 +550,12 @@ int main(void)
     Turntable_Process(); /* Dedicated ID 8 owner; no arm-axis event consumption. */
     if (MechanicalArm_ResultGet(&MotorEvent) != 0U)
     {
-      if ((GrabTask_MotorEventHandle(&MotorEvent) == 0U) &&
-          (MaterialVision_MotorEventHandle(&MotorEvent) == 0U))
+      if (GrabTask_MotorEventHandle(&MotorEvent) == 0U)
       {
         ArmConsole_MotorEventHandle(&MotorEvent);
       }
     }
     ImuTiming_Mark(IMU_TIME_MOTOR);
-    MaterialVision_Process();
     ImuTiming_Mark(IMU_TIME_MATERIAL);
     HWT101_Process(); /* 独立采集；关闭日志不会停止传感器轮询。 */
     ImuTiming_Mark(IMU_TIME_READ);
@@ -579,7 +577,7 @@ int main(void)
       Turntable_BootHomeProcess(boot_arm.state == GRAB_IDLE &&
           strcmp(boot_arm.reason, "home_complete") == 0);
     }
-    Mecanum_Velocity_Process(); /* 航向控制使用本圈已检查的模块角度。 */
+    Mecanum_Process(); /* Task planners submit targets; this layer advances the bus. */
     ImuTiming_Mark(IMU_TIME_CHASSIS);
     ChassisTelemetry_Process();
     RadarConsole_Process();

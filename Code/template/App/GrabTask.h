@@ -18,7 +18,7 @@ typedef enum
   GRAB_X_RETRACT, GRAB_INDEX, GRAB_CAR_EXTEND, GRAB_RETURN_TURN,
   GRAB_EXTERNAL_EXTEND, GRAB_OBSERVE_Z, GRAB_OBSERVE_X, GRAB_COMPLETE,
   GRAB_TRACK_OBSERVE, GRAB_TRACK_MATCH, GRAB_TRACK_FOLLOW, GRAB_TRACK_PAUSE,
-  GRAB_ROUTE_POSE, GRAB_MANUAL_Z
+  GRAB_ROUTE_POSE, GRAB_MANUAL_Z, GRAB_MATERIAL_SEARCH, GRAB_CALIBRATION
 } GrabTask_State_t;
 typedef struct
 {
@@ -59,6 +59,16 @@ bool GrabTask_Start(const char *mode);
  * 不夹取、不操作车载转盘；完成后允许人工夹爪及独立高度调整。
  */
 bool GrabTask_AlignStart(uint8_t target,float z_mm,bool stay);
+/** @brief 人工确认当前观察姿态；确认由统一任务保存，停止不清除，不执行运动。
+ * 手动Base后的参考策略沿用延期P001，不在本次收敛中另行改变。 */
+bool GrabTask_MaterialReferenceSet(void);
+bool GrabTask_MaterialReferenceValid(void);
+/** @brief 兼容物料搜索/响应标定入口；保持当前Base/Z姿态，对准共用静态控制器。 */
+bool GrabTask_MaterialStart(uint8_t color,bool calibration);
+bool GrabTask_MaterialActive(void);
+bool GrabTask_MaterialCalibrating(void);
+/** @brief 原子应用前后与X响应到共用J；X输入像素/电机度，侧向列保留。 */
+bool GrabTask_VisualResponseSet(float forward_dx,float forward_dy,float x_dx,float x_dy);
 /** @brief 只读检查所选模式标定完整性和数值/机械边界，不访问硬件。 */
 bool GrabTask_ConfigReady(const char *mode);
 #define GRAB_TASK_POSE 1

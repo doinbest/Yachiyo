@@ -11,24 +11,34 @@ static bool velocity_valid(const ChassisModel_Velocity_t *v)
 {
   return v != NULL && isfinite(v->vx_mm_s) && isfinite(v->vy_mm_s) && isfinite(v->omega_rad_s);
 }
+bool ChassisModel_WheelLinearInverse(const ChassisModel_Geometry_t *g,
+                                     const ChassisModel_Velocity_t *v, float out[4])
+{
+  float result[4], rotation;
+  unsigned i;
+  if (!geometry_valid(g) || !velocity_valid(v) || !out) return false;
+  rotation = (g->wheelbase_mm + g->track_mm) * .5f * v->omega_rad_s;
+  result[0] = v->vx_mm_s - v->vy_mm_s - rotation;
+  result[1] = v->vx_mm_s + v->vy_mm_s - rotation;
+  result[2] = v->vx_mm_s - v->vy_mm_s + rotation;
+  result[3] = v->vx_mm_s + v->vy_mm_s + rotation;
+  for (i=0;i<4;i++) if (!isfinite(result[i])) return false;
+  for (i=0;i<4;i++) out[i]=result[i];
+  return true;
+}
 bool ChassisModel_Inverse(const ChassisModel_Geometry_t *g, const ChassisModel_Velocity_t *v,
                           float max_rpm, ChassisModel_Wheels_t *out)
 {
   ChassisModel_Wheels_t result;
-  float k, conversion, rotation, largest = 0;
+  float linear[4], conversion, largest = 0;
   unsigned i;
   if (!geometry_valid(g) || !velocity_valid(v) || out == NULL || !isfinite(max_rpm) ||
       max_rpm < 1 || max_rpm > 32767)
     return false;
-  k = (g->wheelbase_mm + g->track_mm) * .5f;
+  if (!ChassisModel_WheelLinearInverse(g,v,linear)) return false;
   conversion = 60 * g->gear_ratio / (CHASSIS_MODEL_PI * g->wheel_diameter_mm);
-  rotation = k * v->omega_rad_s;
-  if (!isfinite(k) || !isfinite(conversion) || !isfinite(rotation) || conversion <= 0)
-    return false;
-  result.rpm[0] = (v->vx_mm_s - v->vy_mm_s - rotation) * conversion;
-  result.rpm[1] = (v->vx_mm_s + v->vy_mm_s - rotation) * conversion;
-  result.rpm[2] = (v->vx_mm_s - v->vy_mm_s + rotation) * conversion;
-  result.rpm[3] = (v->vx_mm_s + v->vy_mm_s + rotation) * conversion;
+  if (!isfinite(conversion) || conversion <= 0) return false;
+  for (i=0;i<4;i++) result.rpm[i]=linear[i]*conversion;
   for (i = 0; i < 4; i++)
   {
     if (!isfinite(result.rpm[i]))

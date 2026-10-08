@@ -1165,8 +1165,8 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
 
   if ((TokenCount == 2U) && !strcmp(Tokens[0], "chassis") && !strcmp(Tokens[1], "status"))
   {
-    Mecanum_HeadingTestStatus_t Status;
-    Mecanum_HeadingTest_StatusGet(&Status);
+    ChassisMotion_HoldStatus_t Status;
+    ChassisMotion_HoldStatusGet(&Status);
     ArmConsole_Printf("OK chassis hold active=%u reason=%s target_deg=%.3f current_deg=%.3f output_rad_s=%.4f\r\n",
                       (unsigned)Status.active, Status.reason, (double)Status.target_deg,
                       (double)Status.current_deg, (double)Status.output_rad_s);
@@ -1175,18 +1175,18 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
   if ((TokenCount == 4U) && !strcmp(Tokens[0], "chassis") && !strcmp(Tokens[1], "hold"))
   {
     int32_t Speed, Seconds;
-    Mecanum_HeadingTestStatus_t Status;
+    ChassisMotion_HoldStatus_t Status;
     if (MechanicalArm_IsBusy() || MaterialVision_IsBusy())
       ArmConsole_Write("ERR busy\r\n");
     else if (!ArmConsole_IntegerParse(Tokens[2], &Speed) ||
              !ArmConsole_IntegerParse(Tokens[3], &Seconds) ||
              Speed < -100 || Speed > 100 || Seconds < 1 || Seconds > 10)
       ArmConsole_Write("ERR range: chassis hold <-100..100mm/s> <1..10s>\r\n");
-    else if (Mecanum_HeadingTest_Start((float)Speed, (uint32_t)Seconds * 1000U))
+    else if (ChassisMotion_HoldStart((float)Speed, (uint32_t)Seconds * 1000U))
       ArmConsole_Printf("OK chassis hold speed=%ldmm/s duration=%lds source=module\r\n", (long)Speed, (long)Seconds);
     else
     {
-      Mecanum_HeadingTest_StatusGet(&Status);
+      ChassisMotion_HoldStatusGet(&Status);
       ArmConsole_Printf("ERR chassis hold reason=%s (stop existing motion first)\r\n", Status.reason);
     }
     return 1U;
@@ -1206,9 +1206,8 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
       ArmConsole_Write("ERR busy\r\n");
       return 1U;
     }
-    if (Mecanum_Velocity_Start(-ARM_CONSOLE_BACKWARD_TEST_SPEED_MM_S,
-                               0.0f,
-                               0.0f))
+    if ((ChassisMotion_VelocityUpdate(-ARM_CONSOLE_BACKWARD_TEST_SPEED_MM_S,0,0) ||
+        ChassisMotion_VelocityStart(-ARM_CONSOLE_BACKWARD_TEST_SPEED_MM_S,0,0)))
     {
       ArmConsole_Write("OK chassis backward velocity=30mm/s request accepted\r\n");
     }
@@ -1252,14 +1251,14 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
     if ((ForwardMmPerSecond == 0) && (LeftMmPerSecond == 0) &&
         (YawDegreesPerSecond == 0))
     {
-      (void)Mecanum_Test_Stop();
+      (void)ChassisMotion_StopRequest(0);
       ArmConsole_Write("OK chassis stop request accepted; physical stop unconfirmed\r\n");
       return 1U;
     }
-    if (Mecanum_Velocity_Start((float)ForwardMmPerSecond,
-                               (float)LeftMmPerSecond,
-                               (float)YawDegreesPerSecond *
-                               3.14159265358979323846f / 180.0f))
+    if ((ChassisMotion_VelocityUpdate((float)ForwardMmPerSecond,(float)LeftMmPerSecond,
+         (float)YawDegreesPerSecond*3.14159265358979323846f/180.0f) ||
+        ChassisMotion_VelocityStart((float)ForwardMmPerSecond,(float)LeftMmPerSecond,
+         (float)YawDegreesPerSecond*3.14159265358979323846f/180.0f)))
     {
       ArmConsole_Printf("OK chassis velocity forward=%ld left=%ld yaw=%lddeg/s request accepted\r\n",
                         (long)ForwardMmPerSecond,
@@ -1566,9 +1565,9 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
   {
     if (!strcmp(Tokens[2], "cancel") || !strcmp(Tokens[2], "clear"))
     {
-      Mecanum_HeadingTestStatus_t Heading;
-      Mecanum_HeadingTest_StatusGet(&Heading);
-      if (Heading.active && !Mecanum_Test_Stop()) ArmConsole_Write("ERR chassis stop_tx_error\r\n");
+      ChassisMotion_HoldStatus_t Heading;
+      ChassisMotion_HoldStatusGet(&Heading);
+      if (Heading.active && !ChassisMotion_StopRequest(0)) ArmConsole_Write("ERR chassis stop_tx_error\r\n");
       HWT101_Cal_Cancel();
       ArmConsole_Write("OK imu cal cancel requested boot_verification_cleared=1 module_bias_kept=1 normal_mode=pending\r\n");
       return 1U;
@@ -2129,7 +2128,6 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
 {
   char *Tokens[ARM_CONSOLE_TOKEN_COUNT];
   uint8_t TokenCount;
-  Mecanum_HeadingTestStatus_t Heading;
 
   TokenCount = ArmConsole_Tokenize(Line, Tokens);
   if (TokenCount == 0U)
@@ -2230,10 +2228,16 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   if (ChassisTelemetry_Command(TokenCount, Tokens)) return 1U;
   if (ChassisMotion_IsBusy() || ChassisRoute_IsBusy())
   {
+    ChassisMotion_Status_t motion;
+    ChassisMotion_StatusGet(&motion);
     if (!strcmp(Tokens[0], "stop")) (void)ChassisRoute_Cancel();
     else if (!((TokenCount == 1U && (!strcmp(Tokens[0], "help") || !strcmp(Tokens[0], "info"))) ||
                (TokenCount == 2U && (!strcmp(Tokens[1], "status") || !strcmp(Tokens[1], "stop") || !strcmp(Tokens[0], "state") || !strcmp(Tokens[0], "position") || !strcmp(Tokens[0], "config"))) ||
-               (TokenCount == 3U && !strcmp(Tokens[0], "imu") && !strcmp(Tokens[1], "stream"))))
+               (TokenCount == 3U && !strcmp(Tokens[0], "imu") && !strcmp(Tokens[1], "stream")) ||
+               (TokenCount == 3U && !strcmp(Tokens[0],"imu") && !strcmp(Tokens[1],"cal") &&
+                (!strcmp(Tokens[2],"cancel") || !strcmp(Tokens[2],"clear"))) ||
+               (motion.indefinite_velocity && TokenCount>=2U && !strcmp(Tokens[0],"chassis") &&
+                (!strcmp(Tokens[1],"velocity") || !strcmp(Tokens[1],"backward")))))
     {
       ArmConsole_Write("ERR chassis_task_busy use chassis stop\r\n");
       return 1U;
@@ -2259,15 +2263,6 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
       !((TokenCount == 2U) && (!strcmp(Tokens[1], "status") || !strcmp(Tokens[1], "stop"))))
   {
     ArmConsole_Write("ERR imu_busy use imu cal cancel\r\n");
-    return 1U;
-  }
-  Mecanum_HeadingTest_StatusGet(&Heading);
-  if (Heading.active && strcmp(Tokens[0], "imu") && strcmp(Tokens[0], "help") &&
-      strcmp(Tokens[0], "info") && strcmp(Tokens[0], "stop") &&
-      !((TokenCount == 2U) && (!strcmp(Tokens[0], "chassis") || !strcmp(Tokens[0], "wheel")) &&
-        (!strcmp(Tokens[1], "stop") || !strcmp(Tokens[1], "status"))))
-  {
-    ArmConsole_Write("ERR chassis_hold_busy use chassis stop\r\n");
     return 1U;
   }
 

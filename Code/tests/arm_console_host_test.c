@@ -44,6 +44,7 @@ bool GrabRoute_Command(unsigned n,char *t[]){if(n==3&&!strcmp(t[0],"grab")&&
 void GrabTask_StatusGet(GrabTask_Status_t *s){memset(s,0,sizeof(*s));}
 bool GrabTask_Command(unsigned n,char *t[]){if(n>=3&&!strcmp(t[0],"grab")&&!strcmp(t[1],"stack")){const char*s="OK grab stack routed\r\n";return ConsoleTx_Write((const uint8_t*)s,(uint16_t)strlen(s));}if(n>=3&&!strcmp(t[0],"grab")&&!strcmp(t[1],"track")){const char*s="OK grab track routed\r\n";return ConsoleTx_Write((const uint8_t*)s,(uint16_t)strlen(s));}if(n==2&&!strcmp(t[0],"grab")&&!strcmp(t[1],"status")){const char*s="OK grab state=hold\r\n";return ConsoleTx_Write((const uint8_t*)s,(uint16_t)strlen(s));}return false;}
 static bool motion_busy;
+static bool continuous_velocity;
 static bool bus_locked;
 static MotorBus_Recovery_t recovery_fake={false,false,0,0,"idle"};
 static MotorBus_Event_t guard_event;
@@ -117,7 +118,8 @@ bool ChassisMotion_StopRequest(uint32_t token)
   motion_busy=false;return Mecanum_Test_Stop();
 }
 bool ChassisMotion_StopPending(void){return stop_status.id && !stop_status.wheels_stopped;}
-void ChassisMotion_StatusGet(ChassisMotion_Status_t *s){memset(s,0,sizeof(*s));}
+void ChassisMotion_StatusGet(ChassisMotion_Status_t *s)
+{ memset(s,0,sizeof(*s));s->indefinite_velocity=continuous_velocity; }
 void ChassisMotion_StopStatusGet(ChassisStop_Status_t *out){*out=stop_status;}
 HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *uart, uint8_t *data, uint16_t length, uint32_t timeout)
 { (void)uart; assert((uint32_t)length * 10U * 1000U <= 115200U * timeout);
@@ -185,17 +187,20 @@ bool HWT101_Cal_GetStatus(HWT101_CalStatus_t *out)
 bool TJC_Status_Get(TJC_Status_t *out) { memset(out,0,sizeof(*out));out->tx_count=UINT32_MAX;out->rx_frame_count=12345;return true; }
 void Arm_GripperSet(Arm_GripperStatusTypeDef status) { grip_duty=(float)status; }
 void Arm_GripperDutySet(float duty) { grip_duty=duty; }
-bool Mecanum_Velocity_Start(float forward,float left,float yaw) { forward_value=forward;left_value=left;yaw_value=yaw;motor_calls++;return true; }
-static Mecanum_HeadingTestStatus_t heading_status={false,"idle",0,0,0};
-bool Mecanum_HeadingTest_Start(float speed,uint32_t duration)
+bool ChassisMotion_VelocityStart(float forward,float left,float yaw)
+{ if(motion_busy)return false;motion_busy=continuous_velocity=true;forward_value=forward;left_value=left;yaw_value=yaw;motor_calls++;return true; }
+bool ChassisMotion_VelocityUpdate(float forward,float left,float yaw)
+{ if(!motion_busy || !continuous_velocity)return false;forward_value=forward;left_value=left;yaw_value=yaw;motor_calls++;return true; }
+static ChassisMotion_HoldStatus_t heading_status={false,"idle",0,0,0};
+bool ChassisMotion_HoldStart(float speed,uint32_t duration)
 {
   (void)duration;
   if(cal_status.state!=HWT101_CAL_DONE){heading_status.reason="imu_not_verified";return false;}
-  forward_value=speed;motor_calls++;heading_status.active=true;heading_status.reason="running";return true;
+  forward_value=speed;motor_calls++;motion_busy=true;heading_status.active=true;heading_status.reason="running";return true;
 }
 bool Mecanum_IsBusy(void) { return chassis_busy || heading_status.active; }
-void Mecanum_HeadingTest_StatusGet(Mecanum_HeadingTestStatus_t *s){*s=heading_status;}
-bool Mecanum_Test_Stop(void) { stop_calls++;heading_status.active=false;return true; }
+void ChassisMotion_HoldStatusGet(ChassisMotion_HoldStatus_t *s){*s=heading_status;}
+bool Mecanum_Test_Stop(void) { stop_calls++;motion_busy=continuous_velocity=false;heading_status.active=false;return true; }
 bool Mecanum_Polarity_Move(float distance) { forward_value=distance;motor_calls++;return true; }
 bool Mecanum_Wheel_Test(MecanumWheel_t wheel,int16_t rpm) { (void)wheel;forward_value=(float)rpm;motor_calls++;return true; }
 uint8_t MechanicalArm_IsBusy(void) { return motor_busy; }
@@ -360,9 +365,9 @@ int main(void)
   cal_status.state=HWT101_CAL_DONE;
   command("chassis hold 101 5\r");assert(motor_calls==before && strstr(output,"ERR range"));
   command("chassis hold 30 5\r");assert(heading_status.active && strstr(output,"source=module"));
-  command("chassis velocity 30 0 0\r");assert(strstr(output,"chassis_hold_busy"));
-  command("material auto 1\r");assert(strstr(output,"chassis_hold_busy"));
-  command("imu cal start\r");assert(strstr(output,"motion_busy") && cal_starts==1);
+  command("chassis velocity 30 0 0\r");assert(strstr(output,"chassis_task_busy"));
+  command("material auto 1\r");assert(strstr(output,"chassis_task_busy"));
+  command("imu cal start\r");assert(strstr(output,"chassis_task_busy") && cal_starts==1);
   command("chassis status\r");assert(strstr(output,"active=1"));
   command("chassis stop\r");assert(!heading_status.active);
   command("chassis hold 0 1\r");assert(heading_status.active);
@@ -392,6 +397,9 @@ int main(void)
   command("material stop\r");assert(!material_busy && notice_clears);
   command("grip duty 7.5\r");assert(grip_duty==7.5f);command("grip duty 99\r");assert(grip_duty==7.5f && strstr(output,"ERR"));
   command("chassis velocity 10 -20 90\r");assert(forward_value==10 && left_value==-20 && fabsf(yaw_value-1.5707963f)<0.0001f);
+  before=motor_calls;command("chassis\r");assert(strstr(output,"chassis_task_busy") && motor_calls==before);
+  command("chassis velocity 20 0 0\r");assert(forward_value==20 && motor_calls==before+1);
+  command("chassis velocity 0 0 0\r");assert(!motion_busy && !continuous_velocity);
   command("config z 100 20 0\r");assert(config.SpeedRpm==100 && config.Acceleration==20 && config.PulseLimit==0);
   command("pos x 90\r\n");assert(motor_pulses==800 && !strstr(output,"arm> "));
   event.Action=MECHANICAL_ARM_ACTION_POSITION;event.Axis=MECHANICAL_ARM_AXIS_X;event.PositionPulses=800;event.Result=MECHANICAL_ARM_RESULT_OK;

@@ -25,8 +25,10 @@ def run(args):
 def build_test(name, *sources):
     exe = OUT / (name + ".exe")
     flags = [BASE[0], "-Itests/radar_stubs", *BASE[1:]] if name in ("test_radar_scan", "test_radar_probe", "test_radar_host", "radar_host_console_test") else BASE
-    if name in ("grab_pose_test", "grab_task_test", "grab_transfer_test", "grab_grace_test", "grab_command_sim_test", "grab_tuning_sim_test", "grab_track_task_test", "grab_track_pick_test", "grab_stack_test"):
+    if name in ("grab_pose_test", "grab_task_test", "grab_material_test", "grab_transfer_test", "grab_grace_test", "grab_command_sim_test", "grab_tuning_sim_test", "grab_track_task_test", "grab_track_pick_test", "grab_stack_test"):
         sources = (*sources, "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    if "template/App/mecanum_chassis.c" in sources and "template/App/chassis_model.c" not in sources:
+        sources = (*sources, "template/App/chassis_model.c")
     # Existing virtual UART fixtures freeze time at ACK; the dedicated settle
     # test exercises the production 2 ms handover and emergency bypass.
     if name != "motor_bus_reply_settle_test":
@@ -75,6 +77,7 @@ if __name__ == "__main__":
     build_test("test_radar_probe", "template/Hardware/lds_parser.c", "template/Hardware/radar_uart.c")
     build_test("radar_console_test", "template/App/radar_console.c", "template/App/radar_map.c")
     build_test("grab_task_test")
+    build_test("grab_material_test", "template/App/MaterialVision.c")
     build_test("grab_stack_test")
     build_test("grab_tracking_test", "template/App/grab_tracking.c")
     build_test("grab_track_task_test")
@@ -109,7 +112,7 @@ if __name__ == "__main__":
     run([OUT / "mechanical_arm_emergency_chain_test.exe", "first_tx_error"])
     build_test("motor_cancel_readback_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_circular_rx_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
-    build_test("mecanum_heading_test", "-Itemplate/System")
+    build_test("mecanum_heading_test", "-Itemplate/System", "template/App/chassis_motion.c", "template/App/chassis_model.c")
     build_test("w25q128_test", "template/Hardware/w25q128.c")
     build_test("material_vision_test")
     build_test("key_test", "template/Hardware/key.c")

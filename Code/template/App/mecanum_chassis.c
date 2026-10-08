@@ -24,19 +24,17 @@ static const uint8_t motor_forward_direction[MECANUM_WHEEL_COUNT] = {
     CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR, CHASSIS_MOTOR_REAR_LEFT_FORWARD_DIR,
     CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR, CHASSIS_MOTOR_FRONT_RIGHT_FORWARD_DIR};
 
-static bool MecanumVelocityActive;
-/* 无到位反馈：发过运动命令后，直到四轮停止命令均成功发送才解除。 */
+/* Motion remains busy until all four stop frames have completed. */
 static bool MecanumMotionPending;
-static float MecanumVelocityForward;
-static float MecanumVelocityLeft;
-static float MecanumVelocityYaw;
-static uint32_t MecanumVelocityLastSendTick;
-static Mecanum_HeadingTestStatus_t HeadingTest = {false, "idle", 0, 0, 0};
-static Mecanum_HeadingPid_t HeadingTestPid;
-static float HeadingTestSpeed;
-static uint32_t HeadingTestStartTick, HeadingTestDuration, HeadingTestLastTick;
-static uint32_t HeadingTestSampleTick, HeadingTestSampleCount;
-static void Mecanum_HeadingTest_Process(void);
+static const ChassisModel_Geometry_t Geometry = {
+    CHASSIS_WHEELBASE_MM, CHASSIS_TRACK_WIDTH_MM,
+    CHASSIS_WHEEL_DIAMETER_MM, CHASSIS_MOTOR_TO_WHEEL_RATIO};
+static bool wheel_linear(float forward, float left, float yaw, float out[4])
+{
+  ChassisModel_Velocity_t body = {forward,left,yaw};
+  return ChassisModel_WheelLinearInverse(&Geometry,&body,out);
+}
+static uint32_t Mecanum_Distance_To_Pulse(float distance_mm);
 
 typedef struct
 {
@@ -115,7 +113,7 @@ static bool QueuePosition(float forward, float left, float yaw, uint16_t speed, 
   uint32_t pulses;
   Mecanum_Batch_t next;
   if (!Mecanum_Ready() || BatchActive || NextValid || !isfinite(forward) || !isfinite(left) ||
-      !isfinite(yaw) || !Mecanum_Wheel_Speed_Calc(forward, left, yaw, distance))
+      !isfinite(yaw) || !wheel_linear(forward, left, yaw, distance))
     return false;
   memset(&next, 0, sizeof(next));
   next.count = 4;
@@ -136,7 +134,6 @@ static bool QueuePosition(float forward, float left, float yaw, uint16_t speed, 
     next.frame[i][12] = 0x6b;
     next.length[i] = 13;
   }
-  Mecanum_VelocityRefresh_Stop();
   if(LastBatchValid && next.length[0]==8 &&
      (uint32_t)(HAL_GetTick()-LastBatchMs)<MECANUM_VELOCITY_REFRESH_MS) {
     const Mecanum_Batch_t *previous=NextValid?&NextBatch:&Batch;
@@ -158,7 +155,6 @@ static void BatchFault(Mecanum_Error_t error)
   BatchWaiting = false;
   NextValid = false;
   MecanumMotionPending = true;
-  Mecanum_VelocityRefresh_Stop();
   MotorBus_Release(MOTOR_BUS_CHASSIS);
   MotorBus_Release(MOTOR_BUS_STOP);
 }
@@ -234,8 +230,7 @@ static void FeedbackProcess(void)
         if (BusStatus.error != MECANUM_ERROR_NONE && BusStatus.error != MECANUM_ERROR_PROFILE &&
             BusStatus.error != MECANUM_ERROR_CANCELLED)
           error = BusStatus.error;
-        if (!BusStatus.stop_pending && (BatchActive || NextValid || MecanumMotionPending ||
-                                        MecanumVelocityActive || HeadingTest.active))
+        if (!BusStatus.stop_pending && (BatchActive || NextValid || MecanumMotionPending))
         {
           MotorBus_Cancel(MOTOR_BUS_CHASSIS);
           BatchFault(error);
@@ -535,32 +530,6 @@ bool Mecanum_FeedbackGet(unsigned wheel, Mecanum_Feedback_t *feedback)
   return true;
 }
 
-static float Mecanum_Clamp(float value, float min_value, float max_value)
-{
-  if (value < min_value)
-  {
-    return min_value;
-  }
-  if (value > max_value)
-  {
-    return max_value;
-  }
-  return value;
-}
-
-static float Mecanum_Wrap_Angle_Error(float error_deg)
-{
-  while (error_deg > 180.0f)
-  {
-    error_deg -= 360.0f;
-  }
-  while (error_deg < -180.0f)
-  {
-    error_deg += 360.0f;
-  }
-  return error_deg;
-}
-
 /**********************************************************
 *** 基础数值换算
 **********************************************************/
@@ -602,49 +571,6 @@ static uint32_t Mecanum_Distance_To_Count(float distance_mm, uint32_t counts_per
 }
 
 /**********************************************************
-*** 麦克纳姆轮逆运动学解算
-**********************************************************/
-/**
- * @brief    将车体前向、横向和旋转速度分解为四个车轮速度
- * @param    forward_mm_s ：车体前向速度，向前为正，单位 mm/s
- * @param    left_mm_s    ：车体横向速度，向左为正，单位 mm/s
- * @param    yaw_rad_s    ：车体角速度，逆时针为正，单位 rad/s
- * @param    wheel_mm_s   ：四轮输出数组，顺序为左上、左下、右下、右上
- * @retval   true  ：输入有效，四轮速度解算完成
- * @retval   false ：输出指针为空，或旋转时尚未配置轴距/轮距
- */
-bool Mecanum_Wheel_Speed_Calc(float forward_mm_s, float left_mm_s, float yaw_rad_s,
-                              float wheel_mm_s[MECANUM_WHEEL_COUNT])
-{
-  float rotation_arm_mm;
-
-  if (wheel_mm_s == NULL)
-  {
-    return false;
-  }
-
-  rotation_arm_mm = (CHASSIS_WHEELBASE_MM + CHASSIS_TRACK_WIDTH_MM) * 0.5f;
-  if ((yaw_rad_s != 0.0f) && (rotation_arm_mm <= 0.0f))
-  {
-    return false;
-  }
-
-  /*
-   * X型麦轮逆解：轮缘正速度统一定义为“该轮向车体前方滚动”。
-   * 0 左上 = Vx - Vy - (L+W)Wz
-   * 1 左下 = Vx + Vy - (L+W)Wz
-   * 2 右下 = Vx - Vy + (L+W)Wz
-   * 3 右上 = Vx + Vy + (L+W)Wz
-   */
-  wheel_mm_s[MECANUM_WHEEL_FRONT_LEFT] = forward_mm_s - left_mm_s - rotation_arm_mm * yaw_rad_s;
-  wheel_mm_s[MECANUM_WHEEL_REAR_LEFT] = forward_mm_s + left_mm_s - rotation_arm_mm * yaw_rad_s;
-  wheel_mm_s[MECANUM_WHEEL_REAR_RIGHT] = forward_mm_s - left_mm_s + rotation_arm_mm * yaw_rad_s;
-  wheel_mm_s[MECANUM_WHEEL_FRONT_RIGHT] = forward_mm_s + left_mm_s + rotation_arm_mm * yaw_rad_s;
-
-  return true;
-}
-
-/**********************************************************
 *** 距离与步进电机计数换算
 **********************************************************/
 /**
@@ -653,7 +579,7 @@ bool Mecanum_Wheel_Speed_Calc(float forward_mm_s, float left_mm_s, float yaw_rad
  * @retval   Emm_V5_Pos_Control() 的 clk 参数绝对值
  * @note     方向不包含在返回值中，由调用函数根据距离正负单独设置 dir
  */
-uint32_t Mecanum_Distance_To_Pulse(float distance_mm)
+static uint32_t Mecanum_Distance_To_Pulse(float distance_mm)
 {
   return Mecanum_Distance_To_Count(distance_mm, CHASSIS_COMMAND_PULSES_PER_REV);
 }
@@ -711,7 +637,6 @@ bool Mecanum_Wheel_Test(MecanumWheel_t wheel, int16_t rpm)
   next.length[0] = 8;
   next.rpm[(unsigned)wheel] = rpm;
   VelocityFrame(next.frame[0], (unsigned)wheel, rpm, CHASSIS_POLARITY_TEST_ACCELERATION, false);
-  Mecanum_VelocityRefresh_Stop();
   if(LastBatchValid && next.length[0]==8 &&
      (uint32_t)(HAL_GetTick()-LastBatchMs)<MECANUM_VELOCITY_REFRESH_MS) {
     const Mecanum_Batch_t *previous=NextValid?&NextBatch:&Batch;
@@ -723,7 +648,6 @@ bool Mecanum_Wheel_Test(MecanumWheel_t wheel, int16_t rpm)
   MecanumMotionPending = true;
   return true;
 }
-
 /**
  * @brief    依次立即停止底盘四个车轮。
  * @retval   true停车请求已接受；false至少一条发送失败
@@ -746,7 +670,6 @@ bool Mecanum_RequestPlannedStop(void)
    * and let the current query finish before FE, rather than racing polling. */
   PlannedStopPending = true;
   NextValid = false;
-  Mecanum_VelocityRefresh_Stop();
   return true;
 }
 
@@ -760,7 +683,6 @@ bool Mecanum_Test_Stop(void)
     BusStatus.locked = true;
     BusStatus.error = MECANUM_ERROR_CANCELLED;
   }
-  Mecanum_VelocityRefresh_Stop();
   NextValid = false;
   BatchActive = false;
   BatchWaiting = false;
@@ -782,7 +704,7 @@ bool Mecanum_Test_Stop(void)
 
 bool Mecanum_IsBusy(void)
 {
-  return PlannedStopPending || MecanumVelocityActive || HeadingTest.active || MecanumMotionPending ||
+  return PlannedStopPending || MecanumMotionPending ||
          BusStatus.stop_pending || BatchActive || NextValid ||
          BusStatus.stage == MECANUM_STAGE_FAULT;
 }
@@ -790,20 +712,14 @@ bool Mecanum_IsBusy(void)
 /**********************************************************
 *** 连续速度控制
 **********************************************************/
-bool Mecanum_Velocity_Control(float forward_mm_s, float left_mm_s, float yaw_rad_s)
-{
-  if (ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return false;
-  return Mecanum_Velocity_Request(forward_mm_s, left_mm_s, yaw_rad_s,
-                                  CHASSIS_VELOCITY_ACCELERATION);
-}
-
 bool Mecanum_Velocity_Request(float forward_mm_s, float left_mm_s, float yaw_rad_s, uint8_t acc)
 {
   Mecanum_Batch_t next;
-  float speed[4], rpm[4], largest = 0, scale = 1;
+  ChassisModel_Velocity_t body = {forward_mm_s,left_mm_s,yaw_rad_s};
+  ChassisModel_Wheels_t wheels;
   unsigned i;
   if (!Mecanum_Ready() || !isfinite(forward_mm_s) || !isfinite(left_mm_s) || !isfinite(yaw_rad_s) ||
-      !Mecanum_Wheel_Speed_Calc(forward_mm_s, left_mm_s, yaw_rad_s, speed))
+      !ChassisModel_Inverse(&Geometry,&body,CHASSIS_EMM_MAX_COMMAND_RPM,&wheels))
     return false;
   if (CHASSIS_WHEEL_DIAMETER_MM <= 0 || CHASSIS_MOTOR_TO_WHEEL_RATIO <= 0)
     return false;
@@ -816,19 +732,7 @@ bool Mecanum_Velocity_Request(float forward_mm_s, float left_mm_s, float yaw_rad
   next.sync = true;
   for (i = 0; i < 4; i++)
   {
-    rpm[i] =
-        speed[i] * 60.0f / (MECANUM_PI * CHASSIS_WHEEL_DIAMETER_MM) * CHASSIS_MOTOR_TO_WHEEL_RATIO;
-    if (!isfinite(rpm[i]))
-      return false;
-    if (fabsf(rpm[i]) > largest)
-      largest = fabsf(rpm[i]);
-  }
-  if (largest > CHASSIS_EMM_MAX_COMMAND_RPM)
-    scale = CHASSIS_EMM_MAX_COMMAND_RPM / largest;
-  for (i = 0; i < 4; i++)
-  {
-    float value = rpm[i] * scale;
-    next.rpm[i] = (int32_t)(value >= 0 ? value + 0.5f : value - 0.5f);
+    next.rpm[i] = wheels.command[i];
     VelocityFrame(next.frame[i], i, next.rpm[i], acc, true);
     next.length[i] = 8;
   }
@@ -842,248 +746,4 @@ bool Mecanum_Velocity_Request(float forward_mm_s, float left_mm_s, float yaw_rad
   BusStatus.motion_sequence++;
   MecanumMotionPending = true;
   return true;
-}
-
-/**
- * @brief    启动整车持续速度控制。
- * @param    forward_mm_s ：车体前后速度，前进为正，单位mm/s
- * @param    left_mm_s    ：车体左右速度，向左为正，单位mm/s
- * @param    yaw_rad_s    ：车体旋转速度，逆时针为正，单位rad/s
- * @retval   true首帧请求已接受；false运动学参数或UART5发送失败
- * @note     后续由主循环调用Mecanum_Velocity_Process()自动刷新
- */
-bool Mecanum_Velocity_Start(float forward_mm_s, float left_mm_s, float yaw_rad_s)
-{
-  if (HWT101_Cal_IsBusy() || HeadingTest.active)
-    return false;
-  if (!Mecanum_Velocity_Control(forward_mm_s, left_mm_s, yaw_rad_s))
-  {
-    return false;
-  }
-
-  MecanumVelocityForward = forward_mm_s;
-  MecanumVelocityLeft = left_mm_s;
-  MecanumVelocityYaw = yaw_rad_s;
-  MecanumVelocityActive = true;
-  MecanumVelocityLastSendTick = HAL_GetTick();
-  return true;
-}
-
-/**
- * @brief    刷新整车持续速度控制。
- * @param    无
- * @retval   无
- * @note     速度模式持续运行，直到调用停车接口
- */
-void Mecanum_Velocity_Process(void)
-{
-  uint32_t now;
-
-  Mecanum_Process();
-  if (HeadingTest.active)
-  {
-    Mecanum_HeadingTest_Process();
-    return;
-  }
-
-  if (!MecanumVelocityActive)
-  {
-    return;
-  }
-
-  now = HAL_GetTick();
-  if ((now - MecanumVelocityLastSendTick) >= MECANUM_VELOCITY_REFRESH_MS)
-  {
-    if (!Mecanum_Velocity_Control(MecanumVelocityForward, MecanumVelocityLeft, MecanumVelocityYaw))
-    {
-      MecanumVelocityActive = false;
-      (void)Mecanum_Test_Stop();
-      return;
-    }
-    MecanumVelocityLastSendTick = now;
-  }
-}
-
-/**
- * @brief    取消整车持续速度控制。
- * @param    无
- * @retval   无
- * @note     不主动发送停车帧，停车由调用者按需执行
- */
-void Mecanum_VelocityRefresh_Stop(void)
-{
-  MecanumVelocityActive = false;
-  if (HeadingTest.active)
-  {
-    HeadingTest.active = false;
-    HeadingTest.reason = "stopped";
-    HeadingTest.output_rad_s = 0.0f;
-  }
-}
-
-static void Mecanum_HeadingTest_Finish(const char *reason)
-{
-  bool stopped = Mecanum_Test_Stop();
-  HeadingTest.reason = stopped ? reason : "stop_tx_error";
-}
-
-bool Mecanum_HeadingTest_Start(float forward_mm_s, uint32_t duration_ms)
-{
-  if (ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return false;
-  HWT101_Angle_t angle;
-  if (HWT101_Cal_IsBusy())
-  {
-    if (!HeadingTest.active)
-      HeadingTest.reason = "imu_busy";
-    return false;
-  }
-  if (Mecanum_IsBusy())
-  {
-    if (!HeadingTest.active)
-      HeadingTest.reason = "chassis_busy";
-    return false;
-  }
-  HeadingTest.reason = "range";
-  if (!isfinite(forward_mm_s) || forward_mm_s < -100.0f || forward_mm_s > 100.0f ||
-      duration_ms < 1000U || duration_ms > 10000U)
-    return false;
-  HeadingTest.reason = "imu_not_verified";
-  if (!HWT101_Cal_ControlAngleGet(&angle))
-    return false;
-
-  HeadingTest.current_deg = angle.yaw * CHASSIS_HEADING_TEST_YAW_SIGN;
-  HeadingTest.target_deg = HeadingTest.current_deg;
-  HeadingTest.output_rad_s = 0.0f;
-  Mecanum_HeadingPid_Init(&HeadingTestPid, CHASSIS_HEADING_TEST_KP, 0.0f, 0.0f, 0.1f, 0.0f,
-                          CHASSIS_HEADING_TEST_OUTPUT_LIMIT);
-  Mecanum_HeadingPid_Set_Target(&HeadingTestPid, HeadingTest.target_deg);
-  HeadingTestSpeed = forward_mm_s;
-  HeadingTestDuration = duration_ms;
-  HeadingTestStartTick = HeadingTestLastTick = HAL_GetTick();
-  HeadingTestSampleTick = angle.last_update_ms;
-  HeadingTestSampleCount = angle.update_count;
-  HeadingTest.active = true;
-  HeadingTest.reason = "running";
-  if (!Mecanum_Velocity_Control(forward_mm_s, 0.0f, 0.0f))
-  {
-    Mecanum_HeadingTest_Finish("motor_tx_error");
-    return false;
-  }
-  return true;
-}
-
-static void Mecanum_HeadingTest_Process(void)
-{
-  HWT101_Angle_t angle;
-  uint32_t now = HAL_GetTick();
-  if ((uint32_t)(now - HeadingTestStartTick) >= HeadingTestDuration)
-  {
-    Mecanum_HeadingTest_Finish("complete");
-    return;
-  }
-  if (!HWT101_Cal_ControlAngleGet(&angle))
-  {
-    Mecanum_HeadingTest_Finish("imu_invalid");
-    return;
-  }
-  if ((uint32_t)(now - HeadingTestLastTick) < MECANUM_VELOCITY_REFRESH_MS ||
-      angle.update_count == HeadingTestSampleCount)
-    return;
-  HeadingTest.current_deg = angle.yaw * CHASSIS_HEADING_TEST_YAW_SIGN;
-  HeadingTestPid.sample_time_s = (uint32_t)(angle.last_update_ms - HeadingTestSampleTick) / 1000.0f;
-  HeadingTest.output_rad_s = Mecanum_HeadingPid_Update(&HeadingTestPid, HeadingTest.current_deg);
-  HeadingTestLastTick = now;
-  HeadingTestSampleTick = angle.last_update_ms;
-  HeadingTestSampleCount = angle.update_count;
-  if (!Mecanum_Velocity_Control(HeadingTestSpeed, 0.0f, HeadingTest.output_rad_s))
-    Mecanum_HeadingTest_Finish("motor_tx_error");
-}
-
-void Mecanum_HeadingTest_StatusGet(Mecanum_HeadingTestStatus_t *status)
-{
-  if (status != NULL)
-    *status = HeadingTest;
-}
-
-/**********************************************************
-*** 离散位置式航向角 PID
-**********************************************************/
-void Mecanum_HeadingPid_Init(Mecanum_HeadingPid_t *pid, float kp, float ki, float kd,
-                             float sample_time_s, float integral_limit, float output_limit)
-{
-  if (pid == NULL)
-  {
-    return;
-  }
-
-  pid->kp = kp;
-  pid->ki = ki;
-  pid->kd = kd;
-  pid->sample_time_s = sample_time_s;
-  pid->integral_limit = Mecanum_Get_Abs(integral_limit);
-  pid->output_limit = Mecanum_Get_Abs(output_limit);
-  pid->target_yaw_deg = 0.0f;
-  pid->integral = 0.0f;
-  pid->previous_error_deg = 0.0f;
-  pid->output_rad_s = 0.0f;
-  pid->initialized = false;
-}
-
-void Mecanum_HeadingPid_Set_Target(Mecanum_HeadingPid_t *pid, float target_deg)
-{
-  if (pid == NULL)
-  {
-    return;
-  }
-
-  pid->target_yaw_deg = Mecanum_Wrap_Angle_Error(target_deg);
-  pid->integral = 0.0f;
-  pid->previous_error_deg = 0.0f;
-  pid->output_rad_s = 0.0f;
-  pid->initialized = false;
-}
-
-float Mecanum_HeadingPid_Update(Mecanum_HeadingPid_t *pid, float current_yaw_deg)
-{
-  float error_deg;
-  float derivative_deg_s;
-  float integral_term;
-  float output_rad_s;
-
-  if ((pid == NULL) || (pid->sample_time_s <= 0.0f))
-  {
-    return 0.0f;
-  }
-
-  error_deg = Mecanum_Wrap_Angle_Error(pid->target_yaw_deg - current_yaw_deg);
-
-  if (!pid->initialized)
-  {
-    pid->previous_error_deg = error_deg;
-    pid->initialized = true;
-  }
-
-  pid->integral += error_deg * pid->sample_time_s;
-  pid->integral = Mecanum_Clamp(pid->integral, -pid->integral_limit, pid->integral_limit);
-  derivative_deg_s = (error_deg - pid->previous_error_deg) / pid->sample_time_s;
-  integral_term = pid->ki * pid->integral;
-  output_rad_s = pid->kp * error_deg + integral_term + pid->kd * derivative_deg_s;
-  pid->output_rad_s = Mecanum_Clamp(output_rad_s, -pid->output_limit, pid->output_limit);
-  pid->previous_error_deg = error_deg;
-
-  return pid->output_rad_s;
-}
-
-bool Mecanum_Heading_Hold_Step(Mecanum_HeadingPid_t *pid, float current_yaw_deg, float forward_mm_s,
-                               float left_mm_s)
-{
-  float yaw_rad_s;
-
-  if (pid == NULL || HWT101_Cal_IsBusy())
-  {
-    return false;
-  }
-
-  yaw_rad_s = Mecanum_HeadingPid_Update(pid, current_yaw_deg);
-  return Mecanum_Velocity_Control(forward_mm_s, left_mm_s, yaw_rad_s);
 }

@@ -1,130 +1,64 @@
 #include "MaterialVision.h"
+#include "GrabTask.h"
 #include "chassis_route.h"
 #include "chassis_motion.h"
-
-#include "GrabTask.h"
 #include "mecanum_chassis.h"
+#include "chassis_config.h"
 #include "mechanical_arm_config.h"
-
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
 
-#define MATERIAL_VISION_TEST_NO_TIMEOUT 1U /* 测试阶段关闭视觉流程的高层自动超时。 */
-#define MATERIAL_VISION_SAMPLE_COUNT 5U  /* 每组视觉中值采样的帧数。 */
-#define MATERIAL_VISION_SEARCH_SPEED_MM_S 30.0f  /* 搜索物料时底盘向后速度。 */
-#define MATERIAL_VISION_COARSE_SPEED_MM_S 15.0f  /* 底盘前后粗调速度。 */
-#define MATERIAL_VISION_FINE_SPEED_MM_S 8.0f  /* 底盘前后精调速度。 */
-#define MATERIAL_VISION_CHASSIS_CAL_SPEED_MM_S 20.0f  /* 底盘标定速度。 */
-#define MATERIAL_VISION_CHASSIS_CAL_STEP_MM 20.0f  /* 底盘标定单次位移。 */
-#define MATERIAL_VISION_CORRECTION_TIME_MS 200U /* 普通底盘修正持续时间。 */
-#define MATERIAL_VISION_MIN_MOVE_TIME_MS 100U
-#define MATERIAL_VISION_MOTOR_POLL_MS 50U
-#define MATERIAL_VISION_X_ARRIVAL_TIMEOUT_MS 5000U
-#define MATERIAL_VISION_X_SPEED_RPM 8U
-#define MATERIAL_VISION_X_CAL_STEP_DEG 5.0f  /* X轴标定角度。 */
-#define MATERIAL_VISION_LOCK_DX_PIXELS 80  /* 进入工作窗口的DX阈值。 */
-#define MATERIAL_VISION_LOCK_DY_PIXELS 100  /* 进入工作窗口的DY阈值。 */
-#define MATERIAL_VISION_ALIGN_DEAD_ZONE_PIXELS 1  /* 最终对准死区半宽。 */
-#define MATERIAL_VISION_DX_HANDOFF_PIXELS 15     /* DX进入该窗口后交给X轴修正DY，不代表对准完成。 */
-#define MATERIAL_VISION_STABLE_COUNT 3U  /* 连续满足死区的次数。 */
-#define MATERIAL_VISION_FIRST_DATA_TIMEOUT_MS 3000U  /* 等待首帧的最长时间。 */
-#define MATERIAL_VISION_DATA_STALE_TIMEOUT_MS 1200U /* 视觉数据失新的时间，容忍较慢的一帧。 */
-#define MATERIAL_VISION_SEARCH_TIMEOUT_MS 10000U  /* 底盘搜索最长时间。 */
-#define MATERIAL_VISION_TASK_TIMEOUT_MS 15000U  /* 自动对准最长时间。 */
-#define MATERIAL_VISION_MOVE_SETTLE_MS 150U  /* 运动停止后的稳定时间。 */
-#define MATERIAL_VISION_MIN_RESPONSE_PIXELS 3.0f  /* 标定响应的最小模长。 */
-#define MATERIAL_VISION_MAX_X_TOTAL_PULSES 3200  /* X轴视觉累计修正安全范围。 */
-#define MATERIAL_VISION_MAX_CHASSIS_TOTAL_MM 2000.0f  /* 底盘前后视觉累计位移范围。 */
-#define MATERIAL_VISION_MIN_CHASSIS_STEP_MM 3.0f  /* 底盘最小修正位移。 */
-#define MATERIAL_VISION_MIN_X_STEP_DEG 1.0f  /* X轴最小修正角度。 */
-#define MATERIAL_VISION_RESPONSE_CROSS_LIMIT 0.2f  /* 两响应向量最小夹角正弦。 */
-#define MATERIAL_VISION_PID_FORWARD_KP 0.20f  /* DX到前后速度的比例增益。 */
-#define MATERIAL_VISION_PID_FORWARD_KI 0.00f  /* 前后速度积分增益，初始关闭。 */
-#define MATERIAL_VISION_PID_FORWARD_KD 0.03f  /* DX变化的微分增益。 */
-#define MATERIAL_VISION_PID_X_KP 0.08f  /* DY到X轴角度增益。 */
-#define MATERIAL_VISION_PID_X_KI 0.00f  /* X轴积分增益，初始关闭。 */
-#define MATERIAL_VISION_PID_X_KD 0.01f  /* DY变化的微分增益。 */
-#define MATERIAL_VISION_PID_OUTPUT_LIMIT 30.0f  /* 底盘前后速度输出限幅。 */
-#define MATERIAL_VISION_PID_X_OUTPUT_LIMIT 30.0f  /* X轴粗调单次角度输出上限，允许更快覆盖Y误差。 */
-#define MATERIAL_VISION_PID_INTEGRAL_LIMIT 300.0f  /* PID积分项限幅。 */
-#define MATERIAL_VISION_PID_FORWARD_SIGN 1.0f /* DX为负时底盘后退，需结合实测确认。 */
-#define MATERIAL_VISION_PID_X_SIGN 1.0f   /* Positive DY now commands positive X correction. */
+#define SAMPLE_COUNT 5U
+#define CAL_SPEED_MM_S 20.0f
+#define CAL_X_DEG 5.0f
+#define CAL_X_RPM 8U
+#define SETTLE_MS 150U
+#define POLL_MS 50U
+#define X_TIMEOUT_MS 5000U
+#define POSITION_FRESH_MS 1200U
 
 typedef enum
 {
-  MATERIAL_VISION_TASK_NONE = 0,
-  MATERIAL_VISION_TASK_ALIGN,
-  MATERIAL_VISION_TASK_CALIBRATION
-} MaterialVision_TaskTypeDef;
-
-typedef enum
-{
-  MATERIAL_VISION_PHASE_NONE = 0,
-  MATERIAL_VISION_PHASE_ALIGN,
-  MATERIAL_VISION_PHASE_CAL_BASELINE,
-  MATERIAL_VISION_PHASE_CAL_FORWARD_SAMPLE,
-  MATERIAL_VISION_PHASE_CAL_FORWARD_RETURN,
-  MATERIAL_VISION_PHASE_CAL_X_BASELINE,
-  MATERIAL_VISION_PHASE_CAL_X_SAMPLE,
-  MATERIAL_VISION_PHASE_CAL_X_RETURN
-} MaterialVision_PhaseTypeDef;
-
-typedef struct
-{
-  float Dx;
-  float Dy;
-} MaterialVision_ResponseTypeDef;
-
-static MaterialVision_StateTypeDef MaterialVision_State;
-static uint8_t MaterialVision_ReferenceValid;
-static MaterialVision_TaskTypeDef MaterialVision_Task;
-static MaterialVision_PhaseTypeDef MaterialVision_Phase;
-static Camera_ColorTypeDef MaterialVision_Color;
-static Camera_DataTypeDef MaterialVision_Data;
-static uint32_t MaterialVision_LastSequence;
-#if (MATERIAL_VISION_TEST_NO_TIMEOUT == 0U)
-static uint32_t MaterialVision_StartTick;
-static uint32_t MaterialVision_LastDataTick;
-#endif
-static uint32_t MaterialVision_MoveStartTick;
-static uint32_t MaterialVision_MoveDurationMs;
-static uint32_t MaterialVision_SettleStartTick;
-static uint32_t MaterialVision_LastPollTick;
-#if (MATERIAL_VISION_TEST_NO_TIMEOUT == 0U)
-static uint8_t MaterialVision_HasData;
-#endif
-static uint8_t MaterialVision_SampleIndex;
-static uint8_t MaterialVision_LockCount;
-static uint8_t MaterialVision_StableCount;
-static int16_t MaterialVision_DxSamples[MATERIAL_VISION_SAMPLE_COUNT];
-static int16_t MaterialVision_DySamples[MATERIAL_VISION_SAMPLE_COUNT];
-static int16_t MaterialVision_BaselineDx;
-static int16_t MaterialVision_BaselineDy;
-static MaterialVision_ResponseTypeDef MaterialVision_Response[3];
-static MaterialVision_CalibrationDataTypeDef MaterialVision_Calibration;
-static uint8_t MaterialVision_Calibrated;
-static int32_t MaterialVision_XTotal;
-static float MaterialVision_ChassisTotal;
-static MaterialVision_ErrorTypeDef MaterialVision_Error;
-static float MaterialVision_ForwardIntegral;
-static float MaterialVision_ForwardPreviousError;
-static float MaterialVision_XIntegral;
-static float MaterialVision_XPreviousError;
-
-static const char *MaterialVision_ErrorNames[] =
+  CAL_NONE, CAL_BASELINE, CAL_FORWARD_BEGIN, CAL_FORWARD_SAMPLE,
+  CAL_FORWARD_RETURN, CAL_X_BASELINE, CAL_X_BEGIN, CAL_X_SAMPLE, CAL_X_RETURN
+} CalibrationPhase;
+static MaterialVision_StateTypeDef State;
+static MaterialVision_ErrorTypeDef Error;
+static CalibrationPhase Phase;
+static uint8_t Sampling, Calibrated, SampleIndex, NeedPositionRead;
+static uint32_t LastSequence, MoveStartTick, SettleTick, PollTick;
+static float ForwardSpeed, ForwardDelta, XDeltaDegree;
+static int16_t DxSamples[SAMPLE_COUNT], DySamples[SAMPLE_COUNT], BaselineDx, BaselineDy;
+static int64_t WheelOrigin[4], XOrigin;
+static uint32_t WheelOriginTick[4];
+static MechanicalArm_ActionTypeDef PendingAction;
+static Camera_ColorTypeDef SelectedColor;
+static MaterialVision_CalibrationDataTypeDef Calibration, Candidate;
+static const char *ErrorNames[] =
 {
   "none", "busy", "not_ready", "camera_first_timeout", "camera_stale",
-  "camera_tx", "motor_ack_timeout", "motor_arrival_timeout",
-  "motor_error", "search_timeout", "response_invalid", "correction_zero",
-  "x_limit", "task_timeout", "internal", "chassis_tx", "motor_busy",
-  "motor_param", "motor_tx", "chassis_limit", "camera_busy", "usb_off"
+  "camera_tx", "motor_ack_timeout", "motor_arrival_timeout", "motor_error",
+  "search_timeout", "response_invalid", "correction_zero", "x_limit",
+  "task_timeout", "internal", "chassis_tx", "motor_busy", "motor_param",
+  "motor_tx", "chassis_limit", "camera_busy", "usb_off"
 };
-
-/** 保留电机接口给出的真实失败原因，避免全部误报为超时。 */
-static MaterialVision_ErrorTypeDef MaterialVision_MotorError(MechanicalArm_ResultTypeDef Result)
+static MaterialVision_ErrorTypeDef reason_error(const char *reason)
 {
-  switch (Result)
+  unsigned i;
+  if(!reason)return MATERIAL_VISION_ERROR_INTERNAL;
+  if(!strcmp(reason,"vision_usb_off"))return MATERIAL_VISION_ERROR_USB_OFF;
+  if(!strcmp(reason,"vision_stale"))return MATERIAL_VISION_ERROR_CAMERA_STALE;
+  if(!strcmp(reason,"vision_acquire_timeout"))return MATERIAL_VISION_ERROR_CAMERA_FIRST_TIMEOUT;
+  if(!strcmp(reason,"vision_request_lost"))return MATERIAL_VISION_ERROR_CAMERA_TX;
+  if(!strcmp(reason,"calibration_x_limit"))return MATERIAL_VISION_ERROR_X_LIMIT;
+  if(!strcmp(reason,"config_missing"))return MATERIAL_VISION_ERROR_NOT_READY;
+  for(i=0;i<sizeof(ErrorNames)/sizeof(ErrorNames[0]);i++)
+    if(!strcmp(reason,ErrorNames[i]))return (MaterialVision_ErrorTypeDef)i;
+  return MATERIAL_VISION_ERROR_INTERNAL;
+}
+static MaterialVision_ErrorTypeDef motor_error(MechanicalArm_ResultTypeDef result)
+{
+  switch(result)
   {
     case MECHANICAL_ARM_RESULT_BUSY: return MATERIAL_VISION_ERROR_MOTOR_BUSY;
     case MECHANICAL_ARM_RESULT_PARAM_ERROR: return MATERIAL_VISION_ERROR_MOTOR_PARAM;
@@ -133,705 +67,318 @@ static MaterialVision_ErrorTypeDef MaterialVision_MotorError(MechanicalArm_Resul
     default: return MATERIAL_VISION_ERROR_MOTOR_ERROR;
   }
 }
-
-/** 区分USB未配置、发送忙和发送失败。 */
-static MaterialVision_ErrorTypeDef MaterialVision_CameraError(HAL_StatusTypeDef Result)
+static uint8_t service_busy(void)
+{ return Sampling && State!=MATERIAL_VISION_STATE_IDLE && State!=MATERIAL_VISION_STATE_ALIGNED && State!=MATERIAL_VISION_STATE_ERROR; }
+static void fail(MaterialVision_ErrorTypeDef error)
 {
-  Camera_SnapshotTypeDef Snapshot;
-  Camera_SnapshotGet(&Snapshot);
-  if (Result == HAL_BUSY) return MATERIAL_VISION_ERROR_CAMERA_BUSY;
-  if (Snapshot.UsbConfigured == 0U) return MATERIAL_VISION_ERROR_USB_OFF;
-  return MATERIAL_VISION_ERROR_CAMERA_TX;
-}
-
-/** 计算固定五个样本的中值。 */
-static int16_t MaterialVision_MedianGet(const int16_t *Data)
-{
-  int16_t Sorted[MATERIAL_VISION_SAMPLE_COUNT];
-  int16_t Value;
-  uint8_t Index;
-  uint8_t Insert;
-
-  (void)memcpy(Sorted, Data, sizeof(Sorted));
-  for (Index = 1U; Index < MATERIAL_VISION_SAMPLE_COUNT; Index++)
-  {
-    Value = Sorted[Index];
-    Insert = Index;
-    while ((Insert > 0U) && (Sorted[Insert - 1U] > Value))
-    {
-      Sorted[Insert] = Sorted[Insert - 1U];
-      Insert--;
-    }
-    Sorted[Insert] = Value;
-  }
-  return Sorted[MATERIAL_VISION_SAMPLE_COUNT / 2U];
-}
-
-/** 读取一帧尚未处理的视觉数据。 */
-static uint8_t MaterialVision_NewDataGet(Camera_DataTypeDef *Data)
-{
-  Camera_SnapshotTypeDef Snapshot;
-
-  Camera_SnapshotGet(&Snapshot);
-  if ((Data == NULL) || (Snapshot.RequestActive == 0U) ||
-      (Snapshot.UsbConfigured == 0U) || (Snapshot.TargetValid == 0U) ||
-      (Snapshot.HasValidData == 0U) ||
-      (Snapshot.Data.Sequence == MaterialVision_LastSequence))
-  {
-    return 0U;
-  }
-  MaterialVision_LastSequence = Snapshot.Data.Sequence;
-#if (MATERIAL_VISION_TEST_NO_TIMEOUT == 0U)
-  MaterialVision_LastDataTick = HAL_GetTick();
-  MaterialVision_HasData = 1U;
-#endif
-  MaterialVision_Data = Snapshot.Data;
-  *Data = Snapshot.Data;
-  return 1U;
-}
-
-/** 将当前阶段切换为中值采样阶段。 */
-static void MaterialVision_CollectStart(MaterialVision_PhaseTypeDef Phase)
-{
-  Camera_SnapshotTypeDef Snapshot;
-
-  /* 稳定等待前已收到的帧不属于新采样组；只接收此后发布的序号。 */
-  Camera_SnapshotGet(&Snapshot);
-  MaterialVision_LastSequence = Snapshot.Data.Sequence;
-  MaterialVision_Phase = Phase;
-  MaterialVision_SampleIndex = 0U;
-  MaterialVision_State = MATERIAL_VISION_STATE_COLLECT;
-}
-
-/** 根据当前运动类型进入一次稳定等待。 */
-static void MaterialVision_SettleStart(void)
-{
-  MaterialVision_SettleStartTick = HAL_GetTick();
-  MaterialVision_State = MATERIAL_VISION_STATE_SETTLE;
-}
-
-/** 停止全部视觉相关执行器并进入错误状态。 */
-static void MaterialVision_Fail(MaterialVision_ErrorTypeDef Error)
-{
+  /* GrabTask owns error parking; the sampler only reports its cause. */
   Camera_RequestStop();
-  (void)Mecanum_Test_Stop();
-  (void)MechanicalArm_Stop(MECHANICAL_ARM_AXIS_ALL);
-  MaterialVision_Error = Error;
-  MaterialVision_State = MATERIAL_VISION_STATE_ERROR;
+  State=MATERIAL_VISION_STATE_ERROR; Error=error;
 }
-
-/** 启动底盘定时速度运动。 */
-static uint8_t MaterialVision_ChassisMoveStart(float Forward,
-                                                float Distance)
+static int16_t median(const int16_t *data)
 {
-  float Speed;
-  uint32_t Duration;
-
-  Speed = (MaterialVision_Task == MATERIAL_VISION_TASK_CALIBRATION) ?
-          MATERIAL_VISION_CHASSIS_CAL_SPEED_MM_S :
-          (((fabsf((float)MaterialVision_Data.DX) > 30.0f) ||
-            (fabsf((float)MaterialVision_Data.DY) > 30.0f)) ?
-           MATERIAL_VISION_COARSE_SPEED_MM_S : MATERIAL_VISION_FINE_SPEED_MM_S);
-  /* 视觉标定使用底盘前后运动，横向速度固定为0。 */
-  if (Mecanum_Velocity_Start(Forward * Speed, 0.0f, 0.0f) == false)
+  int16_t sorted[SAMPLE_COUNT],value;
+  unsigned i,j;
+  memcpy(sorted,data,sizeof(sorted));
+  for(i=1;i<SAMPLE_COUNT;i++)
   {
-    MaterialVision_Error = MATERIAL_VISION_ERROR_CHASSIS_TX;
-    return 0U;
+    value=sorted[i]; j=i;
+    while(j && sorted[j-1]>value) { sorted[j]=sorted[j-1]; j--; }
+    sorted[j]=value;
   }
-  Duration = (uint32_t)(fabsf(Distance) / Speed * 1000.0f);
-  if (Duration < MATERIAL_VISION_MIN_MOVE_TIME_MS)
-  {
-    Duration = MATERIAL_VISION_MIN_MOVE_TIME_MS;
-  }
-  MaterialVision_MoveStartTick = HAL_GetTick();
-  MaterialVision_MoveDurationMs = Duration;
-  MaterialVision_State = MATERIAL_VISION_STATE_CHASSIS_MOVE;
-  return 1U;
+  return sorted[SAMPLE_COUNT/2];
 }
-
-/** 启动一次底盘前后PID速度脉冲，左右速度始终保持为零。 */
-static uint8_t MaterialVision_ForwardVelocityStart(float ForwardSpeed)
+static void collect(CalibrationPhase phase)
 {
-  if (Mecanum_Velocity_Start(ForwardSpeed, 0.0f, 0.0f) == false)
-  {
-    MaterialVision_Error = MATERIAL_VISION_ERROR_CHASSIS_TX;
-    return 0U;
-  }
-  MaterialVision_MoveDurationMs = MATERIAL_VISION_CORRECTION_TIME_MS;
-  MaterialVision_MoveStartTick = HAL_GetTick();
-  MaterialVision_State = MATERIAL_VISION_STATE_CHASSIS_MOVE;
-  return 1U;
+  Camera_SnapshotTypeDef snapshot;
+  Camera_SnapshotGet(&snapshot); LastSequence=snapshot.Data.Sequence;
+  Phase=phase; SampleIndex=0; State=MATERIAL_VISION_STATE_COLLECT;
 }
-
-/** 启动X轴相对角度修正。 */
-static uint8_t MaterialVision_XMoveStart(float Degree)
+static void settle(void)
+{ SettleTick=HAL_GetTick(); State=MATERIAL_VISION_STATE_SETTLE; }
+/* Wheel deltas use configured protocol polarity and 0x36 units, not command pulses.
+ * They measure drive travel under current wheel geometry, not external car localization. */
+static uint8_t wheel_baseline(void)
 {
-  int32_t Pulses;
-  MechanicalArm_ResultTypeDef Result;
-  MechanicalArm_ConfigTypeDef Config;
-
-  Pulses = (int32_t)(Degree * (float)MECHANICAL_ARM_COMMAND_PULSES_PER_REV /
-                     MECHANICAL_ARM_DEGREES_PER_REV +
-                     ((Degree >= 0.0f) ? 0.5f : -0.5f));
-  if (Pulses == 0)
-  {
-    MaterialVision_Error = MATERIAL_VISION_ERROR_CORRECTION_ZERO;
-    return 0U;
-  }
-  if ((MaterialVision_XTotal + Pulses > MATERIAL_VISION_MAX_X_TOTAL_PULSES) ||
-      (MaterialVision_XTotal + Pulses < -MATERIAL_VISION_MAX_X_TOTAL_PULSES))
-  {
-    MaterialVision_Error = MATERIAL_VISION_ERROR_X_LIMIT;
-    return 0U;
-  }
-  if (MechanicalArm_ConfigGet(MECHANICAL_ARM_AXIS_X, &Config) == 0U)
-  {
-    MaterialVision_Error = MaterialVision_MotorError(MECHANICAL_ARM_RESULT_PARAM_ERROR);
-    return 0U;
-  }
-  Result = MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, Pulses,
-                                    MATERIAL_VISION_X_SPEED_RPM,
-                                    Config.Acceleration,
-                                    MECHANICAL_ARM_POSITION_RELATIVE_CURRENT);
-  if (Result != MECHANICAL_ARM_RESULT_NONE)
-  {
-    MaterialVision_Error = MaterialVision_MotorError(Result);
-    return 0U;
-  }
-  MaterialVision_XTotal += Pulses;
-  MaterialVision_MoveStartTick = HAL_GetTick();
-  MaterialVision_State = MATERIAL_VISION_STATE_X_ACK;
-  return 1U;
+  unsigned i; Mecanum_Feedback_t feedback[4];
+  for(i=0;i<4;i++)
+    if(!Mecanum_FeedbackGet(i,&feedback[i]) || !feedback[i].position_valid ||
+       HAL_GetTick()-feedback[i].position_ms>POSITION_FRESH_MS)return 0;
+  for(i=0;i<4;i++) { WheelOrigin[i]=feedback[i].position_raw; WheelOriginTick[i]=feedback[i].position_ms; }
+  return 1;
 }
-
-/** 根据DX、DY运行一次简化PID并启动底盘或X轴修正。 */
-static uint8_t MaterialVision_CorrectionStart(int16_t Dx, int16_t Dy)
+static uint8_t wheel_delta(float *out)
 {
-  float ForwardOutput;
-  float XOutput;
-
-  /* DX较大时使用底盘前后速度；进入交接窗口后让X轴处理DY。 */
-  if ((abs(Dx) > MATERIAL_VISION_DX_HANDOFF_PIXELS) ||
-      ((abs(Dy) <= MATERIAL_VISION_ALIGN_DEAD_ZONE_PIXELS) &&
-       (abs(Dx) > MATERIAL_VISION_ALIGN_DEAD_ZONE_PIXELS)))
+  static const uint8_t dirs[4]={CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR,
+    CHASSIS_MOTOR_REAR_LEFT_FORWARD_DIR,CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR,
+    CHASSIS_MOTOR_FRONT_RIGHT_FORWARD_DIR};
+  unsigned i; Mecanum_Feedback_t f; double sum=0;
+  for(i=0;i<4;i++)
   {
-    MaterialVision_ForwardIntegral += (float)Dx;
-    if (MaterialVision_ForwardIntegral > MATERIAL_VISION_PID_INTEGRAL_LIMIT)
-      MaterialVision_ForwardIntegral = MATERIAL_VISION_PID_INTEGRAL_LIMIT;
-    if (MaterialVision_ForwardIntegral < -MATERIAL_VISION_PID_INTEGRAL_LIMIT)
-      MaterialVision_ForwardIntegral = -MATERIAL_VISION_PID_INTEGRAL_LIMIT;
-    ForwardOutput = MATERIAL_VISION_PID_FORWARD_SIGN *
-                    (MATERIAL_VISION_PID_FORWARD_KP * (float)Dx +
-                     MATERIAL_VISION_PID_FORWARD_KI * MaterialVision_ForwardIntegral +
-                     MATERIAL_VISION_PID_FORWARD_KD *
-                     ((float)Dx - MaterialVision_ForwardPreviousError));
-    MaterialVision_ForwardPreviousError = (float)Dx;
-    if (ForwardOutput > MATERIAL_VISION_PID_OUTPUT_LIMIT)
-      ForwardOutput = MATERIAL_VISION_PID_OUTPUT_LIMIT;
-    if (ForwardOutput < -MATERIAL_VISION_PID_OUTPUT_LIMIT)
-      ForwardOutput = -MATERIAL_VISION_PID_OUTPUT_LIMIT;
-    if (MaterialVision_ChassisTotal + fabsf(ForwardOutput) * ((float)MATERIAL_VISION_CORRECTION_TIME_MS / 1000.0f) >
-        MATERIAL_VISION_MAX_CHASSIS_TOTAL_MM)
-    {
-      MaterialVision_Error = MATERIAL_VISION_ERROR_CHASSIS_LIMIT;
-      return 0U;
-    }
-    if (MaterialVision_ForwardVelocityStart(ForwardOutput) == 0U) return 0U;
-    MaterialVision_ChassisTotal += fabsf(ForwardOutput) *
-                                   ((float)MaterialVision_MoveDurationMs / 1000.0f);
-    return 1U;
+    if(!Mecanum_FeedbackGet(i,&f) || !f.position_valid ||
+       f.position_ms==WheelOriginTick[i] || HAL_GetTick()-f.position_ms>POSITION_FRESH_MS)return 0;
+    sum+=(double)(f.position_raw-WheelOrigin[i])*(dirs[i]?-1.0:1.0);
   }
-
-  /* 窗口内先修正DY；DY达标而DX未达标时，上面的分支继续修正DX。 */
-  if (fabsf((float)Dy) <= MATERIAL_VISION_ALIGN_DEAD_ZONE_PIXELS)
-  {
-    MaterialVision_Error = MATERIAL_VISION_ERROR_CORRECTION_ZERO;
-    return 0U;
-  }
-  MaterialVision_XIntegral += (float)Dy;
-  if (MaterialVision_XIntegral > MATERIAL_VISION_PID_INTEGRAL_LIMIT)
-    MaterialVision_XIntegral = MATERIAL_VISION_PID_INTEGRAL_LIMIT;
-  if (MaterialVision_XIntegral < -MATERIAL_VISION_PID_INTEGRAL_LIMIT)
-    MaterialVision_XIntegral = -MATERIAL_VISION_PID_INTEGRAL_LIMIT;
-  XOutput = MATERIAL_VISION_PID_X_SIGN *
-            (MATERIAL_VISION_PID_X_KP * (float)Dy +
-             MATERIAL_VISION_PID_X_KI * MaterialVision_XIntegral +
-             MATERIAL_VISION_PID_X_KD *
-             ((float)Dy - MaterialVision_XPreviousError));
-  MaterialVision_XPreviousError = (float)Dy;
-  if (XOutput > MATERIAL_VISION_PID_X_OUTPUT_LIMIT)
-    XOutput = MATERIAL_VISION_PID_X_OUTPUT_LIMIT;
-  if (XOutput < -MATERIAL_VISION_PID_X_OUTPUT_LIMIT)
-    XOutput = -MATERIAL_VISION_PID_X_OUTPUT_LIMIT;
-  if (fabsf(XOutput) < MATERIAL_VISION_MIN_X_STEP_DEG)
-    XOutput = (XOutput < 0.0f) ? -MATERIAL_VISION_MIN_X_STEP_DEG :
-              MATERIAL_VISION_MIN_X_STEP_DEG;
-  return MaterialVision_XMoveStart(XOutput);
+  *out=(float)(sum*0.25*3.14159265358979323846*CHASSIS_WHEEL_DIAMETER_MM/
+    (CHASSIS_MOTOR_TO_WHEEL_RATIO*CHASSIS_EMM_POSITION_UNITS_PER_REV));
+  return 1;
 }
-
-/** 检查底盘前后和X轴响应是否足够大且方向不共线。 */
-static uint8_t MaterialVision_CalibrationCheck(void)
+static uint8_t chassis_start(float speed)
 {
-  float Cross;
-  float ForwardNorm;
-  float XNorm;
-
-  ForwardNorm = sqrtf(MaterialVision_Response[0].Dx * MaterialVision_Response[0].Dx +
-                   MaterialVision_Response[0].Dy * MaterialVision_Response[0].Dy);
-  XNorm = sqrtf(MaterialVision_Response[2].Dx * MaterialVision_Response[2].Dx +
-                MaterialVision_Response[2].Dy * MaterialVision_Response[2].Dy);
-  if ((ForwardNorm * MATERIAL_VISION_CHASSIS_CAL_STEP_MM <
-       MATERIAL_VISION_MIN_RESPONSE_PIXELS) ||
-      (XNorm * MATERIAL_VISION_X_CAL_STEP_DEG <
-       MATERIAL_VISION_MIN_RESPONSE_PIXELS))
-    return 0U;
-  Cross = fabsf(MaterialVision_Response[0].Dx * MaterialVision_Response[2].Dy -
-                MaterialVision_Response[0].Dy * MaterialVision_Response[2].Dx);
-  return (Cross >= MATERIAL_VISION_RESPONSE_CROSS_LIMIT * ForwardNorm * XNorm) ?
-         1U : 0U;
+  if(!Mecanum_Velocity_Request(speed,0,0,20)) { Error=MATERIAL_VISION_ERROR_CHASSIS_TX; return 0; }
+  ForwardSpeed=speed; MoveStartTick=HAL_GetTick(); State=MATERIAL_VISION_STATE_CHASSIS_MOVE;
+  return 1;
 }
-
-/** 初始化底盘与X轴物料视觉状态机。 */
+static uint8_t x_start(float degree)
+{
+  int32_t pulses=(int32_t)(degree*MECHANICAL_ARM_COMMAND_PULSES_PER_REV/
+    MECHANICAL_ARM_DEGREES_PER_REV+(degree<0?-0.5f:0.5f));
+  MechanicalArm_ConfigTypeDef config; MechanicalArm_ResultTypeDef result;
+  if(!MechanicalArm_ConfigGet(MECHANICAL_ARM_AXIS_X,&config))
+  { Error=MATERIAL_VISION_ERROR_MOTOR_PARAM; return 0; }
+  result=MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X,pulses,CAL_X_RPM,
+    config.Acceleration,MECHANICAL_ARM_POSITION_RELATIVE_CURRENT);
+  if(result!=MECHANICAL_ARM_RESULT_NONE) { Error=motor_error(result); return 0; }
+  MoveStartTick=HAL_GetTick(); PendingAction=MECHANICAL_ARM_ACTION_POSITION;
+  State=MATERIAL_VISION_STATE_X_ACK; return 1;
+}
+static uint8_t response_valid(void)
+{
+  float f=sqrtf(Candidate.ForwardDxPerMm*Candidate.ForwardDxPerMm+
+    Candidate.ForwardDyPerMm*Candidate.ForwardDyPerMm);
+  float x=sqrtf(Candidate.XDxPerDegree*Candidate.XDxPerDegree+
+    Candidate.XDyPerDegree*Candidate.XDyPerDegree);
+  float cross=fabsf(Candidate.ForwardDxPerMm*Candidate.XDyPerDegree-
+    Candidate.ForwardDyPerMm*Candidate.XDxPerDegree);
+  return isfinite(f) && isfinite(x) && f*fabsf(ForwardDelta)>=3.0f &&
+    x*fabsf(XDeltaDegree)>=3.0f && cross>=0.2f*f*x;
+}
 void MaterialVision_Init(void)
 {
-  (void)memset(&MaterialVision_Calibration, 0, sizeof(MaterialVision_Calibration));
-  (void)memset(MaterialVision_Response, 0, sizeof(MaterialVision_Response));
-  MaterialVision_State = MATERIAL_VISION_STATE_IDLE;
-  MaterialVision_Task = MATERIAL_VISION_TASK_NONE;
-  MaterialVision_Error = MATERIAL_VISION_ERROR_NONE;
-  MaterialVision_Calibrated = 0U;
-  MaterialVision_ReferenceValid = 0U;
+  memset(&Calibration,0,sizeof(Calibration)); memset(&Candidate,0,sizeof(Candidate));
+  State=MATERIAL_VISION_STATE_IDLE; Error=MATERIAL_VISION_ERROR_NONE;
+  Phase=CAL_NONE; Sampling=Calibrated=NeedPositionRead=0; PendingAction=MECHANICAL_ARM_ACTION_NONE;
 }
-
-/** 确认当前安全观察姿态；普通停止不清除参考或标定。 */
 MaterialVision_ResultTypeDef MaterialVision_ReferenceSet(void)
-{
-  if (MaterialVision_IsBusy() || GrabTask_IsBusy() || MechanicalArm_IsBusy() ||
-      ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return MATERIAL_VISION_RESULT_BUSY;
-  MaterialVision_ReferenceValid = 1U;
-  return MATERIAL_VISION_RESULT_OK;
-}
-
+{ return GrabTask_MaterialReferenceSet()?MATERIAL_VISION_RESULT_OK:MATERIAL_VISION_RESULT_BUSY; }
 uint8_t MaterialVision_IsReferenceValid(void)
+{ return GrabTask_MaterialReferenceValid()?1U:0U; }
+static MaterialVision_ResultTypeDef start(Camera_ColorTypeDef color,uint8_t calibration)
 {
-  return MaterialVision_ReferenceValid;
+  GrabTask_Status_t status;
+  if(color<CAMERA_COLOR_RED || color>CAMERA_COLOR_LIGHT_BLUE)return MATERIAL_VISION_RESULT_PARAM_ERROR;
+  if(GrabTask_IsBusy() || MechanicalArm_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy())return MATERIAL_VISION_RESULT_BUSY;
+  if(!GrabTask_MaterialReferenceValid())return MATERIAL_VISION_RESULT_NOT_READY;
+  if(GrabTask_MaterialStart((uint8_t)color,calibration!=0))return MATERIAL_VISION_RESULT_OK;
+  GrabTask_StatusGet(&status);
+  Error=reason_error(status.reason);
+  State=MATERIAL_VISION_STATE_ERROR; return MATERIAL_VISION_RESULT_ERROR;
 }
-
-/** 启动物料自动搜索、粗调和X轴精调流程。 */
-MaterialVision_ResultTypeDef MaterialVision_Start(Camera_ColorTypeDef Color)
+MaterialVision_ResultTypeDef MaterialVision_Start(Camera_ColorTypeDef color)
+{ return start(color,0); }
+MaterialVision_ResultTypeDef MaterialVision_CalibrationStart(Camera_ColorTypeDef color)
+{ return start(color,1); }
+MaterialVision_ResultTypeDef MaterialVision_CalibrationBegin(Camera_ColorTypeDef color)
 {
-  Camera_SnapshotTypeDef Snapshot;
-  HAL_StatusTypeDef CameraResult;
-
-  if ((Color < CAMERA_COLOR_RED) || (Color > CAMERA_COLOR_LIGHT_BLUE))
-    return MATERIAL_VISION_RESULT_PARAM_ERROR;
-  if ((MaterialVision_IsBusy() != 0U) || ChassisRoute_IsBusy() || ChassisMotion_IsBusy())
-    return MATERIAL_VISION_RESULT_BUSY;
-  if (GrabTask_IsBusy() != 0U)
-    return MATERIAL_VISION_RESULT_BUSY;
-  if (MaterialVision_IsReferenceValid() == 0U)
-    return MATERIAL_VISION_RESULT_NOT_READY;
-  if (MechanicalArm_IsBusy() != 0U)
-    return MATERIAL_VISION_RESULT_BUSY;
-  Mecanum_VelocityRefresh_Stop();
-  (void)Mecanum_Test_Stop();
-  MaterialVision_Color = Color;
-  MaterialVision_Task = MATERIAL_VISION_TASK_ALIGN;
-  MaterialVision_Error = MATERIAL_VISION_ERROR_NONE;
-#if (MATERIAL_VISION_TEST_NO_TIMEOUT == 0U)
-  MaterialVision_StartTick = HAL_GetTick();
-  MaterialVision_LastDataTick = MaterialVision_StartTick;
-  MaterialVision_HasData = 0U;
-#endif
-  MaterialVision_LockCount = 0U;
-  MaterialVision_StableCount = 0U;
-  MaterialVision_XTotal = 0;
-  MaterialVision_ChassisTotal = 0.0f;
-  MaterialVision_ForwardIntegral = 0.0f;
-  MaterialVision_ForwardPreviousError = 0.0f;
-  MaterialVision_XIntegral = 0.0f;
-  MaterialVision_XPreviousError = 0.0f;
-  MaterialVision_LastSequence = 0U;
-  CameraResult = Camera_MaterialStart(MaterialVision_Color);
-  if (CameraResult != HAL_OK)
+  HAL_StatusTypeDef result; Camera_SnapshotTypeDef snapshot;
+  if(color<CAMERA_COLOR_RED || color>CAMERA_COLOR_LIGHT_BLUE)return MATERIAL_VISION_RESULT_PARAM_ERROR;
+  if(service_busy())return MATERIAL_VISION_RESULT_BUSY;
+  Sampling=1; NeedPositionRead=0; Error=MATERIAL_VISION_ERROR_NONE; PendingAction=MECHANICAL_ARM_ACTION_NONE;
+  SelectedColor=color;
+  ForwardDelta=XDeltaDegree=0; memset(&Candidate,0,sizeof(Candidate));
+  result=Camera_MaterialStart(color);
+  if(result!=HAL_OK)
   {
-    MaterialVision_Error = MaterialVision_CameraError(CameraResult);
-    MaterialVision_State = MATERIAL_VISION_STATE_ERROR;
-    return MATERIAL_VISION_RESULT_ERROR;
+    Camera_SnapshotGet(&snapshot);
+    Error=result==HAL_BUSY?MATERIAL_VISION_ERROR_CAMERA_BUSY:
+      (!snapshot.UsbConfigured?MATERIAL_VISION_ERROR_USB_OFF:MATERIAL_VISION_ERROR_CAMERA_TX);
+    State=MATERIAL_VISION_STATE_ERROR; return MATERIAL_VISION_RESULT_ERROR;
   }
-  /* 保持Base当前位置；B2请求不会清空Camera历史帧，只接收请求后的新帧。 */
-  Camera_SnapshotGet(&Snapshot);
-  MaterialVision_LastSequence = Snapshot.Data.Sequence;
-  MaterialVision_State = MATERIAL_VISION_STATE_SEARCH;
-  if (Mecanum_Velocity_Start(-MATERIAL_VISION_SEARCH_SPEED_MM_S,
-                             0.0f, 0.0f) == false)
-  {
-    MaterialVision_Fail(MATERIAL_VISION_ERROR_CHASSIS_TX);
-    return MATERIAL_VISION_RESULT_ERROR;
-  }
-  return MATERIAL_VISION_RESULT_OK;
+  collect(CAL_BASELINE); return MATERIAL_VISION_RESULT_OK;
 }
-
-/** 启动底盘和X轴像素响应标定流程。 */
-MaterialVision_ResultTypeDef MaterialVision_CalibrationStart(Camera_ColorTypeDef Color)
+void MaterialVision_CalibrationProcess(void)
 {
-  Camera_SnapshotTypeDef Snapshot;
-  HAL_StatusTypeDef CameraResult;
-
-  if ((Color < CAMERA_COLOR_RED) || (Color > CAMERA_COLOR_LIGHT_BLUE))
-    return MATERIAL_VISION_RESULT_PARAM_ERROR;
-  if ((MaterialVision_IsBusy() != 0U) || ChassisRoute_IsBusy() || ChassisMotion_IsBusy())
-    return MATERIAL_VISION_RESULT_BUSY;
-  if (GrabTask_IsBusy() != 0U)
-    return MATERIAL_VISION_RESULT_BUSY;
-  if (MaterialVision_IsReferenceValid() == 0U)
-    return MATERIAL_VISION_RESULT_NOT_READY;
-  if (MechanicalArm_IsBusy() != 0U)
-    return MATERIAL_VISION_RESULT_BUSY;
-  Mecanum_VelocityRefresh_Stop();
-  (void)Mecanum_Test_Stop();
-  MaterialVision_Color = Color;
-  MaterialVision_Task = MATERIAL_VISION_TASK_CALIBRATION;
-  MaterialVision_Error = MATERIAL_VISION_ERROR_NONE;
-  MaterialVision_Calibrated = 0U;
-#if (MATERIAL_VISION_TEST_NO_TIMEOUT == 0U)
-  MaterialVision_StartTick = HAL_GetTick();
-  MaterialVision_LastDataTick = MaterialVision_StartTick;
-  MaterialVision_HasData = 0U;
-#endif
-  MaterialVision_XTotal = 0;
-  MaterialVision_ChassisTotal = 0.0f;
-  MaterialVision_LastSequence = 0U;
-  Camera_SnapshotGet(&Snapshot);
-  MaterialVision_LastSequence = Snapshot.Data.Sequence;
-  CameraResult = Camera_MaterialStart(Color);
-  if (CameraResult != HAL_OK)
+  uint32_t now=HAL_GetTick(); Camera_SnapshotTypeDef snapshot; int16_t dx,dy;
+  MechanicalArm_ResultTypeDef result;
+  if(!service_busy())return;
+  if(State==MATERIAL_VISION_STATE_CHASSIS_MOVE)
   {
-    MaterialVision_Error = MaterialVision_CameraError(CameraResult);
-    MaterialVision_State = MATERIAL_VISION_STATE_ERROR;
-    return MATERIAL_VISION_RESULT_ERROR;
+    if(now-MoveStartTick>=1000U)
+    { if(!Mecanum_Test_Stop())fail(MATERIAL_VISION_ERROR_CHASSIS_TX); else settle(); }
+    else if(!Mecanum_Velocity_Request(ForwardSpeed,0,0,20))fail(MATERIAL_VISION_ERROR_CHASSIS_TX);
+    return;
   }
-  MaterialVision_CollectStart(MATERIAL_VISION_PHASE_CAL_BASELINE);
-  return MATERIAL_VISION_RESULT_OK;
+  if(State==MATERIAL_VISION_STATE_X_ARRIVAL)
+  {
+    if(now-MoveStartTick>X_TIMEOUT_MS) { fail(MATERIAL_VISION_ERROR_MOTOR_ARRIVAL_TIMEOUT); return; }
+    if(now-PollTick>=POLL_MS && !MechanicalArm_IsBusy())
+    {
+      PollTick=now; result=MechanicalArm_StateRead(MECHANICAL_ARM_AXIS_X);
+      if(result==MECHANICAL_ARM_RESULT_NONE)
+      { PendingAction=MECHANICAL_ARM_ACTION_STATE; State=MATERIAL_VISION_STATE_X_STATE; }
+      else if(result!=MECHANICAL_ARM_RESULT_BUSY)fail(motor_error(result));
+    }
+    return;
+  }
+  if(State==MATERIAL_VISION_STATE_X_ACK || State==MATERIAL_VISION_STATE_X_STATE)return;
+  if((Phase==CAL_X_BEGIN || NeedPositionRead) && PendingAction==MECHANICAL_ARM_ACTION_NONE)
+  {
+    if(MechanicalArm_IsBusy())return;
+    result=MechanicalArm_PositionRead(MECHANICAL_ARM_AXIS_X);
+    if(result==MECHANICAL_ARM_RESULT_NONE)
+    { PendingAction=MECHANICAL_ARM_ACTION_POSITION_READ; State=MATERIAL_VISION_STATE_X_STATE; }
+    else if(result!=MECHANICAL_ARM_RESULT_BUSY)fail(motor_error(result));
+    return;
+  }
+  if(State==MATERIAL_VISION_STATE_SETTLE)
+  {
+    if(now-SettleTick<SETTLE_MS)return;
+    if(Phase==CAL_FORWARD_SAMPLE)
+    {
+      if(!wheel_delta(&ForwardDelta))return;
+      if(!isfinite(ForwardDelta) || fabsf(ForwardDelta)<=0.1f)
+      { fail(MATERIAL_VISION_ERROR_RESPONSE_INVALID); return; }
+      collect(CAL_FORWARD_SAMPLE);
+    }
+    else if(Phase==CAL_FORWARD_RETURN)collect(CAL_X_BASELINE);
+    else if(Phase==CAL_X_SAMPLE)collect(CAL_X_SAMPLE);
+    else if(Phase==CAL_X_RETURN)
+    {
+      if(!response_valid() || !GrabTask_VisualResponseSet(Candidate.ForwardDxPerMm,
+        Candidate.ForwardDyPerMm,Candidate.XDxPerDegree,Candidate.XDyPerDegree))
+      { fail(MATERIAL_VISION_ERROR_RESPONSE_INVALID); return; }
+      Calibration=Candidate; Calibrated=1; Camera_RequestStop(); State=MATERIAL_VISION_STATE_ALIGNED;
+    }
+    return;
+  }
+  if(Phase==CAL_FORWARD_BEGIN)
+  {
+    if(wheel_baseline())
+    { Phase=CAL_FORWARD_SAMPLE; if(!chassis_start(CAL_SPEED_MM_S))fail(Error); }
+    return;
+  }
+  Camera_SnapshotGet(&snapshot);
+  if(!snapshot.RequestActive || !snapshot.UsbConfigured || !snapshot.TargetValid ||
+    !snapshot.HasValidData || snapshot.RequestFunction!=0xB2 ||
+    snapshot.RequestTarget!=(uint8_t)SelectedColor || snapshot.Data.Function!=0xB2 ||
+    snapshot.Data.Target!=(uint8_t)SelectedColor || now-snapshot.Data.Tick>CAMERA_DATA_STALE_MS ||
+    snapshot.Data.Sequence==LastSequence)return;
+  LastSequence=snapshot.Data.Sequence;
+  DxSamples[SampleIndex]=snapshot.Data.DX; DySamples[SampleIndex]=snapshot.Data.DY;
+  if(++SampleIndex<SAMPLE_COUNT)return;
+  dx=median(DxSamples); dy=median(DySamples); SampleIndex=0;
+  switch(Phase)
+  {
+    case CAL_BASELINE:
+      BaselineDx=dx; BaselineDy=dy; Phase=CAL_FORWARD_BEGIN;
+      if(wheel_baseline()) { Phase=CAL_FORWARD_SAMPLE; if(!chassis_start(CAL_SPEED_MM_S))fail(Error); }
+      break;
+    case CAL_FORWARD_SAMPLE:
+      Candidate.ForwardDxPerMm=((float)dx-BaselineDx)/ForwardDelta;
+      Candidate.ForwardDyPerMm=((float)dy-BaselineDy)/ForwardDelta;
+      Phase=CAL_FORWARD_RETURN; if(!chassis_start(-CAL_SPEED_MM_S))fail(Error);
+      break;
+    case CAL_X_BASELINE:
+      BaselineDx=dx; BaselineDy=dy; Phase=CAL_X_BEGIN; break;
+    case CAL_X_SAMPLE:
+      Candidate.XDxPerDegree=((float)dx-BaselineDx)/XDeltaDegree;
+      Candidate.XDyPerDegree=((float)dy-BaselineDy)/XDeltaDegree;
+      Phase=CAL_X_RETURN; if(!x_start(-CAL_X_DEG))fail(Error);
+      break;
+    default: fail(MATERIAL_VISION_ERROR_INTERNAL); break;
+  }
 }
-
-/** 处理底盘和X轴物料视觉状态机。 */
-void MaterialVision_Process(void)
+uint8_t MaterialVision_CalibrationEvent(const MechanicalArm_EventTypeDef *event)
 {
-  Camera_DataTypeDef Data;
-  int16_t Dx;
-  int16_t Dy;
-  uint32_t Now;
-
-  if ((MaterialVision_State == MATERIAL_VISION_STATE_IDLE) ||
-      (MaterialVision_State == MATERIAL_VISION_STATE_ALIGNED) ||
-      (MaterialVision_State == MATERIAL_VISION_STATE_ERROR))
-    return;
-  Now = HAL_GetTick();
-#if (MATERIAL_VISION_TEST_NO_TIMEOUT == 0U)
-  if ((Now - MaterialVision_StartTick) >
-      ((MaterialVision_Task == MATERIAL_VISION_TASK_CALIBRATION) ?
-       12000U : MATERIAL_VISION_TASK_TIMEOUT_MS))
+  if(!event || !service_busy() || event->Axis!=MECHANICAL_ARM_AXIS_X || event->Action!=PendingAction)return 0;
+  PendingAction=MECHANICAL_ARM_ACTION_NONE;
+  if(event->Result!=MECHANICAL_ARM_RESULT_OK) { fail(motor_error(event->Result)); return 1; }
+  if(event->Action==MECHANICAL_ARM_ACTION_POSITION)
+  { MoveStartTick=HAL_GetTick(); PollTick=MoveStartTick; State=MATERIAL_VISION_STATE_X_ARRIVAL; }
+  else if(event->Action==MECHANICAL_ARM_ACTION_STATE)
   {
-    MaterialVision_Fail(MATERIAL_VISION_ERROR_TASK_TIMEOUT);
-    return;
+    uint8_t flags=event->StateFlags[MECHANICAL_ARM_AXIS_X];
+    if(flags&0x0CU)fail(MATERIAL_VISION_ERROR_MOTOR_ERROR);
+    else if(flags&0x02U)
+    { NeedPositionRead=1; State=MATERIAL_VISION_STATE_COLLECT; }
+    else State=MATERIAL_VISION_STATE_X_ARRIVAL;
   }
-#endif
-#if (MATERIAL_VISION_TEST_NO_TIMEOUT == 0U)
-  if ((MaterialVision_HasData != 0U) &&
-      ((Now - MaterialVision_LastDataTick) > MATERIAL_VISION_DATA_STALE_TIMEOUT_MS))
+  else if(event->Action==MECHANICAL_ARM_ACTION_POSITION_READ)
   {
-    MaterialVision_Fail(MATERIAL_VISION_ERROR_CAMERA_STALE);
-    return;
-  }
-#endif
-  /*
-   * Valid=0表示未发现目标，不参与坐标采样。测试模式允许持续等待；
-   * 只有关闭TEST_NO_TIMEOUT后，以下高层首帧/搜索超时才生效。
-   */
-#if (MATERIAL_VISION_TEST_NO_TIMEOUT == 0U)
-  if ((MaterialVision_HasData == 0U) &&
-      (MaterialVision_State != MATERIAL_VISION_STATE_SEARCH) &&
-      ((Now - MaterialVision_StartTick) > MATERIAL_VISION_FIRST_DATA_TIMEOUT_MS))
-  {
-    MaterialVision_Fail(MATERIAL_VISION_ERROR_CAMERA_FIRST_TIMEOUT);
-    return;
-  }
-#endif
-  if (MaterialVision_State == MATERIAL_VISION_STATE_CHASSIS_MOVE)
-  {
-    if ((Now - MaterialVision_MoveStartTick) >= MaterialVision_MoveDurationMs)
-    {
-      (void)Mecanum_Test_Stop();
-      MaterialVision_SettleStart();
-    }
-    return;
-  }
-  if (MaterialVision_State == MATERIAL_VISION_STATE_X_ARRIVAL)
-  {
-    if ((Now - MaterialVision_MoveStartTick) > MATERIAL_VISION_X_ARRIVAL_TIMEOUT_MS)
-    {
-      MaterialVision_Fail(MATERIAL_VISION_ERROR_MOTOR_ARRIVAL_TIMEOUT);
-      return;
-    }
-    if (((Now - MaterialVision_LastPollTick) >= MATERIAL_VISION_MOTOR_POLL_MS) &&
-        (MechanicalArm_IsBusy() == 0U))
-    {
-      MaterialVision_LastPollTick = Now;
-      if (MechanicalArm_StateRead(MECHANICAL_ARM_AXIS_X) ==
-          MECHANICAL_ARM_RESULT_NONE)
-        MaterialVision_State = MATERIAL_VISION_STATE_X_STATE;
-    }
-    return;
-  }
-  if ((MaterialVision_State == MATERIAL_VISION_STATE_X_ACK) ||
-      (MaterialVision_State == MATERIAL_VISION_STATE_X_STATE))
-    return;
-  if (MaterialVision_State == MATERIAL_VISION_STATE_SETTLE)
-  {
-    if ((Now - MaterialVision_SettleStartTick) < MATERIAL_VISION_MOVE_SETTLE_MS)
-      return;
-    if (MaterialVision_Task == MATERIAL_VISION_TASK_CALIBRATION)
-    {
-      if ((MaterialVision_Phase == MATERIAL_VISION_PHASE_CAL_FORWARD_SAMPLE) ||
-          (MaterialVision_Phase == MATERIAL_VISION_PHASE_CAL_X_SAMPLE))
-        MaterialVision_CollectStart(MaterialVision_Phase);
-      else if (MaterialVision_Phase == MATERIAL_VISION_PHASE_CAL_FORWARD_RETURN)
-        MaterialVision_CollectStart(MATERIAL_VISION_PHASE_CAL_X_BASELINE);
-      else if (MaterialVision_Phase == MATERIAL_VISION_PHASE_CAL_X_RETURN)
-      {
-        if (MaterialVision_CalibrationCheck() == 0U)
-        {
-          MaterialVision_Fail(MATERIAL_VISION_ERROR_RESPONSE_INVALID);
-          return;
-        }
-        MaterialVision_Calibration.ForwardDxPerMm = MaterialVision_Response[0].Dx;
-        MaterialVision_Calibration.ForwardDyPerMm = MaterialVision_Response[0].Dy;
-        MaterialVision_Calibration.XDxPerDegree = MaterialVision_Response[2].Dx;
-        MaterialVision_Calibration.XDyPerDegree = MaterialVision_Response[2].Dy;
-        MaterialVision_Calibrated = 1U;
-        Camera_RequestStop();
-        MaterialVision_Task = MATERIAL_VISION_TASK_NONE;
-        MaterialVision_State = MATERIAL_VISION_STATE_ALIGNED;
-      }
-    }
-    else
-      MaterialVision_CollectStart(MATERIAL_VISION_PHASE_ALIGN);
-    return;
-  }
-  if (MaterialVision_NewDataGet(&Data) != 0U)
-  {
-    Dx = Data.DX;
-    Dy = Data.DY;
-    if (MaterialVision_State == MATERIAL_VISION_STATE_SEARCH)
-    {
-      if ((abs(Dx) <= MATERIAL_VISION_LOCK_DX_PIXELS) &&
-          (abs(Dy) <= MATERIAL_VISION_LOCK_DY_PIXELS))
-        MaterialVision_LockCount++;
-      else
-        MaterialVision_LockCount = 0U;
-      if (MaterialVision_LockCount >= MATERIAL_VISION_STABLE_COUNT)
-      {
-        (void)Mecanum_Test_Stop();
-        MaterialVision_CollectStart(MATERIAL_VISION_PHASE_ALIGN);
-      }
-    }
-    else if (MaterialVision_State == MATERIAL_VISION_STATE_COLLECT)
-    {
-      MaterialVision_DxSamples[MaterialVision_SampleIndex] = Dx;
-      MaterialVision_DySamples[MaterialVision_SampleIndex] = Dy;
-      MaterialVision_SampleIndex++;
-      if (MaterialVision_SampleIndex >= MATERIAL_VISION_SAMPLE_COUNT)
-      {
-        Dx = MaterialVision_MedianGet(MaterialVision_DxSamples);
-        Dy = MaterialVision_MedianGet(MaterialVision_DySamples);
-        switch (MaterialVision_Phase)
-        {
-          case MATERIAL_VISION_PHASE_CAL_BASELINE:
-            MaterialVision_BaselineDx = Dx;
-            MaterialVision_BaselineDy = Dy;
-            MaterialVision_Phase = MATERIAL_VISION_PHASE_CAL_FORWARD_SAMPLE;
-            if (MaterialVision_ChassisMoveStart(1.0f,
-                                                MATERIAL_VISION_CHASSIS_CAL_STEP_MM) == 0U)
-              MaterialVision_Fail(MaterialVision_Error);
-            break;
-          case MATERIAL_VISION_PHASE_CAL_FORWARD_SAMPLE:
-            MaterialVision_Response[0].Dx = ((float)Dx - MaterialVision_BaselineDx) /
-                                            MATERIAL_VISION_CHASSIS_CAL_STEP_MM;
-            MaterialVision_Response[0].Dy = ((float)Dy - MaterialVision_BaselineDy) /
-                                            MATERIAL_VISION_CHASSIS_CAL_STEP_MM;
-            MaterialVision_Phase = MATERIAL_VISION_PHASE_CAL_FORWARD_RETURN;
-            if (MaterialVision_ChassisMoveStart(-1.0f,
-                                                MATERIAL_VISION_CHASSIS_CAL_STEP_MM) == 0U)
-              MaterialVision_Fail(MaterialVision_Error);
-            break;
-          case MATERIAL_VISION_PHASE_CAL_X_BASELINE:
-            MaterialVision_BaselineDx = Dx;
-            MaterialVision_BaselineDy = Dy;
-            MaterialVision_Phase = MATERIAL_VISION_PHASE_CAL_X_SAMPLE;
-            if (MaterialVision_XMoveStart(MATERIAL_VISION_X_CAL_STEP_DEG) == 0U)
-              MaterialVision_Fail(MaterialVision_Error);
-            break;
-          case MATERIAL_VISION_PHASE_CAL_X_SAMPLE:
-            MaterialVision_Response[2].Dx = ((float)Dx - MaterialVision_BaselineDx) /
-                                            MATERIAL_VISION_X_CAL_STEP_DEG;
-            MaterialVision_Response[2].Dy = ((float)Dy - MaterialVision_BaselineDy) /
-                                            MATERIAL_VISION_X_CAL_STEP_DEG;
-            MaterialVision_Phase = MATERIAL_VISION_PHASE_CAL_X_RETURN;
-            if (MaterialVision_XMoveStart(-MATERIAL_VISION_X_CAL_STEP_DEG) == 0U)
-              MaterialVision_Fail(MaterialVision_Error);
-            break;
-          case MATERIAL_VISION_PHASE_ALIGN:
-            if ((abs(Dx) <= MATERIAL_VISION_ALIGN_DEAD_ZONE_PIXELS) &&
-                (abs(Dy) <= MATERIAL_VISION_ALIGN_DEAD_ZONE_PIXELS))
-            {
-              MaterialVision_StableCount++;
-              if (MaterialVision_StableCount >= MATERIAL_VISION_STABLE_COUNT)
-              {
-                Camera_RequestStop();
-                (void)Mecanum_Test_Stop();
-                MaterialVision_State = MATERIAL_VISION_STATE_ALIGNED;
-                MaterialVision_Task = MATERIAL_VISION_TASK_NONE;
-              }
-            }
-            else
-            {
-              MaterialVision_StableCount = 0U;
-              if (MaterialVision_CorrectionStart(Dx, Dy) == 0U)
-                MaterialVision_Fail(MaterialVision_Error);
-            }
-            break;
-          default:
-            break;
-        }
-        if (MaterialVision_State == MATERIAL_VISION_STATE_COLLECT)
-          MaterialVision_SampleIndex = 0U;
-      }
-    }
-  }
-#if (MATERIAL_VISION_TEST_NO_TIMEOUT == 0U)
-  if (MaterialVision_State == MATERIAL_VISION_STATE_SEARCH)
-  {
-    if ((Now - MaterialVision_StartTick) > MATERIAL_VISION_SEARCH_TIMEOUT_MS)
-      MaterialVision_Fail(MATERIAL_VISION_ERROR_SEARCH_TIMEOUT);
-  }
-#endif
-}
-
-/** 处理本模块发出的机械臂异步事件。 */
-uint8_t MaterialVision_MotorEventHandle(const MechanicalArm_EventTypeDef *Event)
-{
-  uint8_t Flags;
-
-  if (Event == NULL)
-    return 0U;
-  if ((MaterialVision_State == MATERIAL_VISION_STATE_X_ACK) &&
-      (Event->Action == MECHANICAL_ARM_ACTION_POSITION) &&
-      (Event->Axis == MECHANICAL_ARM_AXIS_X))
-  {
-    if (Event->Result != MECHANICAL_ARM_RESULT_OK)
-      MaterialVision_Fail(MaterialVision_MotorError(Event->Result));
+    NeedPositionRead=0;
+    if(Phase==CAL_X_BEGIN)
+    { XOrigin=event->CurrentPositionRaw; Phase=CAL_X_SAMPLE; if(!x_start(CAL_X_DEG))fail(Error); }
     else
     {
-      MaterialVision_MoveStartTick = HAL_GetTick();
-      MaterialVision_State = MATERIAL_VISION_STATE_X_ARRIVAL;
-    }
-    return 1U;
-  }
-  if ((MaterialVision_State == MATERIAL_VISION_STATE_X_STATE) &&
-      (Event->Action == MECHANICAL_ARM_ACTION_STATE) &&
-      (Event->Axis == MECHANICAL_ARM_AXIS_X))
-  {
-    if (Event->Result != MECHANICAL_ARM_RESULT_OK)
-      MaterialVision_Fail(MaterialVision_MotorError(Event->Result));
-    else
-    {
-      Flags = Event->StateFlags[(uint8_t)MECHANICAL_ARM_AXIS_X];
-      if ((Flags & 0x0CU) != 0U)
-        MaterialVision_Fail(MATERIAL_VISION_ERROR_MOTOR_ERROR);
-      else if ((Flags & 0x02U) != 0U)
+      if(Phase==CAL_X_SAMPLE)
       {
-        MaterialVision_SettleStartTick = HAL_GetTick();
-        MaterialVision_State = MATERIAL_VISION_STATE_SETTLE;
+        XDeltaDegree=(float)(event->CurrentPositionRaw-XOrigin)*360.0f/65536.0f*
+          (MECHANICAL_ARM_X_POSITIVE_DIR?-1.0f:1.0f);
+        if(!isfinite(XDeltaDegree) || fabsf(XDeltaDegree)<0.01f)
+        { fail(MATERIAL_VISION_ERROR_RESPONSE_INVALID); return 1; }
       }
-      else
-        MaterialVision_State = MATERIAL_VISION_STATE_X_ARRIVAL;
+      settle();
     }
-    return 1U;
   }
-  return 0U;
+  return 1;
 }
-
-/** 查询新状态机是否正在运行。 */
+void MaterialVision_CalibrationCancel(void)
+{
+  if(service_busy()) Camera_RequestStop();
+  Sampling=NeedPositionRead=0; Phase=CAL_NONE; PendingAction=MECHANICAL_ARM_ACTION_NONE;
+  State=MATERIAL_VISION_STATE_IDLE; Error=MATERIAL_VISION_ERROR_NONE;
+}
+void MaterialVision_Stop(void)
+{ if(GrabTask_MaterialActive())GrabTask_Stop(); }
 uint8_t MaterialVision_IsBusy(void)
-{
-  return ((MaterialVision_State != MATERIAL_VISION_STATE_IDLE) &&
-          (MaterialVision_State != MATERIAL_VISION_STATE_ALIGNED) &&
-          (MaterialVision_State != MATERIAL_VISION_STATE_ERROR)) ? 1U : 0U;
-}
-
-/** 查询底盘和X轴响应标定是否有效。 */
-uint8_t MaterialVision_IsCalibrated(void)
-{
-  return MaterialVision_Calibrated;
-}
-
-/** 查询新视觉状态机当前状态。 */
+{ return GrabTask_MaterialActive() && GrabTask_IsBusy(); }
+uint8_t MaterialVision_IsCalibrating(void)
+{ return GrabTask_MaterialCalibrating(); }
+uint8_t MaterialVision_IsCalibrated(void) { return Calibrated; }
 MaterialVision_StateTypeDef MaterialVision_StateGet(void)
 {
-  return MaterialVision_State;
-}
-
-/** 返回新视觉状态机的ASCII状态名称。 */
-const char *MaterialVision_StateNameGet(void)
-{
-  static const char *Names[] =
+  GrabTask_Status_t status;
+  if(!GrabTask_MaterialActive())return State;
+  GrabTask_StatusGet(&status);
+  if(status.state==GRAB_PREPARE)return MATERIAL_VISION_STATE_COLLECT;
+  if(GrabTask_MaterialCalibrating())return State;
+  switch(status.state)
   {
-    "IDLE", "SEARCH", "TARGET_LOCK", "COLLECT",
-    "CHASSIS_MOVE", "X_ACK", "X_ARRIVAL", "X_STATE", "SETTLE", "ALIGNED", "ERROR"
-  };
-  return Names[(uint8_t)MaterialVision_State];
-}
-
-/** 返回新视觉状态机最近一次错误名称。 */
-const char *MaterialVision_ErrorNameGet(void)
-{
-  if (MaterialVision_Error >= (sizeof(MaterialVision_ErrorNames) /
-                               sizeof(MaterialVision_ErrorNames[0])))
-    return "internal";
-  return MaterialVision_ErrorNames[MaterialVision_Error];
-}
-
-/** 读取底盘和X轴的像素响应标定结果。 */
-uint8_t MaterialVision_CalibrationGet(MaterialVision_CalibrationDataTypeDef *Data)
-{
-  if ((Data == NULL) || (MaterialVision_Calibrated == 0U))
-    return 0U;
-  *Data = MaterialVision_Calibration;
-  return 1U;
-}
-
-/** 停止底盘、X轴和摄像头视觉流程。 */
-void MaterialVision_Stop(void)
-{
-  if (MaterialVision_IsBusy() != 0U)
-  {
-    Camera_RequestStop();
-    (void)Mecanum_Test_Stop();
-    (void)MechanicalArm_Stop(MECHANICAL_ARM_AXIS_ALL);
+    case GRAB_MATERIAL_SEARCH: return MATERIAL_VISION_STATE_SEARCH;
+    case GRAB_ACQUIRE: case GRAB_PREPARE: return MATERIAL_VISION_STATE_COLLECT;
+    case GRAB_ALIGN: return MATERIAL_VISION_STATE_TARGET_LOCK;
+    case GRAB_SETTLE: case GRAB_STOPPING: return MATERIAL_VISION_STATE_SETTLE;
+    case GRAB_HOLD: case GRAB_COMPLETE: return MATERIAL_VISION_STATE_ALIGNED;
+    case GRAB_ERROR: return MATERIAL_VISION_STATE_ERROR;
+    case GRAB_CALIBRATION: return State;
+    default: return MATERIAL_VISION_STATE_IDLE;
   }
-  MaterialVision_Task = MATERIAL_VISION_TASK_NONE;
-  MaterialVision_State = MATERIAL_VISION_STATE_IDLE;
-  MaterialVision_Error = MATERIAL_VISION_ERROR_NONE;
 }
-
-/** 非消费式查询，供显示和控制台读取。 */
 MaterialVision_ErrorTypeDef MaterialVision_ErrorGet(void)
 {
-  return MaterialVision_Error;
+  GrabTask_Status_t status;
+  if(!GrabTask_MaterialActive())return Error;
+  GrabTask_StatusGet(&status);
+  if(status.state==GRAB_PREPARE)return MATERIAL_VISION_ERROR_NONE;
+  if(GrabTask_MaterialCalibrating())return Error;
+  if(status.state!=GRAB_ERROR && (!status.result || strcmp(status.result,"failed")))return MATERIAL_VISION_ERROR_NONE;
+  return reason_error(status.reason);
 }
-
-uint8_t MaterialVision_IsCalibrating(void)
+const char *MaterialVision_StateNameGet(void)
 {
-  return (MaterialVision_IsBusy() && MaterialVision_Task == MATERIAL_VISION_TASK_CALIBRATION) ? 1U : 0U;
+  static const char *names[]={"IDLE","SEARCH","TARGET_LOCK","COLLECT","CHASSIS_MOVE",
+    "X_ACK","X_ARRIVAL","X_STATE","SETTLE","ALIGNED","ERROR"};
+  return names[(unsigned)MaterialVision_StateGet()];
 }
+const char *MaterialVision_ErrorNameGet(void)
+{
+  unsigned error=(unsigned)MaterialVision_ErrorGet();
+  if(error && GrabTask_MaterialActive() && !GrabTask_MaterialCalibrating())
+  {
+    GrabTask_Status_t status;GrabTask_StatusGet(&status);
+    if(status.reason)return status.reason;
+  }
+  return error<sizeof(ErrorNames)/sizeof(ErrorNames[0])?ErrorNames[error]:"internal";
+}
+uint8_t MaterialVision_CalibrationGet(MaterialVision_CalibrationDataTypeDef *data)
+{ if(!data || !Calibrated)return 0; *data=Calibration; return 1; }

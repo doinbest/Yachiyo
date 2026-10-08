@@ -103,7 +103,7 @@ int main(void)
 '''
 # Main integration ordering and all motion entry guards are part of the contract.
 assert 'HWT101_Cal_Process();' in source
-assert source.index('HWT101_Process();') < source.index('HWT101_Cal_Process();') < source.index('Mecanum_Velocity_Process();')
+assert source.index('HWT101_Process();') < source.index('HWT101_Cal_Process();') < source.index('Mecanum_Process();')
 assert 'if (OptionalDisplayReady()) OledUi_Process();' in source
 assert '!HWT101_Cal_IsBusy() && !ChassisMotion_IsBusy() && !ChassisRoute_IsBusy()' in source
 assert 'HWT101_Drift_' not in source and 'HWT101_Store_' not in source

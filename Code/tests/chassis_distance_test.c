@@ -108,7 +108,7 @@ int main(void)
   sample(120);ChassisMotion_Process();
   assert(fabsf(status().body_target.vx_mm_s-4.242641f)<.001f);
   assert(fabsf(status().body_target.vy_mm_s-4.242641f)<.001f); /* 300mm/s² *20ms */
-  assert(fabsf(status().body_target.omega_rad_s+.04f)<.001f);
+  assert(fabsf(status().body_target.omega_rad_s)<.001f);
   assert(!status().stop_confirmed); /* numerical position never implies physical stop */
   route_busy=true;ChassisMotion_Stop(0);complete_stop();assert(!ChassisMotion_MoveTo(1100,1300,90,50,60000));
   setup();location.feedback_valid=false;assert(!ChassisMotion_MoveTo(1100,1300,90,50,60000));
