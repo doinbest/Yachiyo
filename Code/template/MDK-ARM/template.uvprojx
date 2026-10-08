@@ -2121,14 +2121,14 @@
               <FilePath>..\App\GrabRoute.h</FilePath>
             </File>
             <File>
-              <FileName>MaterialVision.c</FileName>
+              <FileName>grab_calibration.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\App\MaterialVision.c</FilePath>
+              <FilePath>..\App\grab_calibration.c</FilePath>
             </File>
             <File>
-              <FileName>MaterialVision.h</FileName>
+              <FileName>grab_calibration.h</FileName>
               <FileType>5</FileType>
-              <FilePath>..\App\MaterialVision.h</FilePath>
+              <FilePath>..\App\grab_calibration.h</FilePath>
             </File>
             <File>
               <FileName>mechanical_arm_config.h</FileName>

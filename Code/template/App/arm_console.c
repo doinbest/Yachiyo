@@ -4,7 +4,6 @@
 #include "motor_bus.h"
 #include "mechanical_arm_config.h"
 #include "Arm.h"
-#include "MaterialVision.h"
 #include "GrabTask.h"
 #include "GrabRoute.h"
 #include "turntable.h"
@@ -45,7 +44,7 @@
 /* 视觉调试数据的最小输出间隔，避免串口打印拖慢主循环。 */
 
 #define ARM_CONSOLE_BACKWARD_TEST_SPEED_MM_S 30.0f
-/* 单独测试material auto后退方向时使用的底盘后退速度。 */
+/* 独立底盘后退方向测试速度。 */
 
 static UART_HandleTypeDef *ArmConsole_Uart;
 static uint8_t ArmConsole_ImuStream;
@@ -63,10 +62,7 @@ static char ArmConsole_LineBuffer[ARM_CONSOLE_LINE_SIZE];
 static uint8_t ArmConsole_LineLength;
 static uint8_t ArmConsole_LineOverflow;
 static uint8_t ArmConsole_LastWasCr;
-static MaterialVision_StateTypeDef ArmConsole_LastMaterialState;
-static MaterialVision_ErrorTypeDef ArmConsole_LastMaterialError;
 static uint8_t ArmConsole_CameraTrace;
-static uint8_t ArmConsole_CameraTraceDirect;
 static uint32_t ArmConsole_CameraTraceSequence;
 static uint32_t ArmConsole_CameraTraceLastTick;
 static uint8_t ArmConsole_QrStream;
@@ -90,6 +86,8 @@ static bool ArmConsole_RadarMotionGuard(unsigned n,char *t[])
      !strcmp(t[1],"take") || !strcmp(t[1],"return") || !strcmp(t[1],"align") ||
      !strcmp(t[1],"stack") || !strcmp(t[1],"ring"))) return true;
   if(n>=3U && !strcmp(t[0],"grab") && !strcmp(t[1],"track") && !strcmp(t[2],"start")) return true;
+  if(n==3U && !strcmp(t[0],"grab") && !strcmp(t[1],"calib") &&
+     strcmp(t[2],"status") && strcmp(t[2],"ref")) return true;
   if(strcmp(t[0],"chassis")) return false;
   for(i=0;i<sizeof(moves)/sizeof(moves[0]);i++) if(!strcmp(t[1],moves[i])) return true;
   return n>=3U && !strcmp(t[1],"route") && (!strcmp(t[2],"start") || !strcmp(t[2],"auto") || !strcmp(t[2],"next"));
@@ -156,35 +154,16 @@ static void ArmConsole_PromptShow(void)
 }
 
 /**
-  * 函    数：开始视觉调试数据输出
-  * 参    数：无
-  * 返 回 值：无
-  * 说    明：标定和自动对准均允许观察最新坐标，首帧立即允许输出
-  */
-static void ArmConsole_CameraTraceStart(void)
-{
-  Camera_SnapshotTypeDef Snapshot;
-
-  ArmConsole_CameraTrace = 1U;
-  ArmConsole_CameraTraceDirect = 0U;
-  ArmConsole_CameraTraceLastTick = HAL_GetTick() -
-                                   ARM_CONSOLE_CAMERA_TRACE_INTERVAL_MS;
-  Camera_SnapshotGet(&Snapshot);
-  ArmConsole_CameraTraceSequence = Snapshot.Data.Sequence;
-}
-
-/**
   * 函    数：开始独立摄像头测试数据输出
   * 参    数：无
   * 返 回 值：无
-  * 说    明：不依赖MaterialVision状态，直到camera stop才停止
+  * 说    明：独立识别输出，直到camera stop或任务接管才停止
   */
 static void ArmConsole_CameraTraceDirectStart(void)
 {
   Camera_SnapshotTypeDef Snapshot;
 
   ArmConsole_CameraTrace = 1U;
-  ArmConsole_CameraTraceDirect = 1U;
   ArmConsole_CameraTraceLastTick = HAL_GetTick() -
                                    ARM_CONSOLE_CAMERA_TRACE_INTERVAL_MS;
   Camera_SnapshotGet(&Snapshot);
@@ -201,29 +180,12 @@ static void ArmConsole_CameraTraceStop(void)
 {
   ConsoleTx_DebugCancel(CONSOLE_DEBUG_VISION);
   ArmConsole_CameraTrace = 0U;
-  ArmConsole_CameraTraceDirect = 0U;
   ArmConsole_CameraTraceSequence = 0U;
   ArmConsole_CameraTraceLastTick = 0U;
 }
 
-/** 物料任务失败时输出一次真实原因，避免跟踪静默停止。 */
-static void ArmConsole_MaterialErrorShow(void)
-{
-  MaterialVision_StateTypeDef State = MaterialVision_StateGet();
-  MaterialVision_ErrorTypeDef Error = MaterialVision_ErrorGet();
-
-  if (State == MATERIAL_VISION_STATE_ERROR &&
-      (State != ArmConsole_LastMaterialState || Error != ArmConsole_LastMaterialError))
-  {
-    ArmConsole_Printf("ERR material reason=%s\r\n", MaterialVision_ErrorNameGet());
-    ArmConsole_PromptShow();
-  }
-  ArmConsole_LastMaterialState = State;
-  ArmConsole_LastMaterialError = Error;
-}
-
 /**
-  * 函    数：输出视觉标定期间收到的新坐标
+  * 函    数：输出独立相机识别期间收到的新坐标
   * 参    数：无
   * 返 回 值：无
   * 说    明：在标定和自动对准期间限频输出，不清除OLED待刷新数据
@@ -238,12 +200,6 @@ static void ArmConsole_CameraTraceShow(void)
 
   if (ArmConsole_CameraTrace == 0U)
   {
-    return;
-  }
-  if ((ArmConsole_CameraTraceDirect == 0U) &&
-      (MaterialVision_IsBusy() == 0U))
-  {
-    ArmConsole_CameraTraceStop();
     return;
   }
   Camera_SnapshotGet(&Snapshot);
@@ -548,10 +504,7 @@ static void ArmConsole_HelpShow(void)
       "qr status  UART4 bytes, accepted/rejected frames and event drops\r\n"
       "qr read  latest task code, non-consuming\r\n"
       "qr stream on|off  future task codes, <=5Hz, default off\r\n"
-      "material auto <1|2|3|4|5|6>  start chassis material task\r\n"
-      "material stop\r\n"
-      "material status\r\n"
-      "material ref | material calib <1|2|3|4|5|6>\r\n");
+      "grab calib ref | grab calib <1..6> | grab calib status; cancel: grab stop\r\n");
   ArmConsole_Write(
       "chassis backward  continuous test, stop with chassis stop\r\n"
       "chassis <forward|backward> <1..200mm>\r\n"
@@ -962,60 +915,22 @@ static uint8_t ArmConsole_GripCommandHandle(uint8_t TokenCount, char *Tokens[])
 
 static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[])
 {
-  MaterialVision_ResultTypeDef MaterialResult;
   HAL_StatusTypeDef CameraStatus;
   Camera_ColorTypeDef Color;
 
-  if ((TokenCount == 2U) && !strcmp(Tokens[0], "material") && !strcmp(Tokens[1], "ref"))
-  {
-    MaterialResult = MaterialVision_ReferenceSet();
-    ArmConsole_Write(MaterialResult == MATERIAL_VISION_RESULT_OK ?
-                     "OK material ref confirmed\r\n" : "ERR material busy\r\n");
-    return 1U;
-  }
   if ((TokenCount == 2U) && (strcmp(Tokens[0], "camera") == 0))
   {
     if (strcmp(Tokens[1], "stop") == 0)
     {
-      if ((MaterialVision_IsBusy() != 0U))
-      {
-        ArmConsole_Write("ERR material busy use material stop\r\n");
-      }
-      else
-      {
-        Camera_RequestStop();
-        ArmConsole_CameraTraceStop();
-        OledUi_NoticeSet(NULL);
-        ArmConsole_Write("OK camera stop\r\n");
-      }
+      Camera_RequestStop();
+      ArmConsole_CameraTraceStop();
+      OledUi_NoticeSet(NULL);
+      ArmConsole_Write("OK camera stop\r\n");
     }
     else
     {
       ArmConsole_Write("ERR format\r\n");
     }
-    return 1U;
-  }
-  if ((TokenCount == 3U) && (strcmp(Tokens[0], "material") == 0) &&
-      (strcmp(Tokens[1], "calib") == 0))
-  {
-    if (ArmConsole_ColorParse(Tokens[2], &Color) == 0U)
-    {
-      ArmConsole_Write("ERR color\r\n");
-      return 1U;
-    }
-    MaterialResult = MaterialVision_CalibrationStart(Color);
-    if (MaterialResult == MATERIAL_VISION_RESULT_OK)
-    {
-      ArmConsole_CameraTraceStart();
-      ArmConsole_Printf("OK material accepted calibration=chassis color=%u\r\n",
-                        (unsigned int)Color);
-    }
-    else if (MaterialResult == MATERIAL_VISION_RESULT_BUSY)
-      ArmConsole_Write("ERR material busy\r\n");
-    else if (MaterialResult == MATERIAL_VISION_RESULT_NOT_READY)
-      ArmConsole_Write("ERR material ref_required\r\n");
-    else
-      ArmConsole_Write("ERR material calib\r\n");
     return 1U;
   }
   if ((TokenCount == 3U) && (strcmp(Tokens[0], "camera") == 0) &&
@@ -1025,11 +940,6 @@ static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[]
         (!strcmp(Tokens[1],"ring") && Color > CAMERA_COLOR_BLUE))
     {
       ArmConsole_Write("ERR camera target\r\n");
-      return 1U;
-    }
-    if ((MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
       return 1U;
     }
     CameraStatus = !strcmp(Tokens[1],"ring") ? Camera_RingStart((uint8_t)Color) : Camera_MaterialStart(Color);
@@ -1055,105 +965,6 @@ static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[]
     return 1U;
   }
 
-  if ((TokenCount == 2U) && (strcmp(Tokens[0], "material") == 0))
-  {
-    if (strcmp(Tokens[1], "stop") == 0)
-    {
-      ArmConsole_CameraTraceStop();
-      MaterialVision_Stop();
-      OledUi_NoticeSet(NULL);
-      ArmConsole_Write("OK material stop\r\n");
-    }
-    else if (strcmp(Tokens[1], "status") == 0)
-    {
-      Camera_SnapshotTypeDef Snapshot;
-      MaterialVision_CalibrationDataTypeDef Calibration;
-      Camera_VisualStateTypeDef VisualState;
-      char FrameAge[16];
-
-      Camera_SnapshotGet(&Snapshot);
-      VisualState = Camera_VisualStateGet(&Snapshot);
-      if (Snapshot.HasFrame != 0U)
-      {
-        (void)snprintf(FrameAge, sizeof(FrameAge), "%lu",
-                       (unsigned long)(uint32_t)(HAL_GetTick() - Snapshot.LastFrameTick));
-      }
-      else
-      {
-        (void)strcpy(FrameAge, "na");
-      }
-      if ((VisualState == CAMERA_VIS_OK) && (Snapshot.HasValidData != 0U))
-      {
-        ArmConsole_Printf("OK material state=%s calibrated=%u ref=%u error=%s "
-                          "vision=%s age_source=rx frame_age_ms=%s "
-                          "cx=%d cy=%d dx=%d dy=%d seq=%lu\r\n",
-                          MaterialVision_StateNameGet(),
-                          (unsigned int)MaterialVision_IsCalibrated(),
-                          (unsigned int)MaterialVision_IsReferenceValid(),
-                          MaterialVision_ErrorNameGet(),
-                          Camera_VisualStateNameGet(VisualState), FrameAge,
-                          (int)Snapshot.Data.CX, (int)Snapshot.Data.CY,
-                          (int)Snapshot.Data.DX, (int)Snapshot.Data.DY,
-                          (unsigned long)Snapshot.Data.Sequence);
-      }
-      else
-      {
-        ArmConsole_Printf("OK material state=%s calibrated=%u ref=%u error=%s "
-                          "vision=%s age_source=rx frame_age_ms=%s "
-                          "cx=na cy=na dx=na dy=na seq=na\r\n",
-                          MaterialVision_StateNameGet(),
-                          (unsigned int)MaterialVision_IsCalibrated(),
-                          (unsigned int)MaterialVision_IsReferenceValid(),
-                          MaterialVision_ErrorNameGet(),
-                          Camera_VisualStateNameGet(VisualState), FrameAge);
-      }
-      if (MaterialVision_CalibrationGet(&Calibration) != 0U)
-      {
-        ArmConsole_Printf("OK material response forward=(%.3f,%.3f) "
-                          "x=(%.3f,%.3f)\r\n",
-                          (double)Calibration.ForwardDxPerMm,
-                          (double)Calibration.ForwardDyPerMm,
-                          (double)Calibration.XDxPerDegree,
-                          (double)Calibration.XDyPerDegree);
-      }
-    }
-    else
-    {
-      ArmConsole_Write("ERR format\r\n");
-    }
-    return 1U;
-  }
-  if ((TokenCount == 3U) && (strcmp(Tokens[0], "material") == 0) &&
-      (strcmp(Tokens[1], "auto") == 0))
-  {
-    if (ArmConsole_ColorParse(Tokens[2], &Color) == 0U)
-    {
-      ArmConsole_Write("ERR color\r\n");
-      return 1U;
-    }
-    MaterialResult = MaterialVision_Start(Color);
-    if (MaterialResult == MATERIAL_VISION_RESULT_OK)
-    {
-      ArmConsole_CameraTraceStart();
-      OledUi_NoticeSet(NULL);
-      ArmConsole_Printf("OK material auto color=%u\r\n",
-                        (unsigned int)Color);
-    }
-    else if (MaterialResult == MATERIAL_VISION_RESULT_BUSY)
-    {
-      OledUi_NoticeSet("Material busy");
-      ArmConsole_Write("ERR material busy\r\n");
-    }
-    else if (MaterialResult == MATERIAL_VISION_RESULT_NOT_READY)
-    {
-      OledUi_NoticeSet("Not ready");
-      ArmConsole_Write("ERR material ref_required\r\n");
-    }
-    else
-      ArmConsole_Write("ERR material start\r\n");
-    return 1U;
-  }
-
   ArmConsole_Write("ERR format\r\n");
   return 1U;
 }
@@ -1176,7 +987,7 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
   {
     int32_t Speed, Seconds;
     ChassisMotion_HoldStatus_t Status;
-    if (MechanicalArm_IsBusy() || MaterialVision_IsBusy())
+    if (MechanicalArm_IsBusy())
       ArmConsole_Write("ERR busy\r\n");
     else if (!ArmConsole_IntegerParse(Tokens[2], &Speed) ||
              !ArmConsole_IntegerParse(Tokens[3], &Seconds) ||
@@ -1196,11 +1007,6 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
       (strcmp(Tokens[0], "chassis") == 0) &&
       (strcmp(Tokens[1], "backward") == 0))
   {
-    if ((MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
-      return 1U;
-    }
     if (MechanicalArm_IsBusy() != 0U)
     {
       ArmConsole_Write("ERR busy\r\n");
@@ -1224,11 +1030,6 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
     int32_t ForwardMmPerSecond;
     int32_t LeftMmPerSecond;
     int32_t YawDegreesPerSecond;
-    if ((MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
-      return 1U;
-    }
     if (MechanicalArm_IsBusy() != 0U)
     {
       ArmConsole_Write("ERR busy\r\n");
@@ -1274,11 +1075,6 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
   if ((TokenCount == 3U) && (strcmp(Tokens[0], "chassis") == 0))
   {
     int32_t DistanceMagnitudeMm;
-    if ((MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
-      return 1U;
-    }
     if (MechanicalArm_IsBusy() != 0U)
     {
       ArmConsole_Write("ERR busy\r\n");
@@ -1313,11 +1109,6 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
   if ((TokenCount == 3U) && (strcmp(Tokens[0], "wheel") == 0))
   {
     int32_t WheelRpm;
-    if ((MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
-      return 1U;
-    }
     if (MechanicalArm_IsBusy() != 0U)
     {
       ArmConsole_Write("ERR busy\r\n");
@@ -1365,14 +1156,6 @@ static uint8_t ArmConsole_MechanicalArmCommandHandle(uint8_t TokenCount, char *T
     return 1U;
   }
 
-  if (((MaterialVision_IsBusy() != 0U)) &&
-      !((strcmp(Tokens[0], "stop") == 0) &&
-        (Axis == MECHANICAL_ARM_AXIS_ALL)))
-  {
-    ArmConsole_Write("ERR vision_busy\r\n");
-    return 1U;
-  }
-
   if ((TokenCount == 2U) && (strcmp(Tokens[0], "enable") == 0))
   {
     return ArmConsole_RequestResultShow(MechanicalArm_Enable(Axis));
@@ -1413,14 +1196,6 @@ static uint8_t ArmConsole_MechanicalArmCommandHandle(uint8_t TokenCount, char *T
   }
   if ((TokenCount == 2U) && (strcmp(Tokens[0], "stop") == 0))
   {
-    if ((Axis == MECHANICAL_ARM_AXIS_ALL) &&
-        ((MaterialVision_IsBusy() != 0U)))
-    {
-      MaterialVision_Stop();
-      OledUi_NoticeSet(NULL);
-      ArmConsole_Write("OK stop all request accepted; physical stop unconfirmed\r\n");
-      return 1U;
-    }
     return ArmConsole_RequestResultShow(MechanicalArm_Stop(Axis));
   }
   if ((TokenCount == 3U) && (strcmp(Tokens[0], "pos") == 0))
@@ -1543,7 +1318,7 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
       ArmConsole_Write("ERR imu cal busy\r\n");
       return 1U;
     }
-    if (Mecanum_IsBusy() || MechanicalArm_IsBusy() || MaterialVision_IsBusy())
+    if (Mecanum_IsBusy() || MechanicalArm_IsBusy())
     {
       ArmConsole_Write("ERR imu motion_busy stop all motion first\r\n");
       return 1U;
@@ -1817,7 +1592,6 @@ static void ArmConsole_StopRequest(uint32_t token)
   GrabRoute_Stop();
   Turntable_Stop();
   (void)ChassisRoute_Cancel();
-  MaterialVision_Stop();
   OledUi_NoticeSet(NULL);
   (void)ChassisMotion_StopRequest(token);
   ArmConsole_StopStatusShow();
@@ -1858,7 +1632,7 @@ static void ArmConsole_BusRecoveryProcess(void)
       ArmConsole_Write("ERR bus recover tasks_not_idle; inspect grab status and info\r\n");return;
     }
     if (GrabTask_IsBusy() || GrabRoute_IsBusy() || Turntable_IsBusy() || MechanicalArm_IsBusy() ||
-        ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || MaterialVision_IsBusy()) return;
+        ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return;
     /* A stopping task may have re-enabled its feedback before exiting. */
     Mecanum_Feedback_Enable(false);
     if (!MotorBus_RecoveryStart()) return;
@@ -2023,7 +1797,7 @@ static uint8_t ArmConsole_SystemCommandHandle(uint8_t count, char *tokens[])
   if (count != 2U || strcmp(tokens[1], "reset"))
     ArmConsole_Write("ERR format: system reset\r\n");
   else if (ChassisMotion_IsBusy() || ChassisRoute_IsBusy() || Mecanum_IsBusy() ||
-           MechanicalArm_IsBusy() || MaterialVision_IsBusy() || HWT101_Cal_IsBusy() ||
+           MechanicalArm_IsBusy() || HWT101_Cal_IsBusy() ||
            GrabTask_IsBusy() || GrabRoute_IsBusy() || Turntable_IsBusy())
     ArmConsole_Write("ERR system reset busy stop motion and finish/cancel calibration first\r\n");
   else
@@ -2061,7 +1835,7 @@ static uint8_t ArmConsole_TurntableCommandHandle(unsigned count,char *tokens[])
   if (!strcmp(tokens[0],"turntable"))
   {
     if (count==2U && !strcmp(tokens[1],"stop")) ArmConsole_ResetCancel();
-    else if (MaterialVision_IsBusy() || MechanicalArm_IsBusy() ||
+    else if (MechanicalArm_IsBusy() ||
              Mecanum_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy())
     { ArmConsole_Write("ERR turntable other_task_busy\r\n");return 1U; }
     return Turntable_Command(count,tokens) ? 1U : 0U;
@@ -2100,6 +1874,8 @@ static uint8_t ArmConsole_GrabQueryHandle(unsigned count,char *tokens[])
       return ChassisRoute_Command(count,tokens)?1U:0U;
   }
   if(strcmp(tokens[0],"grab"))return 0U;
+  if(count==3U && !strcmp(tokens[1],"calib") && !strcmp(tokens[2],"status"))
+    return GrabTask_Command(count,tokens)?1U:0U;
   if(count==3U && (!strcmp(tokens[1],"route") || !strcmp(tokens[1],"mission")) &&
      !strcmp(tokens[2],"status")) return GrabRoute_Command(count,tokens)?1U:0U;
   if(!(((count==2U || count==3U) && !strcmp(tokens[1],"status")) || (count==3U && !strcmp(tokens[1],"get")) ||
@@ -2118,7 +1894,7 @@ static bool ArmConsole_GrabBusyGuard(unsigned TokenCount,char *Tokens[])
          (TokenCount==3U && !strcmp(Tokens[1],"mission") && !strcmp(Tokens[2],"continue")))) &&
       !((TokenCount==1U && (!strcmp(Tokens[0],"help") || !strcmp(Tokens[0],"info"))) ||
         (TokenCount==2U && ((!strcmp(Tokens[1],"status") &&
-           (!strcmp(Tokens[0],"camera") ||   !strcmp(Tokens[0],"material") || !strcmp(Tokens[0],"console") || !strcmp(Tokens[0],"qr"))) ||
+           (!strcmp(Tokens[0],"camera") ||   !strcmp(Tokens[0],"console") || !strcmp(Tokens[0],"qr"))) ||
           (!strcmp(Tokens[0],"qr") && !strcmp(Tokens[1],"read")))) ||
         (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"status"))))
     return true;
@@ -2135,9 +1911,14 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
     ArmConsole_Write("ERR format\r\n");
     return 1U;
   }
+  if (!strcmp(Tokens[0],"material"))
+  {
+    ArmConsole_Write("ERR retired: material commands removed; use grab align color|ring, grab calib ref|status|<1..6>, grab stop\r\n");
+    return 1U;
+  }
   if (!strcmp(Tokens[0], "vision"))
   {
-    ArmConsole_Write("ERR retired: use grab align color|ring, material ref|calib\r\n");
+    ArmConsole_Write("ERR retired: use grab align color|ring or grab calib ref|status|<1..6>\r\n");
     return 1U;
   }
   /* Queries and log subscription never operate actuators and bypass motion guards. */
@@ -2156,6 +1937,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   if ((BusRecoveryPending || ManualGuardActive) &&
       !(TokenCount==1 && (!strcmp(Tokens[0],"info") || !strcmp(Tokens[0],"help"))) &&
       !(TokenCount==2 && (!strcmp(Tokens[1],"status") || !strcmp(Tokens[0],"state") || !strcmp(Tokens[0],"position"))) &&
+      !(TokenCount==3 && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"calib") && !strcmp(Tokens[2],"status")) &&
       !(TokenCount>=3 && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"track") &&
         (!strcmp(Tokens[2],"status") || !strcmp(Tokens[2],"get") || !strcmp(Tokens[2],"trace") || !strcmp(Tokens[2],"stop")))) {
     ArmConsole_Write("ERR operation_busy command_not_queued\r\n");return 1;
@@ -2167,7 +1949,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
       ((GrabTask_IsBusy() || GrabRoute_IsBusy()) &&
        ((TokenCount==2U && ((!strcmp(Tokens[0],"stop") &&
           MechanicalArm_AxisGet(Tokens[1])!=MECHANICAL_ARM_AXIS_INVALID) ||
-         (!strcmp(Tokens[1],"stop") && (!strcmp(Tokens[0],"material") || !strcmp(Tokens[0],"camera") || !strcmp(Tokens[0],"turntable"))))) ||
+         (!strcmp(Tokens[1],"stop") && (!strcmp(Tokens[0],"camera") || !strcmp(Tokens[0],"turntable"))))) ||
         (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"cancel")))))
   {
     ArmConsole_ResetCancel();
@@ -2181,7 +1963,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
     /* Every valid foreground stop keeps its existing scope and cancels reset. */
     if (TokenCount == 2U &&
         ((!strcmp(Tokens[0], "stop") && MechanicalArm_AxisGet(Tokens[1]) != MECHANICAL_ARM_AXIS_INVALID) ||
-         (!strcmp(Tokens[1], "stop") && (!strcmp(Tokens[0], "material") || !strcmp(Tokens[0], "camera") || !strcmp(Tokens[0], "turntable")))))
+         (!strcmp(Tokens[1], "stop") && (!strcmp(Tokens[0], "camera") || !strcmp(Tokens[0], "turntable")))))
       ArmConsole_ResetCancel();
     else { ArmConsole_Write("ERR system reset_pending\r\n"); return 1U; }
   }
@@ -2200,10 +1982,10 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   if (ArmConsole_TurntableCommandHandle(TokenCount,Tokens)) return 1U;
   if (!strcmp(Tokens[0],"grab"))
   {
-    if (MaterialVision_IsBusy() || MechanicalArm_IsBusy() ||
+    if (MechanicalArm_IsBusy() ||
         Mecanum_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy())
     { ArmConsole_Write("ERR grab other_task_busy\r\n");return 1U; }
-    if(TokenCount>=2U && (!strcmp(Tokens[1],"start") || !strcmp(Tokens[1],"mission") || !strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"store") || !strcmp(Tokens[1],"take") || !strcmp(Tokens[1],"return") || !strcmp(Tokens[1],"ring") || !strcmp(Tokens[1],"align")))
+    if(TokenCount>=2U && (!strcmp(Tokens[1],"start") || !strcmp(Tokens[1],"mission") || !strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"store") || !strcmp(Tokens[1],"take") || !strcmp(Tokens[1],"return") || !strcmp(Tokens[1],"ring") || !strcmp(Tokens[1],"align") || !strcmp(Tokens[1],"calib")))
       ArmConsole_CameraTraceStop(); /* Give the latest-only vision slot to grab progress. */
     if (GrabRoute_Command(TokenCount,Tokens)) return 1U;
     return GrabTask_Command(TokenCount,Tokens) ? 1U : 0U;
@@ -2274,8 +2056,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
 
   if (strcmp(Tokens[0], "grip") == 0)
     return ArmConsole_GripCommandHandle(TokenCount, Tokens);
-  if ((strcmp(Tokens[0], "camera") == 0) ||
-      (strcmp(Tokens[0], "material") == 0))
+  if (strcmp(Tokens[0], "camera") == 0)
     return ArmConsole_VisionCommandHandle(TokenCount, Tokens);
   if ((strcmp(Tokens[0], "chassis") == 0) || (strcmp(Tokens[0], "wheel") == 0))
     return ArmConsole_ChassisCommandHandle(TokenCount, Tokens);
@@ -2315,8 +2096,6 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   ArmConsole_LineLength = 0U;
   ArmConsole_LineOverflow = 0U;
   ArmConsole_LastWasCr = 0U;
-  ArmConsole_LastMaterialState = MaterialVision_StateGet();
-  ArmConsole_LastMaterialError = MaterialVision_ErrorGet();
   ArmConsole_CameraTrace = 0U;
   ArmConsole_CameraTraceSequence = 0U;
   memset(ArmConsole_RingBuffer, 0, sizeof(ArmConsole_RingBuffer));
@@ -2392,7 +2171,6 @@ void ArmConsole_Process(void)
 
   ArmConsole_StopProcess();
 
-  ArmConsole_MaterialErrorShow();
   ArmConsole_CameraTraceShow();
 
   while ((Result = ArmConsole_RingPop(&Data)) != 0U)

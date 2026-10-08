@@ -21,7 +21,7 @@ static uint8_t sent_address,sent_function;
 bool ChassisRoute_IsBusy(void) { return false; }
 bool ChassisRoute_IsSubmitting(void) { return false; }
 bool GrabTask_IsBusy(void) { return false; }
-uint8_t MaterialVision_IsBusy(void) { return false; }
+bool GrabTask_CalibrationActive(void) { return false; }
 uint8_t MechanicalArm_IsBusy(void) { return false; }
 void ChassisLocalization_Get(ChassisLocalization_Status_t *out) { memset(out,0,sizeof *out); }
 uint32_t HAL_GetTick(void)

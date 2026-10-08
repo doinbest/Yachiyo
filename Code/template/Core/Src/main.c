@@ -40,7 +40,6 @@
 
 #include "Camera.h"
 #include "QR.h"
-#include "MaterialVision.h"
 #include "GrabTask.h"
 #include "turntable.h"
 #include "GrabRoute.h"
@@ -397,7 +396,7 @@ static bool OptionalDisplayReady(void)
   MotorBus_RecoveryGet(&recovery);
   return !HWT101_Cal_IsBusy() && !ChassisMotion_IsBusy() && !ChassisRoute_IsBusy() &&
          !GrabTask_IsBusy() && !GrabRoute_IsBusy() && !Turntable_IsBusy() && !MechanicalArm_IsBusy() &&
-         !MaterialVision_IsBusy() && !Mecanum_IsBusy() &&
+         !Mecanum_IsBusy() &&
          !ChassisMotion_StopPending() && !ArmConsole_OperationBusy() &&
          !bus.active && !recovery.active && !RadarConsole_ScanBusy();
 }
@@ -486,7 +485,6 @@ int main(void)
   {
     Error_Handler();
   }
-  MaterialVision_Init();
   GrabTask_Init();
   GrabRoute_Init();
   Turntable_Init();
@@ -560,7 +558,6 @@ int main(void)
     HWT101_Process(); /* 独立采集；关闭日志不会停止传感器轮询。 */
     ImuTiming_Mark(IMU_TIME_READ);
     HWT101_Cal_BootVerifyProcess(!Mecanum_IsBusy() && !MechanicalArm_IsBusy() &&
-        !MaterialVision_IsBusy() &&
         !ChassisRoute_IsBusy() && !ChassisMotion_IsBusy() &&
         !GrabTask_IsBusy() && !GrabRoute_IsBusy() && !Turntable_IsBusy());
     HWT101_Cal_Process();
@@ -609,7 +606,7 @@ int main(void)
       switch (Key)
       {
         case KEY_EVENT_PE3:
-          if (Camera_ColorTaskReady && !MaterialVision_IsBusy() && !MechanicalArm_IsBusy())
+          if (Camera_ColorTaskReady && !MechanicalArm_IsBusy())
           {
             Camera_ColorDigitIndex = (uint8_t)((Camera_ColorDigitIndex + 1U) % 3U);
             OledUi_TaskCodeSet(QR_TaskCode, Camera_ColorDigitIndex);

@@ -50,7 +50,7 @@ test('accepted is not completion and state is reported only from explicit feedba
   assert.match(describeReply('OK pos base degree=15 accepted'), /接受.*到位/);
   assert.match(describeReply('OK state base raw=0x03 en=1 reached=1'), /到位/);
   assert.match(describeReply('ERR busy'), /拒绝/);
-  assert.doesNotMatch(describeReply('OK material auto color=1'), /已完成|已到位/);
+  assert.doesNotMatch(describeReply('OK grab calib accepted'), /已完成|已到位/);
 });
 
  test('reset and yaw zero are distinct writable system commands', async () => {

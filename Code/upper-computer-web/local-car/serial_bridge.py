@@ -18,7 +18,7 @@ STOP_REPLY = re.compile(
     r'tx_complete=([01]) wheels_stopped=([01]) reason=([A-Za-z0-9_]+)')
 READ_COMMAND = re.compile(
     r'(?:info|help|bus status|console status|(?:state|position|config) (?:base|z|x|all)|'
-    r'(?:camera|material|imu|qr|grab) status|qr read|grab (?:route|mission) status|grab status (?:base|x|z)|grab get [a-z][a-z0-9_]*|grab track (?:status|trace(?: \d+)?|get [a-z][a-z0-9_]*|log(?: (?:status|stop|start(?: \d+)?))?)|'
+    r'(?:camera|imu|qr|grab) status|qr read|grab (?:route|mission|calib) status|grab status (?:base|x|z)|grab get [a-z][a-z0-9_]*|grab track (?:status|trace(?: \d+)?|get [a-z][a-z0-9_]*|log(?: (?:status|stop|start(?: \d+)?))?)|'
     r'turntable (?:status|inventory|get [a-z][a-z0-9_]*)|'
     r'chassis (?:task|status|snapshot|feedback|stop-status|route status)|'
     r'radar host (?:status(?: fast)?|bundle \d+ (?:all|\d+(?:,\d+)*)|(?:ack|result) \d+|get (?:active|draft)|live status|fetch (?:config|map|path|preview|cloud):\d+ \d+)|'
@@ -26,8 +26,8 @@ READ_COMMAND = re.compile(
 PREPARATION_COMMAND = re.compile(
     r'(?:chassis (?:units 65536|feedback (?:0|on)|'
     r'origin 2250 150 90|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')
-CANCEL_COMMAND = re.compile(r'(?:bus recover|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab track stop|(?:material|camera|grab) stop)')
-PRIORITY_STOP = re.compile(r'(?:radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab track stop|(?:material|camera|grab) stop)')
+CANCEL_COMMAND = re.compile(r'(?:bus recover|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab track stop|(?:camera|grab) stop)')
+PRIORITY_STOP = re.compile(r'(?:radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab track stop|(?:camera|grab) stop)')
 TERMINAL_STOP = {'confirmed', 'timeout', 'disconnected'}
 
 

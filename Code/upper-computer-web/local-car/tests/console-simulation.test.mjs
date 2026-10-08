@@ -18,6 +18,7 @@ function consoleFixture(){
     const e={tag,textContent:text??'',className:cls??'',children:[],options:[],dataset:{},attributes:{},value:'',disabled:false,isConnected:true,
       classList:{toggle(){},add(){}},setAttribute(k,v){this.attributes[k]=String(v);},
       append(...items){this.children.push(...items);if(this.tag==='select')this.options.push(...items);},
+      replaceChildren(...items){this.children=[...items];},querySelector(selector){return this.children.find(e=>e.className===selector.slice(1))??null;},
       get lastElementChild(){return this.children.at(-1);}};
     elements.push(e);return e;
   };
@@ -26,9 +27,9 @@ function consoleFixture(){
     async send(wire){wires.push(wire);return {text:wire};}};
   const empty=()=>{};
   const ctx=vm.createContext({...protocol,node,$,bridge,readOnlyCommand,scopedStopCommand,
-    document:{querySelectorAll:()=>elements.filter(e=>e.dataset.send),createElement:node},
+    document:{getElementById:id=>elements.find(e=>e.id===id)||null,querySelectorAll:()=>elements.filter(e=>e.dataset.send),createElement:node},
     window:{confirm:()=>false},toast:t=>messages.push(t),appendLog:(d,t)=>logs.push({d,t}),
-    renderGrabStatus:empty,renderStatus:empty,displayReply:t=>t,bootProgress:(_l,s)=>s,
+    renderStatus:empty,displayReply:t=>t,visualStateText:t=>t??'—',bootProgress:(_l,s)=>s,
     parseRadar:()=>null,radarModel:{snapshots:{},params:{}},localStorage:{setItem:empty},
     radarExchange:{busy:false,cancel:empty},radarHostClient:null,radarDirectView:null,
     paramsView:{receive:empty,cancel:empty,update:empty},trackingPanel:null,stackingPanel:null,
@@ -40,15 +41,20 @@ function consoleFixture(){
   vm.runInContext(`
     let routeLocked=false,sending=0,applyingGrabPreset=false,parameterBusy=false,presetCancelled=false;
     let connectionState='connected',lastStopEvent=null,trackingConnected=false,axis='base',active='vision',bootStage='';
-    let grabSnapshot=null,grabRouteSnapshot=null,grabReply=null,savedRadarSnapshot=null;
+    let grabSnapshot=null,grabRouteSnapshot=null,grabReply=null,savedRadarSnapshot=null,grabCalibrationSnapshot=null;
+    let grabPanel=null;
     const status=new Map(),forms=[];
-    const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|radar live stop|material stop|grab stop)$/.test(wire);
+    const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|radar live stop|grab stop)$/.test(wire);
     const stopped=()=>bridge.stopLatched;
     ${section('function mayQuery(wire)','async function requestStop()')}
     ${section('async function send(wire','async function refreshPorts()')}
     ${section('function definition(id)','async function copyText(text)')}
     ${section('function receive(line)','function communicationError(error)')}
-    globalThis.sim={canSend,send,receive,connection,controlForm,updateControls,
+    ${section('function renderGrabCalibrationStatus()','function buildVisionWorkspace(')}
+    ${section('function renderGrabStatus()','function buildPages()')}
+    globalThis.sim={canSend,send,receive,connection,controlForm,updateControls,buildGrabCalibrationPanel,
+      get grabSnapshot(){return grabSnapshot;},get calibrationSnapshot(){return grabCalibrationSnapshot;},
+      mountGrabStatus(){grabPanel=$('grab-task-status');renderGrabStatus();},
       configure(p){
         if('connected'in p)bridge.connected=p.connected;if('disconnecting'in p)bridge.disconnecting=p.disconnecting;
         if('stopLatched'in p)bridge.stopLatched=p.stopLatched;if('sending'in p)sending=p.sending;
@@ -184,4 +190,47 @@ test('ring buttons share edited values and recover after invalid input and trans
   field('grab-ring-align-z').value='-100';field('grab-ring-align-z').oninput();assert.equal(stay.disabled,false);
   f.sim.configure({sending:1});assert.equal(stay.disabled,true);f.sim.configure({sending:0});assert.equal(stay.disabled,false);
   await stay.onclick();await new Promise(setImmediate);assert.deepEqual(f.wires,['grab align ring 3 -100 stay']);
+});
+
+test('real calibration controls send only explicit operations and preserve the task snapshot',async()=>{
+  const f=consoleFixture();
+  f.sim.buildGrabCalibrationPanel(f.$('system-body'));
+  assert.deepEqual(f.wires,[]);
+  const fields=f.elements.filter(e=>e.tag==='select');
+  const target=fields.find(e=>e.options.some(o=>o.value==='3'));assert.ok(target);
+  target.value='3';target.onchange?.();
+  const buttons=f.elements.filter(e=>e.tag==='button');
+  const start=buttons.find(e=>e.title==='grab calib 3');assert.ok(start);
+  const forms=f.elements.filter(e=>e.tag==='form');
+  forms[1].onsubmit({preventDefault(){}});await new Promise(setImmediate);
+  assert.deepEqual(f.wires,['grab calib 3']);
+  f.sim.receive('OK grab state=align mode=align operation=color_align reason=running missing=none');
+  const original=f.sim.grabSnapshot;
+  f.sim.receive('arm> OK grab calib phase=collect ref=1 calibrated=1 reason=none fdx=2 fdy=0.5 xdx=0 xdy=3');
+  assert.equal(f.sim.grabSnapshot,original);
+  assert.match(f.$('grab-calibration-status').textContent,/上次成功响应/);
+  assert.match(f.$('grab-calibration-status').textContent,/2 \/ 0.5 px\/mm/);
+  f.sim.configure({stopLatched:true});
+  assert.equal(start.disabled,true);
+  const query=buttons.find(e=>e.title==='grab calib status');assert.equal(query.disabled,false);
+  query.onclick();await new Promise(setImmediate);assert.deepEqual(f.wires,['grab calib 3','grab calib status']);
+  const stop=buttons.find(e=>e.title==='grab stop');assert.equal(stop.disabled,false);
+  stop.onclick();await new Promise(setImmediate);assert.deepEqual(f.wires,['grab calib 3','grab calib status','grab stop']);
+  f.bridge.connected=false;f.sim.connection('disconnected');
+  f.bridge.connected=true;f.sim.connection('connected');
+  assert.match(f.$('grab-calibration-status').textContent,/历史读回/);
+  assert.equal(f.wires.length,3);
+  f.sim.receive('OK grab calib phase=complete ref=1 calibrated=1 reason=calibrated fdx=2 fdy=0.5 xdx=0 xdy=3');
+  assert.equal(f.sim.calibrationSnapshot.live,true);
+  f.sim.receive('STM32 mechanical arm console ready');
+  assert.equal(f.sim.calibrationSnapshot.live,false);
+  assert.match(f.$('grab-calibration-status').textContent,/历史读回/);
+  assert.equal(f.wires.length,3);
+});
+
+test('real calibration completion uses the firmware complete state',()=>{
+  const f=consoleFixture();f.sim.mountGrabStatus();
+  f.sim.receive('OK grab state=complete mode=align operation=calibration result=calibrated reason=calibrated missing=none');
+  assert.match(f.$('grab-task-status').children.find(e=>e.tag==='h3').textContent,/标定完成/);
+  assert.deepEqual(f.wires,[]);
 });

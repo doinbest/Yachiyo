@@ -6,8 +6,8 @@ import {mountStacking} from './stack-panel.mjs?v=stack-20261008';
 let stackingPanel;
 import {createAttemptTracker} from './command-attempt.mjs?v=terminal-3';
 import {mountPreparation} from './route-preparation.mjs?v=route-20260925';
-import {commands,buildCommand,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText} from './protocol.mjs?v=stack-20261008';
-import {BridgeLink,readOnlyCommand,scopedStopCommand} from './bridge.mjs?v=console-recovery-20261008';
+import {commands,buildCommand,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText} from './protocol.mjs?v=calibration-20261009';
+import {BridgeLink,readOnlyCommand,scopedStopCommand} from './bridge.mjs?v=calibration-20261009';
 import {mountMap} from './map-view.mjs?v=route-20260925';
 import {mountQr} from './qr-panel.mjs?v=bridge-1';
 import {mountParameterPage} from './parameter-page.mjs?v=parameter-page-20261001';
@@ -32,6 +32,7 @@ const renderLogs=createLogRenderScheduler(renderLogsNow,fn=>requestAnimationFram
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)renderLogs();});
 function save(){try{localStorage.setItem(storageKey,JSON.stringify(prefs));}catch{toast('本机存储已满，设置未保存。');}}
 let toastTimer;function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,3500);}
+let grabCalibrationSnapshot=null;
 let active='system',axis='base',mapView,radarView,radarDirectView,radarHostClient,qrView,prepView,wheelView,paramsView,visionTabs,txCount=0,rxCount=0,filter='ALL',logs=[],unseen=0,errors=0,sending=false,applyingGrabPreset=false,presetCancelled=false,parameterBusy=false;
 const navigationMemory=createNavigationMemory();let previousHash='',pendingParameterSource=null;
 const radarModel=new RadarModel();try{const saved=JSON.parse(localStorage.getItem('local-car-radar-snapshots')||'null');if(saved){radarModel.snapshots=saved.snapshots??{};radarModel.params=saved.params??{};}}catch{}
@@ -86,8 +87,11 @@ function receive(line){
   paramsView?.receive(line);
   trackingPanel?.receive(line);
   const progress=bootProgress(line,bootStage);if(progress!==bootStage){bootStage=progress;$('boot-status').textContent=progress;}
-  if(/^(OK|ERR) grab\b/.test(line)){grabReply={line,time:Date.now(),live:bridge.connected};const routeSnapshot=parseGrabRouteStatus(line);if(routeSnapshot)grabRouteSnapshot={data:routeSnapshot,time:Date.now(),live:bridge.connected};const snapshot=parseGrabStatus(line);if(snapshot){grabSnapshot={data:snapshot,time:Date.now(),live:bridge.connected};stackingPanel?.receive(snapshot);}renderGrabStatus();}
+  const calibration=parseGrabCalibrationStatus(line);
+  if(calibration){grabCalibrationSnapshot={data:calibration,time:Date.now(),live:bridge.connected};renderGrabCalibrationStatus();}
+  if(!calibration&&/^(OK|ERR) grab\b/.test(line)){grabReply={line,time:Date.now(),live:bridge.connected};const routeSnapshot=parseGrabRouteStatus(line);if(routeSnapshot)grabRouteSnapshot={data:routeSnapshot,time:Date.now(),live:bridge.connected};const snapshot=parseGrabStatus(line);if(snapshot){grabSnapshot={data:snapshot,time:Date.now(),live:bridge.connected};stackingPanel?.receive(snapshot);}renderGrabStatus();}
   if(line==='STM32 mechanical arm console ready'){
+    if(grabCalibrationSnapshot)grabCalibrationSnapshot.live=false;renderGrabCalibrationStatus();
     stackingPanel?.cancel();
     trackingPanel?.connection(false);trackingPanel?.connection(bridge.connected);
     paramsView?.cancel('STM32 已重启，旧读回标为历史值。',true);
@@ -102,13 +106,13 @@ function receive(line){
 wheelView?.receive(line);mapView?.receive(line);
 const routeState=line.trim().replace(/^(?:arm>\s*)+/,'').match(/^(?:OK|ERR) chassis route state=(\w+)/)?.[1]??(line.startsWith('@CHASSIS ')?mapView?.snapshot()?.route?.state:null);if(routeState){routeLocked=['running','stopping','waiting','station'].includes(routeState);updateControls();}
 qrView?.receive(line);prepView?.receive(line);const owner=moduleForWire(line);if(owner!=='manual'&&!line.startsWith('@CHASSIS ')&&/^(OK |ERR |\[IMU CAL\]|\[MOTOR BUS\]|ARM STM32|BUILD |EVT qr )/.test(line)){status.set(owner,{line,time:Date.now(),live:bridge.connected});renderStatus();}}
-function connection(state){const changed=state!==connectionState;if(changed){stackingPanel?.connection(state==='connected');routeLocked=false;bootStage='';if($('boot-status'))$('boot-status').textContent='启动状态：连接变化，请读取设备状态';grabRouteSnapshot=null;grabSnapshot=null;grabReply=null;renderGrabStatus();}connectionState=state;if(lastStopEvent)$('stop-status').textContent=describeStopEvent(lastStopEvent,state==='connected'||state==='disconnecting',state==='disconnecting');const connected=state==='connected';if(connected&&bridge.port){const select=$('serial-port');if(!Array.from(select.options).some(o=>o.value===bridge.port)){const o=node('option',bridge.port);o.value=bridge.port;select.append(o);}select.value=bridge.port;}if(changed){wheelView?.connection(connected);mapView?.connection(connected);radarView?.connection(connected);const radarConnection={state,port:bridge.port||$('serial-port').value||'',baudrate:Number($('baud').value)||115200};if(radarDirectView)radarDirectView.connection(radarConnection);else radarHostClient?.connection(radarConnection);qrView?.connection(connected);prepView?.connection(connected);if(!connected)paramsView?.cancel('连接已变化，旧读回标为历史值。',true);}$('connection-status').textContent=({connected:`本地服务已连接 ${bridge.port}`,connecting:`正在连接 ${$('serial-port').value}…`,disconnecting:'正在停车并断开…',disconnected:'尚未连接'})[state];$('connection-dot').classList.toggle('online',connected);$('connect').disabled=state!=='disconnected'||!$('serial-port').value;$('serial-port').disabled=state!=='disconnected';$('refresh-ports').disabled=state!=='disconnected';$('disconnect').disabled=!connected;$('baud').disabled=state!=='disconnected';if(changed)for(const value of status.values())value.live=false;if(!connected)$('subscription-note').textContent='';updateControls();renderStatus();if(changed&&connected)appendLog('SYS','已连接，尚未自动发送任何指令。');}
+function connection(state){const changed=state!==connectionState;if(changed){if(grabCalibrationSnapshot)grabCalibrationSnapshot.live=false;renderGrabCalibrationStatus();stackingPanel?.connection(state==='connected');routeLocked=false;bootStage='';if($('boot-status'))$('boot-status').textContent='启动状态：连接变化，请读取设备状态';grabRouteSnapshot=null;grabSnapshot=null;grabReply=null;renderGrabStatus();}connectionState=state;if(lastStopEvent)$('stop-status').textContent=describeStopEvent(lastStopEvent,state==='connected'||state==='disconnecting',state==='disconnecting');const connected=state==='connected';if(connected&&bridge.port){const select=$('serial-port');if(!Array.from(select.options).some(o=>o.value===bridge.port)){const o=node('option',bridge.port);o.value=bridge.port;select.append(o);}select.value=bridge.port;}if(changed){wheelView?.connection(connected);mapView?.connection(connected);radarView?.connection(connected);const radarConnection={state,port:bridge.port||$('serial-port').value||'',baudrate:Number($('baud').value)||115200};if(radarDirectView)radarDirectView.connection(radarConnection);else radarHostClient?.connection(radarConnection);qrView?.connection(connected);prepView?.connection(connected);if(!connected)paramsView?.cancel('连接已变化，旧读回标为历史值。',true);}$('connection-status').textContent=({connected:`本地服务已连接 ${bridge.port}`,connecting:`正在连接 ${$('serial-port').value}…`,disconnecting:'正在停车并断开…',disconnected:'尚未连接'})[state];$('connection-dot').classList.toggle('online',connected);$('connect').disabled=state!=='disconnected'||!$('serial-port').value;$('serial-port').disabled=state!=='disconnected';$('refresh-ports').disabled=state!=='disconnected';$('disconnect').disabled=!connected;$('baud').disabled=state!=='disconnected';if(changed)for(const value of status.values())value.live=false;if(!connected)$('subscription-note').textContent='';updateControls();renderStatus();if(changed&&connected)appendLog('SYS','已连接，尚未自动发送任何指令。');}
 function communicationError(error){appendLog('SYS',`通信异常：${error.message}`);toast(error.message);prepView?.refreshConfiguration();updateControls();}
 function stopped(){return bridge.stopLatched;}
 function bridgeEvent(e){if(e.kind==='preparation'&&e.active===false&&e.owner===bridge.preparationOwner&&prepView?.busy)prepView.cancel('共享准备锁定已结束，请重新准备。');if(e.kind==='tx'&&!/^radar (?:host )?fetch /.test(e.text))appendLog('TX',e.text);if(e.kind==='system')appendLog('SYS',e.text||e.error||'本地服务状态变化');if(e.kind==='stop'){if(e.latched)paramsView?.cancel('停止操作已取消参数批次；已读值和草稿保留。');if(e.latched)prepView?.cancel('停止已锁定，准备已取消；解除锁定后也不会自动继续。');lastStopEvent=e;$('stop-status').textContent=describeStopEvent(e,bridge.connected,bridge.disconnecting);$('resume-stop').hidden=!e.latched;updateControls();prepView?.refreshConfiguration();}}
 const bridge=new BridgeLink({receive,state:connection,error:communicationError,event:bridgeEvent,configuration:()=>prepView?.refreshConfiguration()});
 radarHostClient=new RadarHostClient({fastResults:true,send:wire=>executeSend(wire,false,true,true),onError:error=>{radarDirectView?.refresh();appendLog('SYS',error.message);}});
-const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|radar live stop|material stop|grab stop)$/.test(wire);
+const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|radar live stop|grab stop)$/.test(wire);
 function mayQuery(wire){return readOnlyCommand(wire)&&(!prepView?.busy||!prepView.pending);}
 async function requestStop(){stackingPanel?.cancel();presetCancelled=true;radarExchange.cancel('停止操作已取消雷达读取，保留已完成快照');paramsView?.cancel('停止操作已取消参数核对。');attempts.supersede();$('attempt-wire').textContent='chassis stop';$('attempt-status').textContent='请求停车 · 确认见底部状态';$('latest-command').dataset.state='pending';appendLog('SYS','请求停车 → chassis stop');prepView?.cancel('已中止准备并请求停车；请查看停止状态。');try{await bridge.stop();return true;}catch(error){communicationError(error);return false;}}
 function showAttempt({wire,state,current}) {
@@ -299,6 +303,22 @@ function buildRoutePanel(body){
   const poses=node('details',undefined,'advanced');poses.append(node('summary','机械臂姿态'));actions(poses,[['grab-pose-rear'],['grab-pose-work']]);mission.append(poses);body.append(mission);
   body.append(parameterLink('路线与工位参数','material'),parameterLink('准备跑图参数','radar','route_speed'));
 }
+function renderGrabCalibrationStatus(){
+  const view=document.getElementById('grab-calibration-status');if(!view)return;
+  const snapshot=grabCalibrationSnapshot,s=snapshot?.data;
+  if(!s){view.textContent='尚未读取视觉标定状态。';return;}
+  const phase=({idle:'空闲',prepare:'准备停稳',collect:'采样',chassis_move:'底盘移动',x_ack:'X请求应答',x_arrival:'X到位',x_state:'X反馈',settle:'停稳采样',complete:'标定完成',done:'标定完成',stopping:'正在停止',error:'标定失败'})[s.phase]||s.phase;
+  const response=s.calibrated===1?`前后 ${s.fdx??'—'} / ${s.fdy??'—'} px/mm；X ${s.xdx??'—'} / ${s.xdy??'—'} px/电机°`:'暂无成功标定记录';
+  view.textContent=`${snapshot.live?'最近读回':'历史读回'} · ${phase} · 观察姿态${s.ref===1?'已确认':'未确认'} · 上次成功响应：${response} · 原因 ${s.reason}`;
+}
+function buildGrabCalibrationPanel(body){
+  const panel=node('section',undefined,'vision-card');panel.id='grab-calibration';
+  panel.append(node('h2','视觉响应标定'),node('p','先在安全观察姿态确认，再选择颜色启动。标定会前后移动底盘并小幅移动X，Base、Z和夹爪保持当前状态；失败或停止保留上一次有效模型。','form-note'));
+  panel.append(controlForm('grab-calib-ref',{executeLabel:'确认当前观察姿态'}),controlForm('grab-calib',{executeLabel:'开始视觉响应标定'}));
+  actions(panel,[['grab-calib-status','读取标定状态'],['grab-stop','停止标定']]);
+  const status=node('p','尚未读取视觉标定状态。','form-note');status.id='grab-calibration-status';panel.append(status);body.append(panel);
+  renderGrabCalibrationStatus();
+}
 function buildVisionWorkspace(body){
   stackingPanel?.dispose();
   body.classList.add('vision-workspace');
@@ -324,7 +344,7 @@ function renderGrabStatus(){
   const r=grabRouteSnapshot?.data;
   const s=grabSnapshot?.data,age=grabSnapshot?Math.max(0,Math.floor((Date.now()-grabSnapshot.time)/1000)):null;
   const current=grabSnapshot?.live&&age<=5;
-  const heading=node('h3',s?`${current?'最近快照':'历史快照'} · ${({route_pose:'机构姿态切换',idle:'空闲',prepare:'观察准备',acquire:'获取目标',align:'协同对准',vision_grace:'短暂漏检 · 减速等待',vision_pause:'视觉暂停 · 不会下降夹取',settle:'水平停稳',descend:'Z 下降',close:'夹爪闭合',lift:'带物料提起',turn:'Base 转向放置处',place:'下降至放置高度',release:'松爪放置',retract:'放置后提起',homing:'上电自动回零',hold:s.operation==='ring_place'&&s.result==='released'?'放置完成 · 已松爪提起':s.operation==='ring_align'?(s.reason==='ring_aligned_low'?'色环对准完成 · 保持低位观察':'色环对准完成 · 等待装料'):s.mode==='align'?'对准完成 · 未抓取':'等待人工验收',stopping:'正在停止',error:'故障停止',route:'路线运行',scan:'模拟扫码',done:'单件完成 · 可开始下一件',car_index:'转盘分度',car_x:'X 到车载取放口',car_descend:'车载下降',car_lift:'退出仓位',outside_turn:'返回外侧',return_observe:'恢复观察姿态'})[s.state]||s.state}`:'尚无抓取状态');
+  const heading=node('h3',s?`${current?'最近快照':'历史快照'} · ${({route_pose:'机构姿态切换',idle:'空闲',prepare:'观察准备',acquire:'获取目标',align:'协同对准',vision_grace:'短暂漏检 · 减速等待',vision_pause:'视觉暂停 · 不会下降夹取',settle:'水平停稳',descend:'Z 下降',close:'夹爪闭合',lift:'带物料提起',turn:'Base 转向放置处',place:'下降至放置高度',release:'松爪放置',retract:'放置后提起',homing:'上电自动回零',hold:s.operation==='ring_place'&&s.result==='released'?'放置完成 · 已松爪提起':s.operation==='ring_align'?(s.reason==='ring_aligned_low'?'色环对准完成 · 保持低位观察':'色环对准完成 · 等待装料'):s.mode==='align'?'对准完成 · 未抓取':'等待人工验收',stopping:'正在停止',error:'故障停止',route:'路线运行',scan:'模拟扫码',calibration:'视觉响应标定',complete:s.operation==='calibration'?'标定完成 · 已更新视觉响应':'单件完成 · 可开始下一件',done:s.operation==='calibration'?'标定完成 · 已更新视觉响应':'单件完成 · 可开始下一件',car_index:'转盘分度',car_x:'X 到车载取放口',car_descend:'车载下降',car_lift:'退出仓位',outside_turn:'返回外侧',return_observe:'恢复观察姿态'})[s.state]||s.state}`:'尚无抓取状态');
   const freshness=node('p',s?`收到于 ${new Date(grabSnapshot.time).toLocaleTimeString('zh-CN',{hour12:false})} · ${age} 秒前`:'点击上方“读取任务状态”查看设备反馈。','form-note');
   const list=node('dl',undefined,'grab-readout');
   const value=(key,unit='')=>s?.[key]===null||s?.[key]===undefined?'—':`${s[key]}${unit}`;
@@ -384,7 +404,7 @@ const recovery=node('details',undefined,'advanced');recovery.append(node('summar
 recovery.append(node('p','用于驱动器已实际复位后的总线恢复，不会复位硬件。先停止四轮采集并等待在途事务结束，再确认恢复。底部“解除停止锁定”仅解除网页软件停车锁，两者不同。','form-note'));
 actions(recovery,[['feedback-off','停止四轮采集'],['reset-confirmed','确认驱动已复位']]);ch.append(recovery);
 buildVisionWorkspace(pages.vision);
-const sys=pages.system;const bootNote=node('p',bootStage||'启动状态：尚未收到本次启动报告','form-note');bootNote.id='boot-status';sys.append(bootNote);actions(sys,[['bus-recover','一键恢复电机总线'],['bus-status','查看恢复结果']]);sys.append(node('p','误操作或通信错误后使用：停止任务、检查全部电机，成功后由你重新启动。不会重启主控、自动归零或续跑；恢复结果见终端。','form-note'));actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','上电先完成 Z/X/Base 回零，再静止验证 5 秒；失败后可手动重新验证。原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','重新验证 5 秒'],['imu-cal-cancel','取消标定/验证']]);sys.append(node('p','Z 轴角度清零：把当前朝向设为 0°，不消除漂移、不标定零偏。保持静止操作；跑图前重新验证 IMU 并设置地图起点。','form-note'));
+const sys=pages.system;buildGrabCalibrationPanel(sys);const bootNote=node('p',bootStage||'启动状态：尚未收到本次启动报告','form-note');bootNote.id='boot-status';sys.append(bootNote);actions(sys,[['bus-recover','一键恢复电机总线'],['bus-status','查看恢复结果']]);sys.append(node('p','误操作或通信错误后使用：停止任务、检查全部电机，成功后由你重新启动。不会重启主控、自动归零或续跑；恢复结果见终端。','form-note'));actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','上电先完成 Z/X/Base 回零，再静止验证 5 秒；失败后可手动重新验证。原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','重新验证 5 秒'],['imu-cal-cancel','取消标定/验证']]);sys.append(node('p','Z 轴角度清零：把当前朝向设为 0°，不消除漂移、不标定零偏。保持静止操作；跑图前重新验证 IMU 并设置地图起点。','form-note'));
 actions(sys,[['imu-zero','Z 轴角度清零']]);
 advanced(sys,'IMU 连续角度输出',['imu-stream-on','imu-stream-off']);
 const routeSpeed=prefs.routeSpeed;

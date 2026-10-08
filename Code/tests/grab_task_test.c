@@ -61,16 +61,18 @@ bool Turntable_IsBusy(void) { return tray_moving; }
 void Turntable_Stop(void) { tray_stops++; tray_moving=false; tray_status.moving=false; tray_status.reason="stopped"; }
 void Turntable_StatusGet(Turntable_Status_t *out) { *out=tray_status; out->moving=tray_moving; }
 uint32_t HAL_GetTick(void) { return clock_ms; }
-#ifndef GRAB_REAL_MATERIAL_SERVICE
-uint8_t MaterialVision_IsBusy(void) { return 0; }
-MaterialVision_ResultTypeDef MaterialVision_CalibrationBegin(Camera_ColorTypeDef color)
-{ (void)color;return MATERIAL_VISION_RESULT_OK; }
-void MaterialVision_CalibrationProcess(void) {}
-uint8_t MaterialVision_CalibrationEvent(const MechanicalArm_EventTypeDef *event)
+#ifndef GRAB_REAL_CALIBRATION_SERVICE
+void GrabCalibration_Init(void) {}
+GrabCalibration_ResultTypeDef GrabCalibration_Start(Camera_ColorTypeDef color)
+{ (void)color;return GRAB_CAL_RESULT_OK; }
+void GrabCalibration_Process(void) {}
+uint8_t GrabCalibration_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
 { (void)event;return 0; }
-void MaterialVision_CalibrationCancel(void) {}
-MaterialVision_StateTypeDef MaterialVision_StateGet(void) { return MATERIAL_VISION_STATE_COLLECT; }
-const char *MaterialVision_ErrorNameGet(void) { return "none"; }
+void GrabCalibration_Cancel(void) {}
+GrabCalibration_StateTypeDef GrabCalibration_StateGet(void) { return GRAB_CAL_STATE_COLLECT; }
+const char *GrabCalibration_StateNameGet(void) { return "collect"; }
+const char *GrabCalibration_ErrorNameGet(void) { return "none"; }
+uint8_t GrabCalibration_DataGet(GrabCalibration_CalibrationDataTypeDef *data) { (void)data;return 0; }
 #endif
 static bool chassis_pose_route, chassis_pose_motion;
 bool ChassisRoute_IsBusy(void) { return chassis_pose_route; }
@@ -122,7 +124,7 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef a
     return queue(MECHANICAL_ARM_ACTION_POSITION,axis);
   }
   assert(mode == MECHANICAL_ARM_POSITION_ABSOLUTE ||
-    (axis==MECHANICAL_ARM_AXIS_X && mode==MECHANICAL_ARM_POSITION_RELATIVE_CURRENT && GrabTask_MaterialCalibrating()));
+    (axis==MECHANICAL_ARM_AXIS_X && mode==MECHANICAL_ARM_POSITION_RELATIVE_CURRENT && (CalibrationTask && Status.state==GRAB_CALIBRATION)));
   if (pending_valid) return MECHANICAL_ARM_RESULT_BUSY;
   if(axis==MECHANICAL_ARM_AXIS_Z) { z_position_rpm=rpm; z_position_acc=acc; z_position_pulses=pulses; }
   unsigned idx=axis==MECHANICAL_ARM_AXIS_X?0:1;
@@ -1192,40 +1194,38 @@ static void black_ring_manual_place(void)
   assert(fabsf(physical[1]-Config[C_Z_MAX])<.11f && tray_inventory[0].state==TURNTABLE_EMPTY);
   GrabTask_Stop(); run_to(GRAB_IDLE,150,1);
 }
-static void material_search_uses_shared_alignment(void)
+static void calibration_commands_and_atomic_response(void)
 {
-  reset(); configure(true); setting("travel_mm","0");
-  assert(!GrabTask_MaterialReferenceValid());
-  assert(!GrabTask_MaterialStart(2,false));
-  assert(GrabTask_MaterialReferenceSet());
-  assert(GrabTask_MaterialStart(2,false));
-  assert(GrabTask_MaterialActive() && GrabTask_IsBusy());
-  run_to(GRAB_MATERIAL_SEARCH,200,0);
+  reset();configure(true);setting("travel_mm","0");
+  char *start[]={"grab","calib","2"}, *ref[]={"grab","calib","ref"}, *query[]={"grab","calib","status"};
+  assert(GrabTask_Command(3,start) && strstr(output,"ref_required"));
+  assert(!GrabTask_IsBusy() && !positions && !velocity_requests);
+  float saved=Config[C_J00];
+  assert(GrabTask_Command(3,ref) && strstr(output,"confirmed"));
+  assert(GrabTask_CalibrationReferenceValid() && Config[C_J00]==saved);
+  assert(GrabTask_Command(3,start) && GrabTask_IsBusy());
+  unsigned before=positions, cameras=camera_requests;
+  assert(GrabTask_Command(3,query) && strstr(output,"OK grab calib phase=prepare"));
+  assert(positions==before && camera_requests==cameras);
+  uint32_t started=StartTick;
+  assert(GrabTask_Command(3,start) && StartTick==started && Status.state==GRAB_PREPARE);
+  assert(!GrabTask_CalibrationStart(2));
+  run_to(GRAB_CALIBRATION,200,0);
   assert(!positions && !base_moves && !openings && !closures);
-  unsigned before=velocity_requests;
-  step(true,0,40,30); unsigned locked=MaterialLockCount;
-  for(unsigned i=0;i<4;i++) step(false,0,40,30);
-  assert(MaterialLockCount==locked); /* Old coordinates cannot add confirmations. */
-  assert(velocity_requests>before);
-  step(true,0,40,30); step(true,0,40,30);
-  assert(!strcmp(status().reason,"search_target_stop"));
-  run_to(GRAB_ALIGN,200,0);
-  run_to(GRAB_COMPLETE,500,0);
-  assert(!GrabTask_IsBusy() && !strcmp(status().result,"aligned"));
-  assert(!base_moves && !openings && !closures);
-  assert(GrabTask_MaterialReferenceValid());
+  assert(GrabTask_Command(3,query) && strstr(output,"phase=collect"));
+  GrabTask_Stop();run_to(GRAB_IDLE,200,0);
+  assert(GrabTask_CalibrationReferenceValid());
   float lateral=Config[C_J11];
   assert(GrabTask_VisualResponseSet(3,1,2,4));
   assert(Config[C_J00]==3 && Config[C_J10]==1 && Config[C_J11]==lateral);
   assert(fabsf(Config[C_J02]-2*Config[C_X_PPM]*360/3200)<.001f);
-  float saved=Config[C_J00];
-  assert(!GrabTask_VisualResponseSet(NAN,0,0,0) && Config[C_J00]==saved);
+  saved=Config[C_J00];assert(!GrabTask_VisualResponseSet(NAN,0,0,0) && Config[C_J00]==saved);
   GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_BASE);
-  assert(GrabTask_MaterialReferenceValid()); /* Deferred manual-Base P001 policy is unchanged. */
+  assert(GrabTask_CalibrationReferenceValid()); /* P001 is deliberately unchanged. */
 }
 int main(void)
 {
-  material_search_uses_shared_alignment();
+  calibration_commands_and_atomic_response();
   reset();
   for(unsigned key=0;key<C_COUNT;key++) {
     const GrabParameter_t *p=&Parameters[key];

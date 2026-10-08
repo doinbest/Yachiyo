@@ -2,7 +2,8 @@
 
 #include "oled.h"
 #include "Camera.h"
-#include "MaterialVision.h"
+#include "GrabTask.h"
+#include "grab_calibration.h"
 #include "hwt101_i2c.h"
 #include "tjc_screen.h"
 #include "Arm.h"
@@ -40,9 +41,8 @@ static uint8_t OledUi_DirtyRows;
 static uint8_t OledUi_Ready;
 static uint8_t OledUi_RetryPending;
 static uint8_t OledUi_Rebuild;
-static uint8_t OledUi_LastMaterialBusy;
-static uint8_t OledUi_TaskError; /* 是否保留MaterialVision任务错误。 */
-static MaterialVision_ErrorTypeDef OledUi_LastMaterialError;
+static uint8_t OledUi_LastTaskBusy, OledUi_LastFault;
+static uint8_t OledUi_TaskError; /* 是否保留统一任务错误。 */
 static uint32_t OledUi_LastRefreshTick;
 static uint32_t OledUi_LastFailureTick;
 static uint16_t OledUi_ServoPulseUs;
@@ -61,56 +61,36 @@ static void OledUi_CountText(char Text[6], uint32_t Count)
   else (void)snprintf(Text, 6U, "%lu", (unsigned long)Count);
 }
 
-static const char *OledUi_MaterialErrorName(MaterialVision_ErrorTypeDef Error)
-{
-  static const char *Names[] =
-  {
-    "None", "Busy", "Not ready", "Camera wait", "Camera stale", "Camera tx",
-    "Motor ack", "Motor arrival", "Motor fault", "Search timeout",
-    "Calibration", "Zero correction", "X limit", "Task timeout", "Internal",
-    "Chassis tx", "Motor busy", "Motor param", "Motor tx", "Chassis limit",
-    "Camera busy", "Usb off"
-  };
-  return ((unsigned)Error < sizeof(Names) / sizeof(Names[0])) ? Names[Error] : "Internal";
-}
-
-/** 每圈观察任务变化，避免200ms显示周期漏掉一次启动或停止；翻页不清错误。 */
+/** Every loop observes task errors; page changes retain the first fault. */
 static void OledUi_ErrorUpdate(void)
 {
-  uint8_t Busy = MaterialVision_IsBusy();
-  MaterialVision_ErrorTypeDef Error = MaterialVision_ErrorGet();
-  uint8_t NewTask = Busy && !OledUi_LastMaterialBusy;
-  uint8_t Stopped = !Busy && OledUi_LastMaterialBusy && Error == MATERIAL_VISION_ERROR_NONE;
-  uint8_t ErrorCleared = OledUi_TaskError && OledUi_LastMaterialError != MATERIAL_VISION_ERROR_NONE &&
-                        Error == MATERIAL_VISION_ERROR_NONE && MaterialVision_StateGet() == MATERIAL_VISION_STATE_IDLE;
-  if (NewTask || (Stopped && !OledUi_TaskError) || ErrorCleared)
+  GrabTask_Status_t task;
+  GrabTask_StatusGet(&task);
+  uint8_t busy=GrabTask_IsBusy();
+  uint8_t fault=task.state==GRAB_ERROR || (task.result && !strcmp(task.result,"failed"));
+  if((busy && !OledUi_LastTaskBusy) || (!fault && task.state==GRAB_IDLE))
+  { OledUi_TaskError=0U; (void)strcpy(OledUi_Error,"None"); }
+  if(fault && !OledUi_LastFault && !OledUi_TaskError)
   {
-    OledUi_TaskError = 0U;
-    (void)strcpy(OledUi_Error, "None");
+    const char *reason=task.reason?task.reason:"Internal";
+    if(!strcmp(reason,"motor_arrival_timeout"))reason="Motor arrival";
+    else if(!strcmp(reason,"motor_ack_timeout"))reason="Motor ack";
+    else if(!strcmp(reason,"camera_tx"))reason="Camera tx";
+    (void)snprintf(OledUi_Error,sizeof OledUi_Error,"%.16s",reason);
+    OledUi_TaskError=1U;
   }
-  if (!OledUi_TaskError && Error != OledUi_LastMaterialError && Error != MATERIAL_VISION_ERROR_NONE)
-  {
-    (void)strcpy(OledUi_Error, OledUi_MaterialErrorName(Error));
-    OledUi_TaskError = 1U;
-  }
-  OledUi_LastMaterialBusy = Busy;
-  OledUi_LastMaterialError = Error;
+  OledUi_LastTaskBusy=busy;OledUi_LastFault=fault;
 }
 
 static const char *OledUi_TaskName(void)
 {
-  if (MaterialVision_IsBusy())
-  {
-    if (MaterialVision_IsCalibrating()) return "Calibrating";
-    switch (MaterialVision_StateGet())
-    {
-      case MATERIAL_VISION_STATE_SEARCH: return "Material Search";
-      default: return "Material Align";
-    }
-  }
-  if (OledUi_TaskError) return "Error";
-  if (MaterialVision_StateGet() == MATERIAL_VISION_STATE_ALIGNED) return "Aligned";
-  return "Idle";
+  GrabTask_Status_t task;
+  GrabTask_StatusGet(&task);
+  if(OledUi_TaskError)return "Error";
+  if(GrabTask_IsBusy() && task.operation && !strcmp(task.operation,"calibration"))return "Calibrating";
+  if(task.state==GRAB_HOLD)return "Aligned";
+  if(task.state==GRAB_COMPLETE)return "Complete";
+  return task.state_name?task.state_name:"Idle";
 }
 
 static void OledUi_OverviewBuild(const Camera_SnapshotTypeDef *Camera, const char *Vision)
@@ -139,7 +119,7 @@ static void OledUi_OverviewBuild(const Camera_SnapshotTypeDef *Camera, const cha
 static void OledUi_VisionBuild(const Camera_SnapshotTypeDef *Camera, Camera_VisualStateTypeDef State,
                                 const char *Vision, const char *Age)
 {
-  uint8_t Calibrated = MaterialVision_IsCalibrated();
+  uint8_t Calibrated = GrabCalibration_IsCalibrated();
 
   (void)strcpy(OledUi_Lines[0], "2/4 Vision Test");
   if (Camera->RequestActive)
@@ -159,8 +139,8 @@ static void OledUi_VisionBuild(const Camera_SnapshotTypeDef *Camera, Camera_Visu
     (void)strcpy(OledUi_Lines[3], "Dx:---- Dy:----");
   }
   (void)snprintf(OledUi_Lines[4], sizeof(OledUi_Lines[4]), "Age:%sms Vis:%s", Age, Vision);
-  (void)snprintf(OledUi_Lines[5], sizeof(OledUi_Lines[5]), "Ref:%s Cal:%s",
-                 MaterialVision_IsReferenceValid() ? "Ok" : "No", Calibrated ? "Ok" : "No");
+  (void)snprintf(OledUi_Lines[5], sizeof(OledUi_Lines[5]), "Ref:%s LastCal:%s",
+                 GrabTask_CalibrationReferenceValid() ? "Ok" : "No", Calibrated ? "Ok" : "No");
   (void)strcpy(OledUi_Lines[7], "4:Prev 5:Next");
 }
 
@@ -231,8 +211,7 @@ void OledUi_Init(I2C_HandleTypeDef *I2c)
   OledUi_ServoPulseUs = OLED_UI_SERVO_OPEN_US;
   OledUi_ServoActive = 0U;
   OledUi_CodeReady = OledUi_SelectedIndex = 0U;
-  OledUi_LastMaterialBusy = OledUi_TaskError = 0U;
-  OledUi_LastMaterialError = MATERIAL_VISION_ERROR_NONE;
+  OledUi_LastTaskBusy = OledUi_LastFault = OledUi_TaskError = 0U;
   (void)strcpy(OledUi_Error, "None");
   (void)memset(OledUi_Sent, 0, sizeof(OledUi_Sent));
   OledUi_DirtyRows = 0xFFU;

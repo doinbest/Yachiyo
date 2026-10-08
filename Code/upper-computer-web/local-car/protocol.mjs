@@ -104,14 +104,12 @@ export const commands = [
   command('chassis-stop','chassis','底盘停止','chassis stop',[],'固件可能返回 busy；以实际回复和小车状态为准。'),
   command('wheel','chassis','单轮测试','wheel {wheel} {rpm}',[choice('wheel','选择车轮',[['fl','左前 · fl'],['rl','左后 · rl'],['rr','右后 · rr'],['fr','右前 · fr']]),number('rpm','转速 / RPM',10,-100,100)],'正负值表示方向；停止请使用「车轮停止」。'),
   command('wheel-stop','chassis','车轮停止','wheel stop'),
+  command('grab-calib-ref','system','确认标定观察姿态','grab calib ref',[],'只确认当前观察姿态，不运动、不回零。'),
+  command('grab-calib','system','前后与X视觉响应标定','grab calib {target}',[target()],'会前后移动底盘并小幅移动X；Base、Z和夹爪保持当前状态。成功写入共用视觉模型。'),
+  command('grab-calib-status','system','读取视觉标定状态','grab calib status'),
   command('camera-material','vision','相机识别物料','camera material {target}',[target()]),
   command('camera-stop','vision','停止相机请求','camera stop'),
   command('camera-status','vision','相机与 USB 状态','camera status',[],'读取香橙派最新坐标及USB状态；使用B2颜色识别。'),
-  command('material-auto','vision','物料搜索与对准','material auto {target}',[target()],'已包含相机识别与对准；ALIGNED 仅表示对准完成，不表示完整搬运完成。'),
-  command('material-status','vision','物料任务状态','material status'),
-  command('material-stop','vision','停止物料任务','material stop'),
-  command('material-ref','vision','确认旧物料搜索观察姿态','material ref'),
-  command('material-calib','vision','底盘物料标定','material calib {target}',[target()]),
   command('system-reset','system','重启 STM32','system reset',[],'仅空闲时重启主控；会重新执行初始化，不能代替停车或电机驱动器复位。'),
   command('imu-zero','system','Z 轴角度清零','imu zero',[],'保持静止；只将当前模块角度设为零，不做零偏标定。之后重新验证 IMU 并设置地图起点。'),
   command('info','system','设备信息','info'),
@@ -149,7 +147,7 @@ export const commands = [
 
 // Keep stable command groups/IDs; owner is the six-page UI module.
 const debugIds = new Set(['position','grip-idle','grip-duty','move','velocity','wheel','wheel-stop','chassis-hold','chassis-status','feedback-read','feedback-select','feedback-on','feedback-off','camera-material','camera-status','camera-stop','imu-stream-on','imu-stream-off']);
-const calibrationIds = new Set(['home','origin','zero','config-get','config-set','material-ref','material-calib','units','reset-confirmed','chassis-origin','imu-cal-start','imu-verify','imu-cal-cancel']);
+const calibrationIds = new Set(['home','origin','zero','config-get','config-set','grab-calib-ref','grab-calib','grab-calib-status','units','reset-confirmed','chassis-origin','imu-cal-start','imu-verify','imu-cal-cancel']);
 for (const definition of commands) {
   definition.owner = definition.group === 'grip' ? 'arm' : definition.group;
   definition.section = calibrationIds.has(definition.id)||definition.id.startsWith('grab-set-') ? 'calibration' : debugIds.has(definition.id) ? 'debug' : 'common';
@@ -241,7 +239,6 @@ export function describeReply(line) {
   if (/^OK grab\b.*\bstate=hold\b/.test(line) && /\boperation=ring_place\b/.test(line) && /\bresult=released\b/.test(line)) return '色环放置完成 · 已松爪提起';
   if (/^OK grab\b.*\bstate=hold\b/.test(line) && /\breason=ring_aligned_low\b/.test(line)) return '色环对准完成 · 保持低位观察';
   if (/^OK grab\b.*\bstate=hold\b/.test(line)) return /\bmode=align\b/.test(line) ? '对准动作完成 · 未执行抓取' : '取放动作完成 · 等待人工验收';
-  if (/^OK (?:material|vision)\b.*\bstate=ALIGNED\b/.test(line)) return '对准完成';
   if (/\baccepted\b/.test(line)) return '请求已接受 · 尚未确认到位';
   if (/^OK state \S+ .*\breached=1\b/.test(line)) return '所查询轴报告已到位';
   if (/^OK state \S+ .*\breached=0\b/.test(line)) return '所查询轴报告未到位';
@@ -268,6 +265,31 @@ export function parseGrabStatus(line) {
     if (Object.hasOwn({recovery_used:4294967295,recovery_count:3,recovery_left_ms:120000,grace_count:3},key) && (!Number.isInteger(result[key]) || result[key]<0 || result[key]>{recovery_used:4294967295,recovery_count:3,recovery_left_ms:120000,grace_count:3}[key])) return null;
     if (['rx_seq','loss_ms','loss_max_ms'].includes(key) && (!Number.isInteger(result[key]) || result[key]<0 || result[key]>0xffffffff)) return null;
     if (['age','elapsed'].includes(key) && result[key]<0) return null;
+  }
+  return result;
+}
+
+/** Read-only sampler diagnostics have their own shape and never become task feedback. */
+export function parseGrabCalibrationStatus(line) {
+  if(typeof line!=='string')return null;
+  line=line.trim().replace(/^(?:arm>\s*)+/,'');
+  if(!/^OK grab calib phase=/.test(line))return null;
+  const result={};
+  for(const token of line.split(/\s+/).slice(3)) {
+    const match=token.match(/^([a-z_]+)=([^\s=]+)$/);
+    if(!match||Object.hasOwn(result,match[1]))return null;
+    result[match[1]]=match[2];
+  }
+  if(!/^[a-z_]+$/.test(result.phase??'')||!result.reason)return null;
+  for(const key of ['ref','calibrated']) {
+    if(!/^[01]$/.test(result[key]??''))return null;
+    result[key]=Number(result[key]);
+  }
+  for(const key of ['fdx','fdy','xdx','xdy']) {
+    const raw=result[key];
+    if(/^(?:na|nan)$/i.test(raw??'')){result[key]=null;continue;}
+    if(!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(raw??'')||!Number.isFinite(Number(raw)))return null;
+    result[key]=Number(raw);
   }
   return result;
 }

@@ -10,22 +10,22 @@ assert match, 'Optional display scheduling must have a single tested gate'
 assert 'if (OptionalDisplayReady()) OledUi_Process();' in source
 names = ['HWT101_Cal_IsBusy', 'ChassisMotion_IsBusy', 'ChassisRoute_IsBusy',
          'GrabTask_IsBusy', 'GrabRoute_IsBusy', 'MechanicalArm_IsBusy',
-         'MaterialVision_IsBusy', 'Mecanum_IsBusy',
+         'Mecanum_IsBusy',
          'ChassisMotion_StopPending', 'ArmConsole_OperationBusy']
 fixture = '''#include <assert.h>
 #include <stdbool.h>
 static unsigned blocked;
 typedef struct { bool active; } MotorBus_Diagnostic_t;
 typedef struct { bool active; } MotorBus_Recovery_t;
-void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *s){s->active=blocked&(1U<<10);}
-void MotorBus_RecoveryGet(MotorBus_Recovery_t *s){s->active=blocked&(1U<<11);}
-bool RadarConsole_ScanBusy(void){return blocked&(1U<<12);}
-bool Turntable_IsBusy(void){return blocked&(1U<<13);}
+void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *s){s->active=blocked&(1U<<9);}
+void MotorBus_RecoveryGet(MotorBus_Recovery_t *s){s->active=blocked&(1U<<10);}
+bool RadarConsole_ScanBusy(void){return blocked&(1U<<11);}
+bool Turntable_IsBusy(void){return blocked&(1U<<12);}
 '''
 fixture += ''.join(f'bool {name}(void){{return blocked&(1U<<{i});}}\n' for i,name in enumerate(names))
 fixture += match.group() + '''
 int main(void){assert(OptionalDisplayReady());
-for(unsigned i=0;i<14;i++){blocked=1U<<i;assert(!OptionalDisplayReady());}
+for(unsigned i=0;i<13;i++){blocked=1U<<i;assert(!OptionalDisplayReady());}
 blocked=0;assert(OptionalDisplayReady());return 0;}
 '''
 out = root.parent/'.embeddedskills/tests'

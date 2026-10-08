@@ -19,9 +19,9 @@ Keil打开 `MDK-ARM/template.uvprojx`，Target `template`。CubeMX文件为 `tem
 | 正式任务 | [contest_mission.c](App/contest_mission.c) |
 | 底盘运动/路线 | [chassis_motion.c](App/chassis_motion.c)、[chassis_route_profile.c](App/chassis_route_profile.c) |
 | 雷达地图/规划 | [radar_map.c](App/radar_map.c)、[radar_start.c](App/radar_start.c)；规划入口从控制台调用链定位 |
-| 物料搜索/静态对准所有者 | [GrabTask.c](App/GrabTask.c)；响应采样 [MaterialVision.c](App/MaterialVision.c) |
+| 静态对准/响应标定所有者 | [GrabTask.c](App/GrabTask.c)；响应采样 [grab_calibration.c](App/grab_calibration.c) |
 | 车载ID8转盘 | [turntable.c](App/turntable.c) |
 | UART5共享事务 | [motor_bus.c](Hardware/motor_bus.c)、[Emm_V5.c](Hardware/Emm_V5.c) |
 | 屏幕业务 | [contest_screen.c](App/contest_screen.c)、[OLED](App/oled_ui.c) |
 
-`ArmVision`和旧 `vision` 命令已退役；静态对准用 `grab align color|ring`。`material auto/ref/calib/status/stop` 保留兼容，搜索及标定由 GrabTask 拥有，MaterialVision 只提供响应采样和兼容状态。搜索保持人工确认的观察姿态，对准共用静态控制器；标定写入静态/动态共用 J。持续速度、定时保航向、MoveTo/转向由 chassis_motion 推进，mecanum_chassis 负责总线执行。源码默认值、设备RAM读回与浏览器预填分别判断；机械参数与抓取参数定义不能从旧开发记录推断。
+`ArmVision`和旧 `vision` 命令已退役；静态对准用 `grab align color|ring`。`MaterialVision`、后退搜索和全部 `material` 命令已退役，旧命令只返回提示。响应标定使用 `grab calib ref` / `grab calib <1..6>` / `grab calib status`，由 GrabTask 调度；`grab stop` 取消并保留旧模型。标定保持当前 Base/Z/夹爪姿态，成功写入静态/动态共用 J 的前后与 X 两列，侧向列保留。持续速度、定时保航向、MoveTo/转向由 chassis_motion 推进，mecanum_chassis 负责总线执行。源码默认值、设备RAM读回与浏览器预填分别判断；机械参数与抓取参数定义不能从旧开发记录推断。

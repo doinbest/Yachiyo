@@ -60,6 +60,30 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_grab_calibration_query_and_cancel_keep_stop_semantics(self):
+        port = self.connect()
+        self.assertEqual(port.writes, [])
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        self.bridge.send('grab calib status')
+        wait_for(lambda: len(port.writes) == 1)
+        self.assertEqual(port.writes[0][1], b'grab calib status\r\n')
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('grab calib ref', 'grab calib 3', 'grab calib status extra',
+                        'material status', 'material calib 3'):
+            self.assertIsNone(READ_COMMAND.fullmatch(command), command)
+            with self.assertRaises(ValueError):
+                self.bridge.send(command)
+        with self.bridge.cv:
+            self.bridge.stop_latched = False
+            self.bridge.next_command_at = time.monotonic() + .2
+            self.bridge.send('grab calib 3')
+            self.bridge.send('grab stop')
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertEqual(port.writes[1][1], b'grab stop\r\n')
+        self.assertFalse(self.bridge.stop_latched)
+        self.assertFalse(any(data == b'grab calib 3\r\n' for _, data in port.writes))
+
     def test_grab_route_and_mission_status_are_readable_while_stopped(self):
         port = self.connect()
         with self.bridge.cv:

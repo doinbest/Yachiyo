@@ -30,7 +30,7 @@ test('single grasp actions have explicit distinct wires and retain pure route co
   assert.equal(protocol.buildCommand('grab-route',{speed:300}),'grab route 300');
   for(const speed of ['',0,5001,'NaN']) assert.throws(()=>protocol.buildCommand('grab-route',{speed}));
   assert.equal(protocol.buildCommand('chassis-route-auto',{speed:300}),'chassis route auto 300');
-  assert.equal(protocol.buildCommand('material-auto',{target:1}),'material auto 1');
+  assert.equal(protocol.buildCommand('grab-calib',{target:1}),'grab calib 1');
 });
 
 test('grab inputs distinguish startup defaults from unknown calibration and fit the firmware frame',()=>{

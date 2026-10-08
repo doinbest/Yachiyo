@@ -1,6 +1,6 @@
 #include "GrabTask.h"
 #include "Arm.h"
-#include "MaterialVision.h"
+#include "grab_calibration.h"
 #include "Camera.h"
 #include "chassis_route.h"
 #include "chassis_motion.h"
@@ -51,7 +51,7 @@ enum { DEFAULT_INIT=1, DEFAULT_X_HOME=2, DEFAULT_Z_HOME=4, DEFAULT_VISUAL=8 };
 static const char *const States[] = {"idle","prepare","acquire","align","settle",
   "descend","close","lift","turn","place","release","retract","hold","stopping","error","homing","vision_pause","vision_grace",
   "x_retract","index","car_extend","return_turn","external_extend","observe_z","observe_x","complete",
-  "track_observe","track_match","track_follow","track_pause","route_pose","manual_z","material_search","calibration"};
+  "track_observe","track_match","track_follow","track_pause","route_pose","manual_z","calibration"};
 typedef struct
 {
   float mm, speed, target, signed_speed;
@@ -196,8 +196,7 @@ static float clamp(float value, float low, float high)
 static bool fixed_mode(void) { return strcmp(Status.mode, "fixed") == 0; }
 static bool RingTest, RingPlaceActive;
 static bool StaticAlignTest;
-static bool MaterialTask, MaterialCalibration, MaterialReferenceConfirmed;
-static unsigned MaterialLockCount;
+static bool CalibrationTask, CalibrationReferenceConfirmed;
 /* Fixed image displacement for manual stacking only. Camera/ref_u/ref_v stay unchanged.
  * User's measured red point minus green reference: CX +39, CY +1 (DY -1). */
 #define GRAB_STACK_COMP_DX 39
@@ -364,7 +363,7 @@ void GrabTask_Init(void)
   Status.reference_cause="boot_pending";
   RingTest=RingPlaceActive=RingLowerSent=RingRaise=RingApproachStarted=false;
   StaticAlignTest=false;
-  MaterialTask=MaterialCalibration=MaterialReferenceConfirmed=false;MaterialLockCount=0;
+  CalibrationTask=CalibrationReferenceConfirmed=false;GrabCalibration_Init();
   StackTest=StackCompensating=false;
   RingStayLow=false;
   RingApproachSequence=RingLowerTick=0;
@@ -424,7 +423,7 @@ static void stop_begin(void)
 static void fault(const char *reason)
 {
   if(Status.state==GRAB_STOPPING || Status.state==GRAB_ERROR) return;
-  if(MaterialCalibration) MaterialVision_CalibrationCancel();
+  if(CalibrationTask) GrabCalibration_Cancel();
   loss_finish(HAL_GetTick());
   RecoveryWaiting=RecoveryRestartPending=false; RecoveryCount=0;
   invalidate_inventory(); Status.result="failed";
@@ -434,7 +433,7 @@ static void fault(const char *reason)
 void GrabTask_Stop(void)
 {
   if(BootActive) { boot_stop("home_cancelled",false); return; }
-  if(MaterialCalibration) MaterialVision_CalibrationCancel();
+  if(CalibrationTask) GrabCalibration_Cancel();
   if(Status.state==GRAB_IDLE || Status.state==GRAB_COMPLETE) return;
   loss_finish(HAL_GetTick());
   RecoveryWaiting=RecoveryRestartPending=false; RecoveryCount=0;
@@ -481,7 +480,7 @@ static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOpera
 {
   HWT101_Angle_t angle; Mecanum_Status_t bus; const char *missing;
   if(GrabTask_IsBusy()) return false;
-  MaterialTask=MaterialCalibration=false;MaterialLockCount=0;
+  CalibrationTask=false;
   Mecanum_TrackingTiming(false,0); TrackMoving=false;
   /* A rejected request must still identify the requested mode in its diagnostic. */
   if(!valid_mode(mode)) { Status.reason="invalid_mode"; Status.missing="mode"; return false; }
@@ -514,7 +513,7 @@ static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOpera
     { Status.reason=op==OP_STORE?"slot_occupied":"slot_empty"; Status.missing="slot_inventory"; return false; }
     if(op==OP_TAKE) ActiveColor=(Camera_ColorTypeDef)inventory.color;
   }
-  if(MaterialVision_IsBusy() || ChassisRoute_IsBusy() ||
+  if(ChassisRoute_IsBusy() ||
      ChassisMotion_IsBusy() || MechanicalArm_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy())
   { Status.reason="busy"; return false; }
   Mecanum_StatusGet(&bus);
@@ -556,22 +555,21 @@ bool GrabTask_AlignStart(uint8_t target,float z,bool stay)
   Status.operation=ring?"ring_align":"color_align";Status.scene=ring?"rough":"none";
   return true;
 }
-bool GrabTask_MaterialReferenceValid(void)
-{ return MaterialReferenceConfirmed; }
-bool GrabTask_MaterialReferenceSet(void)
+bool GrabTask_CalibrationReferenceValid(void)
+{ return CalibrationReferenceConfirmed; }
+bool GrabTask_CalibrationActive(void)
+{ return CalibrationTask && GrabTask_IsBusy(); }
+bool GrabTask_CalibrationReferenceSet(void)
 {
   if(GrabTask_IsBusy() || MechanicalArm_IsBusy() || ChassisRoute_IsBusy() ||
      ChassisMotion_IsBusy() || Mecanum_IsBusy() || Turntable_IsBusy()) return false;
-  MaterialReferenceConfirmed=true;
+  CalibrationReferenceConfirmed=true;
   /* Manual confirmation restores only a missing observation model, never an
    * existing measured/custom model. Mechanical scales/bounds remain untouched. */
   if(!isfinite(Config[C_REF_U]) || !isfinite(Config[C_J00])) visual_defaults_restore();
   Status.reference_cause="observation_pose_confirmed";
   return true;
 }
-bool GrabTask_MaterialActive(void) { return MaterialTask; }
-bool GrabTask_MaterialCalibrating(void)
-{ return MaterialTask && MaterialCalibration && (Status.state==GRAB_PREPARE || Status.state==GRAB_CALIBRATION); }
 bool GrabTask_VisualResponseSet(float fdx,float fdy,float xdx,float xdy)
 {
   float degree_per_mm=Config[C_X_PPM]*360.0f/3200.0f;
@@ -584,12 +582,12 @@ bool GrabTask_VisualResponseSet(float fdx,float fdy,float xdx,float xdy)
   VisualModelCustom=true;
   return true;
 }
-bool GrabTask_MaterialStart(uint8_t color,bool calibration)
+bool GrabTask_CalibrationStart(uint8_t color)
 {
-  if(!GrabTask_MaterialReferenceValid()) { Status.reason="ref_required";return false; }
+  if(!GrabTask_CalibrationReferenceValid()) { Status.reason="ref_required";return false; }
   if(!start_operation("align",(Camera_ColorTypeDef)color,OP_ALIGN,SCENE_RAW,0)) return false;
-  MaterialTask=true;MaterialCalibration=calibration;
-  Status.operation=calibration?"calibration":"material_align";
+  CalibrationTask=true;
+  Status.operation="calibration";
   /* The confirmed observation pose is already in place. PREPARE only verifies
    * standstill/feedback; it does not open the claw or reposition any arm axis. */
   return true;
@@ -625,7 +623,7 @@ bool GrabTask_PoseStart(bool work)
   unsigned i;
   Mecanum_Status_t bus;
   if(GrabTask_IsBusy() || MechanicalArm_IsBusy() || Turntable_IsBusy() ||
-     MaterialVision_IsBusy() || HWT101_Cal_IsBusy())
+     HWT101_Cal_IsBusy())
   { Status.reason="busy";return false; }
   if(!RearReferenceValid) { Status.reason="rear_reference_missing";return false; }
   for(i=C_X_PPM;i<=C_Z_MAX;i++) if(!isfinite(Config[i]))
@@ -640,7 +638,7 @@ bool GrabTask_PoseStart(bool work)
   if(ChassisMotion_IsBusy() && (!work || !RearPose))
   { Status.reason="busy";return false; }
   PoseWork=work;PoseStep=0;PollIndex=0;
-  MaterialTask=MaterialCalibration=false;
+  CalibrationTask=false;
   Status.mode="fixed";Status.operation="pose";Status.scene="none";
   Status.result="pending";Status.reason=work?"preparing_work":"preparing_travel";
   Status.missing="none";
@@ -778,7 +776,7 @@ uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
     TrackXDispatch.transmitted=true;TrackXDispatch.acknowledged=event->Acknowledged!=0;
   }
   if(BootActive) return boot_event(event);
-  if(Status.state==GRAB_CALIBRATION && MaterialVision_CalibrationEvent(event)) return 1;
+  if(Status.state==GRAB_CALIBRATION && GrabCalibration_MotorEventHandle(event)) return 1;
   if(PendingAction==MECHANICAL_ARM_ACTION_NONE || event->Action!=PendingAction || event->Axis!=PendingAxis)
   {
     /* Observe reference changes from console AND legacy tasks without consuming
@@ -1373,10 +1371,10 @@ void GrabTask_Process(void)
   {
     (void)wheels(now);
     if(Status.state!=GRAB_CALIBRATION) return;
-    MaterialVision_CalibrationProcess();
-    if(MaterialVision_StateGet()==MATERIAL_VISION_STATE_ERROR)
-      fault(MaterialVision_ErrorNameGet());
-    else if(MaterialVision_StateGet()==MATERIAL_VISION_STATE_ALIGNED)
+    GrabCalibration_Process();
+    if(GrabCalibration_StateGet()==GRAB_CAL_STATE_ERROR)
+      fault(GrabCalibration_ErrorNameGet());
+    else if(GrabCalibration_StateGet()==GRAB_CAL_STATE_ALIGNED)
     { Status.reason="calibrated";Status.result="calibrated";enter(GRAB_COMPLETE); }
     return;
   }
@@ -1428,26 +1426,14 @@ void GrabTask_Process(void)
         if(Axes[1].mm<Config[C_Z_MIN]-Config[C_POS_TOL] || Axes[1].mm>Config[C_Z_MAX]+Config[C_POS_TOL] ||
           (Axes[0].mm<Config[C_X_MIN]-Config[C_POS_TOL] || Axes[0].mm>Config[C_X_MAX]+Config[C_POS_TOL]))
         { fault("initial_axis_limit"); return; }
-        if(MaterialTask)
+        if(CalibrationTask)
         {
-          HAL_StatusTypeDef result;
           ObserveX=Axes[0].target=XIntegral=Axes[0].mm;ObserveZ=Axes[1].mm;
-          if(MaterialCalibration)
-          {
-            /* This sampler extends X by five motor degrees. Check the actual
-             * confirmed starting position against the existing X boundary. */
-            if(Axes[0].mm+5*3200/(360*Config[C_X_PPM])>Config[C_X_MAX])
-            { fault("calibration_x_limit");return; }
-            MaterialVision_ResultTypeDef begin=MaterialVision_CalibrationBegin(ActiveColor);
-            if(begin==MATERIAL_VISION_RESULT_OK) enter(GRAB_CALIBRATION);
-            else if(begin!=MATERIAL_VISION_RESULT_BUSY) fault(MaterialVision_ErrorNameGet());
-            return;
-          }
-          result=request_target();
-          if(result==HAL_OK)
-          { Camera_SnapshotTypeDef camera;Camera_SnapshotGet(&camera);LastSequence=camera.Data.Sequence;
-            RequestTick=LastControl=now;Status.stop_requested=Status.stop_confirmed=false;enter(GRAB_MATERIAL_SEARCH); }
-          else if(result!=HAL_BUSY) fault("camera_tx");
+          if(Axes[0].mm+5*3200/(360*Config[C_X_PPM])>Config[C_X_MAX])
+          { fault("calibration_x_limit");return; }
+          GrabCalibration_ResultTypeDef begin=GrabCalibration_Start(ActiveColor);
+          if(begin==GRAB_CAL_RESULT_OK) enter(GRAB_CALIBRATION);
+          else if(begin!=GRAB_CAL_RESULT_BUSY) fault(GrabCalibration_ErrorNameGet());
           return;
         }
         if(Operation==OP_CAR_PLACE)
@@ -1501,43 +1487,6 @@ void GrabTask_Process(void)
     }
   }
   else if(Status.state==GRAB_VISION_PAUSE) vision_pause_process(now);
-  else if(Status.state==GRAB_MATERIAL_SEARCH)
-  {
-    Camera_SnapshotTypeDef camera;Mecanum_Status_t tx;
-    Camera_SnapshotGet(&camera);
-    if(!vision_request_valid(&camera)) return;
-    Mecanum_StatusGet(&tx);
-    if(tx.locked || tx.stage==MECANUM_STAGE_FAULT) { fault("chassis_tx");return; }
-    if(MaterialLockCount>=3)
-    {
-      stop_process(now,false);
-      if(Status.stop_confirmed)
-      {
-        LastSequence=camera.Data.Sequence;RequestTick=now;HaveCapture=FreshVision=false;
-        memset(PreviousVelocity,0,sizeof PreviousVelocity);LastControl=now;
-        Status.reason="running";enter(GRAB_ACQUIRE);
-      }
-      poll_axes(now);return;
-    }
-    if(camera.HasValidData && camera.TargetValid && camera.Data.Target==ActiveColor &&
-       camera.Data.Sequence!=LastSequence && now-camera.Data.Tick<=Config[C_AGE_MS])
-    {
-      LastSequence=camera.Data.Sequence;
-      int dx=(int)camera.Data.CX-(int)Config[C_REF_U],dy=(int)Config[C_REF_V]-(int)camera.Data.CY;
-      MaterialLockCount=(abs(dx)<=80 && abs(dy)<=100)?MaterialLockCount+1:0;
-      if(MaterialLockCount>=3)
-      {
-        Status.dx=(int16_t)dx;Status.dy=(int16_t)dy;
-        Status.reason="search_target_stop";stop_begin();return;
-      }
-    }
-    if(now-LastControl>=GRAB_CONTROL_PERIOD_MS &&
-       tx.stage!=MECANUM_STAGE_WHEELS && tx.stage!=MECANUM_STAGE_SYNC && !tx.stop_pending)
-    {
-      if(!Mecanum_Velocity_Request(-30,0,0,20)) { fault("chassis_tx");return; }
-      LastControl=now;Status.forward_mm_s=-30;Status.left_mm_s=0;
-    }
-  }
   else if(Status.state==GRAB_VISION_GRACE) vision_grace_process(now);
   else if(Status.state==GRAB_ACQUIRE || Status.state==GRAB_ALIGN || Status.state==GRAB_SETTLE)
   {
@@ -1574,8 +1523,6 @@ void GrabTask_Process(void)
       {
         if(!strcmp(Status.mode,"align"))
         {
-          if(MaterialTask)
-          { Camera_RequestStop();Status.reason="aligned";Status.result="aligned";enter(GRAB_COMPLETE);return; }
           if(StackTest && !StackCompensating)
           {
             /* First confirm the original green reference. Then use the same
@@ -1659,7 +1606,7 @@ void GrabTask_StatusGet(GrabTask_Status_t *out)
 void GrabTask_BootHomeStart(void)
 {
   if(GrabTask_IsBusy()) return;
-  MaterialTask=MaterialCalibration=false;
+  CalibrationTask=false;
   GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_ALL);
   GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_BASE);
   Status.reference_cause="home_verifying";
@@ -2576,8 +2523,7 @@ static bool track_command(unsigned count,char *tokens[])
     if(count>=4)
     { if(strlen(tokens[3])!=1 || tokens[3][0]<'1' || tokens[3][0]>'6') { reply("ERR grab track color\r\n"); return true; } color=(Camera_ColorTypeDef)(tokens[3][0]-'0'); }
     if((GrabTask_IsBusy() && Status.state!=GRAB_HOLD && Status.state!=GRAB_TRACK_OBSERVE &&
-       !(Status.state==GRAB_TRACK_PAUSE && Status.stop_confirmed)) || MaterialVision_IsBusy() ||
-       ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy())
+       !(Status.state==GRAB_TRACK_PAUSE && Status.stop_confirmed)) || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy())
     { reply("ERR grab track busy\r\n"); return true; }
     if(!isfinite(Config[C_X_PPM]) || !isfinite(Config[C_X_MIN]) || !isfinite(Config[C_X_MAX]) || !isfinite(Config[C_Z_PPM]))
     { reply("ERR grab track config_missing; inspect x_ppm and axis references\r\n"); return true; }
@@ -2604,7 +2550,7 @@ static bool track_command(unsigned count,char *tokens[])
     }
     if(pick) { Config[C_Z_GRAB]=pickup;Config[C_Z_PICK_SPEED]=speed; }
     Operation=OP_ALIGN;RingTest=RingPlaceActive=RingRaise=false;
-    MaterialTask=MaterialCalibration=false;
+    CalibrationTask=false;
     StackTest=StackCompensating=false;
     TrackAutoStart=automatic;TrackPickArmed=pick;TrackPickParking=false;TrackEntryBudget=budget;
     TrackEntryHaveSample=false;
@@ -2758,6 +2704,20 @@ static bool manual_height_start(float z)
   Status.reason="stack_height_running";Status.result="pending";StartTick=HAL_GetTick();
   enter(GRAB_MANUAL_Z);return true;
 }
+static void calibration_status_write(void)
+{
+  GrabCalibration_CalibrationDataTypeDef data; char line[224];
+  const char *phase=CalibrationTask && Status.state!=GRAB_CALIBRATION?States[Status.state]:GrabCalibration_StateNameGet();
+  if(GrabCalibration_DataGet(&data))
+    (void)snprintf(line,sizeof line,"OK grab calib phase=%s ref=%u calibrated=1 reason=%s fdx=%.6f fdy=%.6f xdx=%.6f xdy=%.6f\r\n",
+      phase,(unsigned)CalibrationReferenceConfirmed,CalibrationTask?Status.reason:GrabCalibration_ErrorNameGet(),
+      (double)data.ForwardDxPerMm,(double)data.ForwardDyPerMm,(double)data.XDxPerDegree,(double)data.XDyPerDegree);
+  else
+    (void)snprintf(line,sizeof line,"OK grab calib phase=%s ref=%u calibrated=0 reason=%s fdx=na fdy=na xdx=na xdy=na\r\n",
+      phase,(unsigned)CalibrationReferenceConfirmed,CalibrationTask?Status.reason:GrabCalibration_ErrorNameGet());
+  reply(line);
+}
+
 bool GrabTask_Command(unsigned count,char *tokens[])
 {
   unsigned i; size_t length=0;
@@ -2766,6 +2726,19 @@ bool GrabTask_Command(unsigned count,char *tokens[])
   if(count>6 || length>63) { reply("ERR grab syntax\r\n"); return true; }
   if(count>=2 && !strcmp(tokens[1],"track")) return track_command(count,tokens);
   if(count==2 && !strcmp(tokens[1],"status")) status_write(false);
+  else if(count==3 && !strcmp(tokens[1],"calib"))
+  {
+    if(!strcmp(tokens[2],"status")) calibration_status_write();
+    else if(!strcmp(tokens[2],"ref"))
+      reply(GrabTask_CalibrationReferenceSet()?"OK grab calib ref confirmed\r\n":"ERR grab calib busy\r\n");
+    else if(strlen(tokens[2])==1 && tokens[2][0]>='1' && tokens[2][0]<='6')
+    {
+      if(GrabTask_CalibrationStart((uint8_t)(tokens[2][0]-'0')))reply("OK grab calib accepted\r\n");
+      else reply("ERR grab calib rejected; inspect grab status\r\n");
+      status_write(false);
+    }
+    else reply("ERR format: grab calib ref|status|<1..6>\r\n");
+  }
   else if(count==3 && !strcmp(tokens[1],"status"))
   {
     unsigned axis; uint32_t now=HAL_GetTick(); char line[224];
@@ -2909,7 +2882,7 @@ bool GrabTask_Command(unsigned count,char *tokens[])
     Mecanum_Status_t bus;
     Mecanum_StatusGet(&bus);
     if((Status.state!=GRAB_IDLE && Status.state!=GRAB_COMPLETE && Status.state!=GRAB_ERROR) || MechanicalArm_IsBusy() ||
-       MaterialVision_IsBusy() || ChassisRoute_IsBusy() ||
+       ChassisRoute_IsBusy() ||
        ChassisMotion_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy() ||
        bus.locked || bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)
       reply("ERR grab rehome rejected; stop tasks and inspect bus status\r\n");

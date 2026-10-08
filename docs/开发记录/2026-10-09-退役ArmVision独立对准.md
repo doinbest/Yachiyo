@@ -1,5 +1,7 @@
 # 2026-10-09 退役 ArmVision 独立对准
 
+> 后续状态：MaterialVision与material兼容入口已于同日退役，响应标定迁移为grab calib。本文保留本次收敛时的事实；现状见[退役记录](2026-10-09-MaterialVision退役与控制台保留.md)。
+
 ## 授权与检查点
 
 用户确认旧 `vision material` 与统一 `grab align` 的对准目标重复，授权删除旧独立Base/X流程及相关入口。删除前建立Git检查点 `406b416`（`chore: checkpoint before retiring ArmVision`）；此前控制台输出与冗余清理已在检查点历史中保存。旧实现仅通过Git追溯，活动工程不留备份。
