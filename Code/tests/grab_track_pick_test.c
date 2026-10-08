@@ -38,6 +38,15 @@ static void pickup_drift_and_cancel(void)
 
 int main(void)
 {
+  reset(); configure(true);
+  float old_speed=Config[C_Z_PICK_SPEED];
+  char *outside_range[]={"grab","track","pick","3","-8","334"};
+  output[0]=0; assert(GrabTask_Command(6,outside_range));
+  assert(strstr(output,"ERR grab track pickup") && Config[C_Z_PICK_SPEED]==old_speed);
+  /* Range acceptance does not bypass conversion to the drive's RPM limit. */
+  setting("z_ppm","1000");
+  outside_range[5]="200"; output[0]=0; assert(GrabTask_Command(6,outside_range));
+  assert(strstr(output,"ERR grab track pickup") && Config[C_Z_PICK_SPEED]==old_speed);
   char *begin[]={"grab","track","begin","3"};
   char *pick[]={"grab","track","pick","3","-8","110"};
   char *stop[]={"grab","track","stop"};

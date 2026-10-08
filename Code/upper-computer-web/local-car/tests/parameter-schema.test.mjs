@@ -1,6 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parameterFields,displayValue,fieldWrites,deviceRequests} from '../parameter-schema.mjs';
+import {GRAB_FORM_DEFAULTS} from '../grab-params.mjs';
+import {grabParameters,buildCommand} from '../protocol.mjs';
+
+test('firmware defaults and physical ranges reach all parameter entry points',()=>{
+  assert.equal(GRAB_FORM_DEFAULTS.z_min,-150);
+  assert.equal(GRAB_FORM_DEFAULTS.z_grab,-80);
+  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,undefined);
+  assert.equal(grabParameters.length,49);
+  assert.equal(new Set(grabParameters.map(p=>p.key)).size,49);
+  for(const key of ['z_speed','z_pick_speed']) {
+    const field=parameterFields.find(p=>p.key===key);
+    assert.equal(field.max,333.333);
+    assert.deepEqual(fieldWrites(field,{[key]:222.222}),[[key,222.222]]);
+    assert.equal(buildCommand(`grab-set-${key}`,{value:111.111111}),`grab set ${key} 111.111111`);
+    for(const value of [0,333.334]) {
+      assert.throws(()=>fieldWrites(field,{[key]:value}));
+      assert.throws(()=>buildCommand(`grab-set-${key}`,{value}));
+    }
+  }
+  assert.throws(()=>fieldWrites(parameterFields.find(p=>p.key==='frames'),{frames:3.5}));
+  assert.throws(()=>buildCommand('grab-set-base_car_offset',{value:361}));
+  assert.match(parameterFields.find(p=>p.key==='x_acc').label,/手动与任务共用/);
+});
 
 test('material descent speed is shared and separate from ring/lift speed',()=>{
   const speed=parameterFields.find(f=>f.key==='z_pick_speed');

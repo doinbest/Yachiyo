@@ -3,7 +3,6 @@
 #include <string.h>
 #include "oled_ui.h"
 #include "Camera.h"
-#include "ArmVision.h"
 #include "MaterialVision.h"
 #include "hwt101_i2c.h"
 #include "tjc_screen.h"
@@ -15,11 +14,10 @@ static Camera_SnapshotTypeDef camera;
 static HWT101_Angle_t angle;
 static HWT101_Status_t imu;
 static TJC_Status_t screen;
-static uint8_t arm_busy, material_busy;
-static uint8_t arm_calibrated = 1;
+static uint8_t material_busy;
 static uint8_t material_calibrated;
 static MaterialVision_StateTypeDef material_state;
-static ArmVision_ErrorTypeDef arm_error;
+static MaterialVision_ErrorTypeDef material_error;
 static float servo_duty;
 static unsigned servo_sets, servo_offs;
 static uint8_t chassis_busy;
@@ -35,17 +33,12 @@ void Camera_SnapshotGet(Camera_SnapshotTypeDef *out) { *out = camera; }
 /* Camera visual-state calculation is linked from its real source by the runner. */
 uint8_t CDC_IsConfigured_FS(void) { return camera.UsbConfigured; }
 uint8_t CDC_Transmit_FS(uint8_t *data, uint16_t length) { (void)data; (void)length; return 0; }
-uint8_t ArmVision_IsBusy(void) { return arm_busy; }
-uint8_t ArmVision_IsCalibrating(void) { return 0; }
-uint8_t ArmVision_IsReferenceValid(void) { return 1; }
-uint8_t ArmVision_IsCalibrated(void) { return arm_calibrated; }
-ArmVision_ErrorTypeDef ArmVision_ErrorGet(void) { return arm_error; }
-const char *ArmVision_StateNameGet(void) { return arm_busy ? "COLLECT" : "IDLE"; }
+uint8_t MaterialVision_IsReferenceValid(void) { return 1; }
 uint8_t MaterialVision_IsBusy(void) { return material_busy; }
 uint8_t MaterialVision_IsCalibrating(void) { return 0; }
 uint8_t MaterialVision_IsCalibrated(void) { return material_calibrated; }
 MaterialVision_StateTypeDef MaterialVision_StateGet(void) { return material_state; }
-MaterialVision_ErrorTypeDef MaterialVision_ErrorGet(void) { return MATERIAL_VISION_ERROR_NONE; }
+MaterialVision_ErrorTypeDef MaterialVision_ErrorGet(void) { return material_error; }
 bool HWT101_Angle_Get(HWT101_Angle_t *out) { *out = angle; return angle.update_count != 0; }
 bool HWT101_Angle_Is_Fresh(const HWT101_Angle_t *value, uint32_t age)
 { return value->update_count && tick - value->last_update_ms <= age; }
@@ -83,7 +76,7 @@ int main(void)
   camera.RxByteCount = camera.ChecksumErrorCount = camera.OverflowCount = UINT32_MAX;
   screen.tx_count = screen.rx_frame_count = UINT32_MAX; imu.i2c_error_count = UINT32_MAX;
   refresh(); assert(!strcmp(rows[0], "3/4 Link Test")); assert(strstr(rows[1], "9999+"));
-  arm_error = ARM_VISION_ERROR_MOTOR_ARRIVAL_TIMEOUT; refresh();
+  material_error = MATERIAL_VISION_ERROR_MOTOR_ARRIVAL_TIMEOUT; refresh();
   assert(!strcmp(rows[6], "Err:Motor arrival"));
   OledUi_KeyHandle(KEY_EVENT_PE5); refresh();
   assert(!strcmp(rows[0], "4/4 Servo Test"));
@@ -107,7 +100,7 @@ int main(void)
   refresh(); assert(!strcmp(rows[0], "1/4 Overview Test"));
   assert(!strcmp(rows[6], "Err:Motor arrival"));
   OledUi_NoticeSet("Busy"); refresh(); assert(!strcmp(rows[6], "Err:Motor arrival"));
-  arm_error = ARM_VISION_ERROR_NONE; arm_busy = 1; refresh(); assert(!strcmp(rows[6], "Err:None"));
+  material_error = MATERIAL_VISION_ERROR_NONE; material_busy = 1; refresh(); assert(!strcmp(rows[6], "Err:None"));
   before = sends; refresh(); assert(sends == before); /* Unchanged rows are not sent. */
   oled_result = HAL_ERROR; OledUi_KeyHandle(KEY_EVENT_PE4); OledUi_Process(); before = sends;
   tick += 999; OledUi_Process(); assert(sends == before);
@@ -117,13 +110,13 @@ int main(void)
   OledUi_Process(); assert(init_calls == before + 1); before=init_calls;
   tick += 999; OledUi_Process(); assert(init_calls == before); tick++; OledUi_Process(); assert(init_calls == before + 1);
   oled_result = HAL_OK; OledUi_Init(&i2c);
-  arm_busy = 0; arm_calibrated = 0; material_busy = 1; material_state = MATERIAL_VISION_STATE_COLLECT;
+  material_busy = 1; material_state = MATERIAL_VISION_STATE_COLLECT;
   OledUi_KeyHandle(KEY_EVENT_PE5); refresh(); assert(strstr(rows[5], "Cal:No"));
   material_busy = 0; material_state = MATERIAL_VISION_STATE_ALIGNED; material_calibrated = 1;
   refresh(); assert(strstr(rows[5], "Cal:Ok"));
   /* A failed retry must not overwrite a retained task error. */
-  arm_error = ARM_VISION_ERROR_MOTOR_ARRIVAL_TIMEOUT; refresh();
-  arm_error = ARM_VISION_ERROR_CAMERA_TX; refresh();
+  material_error = MATERIAL_VISION_ERROR_MOTOR_ARRIVAL_TIMEOUT; refresh();
+  material_error = MATERIAL_VISION_ERROR_CAMERA_TX; refresh();
   assert(!strcmp(rows[6], "Err:Motor arrival"));
   puts("oled_ui_test: OK"); return 0;
 }

@@ -15,7 +15,7 @@ static uint32_t urgent_losses;
 void NVIC_SystemReset(void) { reset_calls++; }
 bool ConsoleTx_UrgentIdle(void) { return urgent_idle; }
 static unsigned camera_calls, motor_calls, stop_calls, notice_clears;
-static uint8_t arm_busy, material_busy, motor_busy;
+static uint8_t material_busy, motor_busy;
 static bool grab_busy, grab_route_busy;
 static bool turntable_busy;
 static unsigned turntable_stops, turntable_commands;
@@ -139,29 +139,14 @@ HAL_StatusTypeDef Camera_RingStart(uint8_t ring)
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef color)
 { camera_calls++; if (camera_result == HAL_OK) snapshot.RequestTarget = color; return camera_result; }
 void Camera_RequestStop(void) { snapshot.RequestActive = 0; }
-uint8_t ArmVision_IsBusy(void) { return arm_busy; }
-uint8_t ArmVision_IsCalibrated(void) { return 1; }
-uint8_t ArmVision_IsReferenceValid(void) { return 1; }
-uint32_t ArmVision_StatusSequenceGet(void) { return 1; }
-ArmVision_ResultTypeDef ArmVision_ReferenceSet(void) { return arm_busy || material_busy ? ARM_VISION_RESULT_BUSY : ARM_VISION_RESULT_OK; }
-ArmVision_ResultTypeDef ArmVision_MaterialStart(Camera_ColorTypeDef color, ArmVision_JobTypeDef job)
-{ (void)color; (void)job; if (arm_busy || material_busy) return ARM_VISION_RESULT_BUSY; arm_busy = 1; return ARM_VISION_RESULT_OK; }
-ArmVision_ResultTypeDef ArmVision_MaterialCalibrationStart(Camera_ColorTypeDef color) { return ArmVision_MaterialStart(color, ARM_VISION_JOB_ALIGN_ONLY); }
-void ArmVision_Stop(void) { if (arm_busy) stop_calls++; arm_busy = 0; }
-const char *ArmVision_StateNameGet(void) { return arm_busy ? "COLLECT" : "IDLE"; }
-ArmVision_ErrorTypeDef ArmVision_ErrorGet(void) { return ARM_VISION_ERROR_NONE; }
-const char *ArmVision_ErrorNameGet(void) { return "none"; }
-const char *ArmVision_CalibrationSourceNameGet(void) { return "material"; }
-uint8_t ArmVision_CalibrationTargetGet(void) { return 3; }
-uint8_t ArmVision_CalibrationResultGet(ArmVision_CalibrationDataTypeDef *out) { memset(out,0,sizeof(*out)); return 0; }
-uint8_t ArmVision_CalibrationDebugGet(ArmVision_CalibrationDebugDataTypeDef *out) { memset(out,0,sizeof(*out)); return 0; }
-uint8_t ArmVision_ErrorInfoGet(ArmVision_ErrorInfoTypeDef *out) { memset(out,0,sizeof(*out)); return 0; }
-uint8_t ArmVision_MoveDebugGet(ArmVision_MoveDebugDataTypeDef *out) { memset(out,0,sizeof(*out)); return 0; }
-uint8_t ArmVision_ProgressGet(ArmVision_ProgressTypeDef *out) { memset(out,0,sizeof(*out)); return 1; }
+static uint8_t material_ref;
+MaterialVision_ResultTypeDef MaterialVision_ReferenceSet(void)
+{ if(material_busy || motor_busy)return MATERIAL_VISION_RESULT_BUSY;material_ref=1;return MATERIAL_VISION_RESULT_OK; }
+uint8_t MaterialVision_IsReferenceValid(void) { return material_ref; }
 uint8_t MaterialVision_IsBusy(void) { return material_busy; }
 uint8_t MaterialVision_IsCalibrated(void) { return 1; }
 MaterialVision_ResultTypeDef MaterialVision_Start(Camera_ColorTypeDef color)
-{ (void)color; if (arm_busy || material_busy) return MATERIAL_VISION_RESULT_BUSY; material_busy=1;material_state=MATERIAL_VISION_STATE_SEARCH;return MATERIAL_VISION_RESULT_OK; }
+{ (void)color; if (material_busy) return MATERIAL_VISION_RESULT_BUSY; material_busy=1;material_state=MATERIAL_VISION_STATE_SEARCH;return MATERIAL_VISION_RESULT_OK; }
 MaterialVision_ResultTypeDef MaterialVision_CalibrationStart(Camera_ColorTypeDef color) { return MaterialVision_Start(color); }
 void MaterialVision_Stop(void) { if (material_busy) stop_calls++; material_busy=0;material_state=MATERIAL_VISION_STATE_IDLE;material_error=MATERIAL_VISION_ERROR_NONE; }
 const char *MaterialVision_StateNameGet(void) { return material_busy ? "SEARCH" : "IDLE"; }
@@ -181,12 +166,12 @@ bool HWT101_Cal_IsBusy(void) { return cal_status.busy; }
 bool HWT101_Cal_ZeroStart(void) { zero_calls++; cal_status.busy=true; return true; }
 bool HWT101_Cal_Start(void)
 {
-  assert(!chassis_busy && !arm_busy && !motor_busy && !material_busy);
+  assert(!chassis_busy && !motor_busy && !material_busy);
   cal_starts++; cal_status.busy=true; cal_status.state=HWT101_CAL_CALIBRATING; return true;
 }
 bool HWT101_Cal_VerifyStart(uint32_t duration)
 {
-  assert(!chassis_busy && !arm_busy && !motor_busy && !material_busy);
+  assert(!chassis_busy && !motor_busy && !material_busy);
   verify_duration=duration; cal_status.busy=true; cal_status.state=HWT101_CAL_VERIFYING;return true;
 }
 void HWT101_Cal_Cancel(void) { cal_cancels++;memset(&cal_status,0,sizeof(cal_status)); }
@@ -288,6 +273,16 @@ int main(void)
   UART_HandleTypeDef uart={0};MechanicalArm_EventTypeDef event={0};unsigned before;
   uart.Instance=USART1;ArmConsole_Init(&uart);snapshot.UsbConfigured=1;snapshot.RequestActive=1;
   QR_Init();test_qr();
+  {
+    const char *retired[]={"vision ref\r","vision status\r","vision material 1\r","vision calib material 1\r","vision stop\r"};
+    unsigned motors=motor_calls,cameras=camera_calls,stops=stop_calls;
+    for(unsigned i=0;i<sizeof(retired)/sizeof(retired[0]);i++)
+    {
+      command(retired[i]);assert(strstr(output,"ERR retired") && strstr(output,"grab align"));
+      assert(motor_calls==motors && camera_calls==cameras && stop_calls==stops);
+    }
+  }
+  command("material ref\r");assert(material_ref && strstr(output,"OK material ref confirmed"));
   radar_scan_busy=true;
   command("grab mission 200\r");assert(strstr(output,"stationary capture active"));
   command("grab pose work\r");assert(strstr(output,"stationary capture active"));
@@ -298,7 +293,7 @@ int main(void)
   command("wheel stop\r");assert(!motion_busy && strstr(output,"OK chassis stop id="));
   snapshot.RxByteCount=UINT32_MAX;snapshot.Data.CX=65535;snapshot.Data.DX=-32768;snapshot.Data.Sequence=7;
   command("help\r\n");assert(occurrences("arm> ")==1);assert(strstr(output,"camera status"));assert(!strstr(output,"vision ring <"));
-  assert(!strstr(output,"vision calib <"));
+  assert(!strstr(output,"vision calib") && !strstr(output,"vision material") && !strstr(output,"vision ref"));
   snapshot.Data.Target=2; snapshot.Data.Function=0xB2; snapshot.HasFrame=1; snapshot.LastFrameTick=80;
   snapshot.HasValidData=snapshot.TargetValid=1;
   command("camera status\r");assert(strstr(output,"4294967295"));assert(camera_calls==0 && motor_calls==0);
@@ -338,7 +333,7 @@ int main(void)
   before=motor_calls;command("chassis velocity 30 0 0\r");assert(motor_calls==before && strstr(output,"imu_busy"));
   command("pos x 90\r");assert(motor_calls==before && strstr(output,"imu_busy"));
   command("material auto 1\r");assert(!material_busy && strstr(output,"imu_busy"));
-  command("vision material 2\r");assert(!arm_busy && strstr(output,"imu_busy"));
+  command("vision material 2\r");assert(strstr(output,"ERR retired"));
   command("grip open\r");assert(strstr(output,"imu_busy"));
   command("vision status\r");assert(!strstr(output,"imu_busy"));
   command("chassis stop\r");assert(!strstr(output,"imu_busy"));
@@ -354,7 +349,6 @@ int main(void)
   chassis_busy=true;command("imu cal start\r");assert(cal_starts==1 && strstr(output,"motion_busy"));
   command("imu verify\r");assert(!cal_status.busy && strstr(output,"motion_busy"));chassis_busy=false;
   motor_busy=1;command("imu cal start\r");assert(cal_starts==1 && strstr(output,"motion_busy"));motor_busy=0;
-  arm_busy=1;command("imu verify\r");assert(!cal_status.busy && strstr(output,"motion_busy"));arm_busy=0;
   material_busy=1;command("imu cal start\r");assert(cal_starts==1 && strstr(output,"motion_busy"));material_busy=0;
   cal_status.state=HWT101_CAL_DONE;
   before=refresh_calls;command("imu status\r");assert(refresh_calls==before+1 && strstr(output,"result=PASS"));
@@ -379,8 +373,8 @@ int main(void)
   command("screen status\r");assert(strstr(output,"4294967295") && strstr(output,"12345"));
   {
     unsigned before_camera = camera_calls, before_motor = motor_calls;
-    command("vision calib 1\r");assert(strstr(output,"ERR Unsupported B3"));
-    command("vision ring 1\r");assert(strstr(output,"ERR Unsupported B3"));
+    command("vision calib 1\r");assert(strstr(output,"ERR retired"));
+    command("vision ring 1\r");assert(strstr(output,"ERR retired"));
     assert(camera_calls == before_camera && motor_calls == before_motor);
   }
   command("camera material 3\r");assert(camera_calls==1 && snapshot.RequestTarget==3);
@@ -394,8 +388,8 @@ int main(void)
   camera_result=HAL_ERROR;snapshot.UsbConfigured=0;command("camera material 2\r");assert(strstr(output,"usb") && snapshot.RequestTarget==3);
   snapshot.UsbConfigured=1;command("camera material 2\r");assert(strstr(output,"tx"));camera_result=HAL_OK;
   material_busy=1;before=camera_calls;command("camera material 2\r");assert(strstr(output,"busy") && camera_calls==before);
-  command("vision material 2\r");assert(strstr(output,"busy") && !arm_busy);
-  command("vision stop\r");assert(!material_busy && notice_clears);
+  command("vision material 2\r");assert(strstr(output,"ERR retired") && material_busy);
+  command("material stop\r");assert(!material_busy && notice_clears);
   command("grip duty 7.5\r");assert(grip_duty==7.5f);command("grip duty 99\r");assert(grip_duty==7.5f && strstr(output,"ERR"));
   command("chassis velocity 10 -20 90\r");assert(forward_value==10 && left_value==-20 && fabsf(yaw_value-1.5707963f)<0.0001f);
   command("config z 100 20 0\r");assert(config.SpeedRpm==100 && config.Acceleration==20 && config.PulseLimit==0);
@@ -404,7 +398,10 @@ int main(void)
   ArmConsole_MotorEventHandle(&event);assert(strstr(output,"accepted") && occurrences("arm> ")==1);
   motor_result=MECHANICAL_ARM_RESULT_BUSY;command("enable base\r");assert(strstr(output,"ERR busy") && strstr(output,"arm> "));motor_result=MECHANICAL_ARM_RESULT_NONE;
   command("pos x xyz\r");assert(strstr(output,"ERR"));
-  arm_busy=1;before=stop_calls;command("stop all\r");assert(!arm_busy && stop_calls>before);
+  material_busy=1;before=stop_calls;command("stop all\r");assert(!material_busy && stop_calls>before);
+  command("material calib 3\r");assert(material_busy && strstr(output,"calibration=chassis"));
+  before=stop_calls;command("material ref\r");assert(strstr(output,"busy") && material_ref && stop_calls==before);
+  command("material stop\r");assert(material_ref && !material_busy);
   command("material auto 3\r");assert(material_busy);
   output[0]=0;material_busy=0;material_state=MATERIAL_VISION_STATE_ERROR;material_error=MATERIAL_VISION_ERROR_MOTOR_ACK_TIMEOUT;
   ArmConsole_Process();assert(strstr(output,"ERR material reason=motor_ack_timeout") && occurrences("arm> ")==1);
@@ -417,9 +414,9 @@ int main(void)
   command("wheel stop\r");assert(!route_reserved);
   /* Raw Ctrl+C discards a partial line, even a full ring, and cancels all producers. */
   before=motor_calls;command("chassis velocity 10");
-  route_reserved=motion_busy=true;arm_busy=material_busy=1;
+  route_reserved=motion_busy=true;material_busy=1;
   output[0]=0;ArmConsole_ReceiveData(0x03);ArmConsole_StopProcess();
-  assert(!route_reserved && !motion_busy && !arm_busy && !material_busy);
+  assert(!route_reserved && !motion_busy && !material_busy);
   assert(strstr(output,"token=0") && strstr(output,"tx_complete=0 wheels_stopped=0"));
   command("\r");assert(motor_calls==before && !strstr(output,"ERR format"));
   for(unsigned j=0;j<200;j++)ArmConsole_ReceiveData('x');
@@ -463,20 +460,21 @@ int main(void)
   assert(strstr(output,"[MOTOR BUS] locked=0 reason=none"));
   for(unsigned j=0;j<600;j++)ArmConsole_ReceiveData('x');
   ArmConsole_ReceiveData(3);command("chassis stop 99\r");assert(strstr(output,"token=99"));
-  chassis_busy=false; heading_status.active=false; motor_busy=arm_busy=material_busy=0;
+  chassis_busy=false; heading_status.active=false; motor_busy=material_busy=0;
   route_reserved=motion_busy=cal_status.busy=false;
   command("imu zero extra\r"); assert(!zero_calls && strstr(output,"ERR imu format"));
   motor_busy=1; command("imu zero\r"); assert(!zero_calls && strstr(output,"motion_busy")); motor_busy=0;
   command("imu zero\r"); assert(zero_calls==1 && strstr(output,"OK imu zero started"));
   cal_status.busy=false;
-  for(unsigned owner=0;owner<7;owner++) {
-    chassis_busy=owner==0; motor_busy=owner==1; arm_busy=owner==2; material_busy=owner==3;
-    route_reserved=owner==4; motion_busy=owner==5; cal_status.busy=owner==6;
+  for(unsigned owner=0;owner<6;owner++) {
+    chassis_busy=owner==0; motor_busy=owner==1; material_busy=owner==2;
+    route_reserved=owner==3; motion_busy=owner==4; cal_status.busy=owner==5;
     command("system reset\r"); assert(!ArmConsole_ResetPending() && strstr(output,"ERR system reset busy"));
   }
-  chassis_busy=false; motor_busy=arm_busy=material_busy=0; route_reserved=motion_busy=cal_status.busy=false;
+  chassis_busy=false; motor_busy=material_busy=0; route_reserved=motion_busy=cal_status.busy=false;
   command("system reset extra\r"); assert(!ArmConsole_ResetPending());
   urgent_idle=false; command("system reset\r"); assert(ArmConsole_ResetPending() && strstr(output,"OK system reset pending"));
+  command("vision stop\r");assert(ArmConsole_ResetPending() && strstr(output,"ERR retired"));
   before=motor_calls; command("enable base\r"); assert(motor_calls==before && strstr(output,"reset_pending"));
   tick+=1000; assert(ArmConsole_ResetProcess() && !reset_calls);
   urgent_idle=true; assert(ArmConsole_ResetProcess() && !reset_calls);
@@ -485,7 +483,7 @@ int main(void)
   command("system reset\r"); ArmConsole_ReceiveData(3); ArmConsole_StopProcess();
   assert(!ArmConsole_ResetPending()); tick+=6000; ArmConsole_ResetProcess(); assert(reset_calls==1);
   {
-    const char *stops[]={"stop all\r","stop base\r","stop z\r","stop x\r","vision stop\r","material stop\r","camera stop\r"};
+    const char *stops[]={"stop all\r","stop base\r","stop z\r","stop x\r","material stop\r","camera stop\r"};
     for(unsigned i=0;i<sizeof(stops)/sizeof(stops[0]);i++) {
       command("system reset\r"); assert(ArmConsole_ResetPending());
       command(stops[i]); assert(!ArmConsole_ResetPending() && strstr(output,"cancelled_by_stop"));
@@ -503,6 +501,7 @@ int main(void)
   command("chassis task\r");assert(strstr(output,"OK chassis task query"));
   command("chassis route status\r");assert(strstr(output,"OK chassis route query"));
   assert(grab_busy && motor_calls==before);
+  { unsigned stops=grab_stops;command("vision stop\r");assert(grab_busy && grab_stops==stops && strstr(output,"ERR retired")); }
 
   command("grab track status\r");assert(strstr(output,"track routed"));
   command("grab track get body_speed\r");assert(strstr(output,"track routed"));

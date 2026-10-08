@@ -4,7 +4,6 @@
 #include "chassis_route.h"
 #include "mecanum_chassis.h"
 #include "hwt101_calibration.h"
-#include "ArmVision.h"
 #include "MaterialVision.h"
 #include "mechanical_arm.h"
 #include "GrabTask.h"
@@ -166,7 +165,7 @@ bool ChassisMotion_Start(const ChassisMotion_Target_t *t)
     Motion.reason = "invalid_target";
     return false;
   }
-  if (HWT101_Cal_IsBusy() || ArmVision_IsBusy() || MaterialVision_IsBusy() ||
+  if (HWT101_Cal_IsBusy() || MaterialVision_IsBusy() ||
       MechanicalArm_IsBusy() || Mecanum_IsBusy())
   {
     Motion.reason = "busy";
@@ -480,7 +479,7 @@ void ChassisMotion_StopStatusGet(ChassisStop_Status_t *out)
 bool ChassisMotion_AnchorSet(float map_yaw_rad)
 {
   if (!isfinite(map_yaw_rad) || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() ||
-      ArmVision_IsBusy() || MaterialVision_IsBusy() || MechanicalArm_IsBusy())
+      MaterialVision_IsBusy() || MechanicalArm_IsBusy())
     return false;
   ChassisMotion_AnchorInvalidate();
   if (!heading_read(HAL_GetTick()))

@@ -1,5 +1,6 @@
 import {chineseTerminalLine,replyIsFault} from './terminal-format.mjs?v=grab-terminal-20261002';
 import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from './grab-params.mjs?v=car-transfer-speed-20261007';
+import {GRAB_PARAMETER_METADATA} from './grab-parameter-metadata.mjs';
 export {replyIsFault};
 // Source: Code/template/App/arm_console.c. UI labels never go over the wire.
 /** One relative Z step, using the operator's measured command pulses/mm. */
@@ -23,27 +24,27 @@ export const groups = [['arm','机械臂'],['grip','夹爪'],['chassis','底盘'
 // Firmware startup defaults; displayed inputs are not device readback.
 const grabDefaults=GRAB_FORM_DEFAULTS;
 export const grabParameters = [
-  ...[['z_ppm','Z 命令脉冲 / mm'],['x_ppm','X 命令脉冲 / mm']].map(([key,label])=>({key,label,group:'尺度与行程',min:0.0001,max:100000})),
-  ...[['z_min','Z 最小位置'],['z_max','Z 最大位置'],['z_grab','Z 夹持位置'],['z_place','Z 放置位置'],['z_lift','Z 提起位置'],['z_observe','Z 观察位置'],['x_min','X 最小位置'],['x_max','X 最大位置'],['x_pre','X 预备位置']].map(([key,label])=>({key,label:`${label} / mm`,group:'尺度与行程',min:-10000,max:10000})),
-  ...[['pos_tol','轴到位容差 / mm'],['stop_speed','停稳速度阈值 / mm·s⁻¹'],['dx_tol','DX 抓取窗口 / px'],['dy_tol','DY 抓取窗口 / px']].map(([key,label])=>({key,label,group:'反馈与抓取条件',min:0.0001,max:100})),
-  ...[['close_ms','夹爪闭合 / 松开等待 / ms',1],['stable_ms','精定位稳定时间 / ms',200]].map(([key,label,min])=>({key,label,group:'反馈与抓取条件',min,max:120000,step:1})),
-  ...[['feedback_ms','反馈最大年龄 / ms'],['age_ms','有效坐标接收超时 / ms']].map(([key,label])=>({key,label,group:'反馈与抓取条件',min:50,max:5000,step:1})),
-  {key:'vision_wait_ms',label:'目标颜色等待窗口 / ms',group:'反馈与抓取条件',min:1500,max:120000,step:1},
-  {key:'loss_grace_ms',label:'视觉对准短暂漏检容忍 / ms（0 关闭）',group:'反馈与抓取条件',min:0,max:300,step:1},
-  {key:'frames',label:'稳定坐标观测次数',group:'反馈与抓取条件',min:3,max:100,step:1},
-  {key:'retries',label:'重新对准次数上限',group:'反馈与抓取条件',min:0,max:10,step:1},
-  {key:'ref_u',label:'观察姿态准心 U / px',group:'准心与像素响应',min:0,max:639,step:1},
-  {key:'ref_v',label:'观察姿态准心 V / px',group:'准心与像素响应',min:0,max:479,step:1},
-  ...[['j00','DX / 底盘前进'],['j01','DX / 底盘左移'],['j02','DX / X 伸出'],['j10','DY / 底盘前进'],['j11','DY / 底盘左移'],['j12','DY / X 伸出']].map(([key,label])=>({key,label:`${label} / px·mm⁻¹`,group:'准心与像素响应',min:-10000,max:10000})),
-  ...[['body_speed','底盘速度上限'],['x_speed','X 视觉对准速度上限'],['x_transfer_speed','X 正式取放 / 入仓测试速度'],['z_speed','Z 速度上限']].map(([key,label])=>({key,label:`${label} / mm·s⁻¹`,group:'控制与运动边界',min:0.0001,max:key==='body_speed'?300:100})),
-  {key:'z_pick_speed',label:'物料夹取下降速度 / mm·s⁻¹',group:'控制与运动边界',min:1,max:333.333},
-  {key:'accel',label:'平移加速度上限 / mm·s⁻²',group:'控制与运动边界',min:0.0001,max:1000},
-  {key:'travel_mm',label:'局部底盘行程上限 / mm（0 关闭）',group:'控制与运动边界',min:0,max:10000},
-  {key:'lead_mm',label:'X 目标领先反馈上限 / mm',group:'控制与运动边界',min:0.0001,max:10000},
-  {key:'lambda',label:'视觉收敛增益 / s⁻¹',group:'控制与运动边界',min:0.001,max:10},
-  {key:'x_weight',label:'X 分配权重',group:'控制与运动边界',min:0.01,max:100},
-  ...['z_proc_grab','z_proc_lift','z_car_lift','z_proc_place','z_temp_place','z_stack_place','x_car','base_car_offset'].map(key=>({key,label:({z_proc_grab:'粗加工夹取Z',z_proc_lift:'粗加工提起Z',z_car_lift:'车载取出提起Z',z_proc_place:'粗加工释放Z',z_temp_place:'暂存第一层释放Z',z_stack_place:'暂存第二层释放Z',x_car:'车载取放口X',base_car_offset:'车载Base偏转角'})[key],group:'取放场景',min:-10000,max:10000})),
-];
+  ...[['z_ppm','Z 命令脉冲 / mm'],['x_ppm','X 命令脉冲 / mm']].map(([key,label])=>({key,label,group:'尺度与行程'})),
+  ...[['z_min','Z 最小位置'],['z_max','Z 最大位置'],['z_grab','Z 夹持位置'],['z_place','Z 放置位置'],['z_lift','Z 提起位置'],['z_observe','Z 观察位置'],['x_min','X 最小位置'],['x_max','X 最大位置'],['x_pre','X 预备位置']].map(([key,label])=>({key,label:`${label} / mm`,group:'尺度与行程'})),
+  ...[['pos_tol','轴到位容差 / mm'],['stop_speed','停稳速度阈值 / mm·s⁻¹'],['dx_tol','DX 抓取窗口 / px'],['dy_tol','DY 抓取窗口 / px']].map(([key,label])=>({key,label,group:'反馈与抓取条件'})),
+  ...[['close_ms','夹爪闭合 / 松开等待 / ms'],['stable_ms','精定位稳定时间 / ms']].map(([key,label])=>({key,label,group:'反馈与抓取条件'})),
+  ...[['feedback_ms','反馈最大年龄 / ms'],['age_ms','有效坐标接收超时 / ms']].map(([key,label])=>({key,label,group:'反馈与抓取条件'})),
+  {key:'vision_wait_ms',label:'目标颜色等待窗口 / ms',group:'反馈与抓取条件'},
+  {key:'loss_grace_ms',label:'视觉对准短暂漏检容忍 / ms（0 关闭）',group:'反馈与抓取条件'},
+  {key:'frames',label:'稳定坐标观测次数',group:'反馈与抓取条件'},
+  {key:'retries',label:'重新对准次数上限',group:'反馈与抓取条件'},
+  {key:'ref_u',label:'观察姿态准心 U / px',group:'准心与像素响应'},
+  {key:'ref_v',label:'观察姿态准心 V / px',group:'准心与像素响应'},
+  ...[['j00','DX / 底盘前进'],['j01','DX / 底盘左移'],['j02','DX / X 伸出'],['j10','DY / 底盘前进'],['j11','DY / 底盘左移'],['j12','DY / X 伸出']].map(([key,label])=>({key,label:`${label} / px·mm⁻¹`,group:'准心与像素响应'})),
+  ...[['body_speed','底盘速度上限'],['x_speed','X 视觉对准速度上限'],['x_transfer_speed','X 正式取放 / 入仓测试速度'],['z_speed','Z 速度上限']].map(([key,label])=>({key,label:`${label} / mm·s⁻¹`,group:'控制与运动边界'})),
+  {key:'z_pick_speed',label:'物料夹取下降速度 / mm·s⁻¹',group:'控制与运动边界'},
+  {key:'accel',label:'平移加速度上限 / mm·s⁻²',group:'控制与运动边界'},
+  {key:'travel_mm',label:'局部底盘行程上限 / mm（0 关闭）',group:'控制与运动边界'},
+  {key:'lead_mm',label:'X 目标领先反馈上限 / mm',group:'控制与运动边界'},
+  {key:'lambda',label:'视觉收敛增益 / s⁻¹',group:'控制与运动边界'},
+  {key:'x_weight',label:'X 分配权重',group:'控制与运动边界'},
+  ...['z_proc_grab','z_proc_lift','z_car_lift','z_proc_place','z_temp_place','z_stack_place','x_car','base_car_offset'].map(key=>({key,label:({z_proc_grab:'粗加工夹取Z',z_proc_lift:'粗加工提起Z',z_car_lift:'车载取出提起Z',z_proc_place:'粗加工释放Z',z_temp_place:'暂存第一层释放Z',z_stack_place:'暂存第二层释放Z',x_car:'车载取放口X',base_car_offset:'车载Base偏转角'})[key],group:'取放场景'})),
+].map(p=>({...p,...GRAB_PARAMETER_METADATA[p.key]}));
 export const turntableParameters=[
   ...[['slot1_deg','第一仓位 / °'],['slot2_deg','第二仓位 / °'],['slot3_deg','第三仓位 / °']].map(([key,label])=>({key,label,min:-360,max:360,readOnly:key==='slot1_deg'})),
   {key:'speed_rpm',label:'分度速度 / RPM',min:1,max:5000,step:1},
@@ -87,7 +88,7 @@ export const commands = [
   command('grab-stop','vision','停止单件抓取','grab stop',[],'停止自动推进并请求机构停止；保留夹持和 Z 承载。停止确认以新鲜反馈为准。'),
   command('grab-rehome','vision','重新建立三轴参考','grab rehome',[],'先移走夹持物并确认机械臂周围无障碍；按 Z、X、Base 顺序重新回零并读回验证。各轴确认后恢复对应默认参考，三轴完成后才能开始新任务。'),
   ...grabParameters.map(p=>command(`grab-get-${p.key}`,'vision',`读取 ${p.label}`,`grab get ${p.key}`)),
-  ...grabParameters.map(p=>command(`grab-set-${p.key}`,'vision',p.label,`grab set ${p.key} {value}`,[number('value',p.label,grabDefaults[p.key]??'',p.min,p.max,p.step??'any')],p.key in grabDefaults?'预填程序默认值，不是设备读回值；X/Z尺度和位置在上电或 grab rehome 对应轴验证成功后载入，容差和等待时间在启动时载入。单轴手动回零只受理动作，不自动恢复参考参数。修改仅存MCU RAM，运行中拒绝修改。':'仅设置 MCU RAM；复位后需重新配置。运行中拒绝修改，输入值不代表设备已接受。')),
+  ...grabParameters.map(p=>command(`grab-set-${p.key}`,'vision',p.label,`grab set ${p.key} {value}`,[{...number('value',p.label,grabDefaults[p.key]??'',p.min,p.max,p.step??'any'),exclusiveMin:p.exclusiveMin}],p.key in grabDefaults?'预填程序默认值，不是设备读回值；X/Z尺度和位置在上电或 grab rehome 对应轴验证成功后载入，容差和等待时间在启动时载入。单轴手动回零只受理动作，不自动恢复参考参数。修改仅存MCU RAM，运行中拒绝修改。':'仅设置 MCU RAM；复位后需重新配置。运行中拒绝修改，输入值不代表设备已接受。')),
   command('pos','arm','相对转动','pos {axis} {degree}',[axis(),number('degree','电机轴相对角度 / °',10,-360,360,0.1)],'正负值表示方向；这是相对运动，不是绝对位置。本面板单次输入限 ±360°，固件另有脉冲限制。'),
   ...[['enable','使能'],['disable','取消使能'],['state','查询状态'],['stop','停止']].map(([id,label]) => command(id,'arm',label,`${id} {axis}`,[axis(true)])),
   command('position','arm','读取当前位置','position {axis}',[axis()],'返回值为脉冲数。'),
@@ -103,18 +104,14 @@ export const commands = [
   command('chassis-stop','chassis','底盘停止','chassis stop',[],'固件可能返回 busy；以实际回复和小车状态为准。'),
   command('wheel','chassis','单轮测试','wheel {wheel} {rpm}',[choice('wheel','选择车轮',[['fl','左前 · fl'],['rl','左后 · rl'],['rr','右后 · rr'],['fr','右前 · fr']]),number('rpm','转速 / RPM',10,-100,100)],'正负值表示方向；停止请使用「车轮停止」。'),
   command('wheel-stop','chassis','车轮停止','wheel stop'),
-  command('vision-status','vision','视觉状态','vision status'),
   command('camera-material','vision','相机识别物料','camera material {target}',[target()]),
   command('camera-stop','vision','停止相机请求','camera stop'),
   command('camera-status','vision','相机与 USB 状态','camera status',[],'读取香橙派最新坐标及USB状态；使用B2颜色识别。'),
   command('material-auto','vision','物料搜索与对准','material auto {target}',[target()],'已包含相机识别与对准；ALIGNED 仅表示对准完成，不表示完整搬运完成。'),
   command('material-status','vision','物料任务状态','material status'),
   command('material-stop','vision','停止物料任务','material stop'),
-  command('vision-ref','vision','设置视觉参考点','vision ref'),
-  command('vision-calib-material','vision','机械臂物料标定','vision calib material {target}',[target()]),
-  command('vision-calib-chassis','vision','底盘物料标定','vision calib chassis {target}',[target()]),
-  command('vision-material','vision','物料对准','vision material {target}',[target()]),
-  command('vision-stop','vision','停止视觉任务','vision stop'),
+  command('material-ref','vision','确认旧物料搜索观察姿态','material ref'),
+  command('material-calib','vision','底盘物料标定','material calib {target}',[target()]),
   command('system-reset','system','重启 STM32','system reset',[],'仅空闲时重启主控；会重新执行初始化，不能代替停车或电机驱动器复位。'),
   command('imu-zero','system','Z 轴角度清零','imu zero',[],'保持静止；只将当前模块角度设为零，不做零偏标定。之后重新验证 IMU 并设置地图起点。'),
   command('info','system','设备信息','info'),
@@ -151,8 +148,8 @@ export const commands = [
 ];
 
 // Keep stable command groups/IDs; owner is the six-page UI module.
-const debugIds = new Set(['position','grip-idle','grip-duty','move','velocity','wheel','wheel-stop','chassis-hold','chassis-status','feedback-read','feedback-select','feedback-on','feedback-off','camera-material','camera-status','camera-stop','vision-material','imu-stream-on','imu-stream-off']);
-const calibrationIds = new Set(['home','origin','zero','config-get','config-set','vision-ref','vision-calib-material','vision-calib-chassis','units','reset-confirmed','chassis-origin','imu-cal-start','imu-verify','imu-cal-cancel']);
+const debugIds = new Set(['position','grip-idle','grip-duty','move','velocity','wheel','wheel-stop','chassis-hold','chassis-status','feedback-read','feedback-select','feedback-on','feedback-off','camera-material','camera-status','camera-stop','imu-stream-on','imu-stream-off']);
+const calibrationIds = new Set(['home','origin','zero','config-get','config-set','material-ref','material-calib','units','reset-confirmed','chassis-origin','imu-cal-start','imu-verify','imu-cal-cancel']);
 for (const definition of commands) {
   definition.owner = definition.group === 'grip' ? 'arm' : definition.group;
   definition.section = calibrationIds.has(definition.id)||definition.id.startsWith('grab-set-') ? 'calibration' : debugIds.has(definition.id) ? 'debug' : 'common';
@@ -192,7 +189,7 @@ export function buildCommand(id, values = {}) {
     } else {
       const value = Number(raw);
       if (!raw || !/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(raw) || !Number.isFinite(value) ||
-          value < field.min || value > field.max || (field.step === 1 && !Number.isInteger(value)))
+          value < field.min || (field.exclusiveMin && value === field.min) || value > field.max || (field.step === 1 && !Number.isInteger(value)))
         throw new Error(`${field.label}：请输入 ${field.min}～${field.max}${field.step === 1 ? ' 的整数' : ' 的数值'}。`);
     }
     checked[field.key] = raw;

@@ -15,7 +15,7 @@ bool ChassisRoute_IsBusy(void){return route_busy;}
 bool ChassisRoute_IsSubmitting(void){return route_submitting;}
 bool Mecanum_CanStopCleanly(void){return true;}
 static uint32_t tick;
-static bool valid,cal_busy,vision_busy,arm_busy,material_busy,motor_busy,grab_busy,proportional_pid,accept=true;
+static bool valid,cal_busy,arm_busy,material_busy,motor_busy,grab_busy,proportional_pid,accept=true;
 static unsigned sends,stops,pid_calls;
 static float sent_vx,sent_vy,sent_omega,pid_current;
 static HWT101_Angle_t angle;
@@ -23,7 +23,6 @@ static Mecanum_Status_t bus;
 uint32_t HAL_GetTick(void){return tick;}
 bool HWT101_Cal_IsBusy(void){return cal_busy;}
 bool HWT101_Cal_ControlAngleGet(HWT101_Angle_t *out){if(!valid||cal_busy)return false;*out=angle;return true;}
-uint8_t ArmVision_IsBusy(void){return vision_busy;}
 uint8_t MaterialVision_IsBusy(void){return material_busy;}
 uint8_t MechanicalArm_IsBusy(void){return arm_busy;}
 bool Mecanum_IsBusy(void){return motor_busy;}
@@ -47,7 +46,7 @@ float Mecanum_HeadingPid_Update(Mecanum_HeadingPid_t *p,float current)
 }
 static void reading(uint32_t now,float yaw){tick=now;angle.yaw=yaw;angle.last_update_ms=now;angle.update_count++;}
 static ChassisMotion_Status_t status(void){ChassisMotion_Status_t s;ChassisMotion_StatusGet(&s);return s;}
-static void reset(void){memset(&location,0,sizeof(location));route_busy=route_submitting=false;tick=0;sends=stops=pid_calls=0;valid=cal_busy=vision_busy=arm_busy=material_busy=motor_busy=grab_busy=proportional_pid=false;accept=true;memset(&bus,0,sizeof(bus));bus.ack_profile=MECANUM_ACK_NONE;memset(&angle,0,sizeof(angle));ChassisMotion_Init();}
+static void reset(void){memset(&location,0,sizeof(location));route_busy=route_submitting=false;tick=0;sends=stops=pid_calls=0;valid=cal_busy=arm_busy=material_busy=motor_busy=grab_busy=proportional_pid=false;accept=true;memset(&bus,0,sizeof(bus));bus.ack_profile=MECANUM_ACK_NONE;memset(&angle,0,sizeof(angle));ChassisMotion_Init();}
 static void complete_stop(void){bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;ChassisMotion_Process();}
 int main(void)
 {
@@ -97,7 +96,6 @@ int main(void)
   assert(ChassisMotion_Start(&t));tick=20;ChassisMotion_Process();assert(fabsf(sent_vx-1000)<.01f);
   reset();t.vx_mm_s=4000;t.vy_mm_s=4000;assert(!ChassisMotion_Start(&t));t.vy_mm_s=0;t.vx_mm_s=NAN;assert(!ChassisMotion_Start(&t));
   t.vx_mm_s=50;t.omega_rad_s=1.746f;assert(!ChassisMotion_Start(&t));t.omega_rad_s=0;
-  vision_busy=true;assert(!ChassisMotion_Start(&t));vision_busy=false;
   material_busy=true;assert(!ChassisMotion_Start(&t));material_busy=false;
   arm_busy=true;assert(!ChassisMotion_Start(&t));arm_busy=false;
   cal_busy=true;assert(!ChassisMotion_Start(&t));cal_busy=false;

@@ -1,3 +1,4 @@
+import {GRAB_FORM_DEFAULTS,GRAB_PARAMETER_METADATA} from './grab-parameter-metadata.mjs';
 export const TRACK_PRESET=Object.freeze({body_speed:160,x_speed:60,accel:300,lambda:2.5,x_weight:2.333333,lead_mm:12,tol_px:5,control_ms:20,batch_ms:0,latency_ms:50,fit_ms:240,horizon_ms:120,grace_ms:250});
 const labels={body_speed:'底盘合速度 / mm/s',x_speed:'伸缩速度 / mm/s',accel:'联合加速度 / mm/s²',lambda:'残余误差增益 / s⁻¹',x_weight:'伸缩分配权重',lead_mm:'最大领先 / mm',tol_px:'位置窗口 / px',control_ms:'定时预测间隔（新视觉包即时修正）/ ms',batch_ms:'额外批次限频（0为应答驱动）/ ms',latency_ms:'延迟联调初值 / ms',fit_ms:'拟合窗口 / ms',horizon_ms:'X前瞻 / ms',grace_ms:'短漏检预测 / ms'};
 const text={track_observe:'仅观察 · 不运动',track_match:'正在匹配速度',track_follow:'稳定跟随',track_pause:'保持姿态',idle:'空闲',stopping:'停车中',error:'故障停止',settle:'确认停稳',descend:'快速下降夹取',close:'闭爪',lift:'提起物料',complete:'动作完成',track_pick_stopping:'对准后停车确认',track_pick_descend:'目标仍在窗口内 · 下降',track_pick_reacquire:'停车时目标移动 · 继续追踪',track_pick_complete:'已夹取并提起 · 等待下一步',track_observing:'正在观察和估计',track_matching:'位置与速度匹配',track_following:'像素到点后仍持续跟随',track_visual_wait:'视觉暂停 · 新观测恢复后继续',track_window_end:'行程暂不足 · 保持观察，目标返回可追范围后继续',track_window_recovered:'目标已返回可追范围 · 自动续追',track_recovered:'视觉已恢复',cancelled:'人工停止',stop_unconfirmed:'停车尚未取得反馈确认'};
@@ -80,8 +81,9 @@ export function mountTracking({root,send,canSend=()=>false}){
   function numberField(label,value,step,min,max){const wrap=el('label',label),input=el('input');input.type='number';input.step=step;input.min=min;input.max=max;input.value=value;wrap.append(input);pickup.append(wrap);return input;}
   const budget=numberField('首次建立参考：剩余接近余量 / mm',50,1,0,50);
   const pickupZ=numberField('物料夹取 Z 绝对高度 / mm',-80,1,-150,0);
-  const pickupSpeed=numberField('物料夹取下降速度 / mm/s',111.111,1,1,333.333);
-  const number=(input,label)=>{const value=Number(input.value);if(input.value===''||!Number.isFinite(value)||value<Number(input.min)||value>Number(input.max))throw new Error(`${label}输入无效`);return value;};
+  const pickupSpeed=numberField('物料夹取下降速度 / mm/s',GRAB_FORM_DEFAULTS.z_pick_speed,1,GRAB_PARAMETER_METADATA.z_pick_speed.min,GRAB_PARAMETER_METADATA.z_pick_speed.max);
+  pickupSpeed.exclusiveMin=GRAB_PARAMETER_METADATA.z_pick_speed.exclusiveMin;
+  const number=(input,label)=>{const value=Number(input.value);if(input.value===''||!Number.isFinite(value)||value<Number(input.min)||(input.exclusiveMin&&value===Number(input.min))||value>Number(input.max))throw new Error(`${label}输入无效`);return value;};
   button(actions,'准备抓取姿态','grab pose work',async()=>{if(await send('grab pose work')){poseReply='抓取姿态已请求 · 等待设备确认到位';poseBusy=true;}});
   button(actions,'一键持续追踪','grab track begin',()=>send(`grab track begin ${color.value} ${number(budget,'接近余量')}`));
   button(actions,'追踪并夹取','grab track pick',()=>send(`grab track pick ${color.value} ${number(pickupZ,'夹取高度')} ${number(pickupSpeed,'下降速度')}`));

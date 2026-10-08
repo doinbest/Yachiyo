@@ -25,7 +25,4 @@
 #define MECHANICAL_ARM_DEGREES_PER_REV         360.0f
 /* 电机轴旋转一圈对应的角度，用于控制台角度和命令脉冲换算。 */
 
-#define MECHANICAL_ARM_CAR_X_DEFAULT_MM        100.0f
-/* 2026-10-05用户指定车载取放口X绝对位置为10cm；初始化及X回零验证后恢复，待动作验收。 */
-
 #endif /* __MECHANICAL_ARM_CONFIG_H */

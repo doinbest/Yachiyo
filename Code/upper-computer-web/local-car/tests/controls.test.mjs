@@ -76,7 +76,10 @@ test('module classification preserves favorite wire text and refuses to infer ge
   assert.equal(commands.find(c=>c.id==='grip-open').group,'grip');
   assert.equal(commands.find(c=>c.id==='grip-open').owner,'arm');
   assert.equal(commands.find(c=>c.id==='camera-material').section,'debug');
-  assert.equal(commands.find(c=>c.id==='vision-calib-material').section,'calibration');
+  assert.equal(commands.find(c=>c.id==='material-calib').section,'calibration');
+  assert.equal(commands.some(c=>c.wire?.startsWith('vision ')||c.id.startsWith('vision-')),false);
+  assert.equal(buildCommand('material-ref'),'material ref');
+  assert.equal(buildCommand('material-calib',{target:'3'}),'material calib 3');
   assert.equal(buildCommand('material-auto',{target:'3'}),'material auto 3');
   assert.doesNotMatch(describeReply('OK material state=ALIGNED'),/搬运完成|已到位/);
 });

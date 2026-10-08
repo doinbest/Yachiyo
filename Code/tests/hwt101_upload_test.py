@@ -106,8 +106,6 @@ assert 'HWT101_Cal_Process();' in source
 assert source.index('HWT101_Process();') < source.index('HWT101_Cal_Process();') < source.index('Mecanum_Velocity_Process();')
 assert 'if (OptionalDisplayReady()) OledUi_Process();' in source
 assert '!HWT101_Cal_IsBusy() && !ChassisMotion_IsBusy() && !ChassisRoute_IsBusy()' in source
-color_start = re.search(r'static void ArmVision_ColorAlignStart\(void\).*?\n\}', source, re.S).group()
-assert 'HWT101_Cal_IsBusy()' in color_start
 assert 'HWT101_Drift_' not in source and 'HWT101_Store_' not in source
 OUT.mkdir(parents=True, exist_ok=True)
 path=OUT/'hwt101_upload_test.c';exe=OUT/'hwt101_upload_test.exe'

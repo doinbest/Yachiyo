@@ -36,6 +36,7 @@ def build_test(name, *sources):
 
 
 if __name__ == "__main__":
+    run([sys.executable, "tools/sync_grab_parameters.py", "--check"])
     if (OUT / "host-tests.log").exists():
         from datetime import datetime
         import shutil
@@ -111,7 +112,6 @@ if __name__ == "__main__":
     build_test("mecanum_heading_test", "-Itemplate/System")
     build_test("w25q128_test", "template/Hardware/w25q128.c")
     build_test("material_vision_test")
-    build_test("arm_vision_test")
     build_test("key_test", "template/Hardware/key.c")
     build_test("arm_console_host_test")
     # UI supplies synthetic snapshots; retain the production visual-state classifier.

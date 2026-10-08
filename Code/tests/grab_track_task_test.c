@@ -465,6 +465,10 @@ static void visual_pause_still_recovers(void)
 
 int main(void)
 {
+  reset(); configure(true); configured_x_acc=47;
+  TrackControlSequence=1; TrackXControlSequence=0; TrackIoSlot=0;
+  TrackOutput.velocity_mm_s[2]=20; TrackOutput.x_target_mm=1;
+  track_io(clock_ms,true); assert(x_position_acc==47 && positions==1);
   char *observe[]={"grab","track","observe"};
   char *reference[]={"grab","track","reference"};
   char *start[]={"grab","track","start"};

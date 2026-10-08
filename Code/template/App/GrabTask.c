@@ -1,6 +1,5 @@
 #include "GrabTask.h"
 #include "Arm.h"
-#include "ArmVision.h"
 #include "MaterialVision.h"
 #include "Camera.h"
 #include "chassis_route.h"
@@ -28,25 +27,27 @@
  * Vision starts from an explicitly unmeasured trial model, adjustable with grab set. */
 enum
 {
-  C_X_PPM, C_Z_PPM, C_X_MIN, C_X_MAX, C_Z_MIN, C_Z_MAX,
-  C_X_PRE, C_Z_OBSERVE, C_Z_GRAB, C_Z_LIFT, C_POS_TOL, C_STOP_SPEED,
-  C_CLOSE_MS, C_AGE_MS, C_FEEDBACK_MS, C_ACCEL, C_TRAVEL,
-  C_LEAD, C_DX_TOL, C_DY_TOL, C_REF_U, C_REF_V,
-  C_J00, C_J01, C_J02, C_J10, C_J11, C_J12,
-  C_LAMBDA, C_BODY_SPEED, C_X_SPEED, C_Z_SPEED, C_STABLE_MS, C_FRAMES,
-  C_RETRIES, C_X_WEIGHT, C_Z_PLACE, C_LOSS_GRACE_MS,
-  C_Z_PROC_GRAB, C_Z_PROC_LIFT, C_Z_CAR_LIFT, C_Z_PROC_PLACE,
-  C_Z_TEMP_PLACE, C_Z_STACK_PLACE, C_X_CAR, C_BASE_CAR_OFFSET, C_VISION_WAIT_MS, C_X_TRANSFER_SPEED, C_Z_PICK_SPEED, C_COUNT
+#define PARAM(id,key,initial,min,max,flags,phase) id,
+#include "grab_parameters.def"
+#undef PARAM
+  C_COUNT
 };
 static const char *const Keys[C_COUNT] = {
-  "x_ppm","z_ppm","x_min","x_max","z_min","z_max","x_pre","z_observe",
-  "z_grab","z_lift","pos_tol","stop_speed","close_ms","age_ms","feedback_ms",
-  "accel","travel_mm","lead_mm","dx_tol","dy_tol","ref_u","ref_v",
-  "j00","j01","j02","j10","j11","j12","lambda","body_speed","x_speed",
-  "z_speed","stable_ms","frames","retries","x_weight","z_place","loss_grace_ms",
-  "z_proc_grab","z_proc_lift","z_car_lift","z_proc_place","z_temp_place",
-  "z_stack_place","x_car","base_car_offset","vision_wait_ms","x_transfer_speed","z_pick_speed"
+#define PARAM(id,key,initial,min,max,flags,phase) key,
+#include "grab_parameters.def"
+#undef PARAM
 };
+typedef struct
+{
+  float initial, minimum, maximum;
+  unsigned char validation, phase;
+} GrabParameter_t;
+static const GrabParameter_t Parameters[C_COUNT] = {
+#define PARAM(id,key,initial,min,max,flags,phase) {initial,min,max,flags,phase},
+#include "grab_parameters.def"
+#undef PARAM
+};
+enum { DEFAULT_INIT=1, DEFAULT_X_HOME=2, DEFAULT_Z_HOME=4, DEFAULT_VISUAL=8 };
 static const char *const States[] = {"idle","prepare","acquire","align","settle",
   "descend","close","lift","turn","place","release","retract","hold","stopping","error","homing","vision_pause","vision_grace",
   "x_retract","index","car_extend","return_turn","external_extend","observe_z","observe_x","complete",
@@ -266,11 +267,14 @@ static bool solve(float dx, float dy, float x, float result[3])
  * Errors are DX=CX-ref_u and DY=ref_v-CY; both left and extension increase DY.
  * 2 px/mm remains an initial control scale, NOT a measured camera calibration. */
 static bool VisualModelCustom;
+static void defaults_restore(unsigned phase)
+{
+  unsigned i;
+  for(i=0;i<C_COUNT;i++) if(Parameters[i].phase & phase) Config[i]=Parameters[i].initial;
+}
 static void visual_defaults_restore(void)
 {
-  Config[C_REF_U]=334; Config[C_REF_V]=338;
-  Config[C_J00]=2; Config[C_J01]=0; Config[C_J02]=0;
-  Config[C_J10]=0; Config[C_J11]=2; Config[C_J12]=2;
+  defaults_restore(DEFAULT_VISUAL);
   VisualModelCustom=false;
 }
 static const char *visual_model_name(void)
@@ -351,21 +355,7 @@ void GrabTask_Init(void)
   RecoveryUsed=RecoveryCount=0; RecoveryWaiting=RecoveryRestartPending=false;
   LossActive=false; LossTick=LossLastMs=LossMaxMs=GraceCount=GraceSequence=0;
   for(i=0;i<C_COUNT;i++) Config[i]=NAN;
-  /* Shared static color/ring/pick profile from the validated numbered-ring tuning. */
-  Config[C_LAMBDA]=2.5f; Config[C_BODY_SPEED]=160; Config[C_X_SPEED]=60;
-  Config[C_X_TRANSFER_SPEED]=60; /* Shared mission/manual transfer speed, mm/s. */
-  /* Z: user-requested 500 RPM at 3200 command pulses/rev and 480 pulses/mm.
-   * Keep the public z_speed setting in mm/s; home O_Vel is driver-owned. */
-  Config[C_Z_SPEED]=500.0f*3200.0f/(60.0f*480.0f);
-  Config[C_Z_PICK_SPEED]=1000.0f*3200.0f/(60.0f*480.0f);
-  Config[C_STABLE_MS]=200; Config[C_FRAMES]=3; Config[C_RETRIES]=2; Config[C_X_WEIGHT]=2.333333f;
-  Config[C_POS_TOL]=1; Config[C_STOP_SPEED]=2; /* mm / mm/s, initial relaxed acceptance thresholds. */
-  Config[C_FEEDBACK_MS]=2000; Config[C_CLOSE_MS]=500;
-  Config[C_AGE_MS]=1000; Config[C_ACCEL]=300; Config[C_TRAVEL]=0; Config[C_LEAD]=12;
-  Config[C_DX_TOL]=1; Config[C_DY_TOL]=1;
-  Config[C_LOSS_GRACE_MS]=250; Config[C_VISION_WAIT_MS]=12000;
-  Config[C_Z_CAR_LIFT]=0; Config[C_BASE_CAR_OFFSET]=-180;
-  Config[C_X_CAR]=MECHANICAL_ARM_CAR_X_DEFAULT_MM;
+  defaults_restore(DEFAULT_INIT);
   visual_defaults_restore();
   memset(&Status,0,sizeof Status); memset(Axes,0,sizeof Axes);
   Status.mode="fixed"; Status.reason="idle"; Status.missing="z_ppm";
@@ -518,7 +508,7 @@ static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOpera
     { Status.reason=op==OP_STORE?"slot_occupied":"slot_empty"; Status.missing="slot_inventory"; return false; }
     if(op==OP_TAKE) ActiveColor=(Camera_ColorTypeDef)inventory.color;
   }
-  if(ArmVision_IsBusy() || MaterialVision_IsBusy() || ChassisRoute_IsBusy() ||
+  if(MaterialVision_IsBusy() || ChassisRoute_IsBusy() ||
      ChassisMotion_IsBusy() || MechanicalArm_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy())
   { Status.reason="busy"; return false; }
   Mecanum_StatusGet(&bus);
@@ -591,7 +581,7 @@ bool GrabTask_PoseStart(bool work)
   unsigned i;
   Mecanum_Status_t bus;
   if(GrabTask_IsBusy() || MechanicalArm_IsBusy() || Turntable_IsBusy() ||
-     ArmVision_IsBusy() || MaterialVision_IsBusy() || HWT101_Cal_IsBusy())
+     MaterialVision_IsBusy() || HWT101_Cal_IsBusy())
   { Status.reason="busy";return false; }
   if(!RearReferenceValid) { Status.reason="rear_reference_missing";return false; }
   for(i=C_X_PPM;i<=C_Z_MAX;i++) if(!isfinite(Config[i]))
@@ -627,6 +617,7 @@ static bool result_accept(MechanicalArm_ResultTypeDef result, MechanicalArm_Acti
 static bool axis_move(unsigned i,float target)
 {
   MechanicalArm_AxisTypeDef axis=i==0?MECHANICAL_ARM_AXIS_X:MECHANICAL_ARM_AXIS_Z;
+  MechanicalArm_ConfigTypeDef config;
   float ppm=Config[i==0?C_X_PPM:C_Z_PPM], speed=i==0?align_parameter(C_X_SPEED):Config[C_Z_SPEED];
   /* Fast material descent is shared by formal store and tracking pickup;
    * numbered-ring placement and observation keep their original Z speed. */
@@ -643,7 +634,8 @@ static bool axis_move(unsigned i,float target)
   if(target<minimum || target>maximum || !isfinite(target)) { fault("axis_limit"); return false; }
   if(PendingAction!=MECHANICAL_ARM_ACTION_NONE || MechanicalArm_IsBusy()) return false;
   pulses=(int32_t)lroundf(target*ppm);
-  if(!result_accept(MechanicalArm_PositionEx(axis,pulses,rpm,8,
+  if(!MechanicalArm_ConfigGet(axis,&config)) { fault("axis_config"); return false; }
+  if(!result_accept(MechanicalArm_PositionEx(axis,pulses,rpm,config.Acceleration,
     MECHANICAL_ARM_POSITION_ABSOLUTE),MECHANICAL_ARM_ACTION_POSITION,axis)) return false;
   target=(float)pulses/ppm;
   Axes[i].target=target; Axes[i].command_tick=HAL_GetTick(); Axes[i].commanded=true;
@@ -1687,16 +1679,11 @@ static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
       /* Restore known defaults only after this axis has passed homing feedback. */
       if(axis==MECHANICAL_ARM_AXIS_Z)
       {
-        Config[C_Z_PPM]=480; Config[C_Z_MIN]=-150; Config[C_Z_MAX]=0;
-        Config[C_Z_GRAB]=-80; Config[C_Z_LIFT]=-40; Config[C_Z_PLACE]=-60; Config[C_Z_CAR_LIFT]=0;
-        Config[C_Z_OBSERVE]=0;
+        defaults_restore(DEFAULT_Z_HOME);
       }
       else if(axis==MECHANICAL_ARM_AXIS_X)
       {
-        /* User measurement: 100 motor degrees -> 28 mm; 3200 command pulses/rev. */
-        Config[C_X_PPM]=3200.0f*100.0f/(360.0f*28.0f);
-        Config[C_X_MIN]=0; Config[C_X_MAX]=100; Config[C_X_PRE]=0;
-        Config[C_X_CAR]=MECHANICAL_ARM_CAR_X_DEFAULT_MM;
+        defaults_restore(DEFAULT_X_HOME);
       }
       else if(axis==MECHANICAL_ARM_AXIS_BASE)
       {
@@ -1722,30 +1709,10 @@ static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
 }
 static bool config_value_valid(unsigned key,float value)
 {
-  if(!isfinite(value)) return false;
-  if(key==C_X_PPM || key==C_Z_PPM) return value>0 && value<=100000;
-  if(key==C_Z_PLACE || (key>=C_X_MIN && key<=C_Z_LIFT) ||
-     (key>=C_Z_PROC_GRAB && key<=C_X_CAR)) return fabsf(value)<=10000;
-  if(key==C_BASE_CAR_OFFSET) return fabsf(value)<=360;
-  if(key>=C_J00 && key<=C_J12) return fabsf(value)<=10000;
-  if(key==C_REF_U || key==C_REF_V) return value>=0 && value<= (key==C_REF_U?639:479) && floorf(value)==value;
-  if(key==C_RETRIES) return value>=0 && value<=10 && floorf(value)==value;
-  if(key==C_VISION_WAIT_MS) return value>=1500 && value<=120000 && floorf(value)==value;
-  if(key==C_LOSS_GRACE_MS) return value>=0 && value<=300 && floorf(value)==value;
-  if(key==C_FRAMES) return value>=3 && value<=100 && floorf(value)==value;
-  if(key==C_CLOSE_MS || key==C_STABLE_MS || key==C_AGE_MS || key==C_FEEDBACK_MS)
-  {
-    float min=key==C_STABLE_MS?200:((key==C_AGE_MS || key==C_FEEDBACK_MS)?50:1);
-    float max=(key==C_AGE_MS || key==C_FEEDBACK_MS)?5000:120000;
-    return value>=min && value<=max && floorf(value)==value;
-  }
-  if(key==C_ACCEL) return value>0 && value<=1000;
-  if(key==C_LAMBDA) return value>=.001f && value<=10;
-  if(key==C_X_WEIGHT) return value>=.01f && value<=100;
-  if(key==C_BODY_SPEED) return value>0 && value<=300;
-  if(key==C_TRAVEL) return value>=0 && value<=10000;
-  if(key==C_LEAD) return value>0 && value<=10000;
-  return value>0 && value<=100;
+  const GrabParameter_t *p=&Parameters[key];
+  return isfinite(value) && value<=p->maximum &&
+    ((p->validation & 2)?value>p->minimum:value>=p->minimum) &&
+    (!(p->validation & 1) || floorf(value)==value);
 }
 static void reply(const char *text)
 { (void)ConsoleTx_Write((const uint8_t *)text,(uint16_t)strlen(text)); }
@@ -1933,7 +1900,11 @@ static void track_io(uint32_t now,bool moving)
       pulse=(int32_t)clamp((float)pulse,ceilf(Config[C_X_MIN]*ppm),floorf(Config[C_X_MAX]*ppm));
       if(TrackPulseValid && pulse==TrackLastPulse && speed==TrackLastRpm)
       { TrackXControlSequence=TrackControlSequence; continue; }
-      result=MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X,pulse,speed,8,MECHANICAL_ARM_POSITION_ABSOLUTE);
+      {
+        MechanicalArm_ConfigTypeDef config;
+        if(!MechanicalArm_ConfigGet(MECHANICAL_ARM_AXIS_X,&config)) { fault("axis_config"); return; }
+        result=MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X,pulse,speed,config.Acceleration,MECHANICAL_ARM_POSITION_ABSOLUTE);
+      }
       if(result_accept(result,MECHANICAL_ARM_ACTION_POSITION,MECHANICAL_ARM_AXIS_X))
       {
         TrackXDispatch.requested_pulses=pulse; TrackXDispatch.requested_rpm=speed;
@@ -2473,14 +2444,14 @@ static bool track_command(unsigned count,char *tokens[])
     if(pick && (!isfinite(Config[C_Z_MIN]) || !isfinite(Config[C_Z_MAX]) ||
        !isfinite(pickup) || pickup<Config[C_Z_MIN] || pickup>Config[C_Z_MAX] ||
        !isfinite(Config[C_Z_LIFT]) || Config[C_Z_LIFT]<=pickup || Config[C_Z_LIFT]>Config[C_Z_MAX] ||
-       !isfinite(speed) || speed*Config[C_Z_PPM]*60/3200<1 || speed*Config[C_Z_PPM]*60/3200>3000))
+       !config_value_valid(C_Z_PICK_SPEED,speed) || speed*Config[C_Z_PPM]*60/3200<1 || speed*Config[C_Z_PPM]*60/3200>3000))
     { reply("ERR grab track pickup height/speed; inspect z_grab z_lift z_pick_speed\r\n");return true; }
     Camera_ColorTypeDef color=tracking_mode()?ActiveColor:CAMERA_COLOR_BLUE;
     HWT101_Angle_t angle; Mecanum_Status_t tx; Camera_SnapshotTypeDef camera;
     if(count>=4)
     { if(strlen(tokens[3])!=1 || tokens[3][0]<'1' || tokens[3][0]>'6') { reply("ERR grab track color\r\n"); return true; } color=(Camera_ColorTypeDef)(tokens[3][0]-'0'); }
     if((GrabTask_IsBusy() && Status.state!=GRAB_HOLD && Status.state!=GRAB_TRACK_OBSERVE &&
-       !(Status.state==GRAB_TRACK_PAUSE && Status.stop_confirmed)) || ArmVision_IsBusy() || MaterialVision_IsBusy() ||
+       !(Status.state==GRAB_TRACK_PAUSE && Status.stop_confirmed)) || MaterialVision_IsBusy() ||
        ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy())
     { reply("ERR grab track busy\r\n"); return true; }
     if(!isfinite(Config[C_X_PPM]) || !isfinite(Config[C_X_MIN]) || !isfinite(Config[C_X_MAX]) || !isfinite(Config[C_Z_PPM]))
@@ -2811,7 +2782,7 @@ bool GrabTask_Command(unsigned count,char *tokens[])
   {
     Mecanum_Status_t bus;
     Mecanum_StatusGet(&bus);
-    if((Status.state!=GRAB_IDLE && Status.state!=GRAB_COMPLETE && Status.state!=GRAB_ERROR) || MechanicalArm_IsBusy() || ArmVision_IsBusy() ||
+    if((Status.state!=GRAB_IDLE && Status.state!=GRAB_COMPLETE && Status.state!=GRAB_ERROR) || MechanicalArm_IsBusy() ||
        MaterialVision_IsBusy() || ChassisRoute_IsBusy() ||
        ChassisMotion_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy() ||
        bus.locked || bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)

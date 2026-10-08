@@ -1,3 +1,4 @@
+import {GRAB_FORM_DEFAULTS} from '../grab-params.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseTrack,TRACK_PRESET,trackText,TrackingPanelModel,mountTracking,trackCrc} from '../grab-track.mjs';
@@ -86,7 +87,7 @@ test('mount/reconnect are passive; one-click entry and preparation are explicit'
     panel.connection(false);assert.equal(panel.model.current,false);
     panel.connection(true);assert.equal(wires.length,2);
     await ui.all().find(e=>e.title==='grab track pick').onclick();
-    assert.equal(wires.at(-1),'grab track pick 3 -80 111.111');
+    assert.equal(wires.at(-1),`grab track pick 3 -80 ${GRAB_FORM_DEFAULTS.z_pick_speed}`);
     await ui.all().find(e=>e.title==='grab track stop').onclick();
     assert.equal(wires.at(-1),'grab track stop');
   }finally{ui.restore();}

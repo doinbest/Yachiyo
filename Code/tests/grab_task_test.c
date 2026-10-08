@@ -14,6 +14,7 @@ static float physical[3], destination[3];
 static unsigned positions, closures, openings, stops, camera_requests, velocity_requests;
 static uint16_t z_position_rpm;
 static uint8_t z_position_acc;
+static uint8_t x_position_acc, configured_x_acc=20, configured_z_acc=120;
 static int32_t z_position_pulses;
 static Camera_SnapshotTypeDef camera;
 static Camera_ColorTypeDef requested_color;
@@ -60,7 +61,6 @@ bool Turntable_IsBusy(void) { return tray_moving; }
 void Turntable_Stop(void) { tray_stops++; tray_moving=false; tray_status.moving=false; tray_status.reason="stopped"; }
 void Turntable_StatusGet(Turntable_Status_t *out) { *out=tray_status; out->moving=tray_moving; }
 uint32_t HAL_GetTick(void) { return clock_ms; }
-uint8_t ArmVision_IsBusy(void) { return 0; }
 uint8_t MaterialVision_IsBusy(void) { return 0; }
 static bool chassis_pose_route, chassis_pose_motion;
 bool ChassisRoute_IsBusy(void) { return chassis_pose_route; }
@@ -102,7 +102,7 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef a
  uint16_t rpm, uint8_t acc, MechanicalArm_PositionModeTypeDef mode)
 {
   assert(rpm > 0); (void)acc;
-  if(axis==MECHANICAL_ARM_AXIS_X) x_position_rpm=rpm;
+  if(axis==MECHANICAL_ARM_AXIS_X) { x_position_rpm=rpm; x_position_acc=acc; }
   if(axis == MECHANICAL_ARM_AXIS_BASE) {
     assert(mode == MECHANICAL_ARM_POSITION_RELATIVE_CURRENT || mode == MECHANICAL_ARM_POSITION_ABSOLUTE);
     base_position_mode=mode;
@@ -118,7 +118,8 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef a
   positions++; return queue(MECHANICAL_ARM_ACTION_POSITION, axis);
 }
 uint8_t MechanicalArm_ConfigGet(MechanicalArm_AxisTypeDef axis, MechanicalArm_ConfigTypeDef *out)
-{ assert(axis==MECHANICAL_ARM_AXIS_BASE); out->SpeedRpm=30; out->Acceleration=20; out->PulseLimit=3200; return 1; }
+{ out->SpeedRpm=30; out->Acceleration=axis==MECHANICAL_ARM_AXIS_X?configured_x_acc:
+    axis==MECHANICAL_ARM_AXIS_Z?configured_z_acc:20; out->PulseLimit=3200; return 1; }
 void Arm_GripperSet(Arm_GripperStatusTypeDef status)
 { if (status == ARM_GRIPPER_CATCH) closures++; else if (status == ARM_GRIPPER_OPEN) openings++; }
 #ifndef GRAB_COMMAND_SIM
@@ -194,6 +195,7 @@ static void reset(void)
   memset(&home_bus_diag,0,sizeof home_bus_diag);home_bus_diag.reason="none";
   clock_ms = 1000; pending_valid = false; positions = closures = openings = stops = 0;
   z_position_rpm=0; z_position_acc=0; z_position_pulses=0;
+  configured_x_acc=20; configured_z_acc=120; x_position_acc=0;
   requested_color=CAMERA_COLOR_RED; camera_requests = velocity_requests = 0; wheel_moving = false;
   camera_tx_result=HAL_OK; camera_attempts=camera_stops=0;
   wheel_stale = false; base_arrives=true; base_stale=false; base_mode2_absolute=false; base_moves=0; homes=aborts=0; home_flags=3; base_state_flags=3; boot_verify_calls=0; camera_logs=0; camera_log[0]=0;
@@ -988,12 +990,12 @@ static void grab_z_speed_matches_500_rpm(void)
   setting("x_car","0"); assert(GrabTask_Start("fixed")); run_to(GRAB_DESCEND,100,0);
   for(i=0;i<10 && !Axes[1].commanded;i++) step(true,0,0,0);
   /* Material descent shares 1000 RPM; normal lift retains 500 RPM. */
-  assert(z_position_rpm==1000 && z_position_pulses==-38400 && z_position_acc==8);
+  assert(z_position_rpm==1000 && z_position_pulses==-38400 && z_position_acc==120);
   assert(!closures); /* A submitted descent is not arrival. */
   pending_valid=false; PendingAction=MECHANICAL_ARM_ACTION_NONE;
   enter(GRAB_LIFT);
   assert(axis_move(1,-40));
-  assert(z_position_rpm==500 && z_position_pulses==-19200 && z_position_acc==8);
+  assert(z_position_rpm==500 && z_position_pulses==-19200 && z_position_acc==120);
   /* Preserve the existing mm/s setting, including the value sent by the UI. */
   reset(); configure(false); setting("z_ppm","480"); setting("z_speed","27.777778");
   assert(axis_move(1,-10)); assert(z_position_rpm==250 && z_position_pulses==-4800);
@@ -1179,6 +1181,27 @@ static void black_ring_manual_place(void)
 }
 int main(void)
 {
+  reset();
+  for(unsigned key=0;key<C_COUNT;key++) {
+    const GrabParameter_t *p=&Parameters[key];
+    if(isfinite(p->initial)) {
+      char value[40]; snprintf(value,sizeof value,"%.9g",p->initial);
+      setting(Keys[key],value);
+    }
+    assert(!config_value_valid(key,p->maximum+1));
+    assert(!config_value_valid(key,p->minimum-1));
+    assert(!config_value_valid(key,NAN));
+    if(p->validation & 1)assert(!config_value_valid(key,p->minimum+.5f));
+  }
+  reset(); assert(isnan(Config[C_Z_PROC_PLACE]));
+  assert(!config_value_valid(C_Z_PICK_SPEED,333.334f));
+  assert(!config_value_valid(C_BASE_CAR_OFFSET,361));
+  /* Device defaults must round-trip through the public parameter command. */
+  reset(); setting("z_pick_speed","111.111111"); setting("z_speed","222.222222");
+  reset(); configure(false); configured_x_acc=37; configured_z_acc=149;
+  assert(axis_move(0,1)); assert(x_position_acc==37);
+  pending_valid=false; PendingAction=MECHANICAL_ARM_ACTION_NONE;
+  assert(axis_move(1,1)); assert(z_position_acc==149);
   ring_reference_is_independent_of_material();
   ring_tracking_parameters();
   ring_approach_before_progressive_descent();

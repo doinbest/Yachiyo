@@ -2,7 +2,7 @@
 #include "chassis_route.h"
 #include "chassis_motion.h"
 
-#include "ArmVision.h"
+#include "GrabTask.h"
 #include "mecanum_chassis.h"
 #include "mechanical_arm_config.h"
 
@@ -22,7 +22,6 @@
 #define MATERIAL_VISION_MOTOR_POLL_MS 50U
 #define MATERIAL_VISION_X_ARRIVAL_TIMEOUT_MS 5000U
 #define MATERIAL_VISION_X_SPEED_RPM 8U
-#define MATERIAL_VISION_X_ACCELERATION 8U
 #define MATERIAL_VISION_X_CAL_STEP_DEG 5.0f  /* X轴标定角度。 */
 #define MATERIAL_VISION_LOCK_DX_PIXELS 80  /* 进入工作窗口的DX阈值。 */
 #define MATERIAL_VISION_LOCK_DY_PIXELS 100  /* 进入工作窗口的DY阈值。 */
@@ -78,6 +77,7 @@ typedef struct
 } MaterialVision_ResponseTypeDef;
 
 static MaterialVision_StateTypeDef MaterialVision_State;
+static uint8_t MaterialVision_ReferenceValid;
 static MaterialVision_TaskTypeDef MaterialVision_Task;
 static MaterialVision_PhaseTypeDef MaterialVision_Phase;
 static Camera_ColorTypeDef MaterialVision_Color;
@@ -268,6 +268,7 @@ static uint8_t MaterialVision_XMoveStart(float Degree)
 {
   int32_t Pulses;
   MechanicalArm_ResultTypeDef Result;
+  MechanicalArm_ConfigTypeDef Config;
 
   Pulses = (int32_t)(Degree * (float)MECHANICAL_ARM_COMMAND_PULSES_PER_REV /
                      MECHANICAL_ARM_DEGREES_PER_REV +
@@ -283,9 +284,14 @@ static uint8_t MaterialVision_XMoveStart(float Degree)
     MaterialVision_Error = MATERIAL_VISION_ERROR_X_LIMIT;
     return 0U;
   }
+  if (MechanicalArm_ConfigGet(MECHANICAL_ARM_AXIS_X, &Config) == 0U)
+  {
+    MaterialVision_Error = MaterialVision_MotorError(MECHANICAL_ARM_RESULT_PARAM_ERROR);
+    return 0U;
+  }
   Result = MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, Pulses,
                                     MATERIAL_VISION_X_SPEED_RPM,
-                                    MATERIAL_VISION_X_ACCELERATION,
+                                    Config.Acceleration,
                                     MECHANICAL_ARM_POSITION_RELATIVE_CURRENT);
   if (Result != MECHANICAL_ARM_RESULT_NONE)
   {
@@ -394,6 +400,21 @@ void MaterialVision_Init(void)
   MaterialVision_Task = MATERIAL_VISION_TASK_NONE;
   MaterialVision_Error = MATERIAL_VISION_ERROR_NONE;
   MaterialVision_Calibrated = 0U;
+  MaterialVision_ReferenceValid = 0U;
+}
+
+/** 确认当前安全观察姿态；普通停止不清除参考或标定。 */
+MaterialVision_ResultTypeDef MaterialVision_ReferenceSet(void)
+{
+  if (MaterialVision_IsBusy() || GrabTask_IsBusy() || MechanicalArm_IsBusy() ||
+      ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return MATERIAL_VISION_RESULT_BUSY;
+  MaterialVision_ReferenceValid = 1U;
+  return MATERIAL_VISION_RESULT_OK;
+}
+
+uint8_t MaterialVision_IsReferenceValid(void)
+{
+  return MaterialVision_ReferenceValid;
 }
 
 /** 启动物料自动搜索、粗调和X轴精调流程。 */
@@ -406,9 +427,9 @@ MaterialVision_ResultTypeDef MaterialVision_Start(Camera_ColorTypeDef Color)
     return MATERIAL_VISION_RESULT_PARAM_ERROR;
   if ((MaterialVision_IsBusy() != 0U) || ChassisRoute_IsBusy() || ChassisMotion_IsBusy())
     return MATERIAL_VISION_RESULT_BUSY;
-  if (ArmVision_IsBusy() != 0U)
+  if (GrabTask_IsBusy() != 0U)
     return MATERIAL_VISION_RESULT_BUSY;
-  if (ArmVision_IsReferenceValid() == 0U)
+  if (MaterialVision_IsReferenceValid() == 0U)
     return MATERIAL_VISION_RESULT_NOT_READY;
   if (MechanicalArm_IsBusy() != 0U)
     return MATERIAL_VISION_RESULT_BUSY;
@@ -461,9 +482,9 @@ MaterialVision_ResultTypeDef MaterialVision_CalibrationStart(Camera_ColorTypeDef
     return MATERIAL_VISION_RESULT_PARAM_ERROR;
   if ((MaterialVision_IsBusy() != 0U) || ChassisRoute_IsBusy() || ChassisMotion_IsBusy())
     return MATERIAL_VISION_RESULT_BUSY;
-  if (ArmVision_IsBusy() != 0U)
+  if (GrabTask_IsBusy() != 0U)
     return MATERIAL_VISION_RESULT_BUSY;
-  if (ArmVision_IsReferenceValid() == 0U)
+  if (MaterialVision_IsReferenceValid() == 0U)
     return MATERIAL_VISION_RESULT_NOT_READY;
   if (MechanicalArm_IsBusy() != 0U)
     return MATERIAL_VISION_RESULT_BUSY;

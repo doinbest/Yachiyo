@@ -118,7 +118,6 @@ bool GrabRoute_IsBusy(void){return false;}
 bool GrabTask_RingManualAllowed(void){return false;}
 bool GrabTask_IsBusy(void){return false;}
 uint8_t MechanicalArm_IsBusy(void){return 0;}
-uint8_t ArmVision_IsBusy(void){return 0;}
 uint8_t MaterialVision_IsBusy(void){return 0;}
 bool HWT101_Cal_IsBusy(void){return false;}
 bool ChassisRoute_PlanStart(const RadarPlan_t *p,float speed,bool station){assert(p->valid && !station);submitted_speed=speed;moves++;return true;}

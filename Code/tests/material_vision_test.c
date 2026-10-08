@@ -11,12 +11,14 @@ static Camera_DataTypeDef frame;
 static uint8_t peer_busy, motor_busy;
 static unsigned forward_moves, x_moves, requests, home_calls, chassis_stops, motor_stops;
 static float last_speed;
+static uint8_t axis_acc=20, last_acc;
+uint8_t MechanicalArm_ConfigGet(MechanicalArm_AxisTypeDef axis,MechanicalArm_ConfigTypeDef *out)
+{ assert(axis==MECHANICAL_ARM_AXIS_X); out->Acceleration=axis_acc; return 1; }
 static MechanicalArm_ResultTypeDef motor_result;
 static HAL_StatusTypeDef camera_result = HAL_OK;
 static uint8_t chassis_ok = 1;
 uint32_t HAL_GetTick(void) { return tick; }
-uint8_t ArmVision_IsBusy(void) { return peer_busy; }
-uint8_t ArmVision_IsReferenceValid(void) { return 1; }
+bool GrabTask_IsBusy(void) { return peer_busy != 0; }
 void Camera_SnapshotGet(Camera_SnapshotTypeDef *out)
 { memset(out, 0, sizeof(*out)); out->Data = frame; out->RequestActive = out->UsbConfigured = 1;
   out->HasFrame = out->TargetValid = out->HasValidData = (frame.Sequence != 0); }
@@ -34,10 +36,11 @@ MechanicalArm_ResultTypeDef MechanicalArm_StateRead(MechanicalArm_AxisTypeDef ax
 { (void)axis; return motor_result; }
 MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef axis, int32_t pulses,
     uint16_t rpm, uint8_t acceleration, MechanicalArm_PositionModeTypeDef mode)
-{ assert(axis == MECHANICAL_ARM_AXIS_X && pulses != 0); (void)rpm; (void)acceleration; (void)mode; x_moves++; return motor_result; }
+{ assert(axis == MECHANICAL_ARM_AXIS_X && pulses != 0); (void)rpm; last_acc=acceleration; (void)mode; x_moves++; return motor_result; }
 
 static void reset(void)
 {
+  route_busy = motion_busy = false;
   MaterialVision_Init(); tick = 0; memset(&frame, 0, sizeof(frame));
   peer_busy = motor_busy = 0; forward_moves = x_moves = requests = home_calls = 0;
   chassis_stops = motor_stops = 0;
@@ -45,6 +48,11 @@ static void reset(void)
   MaterialVision_XTotal = 0; MaterialVision_ChassisTotal = 0;
   MaterialVision_ForwardIntegral = MaterialVision_ForwardPreviousError = 0;
   MaterialVision_XIntegral = MaterialVision_XPreviousError = 0;
+  assert(!MaterialVision_IsReferenceValid());
+  assert(MaterialVision_Start(CAMERA_COLOR_BLUE)==MATERIAL_VISION_RESULT_NOT_READY);
+  assert(MaterialVision_CalibrationStart(CAMERA_COLOR_BLUE)==MATERIAL_VISION_RESULT_NOT_READY);
+  assert(!requests && !forward_moves && !x_moves);
+  assert(MaterialVision_ReferenceSet()==MATERIAL_VISION_RESULT_OK);
 }
 static void sample(int16_t dx, int16_t dy)
 {
@@ -113,6 +121,7 @@ static void variable_duration(void)
 static void busy_and_timeout(void)
 {
   reset(); peer_busy = 1;
+  assert(MaterialVision_ReferenceSet()==MATERIAL_VISION_RESULT_BUSY && MaterialVision_IsReferenceValid());
   assert(MaterialVision_Start(CAMERA_COLOR_BLUE) == MATERIAL_VISION_RESULT_BUSY);
   assert(MaterialVision_CalibrationStart(CAMERA_COLOR_BLUE) == MATERIAL_VISION_RESULT_BUSY);
   assert(requests == 0 && !forward_moves && !x_moves);
@@ -120,6 +129,7 @@ static void busy_and_timeout(void)
   assert(MaterialVision_CalibrationStart(CAMERA_COLOR_BLUE) == MATERIAL_VISION_RESULT_BUSY);
   motor_busy = 0; MaterialVision_CalibrationStart(CAMERA_COLOR_BLUE);
   tick = 60000; MaterialVision_Process(); assert(MaterialVision_IsBusy());
+  MaterialVision_Stop();assert(MaterialVision_IsReferenceValid());
 }
 static void starts_without_home(void)
 {
@@ -160,6 +170,7 @@ static void failures(void)
 }
 int main(void)
 {
+  reset(); axis_acc=53; assert(MaterialVision_XMoveStart(1)); assert(last_acc==53);
   for (unsigned owner = 0; owner < 2; owner++)
   {
     reset(); route_busy = owner == 0; motion_busy = owner == 1;

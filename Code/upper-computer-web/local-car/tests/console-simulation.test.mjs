@@ -42,7 +42,7 @@ function consoleFixture(){
     let connectionState='connected',lastStopEvent=null,trackingConnected=false,axis='base',active='vision',bootStage='';
     let grabSnapshot=null,grabRouteSnapshot=null,grabReply=null,savedRadarSnapshot=null;
     const status=new Map(),forms=[];
-    const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|radar live stop|vision stop|material stop|grab stop)$/.test(wire);
+    const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|radar live stop|material stop|grab stop)$/.test(wire);
     const stopped=()=>bridge.stopLatched;
     ${section('function mayQuery(wire)','async function requestStop()')}
     ${section('async function send(wire','async function refreshPorts()')}

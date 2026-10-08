@@ -8,7 +8,6 @@
 #include "GrabRoute.h"
 #include "GrabTask.h"
 #include "mechanical_arm.h"
-#include "ArmVision.h"
 #include "MaterialVision.h"
 #include "hwt101_calibration.h"
 #include "console_tx.h"
@@ -77,7 +76,7 @@ static bool actuators_busy(void)
 {
   return ChassisMotion_IsBusy() || ChassisRoute_IsBusy() || ChassisRoute_StationReserved() ||
     GrabRoute_IsBusy() || GrabTask_IsBusy() || Mecanum_IsBusy() || MechanicalArm_IsBusy() ||
-    ArmVision_IsBusy() || MaterialVision_IsBusy() || HWT101_Cal_IsBusy();
+    MaterialVision_IsBusy() || HWT101_Cal_IsBusy();
 }
 static void reply(bool ok,const char *reason)
 {

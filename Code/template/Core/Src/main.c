@@ -40,7 +40,6 @@
 
 #include "Camera.h"
 #include "QR.h"
-#include "ArmVision.h"
 #include "MaterialVision.h"
 #include "GrabTask.h"
 #include "turntable.h"
@@ -200,40 +199,10 @@ static void W25Q128_StartupCheck(void)
 }
 #endif
 
-/**
-  * 函    数：读取任务码第二组中当前选择的数字字符
-  * 参    数：无
-  * 返 回 值：第一批颜色组中当前选中的数字字符
-  * 说    明：第二组为放置编号；颜色选择索引范围为0至2
-  */
-static char Camera_ColorTaskDigitGet(void)
-{
-  return (char)('0' + QR_ColorGet(0U, Camera_ColorDigitIndex));
-}
-
-/**
-  * 函    数：将任务码ASCII数字转换为摄像头颜色编号
-  * 参    数：TaskCodeDigit 任务码中的数字字符
-  * 返 回 值：对应的颜色枚举；0表示字符不在1~6
-  * 说    明：先将ASCII字符转换为颜色编号1~6
-  */
-static Camera_ColorTypeDef Camera_ColorCodeGet(char TaskCodeDigit)
-{
-  uint8_t ColorNumber;
-
-  if ((TaskCodeDigit < '1') || (TaskCodeDigit > '6'))
-  {
-    return (Camera_ColorTypeDef)0;
-  }
-
-  ColorNumber = (uint8_t)(TaskCodeDigit - '0');
-  return (Camera_ColorTypeDef)ColorNumber;
-}
-
 /* IMU_TIMING_BEGIN: 主循环分段计时；仅保存数值，失败前不发送日志。 */
 typedef enum
 {
-  IMU_TIME_CAMERA, IMU_TIME_MOTOR, IMU_TIME_ARM_VISION, IMU_TIME_MATERIAL,
+  IMU_TIME_CAMERA, IMU_TIME_MOTOR, IMU_TIME_MATERIAL,
   IMU_TIME_CHASSIS, IMU_TIME_READ, IMU_TIME_CAL, IMU_TIME_LOG,
   IMU_TIME_CONSOLE, IMU_TIME_SCREEN, IMU_TIME_QR_KEYS, IMU_TIME_OLED,
   IMU_TIME_COUNT
@@ -292,7 +261,7 @@ static void ImuTiming_Freeze(void)
 static void ImuTiming_Report(const HWT101_CalStatus_t *Cal)
 {
   static const char *const Names[IMU_TIME_COUNT] = {
-    "camera", "motor_events", "arm_vision", "material", "chassis", "imu_read",
+    "camera", "motor_events", "material", "chassis", "imu_read",
     "imu_cal", "imu_log", "console", "screen", "qr_keys", "oled"
   };
   char Text[192];
@@ -419,55 +388,6 @@ static void HWT101_Upload_Process(void)
   }
 }
 
-/** 按当前选中颜色启动机械臂对准；拒绝原因交给显示模块保留。 */
-static void ArmVision_ColorAlignStart(void)
-{
-  Camera_ColorTypeDef Color;
-  Mecanum_HeadingTestStatus_t Heading;
-
-  if (HWT101_Cal_IsBusy())
-  {
-    OledUi_NoticeSet("IMU busy");
-    return;
-  }
-  Mecanum_HeadingTest_StatusGet(&Heading);
-  if (Heading.active)
-  {
-    OledUi_NoticeSet("Heading test busy");
-    return;
-  }
-
-  if (Camera_ColorTaskReady == 0U)
-  {
-    OledUi_NoticeSet("Code required");
-    return;
-  }
-  if (ArmVision_IsBusy() || MaterialVision_IsBusy() || MechanicalArm_IsBusy())
-  {
-    OledUi_NoticeSet("Busy");
-    return;
-  }
-  if (!ArmVision_IsReferenceValid())
-  {
-    OledUi_NoticeSet("Ref required");
-    return;
-  }
-  if (!ArmVision_IsCalibrated())
-  {
-    OledUi_NoticeSet("Cal required");
-    return;
-  }
-  Color = Camera_ColorCodeGet(Camera_ColorTaskDigitGet());
-  switch (ArmVision_MaterialStart(Color, ARM_VISION_JOB_ALIGN_ONLY))
-  {
-    case ARM_VISION_RESULT_OK: OledUi_NoticeSet(NULL); break;
-    case ARM_VISION_RESULT_BUSY: OledUi_NoticeSet("Busy"); break;
-    case ARM_VISION_RESULT_NOT_READY: OledUi_NoticeSet("Ref/Cal required"); break;
-    case ARM_VISION_RESULT_PARAM_ERROR: OledUi_NoticeSet("Color invalid"); break;
-    default: OledUi_NoticeSet("Camera tx"); break;
-  }
-}
-
 /** Optional blocking I2C work yields to every active motor/control workflow. */
 static bool OptionalDisplayReady(void)
 {
@@ -477,7 +397,7 @@ static bool OptionalDisplayReady(void)
   MotorBus_RecoveryGet(&recovery);
   return !HWT101_Cal_IsBusy() && !ChassisMotion_IsBusy() && !ChassisRoute_IsBusy() &&
          !GrabTask_IsBusy() && !GrabRoute_IsBusy() && !Turntable_IsBusy() && !MechanicalArm_IsBusy() &&
-         !ArmVision_IsBusy() && !MaterialVision_IsBusy() && !Mecanum_IsBusy() &&
+         !MaterialVision_IsBusy() && !Mecanum_IsBusy() &&
          !ChassisMotion_StopPending() && !ArmConsole_OperationBusy() &&
          !bus.active && !recovery.active && !RadarConsole_ScanBusy();
 }
@@ -566,7 +486,6 @@ int main(void)
   {
     Error_Handler();
   }
-  ArmVision_Init();
   MaterialVision_Init();
   GrabTask_Init();
   GrabRoute_Init();
@@ -632,21 +551,18 @@ int main(void)
     if (MechanicalArm_ResultGet(&MotorEvent) != 0U)
     {
       if ((GrabTask_MotorEventHandle(&MotorEvent) == 0U) &&
-          (ArmVision_MotorEventHandle(&MotorEvent) == 0U) &&
           (MaterialVision_MotorEventHandle(&MotorEvent) == 0U))
       {
         ArmConsole_MotorEventHandle(&MotorEvent);
       }
     }
     ImuTiming_Mark(IMU_TIME_MOTOR);
-    ArmVision_Process();
-    ImuTiming_Mark(IMU_TIME_ARM_VISION);
     MaterialVision_Process();
     ImuTiming_Mark(IMU_TIME_MATERIAL);
     HWT101_Process(); /* 独立采集；关闭日志不会停止传感器轮询。 */
     ImuTiming_Mark(IMU_TIME_READ);
     HWT101_Cal_BootVerifyProcess(!Mecanum_IsBusy() && !MechanicalArm_IsBusy() &&
-        !ArmVision_IsBusy() && !MaterialVision_IsBusy() &&
+        !MaterialVision_IsBusy() &&
         !ChassisRoute_IsBusy() && !ChassisMotion_IsBusy() &&
         !GrabTask_IsBusy() && !GrabRoute_IsBusy() && !Turntable_IsBusy());
     HWT101_Cal_Process();
@@ -694,13 +610,8 @@ int main(void)
     {
       switch (Key)
       {
-        case KEY_EVENT_PE2:
-          ArmVision_ColorAlignStart();
-          break;
-
         case KEY_EVENT_PE3:
-          if (Camera_ColorTaskReady && !ArmVision_IsBusy() &&
-              !MaterialVision_IsBusy() && !MechanicalArm_IsBusy())
+          if (Camera_ColorTaskReady && !MaterialVision_IsBusy() && !MechanicalArm_IsBusy())
           {
             Camera_ColorDigitIndex = (uint8_t)((Camera_ColorDigitIndex + 1U) % 3U);
             OledUi_TaskCodeSet(QR_TaskCode, Camera_ColorDigitIndex);

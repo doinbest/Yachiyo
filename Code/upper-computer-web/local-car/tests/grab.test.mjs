@@ -35,13 +35,12 @@ test('single grasp actions have explicit distinct wires and retain pure route co
 
 test('grab inputs distinguish startup defaults from unknown calibration and fit the firmware frame',()=>{
   assert.ok(protocol.grabParameters?.length>20);
-  const defaults={z_speed:55.555556,loss_grace_ms:250,age_ms:1000,accel:300,body_speed:160,lambda:2.5,vision_wait_ms:12000,x_speed:60,x_transfer_speed:60,travel_mm:0,lead_mm:12,dx_tol:1,dy_tol:1,ref_u:334,ref_v:338,j00:2,j01:0,j02:0,j10:0,j11:2,j12:2,x_ppm:31.746032,x_min:0,x_max:100,x_pre:0,z_observe:0,z_ppm:480,z_min:-80,z_max:0,z_grab:-80,z_place:-60,z_lift:-40,pos_tol:1,stop_speed:2,feedback_ms:2000,close_ms:500};
-  defaults.z_pick_speed=111.111111;
+  const defaults=GRAB_FORM_DEFAULTS;
   for(const parameter of protocol.grabParameters){
     const command=protocol.commands.find(c=>c.id===`grab-set-${parameter.key}`);
     assert.equal(command.fields[0].value,defaults[parameter.key]??'',parameter.key);
     assert.throws(()=>protocol.buildCommand(command.id,{value:''}));
-    const value=parameter.min<=0&&parameter.max>=0?0:parameter.min;
+    const value=parameter.exclusiveMin?parameter.min+1:parameter.min<=0&&parameter.max>=0?0:parameter.min;
     const wire=protocol.buildCommand(command.id,{value});
     assert.equal(wire,`grab set ${parameter.key} ${value}`);
     assert.ok(protocol.frameCommand(wire).length<=65);

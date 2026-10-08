@@ -2076,16 +2076,6 @@
               <FilePath>..\App\Arm.h</FilePath>
             </File>
             <File>
-              <FileName>ArmVision.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\App\ArmVision.c</FilePath>
-            </File>
-            <File>
-              <FileName>ArmVision.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\App\ArmVision.h</FilePath>
-            </File>
-            <File>
               <FileName>oled_ui.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\oled_ui.c</FilePath>

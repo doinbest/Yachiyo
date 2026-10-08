@@ -26,7 +26,7 @@ export const parameterFields=[
     note:p.key==='vision_wait_ms'?'首次等待与停稳后重获颜色的等待窗口；不会延长旧坐标有效期。':p.key==='close_ms'?'发出开合指令后，到下一步 Z 动作的等待；通常无需调整。':undefined,
     conversion:liftToDown[p.key]?'rise':positions[p.key]?'down':null,down:liftToDown[p.key],lift:pairs[p.key]})),
   ...turntableParameters.map(p=>({...p,kind:'turntable',tab:'turntable',group:p.key.startsWith('slot')?'仓位角度':'分度与反馈'})),
-  ...['base','x','z'].flatMap(axis=>[['rpm','普通运动速度 / RPM',1,3000],['acc','普通运动加速度档位',1,255],['limit',axis==='z'?'普通运动脉冲限制（固定不限）':'普通运动脉冲限制',axis==='z'?0:1,3200]].map(([part,label,min,max])=>({key:`${axis}_${part}`,kind:'arm',axis,part,label,min,max,step:1,tab:'motion',group:`${axis.toUpperCase()} 普通手动运动`,readOnly:axis==='z'&&part==='limit'}))),
+  ...['base','x','z'].flatMap(axis=>[['rpm','普通运动速度 / RPM',1,3000],['acc','轴加速度档位（手动与任务共用）',1,255],['limit',axis==='z'?'普通运动脉冲限制（固定不限）':'普通运动脉冲限制',axis==='z'?0:1,3200]].map(([part,label,min,max])=>({key:`${axis}_${part}`,kind:'arm',axis,part,label,min,max,step:1,tab:'motion',group:`${axis.toUpperCase()} 轴运动配置`,readOnly:axis==='z'&&part==='limit',note:part==='acc'?'手动、静态取放与追踪均读取此轴档位；任务速度由对应的 grab 参数决定。':undefined}))),
   ...RADAR_PARAMETERS.map(p=>({...p,kind:'radar',tab:'radar',group:'雷达下次静止扫描',step:p.key==='zero_deg'?.1:1})),
   {key:'route_speed',kind:'local',tab:'radar',group:'浏览器本地路线设置',label:'下次路线启动速度',unit:'mm/s',min:10,max:5000,step:1}
 ].map(separateUnit);
@@ -40,7 +40,7 @@ export function displayValue(field,values){
 const number=(value,label)=>{if(String(value??'').trim()===''||!Number.isFinite(Number(value)))throw new Error(`请填写${label}`);return Number(value);};
 export function fieldWrites(field,drafts){
   const value=number(drafts[field.key],field.label);
-  if(value<field.min||value>field.max)throw new Error(`${field.label}超出范围 ${field.min}～${field.max}`);
+  if(value<field.min||(field.exclusiveMin&&value===field.min)||value>field.max||(field.step===1&&!Number.isInteger(value)))throw new Error(`${field.label}超出范围或数值类型不符 ${field.min}～${field.max}`);
   if(field.conversion==='down'){
     const target=-value;
     return field.lift?[[field.key,target],[field.lift,target+number(drafts[field.lift],'对应抬升距离')]]:[[field.key,target]];
