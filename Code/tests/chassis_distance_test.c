@@ -83,6 +83,17 @@ static void delayed_plant(float length, float speed, unsigned delay_steps, bool 
 }
 int main(void)
 {
+  /* A zero snapshot can predate the stop request: the repeated target was
+   * deduplicated by the bus. Retry the normal request until a fresh TX exists. */
+  setup();assert(ChassisMotion_MoveTo(1200,1200,90,50,60000));
+  bus.stage=MECANUM_STAGE_SENT;bus.tx_complete=true;bus.sent_velocity_valid=true;
+  bus.sent_ms=100;memset(bus.sent_rpm,0,sizeof(bus.sent_rpm));
+  sample(120);ChassisMotion_Process();unsigned zero_requests=sends;
+  sample(140);ChassisMotion_Process();
+  assert(sends==zero_requests+1 && !stops && status().state==CHASSIS_MOTION_STOPPING);
+  zero_dispatched(160);sample(200);ChassisMotion_Process();sample(500);ChassisMotion_Process();
+  sample(800);ChassisMotion_Process();assert(status().stop_confirmed);
+
   delayed_plant(14000,1000,5,false);
   delayed_plant(1750,1000,10,false);
   delayed_plant(1750,5000,10,false);
@@ -117,6 +128,11 @@ int main(void)
   sample(550);ChassisMotion_Process();assert(!status().stop_confirmed);
   sample(750);ChassisMotion_Process();assert(status().stop_confirmed&&status().state==CHASSIS_MOTION_DONE);
   assert(!strcmp(status().reason,"feedback_arrived"));
+  /* Positions and speeds arrive separately on the real shared bus. A fresh
+   * reused speed sample must wait for a full new group, not erase quiet time. */
+  setup();assert(ChassisMotion_MoveTo(1200,1200,90,50,60000));sample(120);ChassisMotion_Process();zero_dispatched(140);
+  for(unsigned j=200;j<=1000 && ChassisMotion_IsBusy();j+=20){sample(j);if((j/20)%2==0)location.wheels[0].speed_ms=j-20;ChassisMotion_Process();}
+  assert(status().stop_confirmed && status().state==CHASSIS_MOTION_DONE);
   setup();assert(ChassisMotion_MoveTo(1200,1200,90,50,60000));sample(120);ChassisMotion_Process();zero_dispatched(140);
   for(unsigned j=200;j<=3200;j+=100){sample(j);location.wheels[0].speed_rpm=2;ChassisMotion_Process();}
   assert(status().state==CHASSIS_MOTION_ERROR&&!status().stop_confirmed);assert(!strcmp(status().reason,"stop_unconfirmed"));

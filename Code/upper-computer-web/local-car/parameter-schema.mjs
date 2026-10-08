@@ -5,13 +5,13 @@ export const parameterTabs=[['material','物料取放'],['turntable','车载转�
 const pairs={z_grab:'z_lift',z_proc_grab:'z_proc_lift',z_place:'z_car_lift'};
 const liftToDown=Object.fromEntries(Object.entries(pairs).map(([down,lift])=>[lift,down]));
 const positions={z_grab:'原料夹取下降距离',z_lift:'原料夹取后抬升距离',z_proc_grab:'粗加工夹取下降距离',z_proc_lift:'粗加工夹取后抬升距离',z_place:'车载仓位取放下降距离',z_car_lift:'车载取出后抬升距离',z_proc_place:'粗加工释放下降距离',z_temp_place:'暂存第一层释放下降距离',z_stack_place:'暂存第二层释放下降距离'};
-const materialKeys=new Set([...Object.keys(positions),'x_car','base_car_offset','x_speed','z_speed']);
+const materialKeys=new Set([...Object.keys(positions),'x_car','base_car_offset','x_speed','z_speed','z_pick_speed']);
 const motionKeys=new Set(['x_ppm','z_ppm','x_min','x_max','x_pre','z_min','z_max','z_observe','pos_tol','stop_speed','feedback_ms','close_ms']);
 export const materialScenarios=[
   ['原料夹取','z_grab','z_lift'],['粗加工夹取','z_proc_grab','z_proc_lift'],['车载取放','z_place','z_car_lift'],
   ['粗加工释放','z_proc_place'],['暂存第一层','z_temp_place'],['暂存第二层','z_stack_place']
 ];
-const labels={x_car:'车载取放口 X 位置',base_car_offset:'车载 Base 偏转角',x_speed:'自动 X 运动速度',z_speed:'自动 Z 运动速度',close_ms:'夹爪到位等待',x_ppm:'X 尺度',z_ppm:'Z 尺度'};
+const labels={x_car:'车载取放口 X 位置',base_car_offset:'车载 Base 偏转角',x_speed:'自动 X 运动速度',z_speed:'Z 观察 / 提起 / 放置速度',z_pick_speed:'物料夹取下降速度',close_ms:'夹爪到位等待',x_ppm:'X 尺度',z_ppm:'Z 尺度'};
 function separateUnit(field){
   if(field.unit)return field;
   const match=field.label.match(/^(.*)\s\/\s([^/]+)$/);
@@ -22,7 +22,7 @@ function separateUnit(field){
 export const parameterFields=[
   ...grabParameters.map(p=>({...p,kind:'grab',tab:materialKeys.has(p.key)?'material':motionKeys.has(p.key)?'motion':'vision',
     label:positions[p.key]??labels[p.key]??p.label,group:positions[p.key]?'Z 场景距离':p.key==='close_ms'?'夹爪动作时序':p.key==='x_car'||p.key==='base_car_offset'?'车载取放位置':materialKeys.has(p.key)?'自动取放速度':p.group,
-    min:positions[p.key]?0:p.min,max:positions[p.key]?10000:p.max,unit:positions[p.key]?'mm':p.key==='x_car'?'mm':p.key==='base_car_offset'?'°':p.key==='close_ms'?'ms':p.key.endsWith('_ppm')?'脉冲/mm':p.key==='x_speed'||p.key==='z_speed'?'mm/s':'',
+    min:positions[p.key]?0:p.min,max:positions[p.key]?10000:p.max,unit:positions[p.key]?'mm':p.key==='x_car'?'mm':p.key==='base_car_offset'?'°':p.key==='close_ms'?'ms':p.key.endsWith('_ppm')?'脉冲/mm':p.key==='x_speed'||p.key==='z_speed'||p.key==='z_pick_speed'?'mm/s':'',
     note:p.key==='vision_wait_ms'?'首次等待与停稳后重获颜色的等待窗口；不会延长旧坐标有效期。':p.key==='close_ms'?'发出开合指令后，到下一步 Z 动作的等待；通常无需调整。':undefined,
     conversion:liftToDown[p.key]?'rise':positions[p.key]?'down':null,down:liftToDown[p.key],lift:pairs[p.key]})),
   ...turntableParameters.map(p=>({...p,kind:'turntable',tab:'turntable',group:p.key.startsWith('slot')?'仓位角度':'分度与反馈'})),

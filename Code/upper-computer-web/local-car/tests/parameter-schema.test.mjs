@@ -2,6 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parameterFields,displayValue,fieldWrites,deviceRequests} from '../parameter-schema.mjs';
 
+test('material descent speed is shared and separate from ring/lift speed',()=>{
+  const speed=parameterFields.find(f=>f.key==='z_pick_speed');
+  assert.ok(speed);assert.equal(speed.tab,'material');assert.equal(speed.unit,'mm/s');
+  assert.deepEqual(fieldWrites(speed,{z_pick_speed:'111.111'}),[['z_pick_speed',111.111]]);
+});
+
 test('distance fields preserve absolute firmware coordinates and relative clearance',()=>{
   const values={z_grab:-80,z_lift:-40,z_place:-60,z_car_lift:0};
   const field=key=>parameterFields.find(f=>f.key===key);

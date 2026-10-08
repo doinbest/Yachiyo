@@ -7,6 +7,7 @@
 #include "tjc_screen.h"
 
 #include <string.h>
+#include <stdio.h>
 
 #define CONTEST_SCREEN_BOOT_DELAY_MS       800U  /* 串口屏上电稳定等待时间。 */
 #define CONTEST_SCREEN_COMMAND_INTERVAL_MS 100U  /* 相邻串口屏命令最小间隔。 */
@@ -29,8 +30,8 @@ typedef enum
 static ContestScreen_StartTypeDef ContestScreen_StartState;
 static uint32_t ContestScreen_LastTick;
 static char ContestScreen_TaskCode[CONTEST_SCREEN_TASK_CODE_LENGTH + 1U];
-static char ContestScreen_GrabText[sizeof("正确抓取数：0")];
-static char ContestScreen_PlaceText[sizeof("正确放置数：0")];
+static char ContestScreen_GrabText[sizeof("正确抓取数：12")];
+static char ContestScreen_PlaceText[sizeof("正确放置数：12")];
 static uint8_t ContestScreen_GrabCount;
 static uint8_t ContestScreen_PlaceCount;
 static uint8_t ContestScreen_DirtyFlags;
@@ -132,10 +133,8 @@ void ContestScreen_Init(void)
 {
   (void)memcpy(ContestScreen_TaskCode, "---+---+---+---",
                CONTEST_SCREEN_TASK_CODE_LENGTH + 1U);
-  (void)memcpy(ContestScreen_GrabText, "正确抓取数：0",
-               sizeof(ContestScreen_GrabText));
-  (void)memcpy(ContestScreen_PlaceText, "正确放置数：0",
-               sizeof(ContestScreen_PlaceText));
+  (void)snprintf(ContestScreen_GrabText,sizeof ContestScreen_GrabText,"正确抓取数：0");
+  (void)snprintf(ContestScreen_PlaceText,sizeof ContestScreen_PlaceText,"正确放置数：0");
   ContestScreen_GrabCount = 0U;
   ContestScreen_PlaceCount = 0U;
   ContestScreen_DirtyFlags = 0U;
@@ -192,20 +191,20 @@ uint8_t ContestScreen_TaskCodeSet(const char *TaskCode)
 /** 函数：设置比赛进度；参数：抓取数和放置数；返回值：1成功，0越界。 */
 uint8_t ContestScreen_ProgressSet(uint8_t GrabCount, uint8_t PlaceCount)
 {
-  if ((GrabCount > 6U) || (PlaceCount > 6U))
+  if ((GrabCount > 12U) || (PlaceCount > 12U))
   {
     return 0U;
   }
   if (ContestScreen_GrabCount != GrabCount)
   {
     ContestScreen_GrabCount = GrabCount;
-    ContestScreen_GrabText[sizeof(ContestScreen_GrabText) - 2U] = (char)('0' + GrabCount);
+    (void)snprintf(ContestScreen_GrabText,sizeof ContestScreen_GrabText,"正确抓取数：%u",(unsigned)GrabCount);
     ContestScreen_DirtyFlags |= CONTEST_SCREEN_DIRTY_GRAB;
   }
   if (ContestScreen_PlaceCount != PlaceCount)
   {
     ContestScreen_PlaceCount = PlaceCount;
-    ContestScreen_PlaceText[sizeof(ContestScreen_PlaceText) - 2U] = (char)('0' + PlaceCount);
+    (void)snprintf(ContestScreen_PlaceText,sizeof ContestScreen_PlaceText,"正确放置数：%u",(unsigned)PlaceCount);
     ContestScreen_DirtyFlags |= CONTEST_SCREEN_DIRTY_PLACE;
   }
   return 1U;

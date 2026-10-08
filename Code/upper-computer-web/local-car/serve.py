@@ -20,7 +20,7 @@ from serial_bridge import SerialBridge
 _planner_lock = threading.Lock()
 RADAR_DEFAULTS = dict(lidar_x_mm=2250, lidar_y_mm=150, zero_deg=180,
                      distance_min_mm=100, distance_max_mm=40000, angle_min_tenths=0,
-                     angle_max_tenths=900, threshold=1, energy_min=0, energy_max=255)
+                     angle_max_tenths=3600, threshold=1, energy_min=0, energy_max=255)
 
 
 def plan_radar_offline(body):
@@ -45,7 +45,7 @@ def plan_radar_offline(body):
     if not isinstance(points, list) or len(points) > 4096:
         raise ValueError('A cloud contains at most 4096 points')
     if points and body.get('cloud_complete') is False:
-        raise ValueError('轮廓重建需要未截断的完整点云；当前点云仍可查看，也可按已有地图或手工障碍规划')
+        raise ValueError('完整圈建图需要未截断的完整点云；当前点云仍可查看，也可按已有地图或手工障碍规划')
     for point in points:
         if not isinstance(point, list) or len(point) != 3 or any(type(v) is not int for v in point):
             raise ValueError('Points are integer [angle_tenths, distance_mm, energy]')

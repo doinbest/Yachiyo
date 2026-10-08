@@ -52,7 +52,8 @@ bool HWT101_Cal_GetStatus(HWT101_CalStatus_t *status);
 /** @brief 当前是否正在标定、验证、保存或恢复模式。 */
 bool HWT101_Cal_IsBusy(void);
 /** @brief 本次验证通过且数据新鲜时返回模块角度，不进行外部漂移扣除。
- * @return 失败不修改angle；运行中的通信故障会撤销资格。 */
+ * @return 失败不修改angle；运行中通信异常暂停使用，通过后连续两帧新鲜数据可恢复。
+ * @note 恢复不归零、不保存、不重启运动；验证失败、取消或模式未确认仍不可用。 */
 bool HWT101_Cal_ControlAngleGet(HWT101_Angle_t *angle);
 /** @brief 空闲时读取版本/模式/零偏供status诊断；不写寄存器。
  * @return HAL_BUSY表示流程运行中；读取失败保留数值并清除有效标志。 */

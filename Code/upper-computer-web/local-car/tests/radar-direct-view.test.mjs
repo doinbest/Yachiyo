@@ -98,6 +98,74 @@ function harness(ui) {
 
 const flush = () => new Promise(setImmediate);
 
+test('an unavailable device map is pending, not a zero-point scan',async()=>{
+  const ui=surface(),h=harness(ui);await flush();
+  h.view.connection({state:'connected',port:'COM7',baudrate:115200});
+  h.hostClient.model.status={session:1,config:1,scan:2,map:3,plan:4,ss:4,a:0,l:1,ls:2,reason:'complete'};
+  h.view.refresh();
+  assert.equal(ui.get('radar-direct-metric-raw').textContent,'—');
+  assert.equal(ui.get('radar-direct-metric-filtered').textContent,'—');
+  assert.match(ui.get('radar-direct-point-summary').textContent,/地图.*读取/);
+});
+
+test('result-only scan labels cloud storage honestly and status reload stays button-driven',async()=>{
+  const ui=surface(),h=harness(ui);await flush();
+  h.view.connection({state:'connected',port:'COM7',baudrate:115200});
+  h.hostClient.model.snapshots.map=mapSnapshot();h.hostClient.model.snapshots.path=pathSnapshot();
+  h.hostClient.model.status={ss:4,a:0,l:0,ls:3,reason:'complete'};h.view.refresh();
+  const values=ui.get('radar-direct-flags').children.map(row=>row.children.map(node=>node.textContent).join(':')).join('|');
+  assert.match(values,/保留在 F407 · 不自动上传/);assert.doesNotMatch(values,/后台读取中/);
+  assert.equal(h.commands.length,0);
+  await ui.get('radar-direct-read-status').click();assert.deepEqual(h.commands,['status']);
+  h.hostClient.lastError='ERR radar host scan_busy_or_uart';h.view.refresh();
+  assert.match(ui.get('radar-direct-connection-status').textContent,/scan_busy_or_uart/);
+});
+
+test('a map awaiting its path is pending, while an actual blocked route remains unreachable',()=>{
+  const ui=surface(),h=harness(ui);
+  h.hostClient.model.snapshots.map=mapSnapshot();h.view.refresh();
+  assert.match(ui.get('radar-direct-route-summary').children[0].textContent,/待同步/);
+  assert.match(ui.get('radar-direct-route-summary').children[1].textContent,/路径.*读取/);
+  h.hostClient.model.snapshots.map=mapSnapshot({path_valid:false,failed_from_task:1,failed_to_task:5});h.view.refresh();
+  assert.match(ui.get('radar-direct-route-summary').children[1].textContent,/1.*5.*不可达/);
+});
+
+test('single-scan button waits for acquisition, remains available during result download and can replace live mode',()=>{
+  const ui=surface(),h=harness(ui);
+  h.view.connection({state:'connected',port:'COM7',baudrate:115200});
+  h.hostClient.model.status={ss:3,a:1,l:0,ls:3,reason:'collecting'};h.view.refresh();
+  assert.equal(ui.get('radar-direct-single').disabled,true);
+  assert.equal(ui.get('radar-direct-stop').disabled,false);
+  h.hostClient.model.status={ss:4,a:0,l:0,ls:3,reason:'complete'};h.view.refresh();
+  assert.equal(ui.get('radar-direct-single').disabled,false);
+  h.hostClient.model.status={ss:4,a:0,l:1,ls:2,reason:'complete'};h.view.refresh();
+  assert.equal(ui.get('radar-direct-single').disabled,false);
+});
+
+test('continuous mapping reports full-circle counts without claiming a full cloud is stored',()=>{
+  const ui=surface(),h=harness(ui);
+  h.view.connection({state:'connected',port:'COM7',baudrate:115200});
+  h.hostClient.model.snapshots.map=mapSnapshot({filtered_points:1331,outside_points:1330});
+  h.hostClient.model.snapshots.path=pathSnapshot();
+  h.hostClient.model.status={ss:4,a:0,l:1,ls:2,cloud:0,reason:'complete'};h.view.refresh();
+  assert.match(ui.get('radar-direct-connection-status').textContent,/持续建图/);
+  const values=ui.get('radar-direct-flags').children.map(row=>row.children.map(n=>n.textContent).join(':')).join('|');
+  assert.match(values,/未缓存完整点云/);assert.doesNotMatch(values,/保留在 F407/);
+  assert.match(ui.get('radar-direct-counters').children.at(-1).children[1].textContent,/1330.*150.*2250/);
+  assert.equal(ui.get('radar-direct-metric-raw').textContent,'1616');
+});
+
+test('changing continuous filters reports next-circle application without starting another scan',async()=>{
+  const ui=surface(),h=harness(ui);await flush();
+  h.view.connection({state:'connected',port:'COM7',baudrate:115200});
+  h.hostClient.model.snapshots.config=configSnapshot();
+  h.hostClient.model.status={ss:4,a:0,l:1,ls:2,cloud:0,reason:'complete'};h.view.refresh();
+  await ui.get('radar-direct-apply-filter').click();
+  assert.equal(h.applications.length,1);
+  assert.match(ui.get('radar-direct-settings-status').textContent,/下一完整圈/);
+  assert.deepEqual(h.commands,[]);
+});
+
 test('mount uses the shared serial owner at fixed 115200 without automatic radar writes', async () => {
   const ui = surface(), h = harness(ui);
   await flush();

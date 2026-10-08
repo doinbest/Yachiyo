@@ -106,3 +106,22 @@ test('full automatic route is an explicit command with bounded speed',()=>{
  assert.equal(buildCommand('chassis-route-auto',{speed:5000}),'chassis route auto 5000');
  assert.throws(()=>buildCommand('chassis-route-auto',{speed:5001}));
 });
+
+test('ID8 manual setup and nearest home use dedicated commands and arm replies',()=>{
+  for(const op of ['enable','disable','save_zero','home']){
+    assert.equal(buildCommand('turntable-'+op),'turntable '+op);
+    assert.equal(moduleForWire('OK turntable accepted action='+op),'arm');
+  }
+});
+
+test('direct onboard arm release has its own command independent of tray index',()=>{
+  assert.equal(buildCommand('grab-place-car'),'grab place car');
+  assert.equal(buildCommand('turntable-index',{slot:2}),'turntable index 2');
+});
+
+test('short axis diagnostics are read-only while stop is latched',async()=>{
+  const {readOnlyCommand}=await import('../bridge.mjs');
+  assert.equal(buildCommand('grab-base-status'),'grab status base');
+  for(const axis of ['base','x','z'])assert.equal(readOnlyCommand('grab status '+axis),true);
+  assert.equal(readOnlyCommand('grab status all'),false);
+});

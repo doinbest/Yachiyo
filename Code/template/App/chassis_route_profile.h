@@ -9,6 +9,7 @@
 
 #define CHASSIS_ROUTE_TARGET_COUNT 15U
 #define CHASSIS_ROUTE_PROFILE_MAX_PHASES 6U
+#define CHASSIS_TASK_PROFILE 1
 
 typedef struct {
   bool turn;
@@ -36,5 +37,12 @@ bool ChassisRouteProfile_Build(const RadarPlan_Point_t *from,
                               float previous_yaw_deg, float speed_mm_s,
                               bool first_scan_leg,
                               ChassisRoute_Profile_t *out);
+/** @brief 后向机械臂实车任务路线；Base顺时针90°作业时分别朝向原料/加工/暂存。
+ * @note 接驳点仅在线段内截取最后75mm，不替换规划绕行路点。
+ */
+bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,
+                                 const RadarPlan_Point_t *to,
+                                 float previous_yaw_deg, float speed_mm_s,
+                                 bool first_scan_leg, ChassisRoute_Profile_t *out);
 
 #endif

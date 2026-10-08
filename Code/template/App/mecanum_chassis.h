@@ -60,21 +60,38 @@ typedef struct
 } Mecanum_Feedback_t;
 /** Accept a latest target snapshot; main loop sends asynchronously. acc is drive grade. */
 bool Mecanum_Velocity_Request(float forward_mm_s, float left_mm_s, float yaw_rad_s, uint8_t acc);
+/** @brief 设置追踪模式与用户显式批次限频。
+ * @param enabled 是否追踪；interval_ms为0..200ms，0按应答推进。
+ * @retval 无
+ * @note 保留Receive应答、四轮原子批次及批间公平调度。
+ */
+void Mecanum_TrackingTiming(bool enabled, uint32_t interval_ms);
 void Mecanum_Process(void);
 void Mecanum_StatusGet(Mecanum_Status_t *status);
+typedef struct
+{
+  uint32_t batches, intervals, last_ms, interval_max_ms, duration_max_ms;
+  uint32_t interval_bins[201]; /* Last bin includes intervals >=200ms. */
+} Mecanum_Timing_t;
+/** @brief Copy cumulative actual batch timing in MCU milliseconds, without traffic. */
+void Mecanum_TimingGet(Mecanum_Timing_t *out);
 /** Local profile only; caller must first confirm all four physical drive ACK settings. */
 bool Mecanum_AckProfile_Set(Mecanum_AckProfile_t profile);
 /** Caller confirms physical reset of drivers; Stop alone is insufficient for recovery. */
 bool Mecanum_RecoveryAfterReset(void);
-/** @brief Clear chassis transport fault after verified bus recovery only when
- * no untriggered synchronous cache remains. Never starts motion. */
+/** @brief Unlock after explicit bus recovery verifies zero cache writes,
+ * addressed wheel sync and stopped feedback. Never starts motion or resets pose. */
 bool Mecanum_RecoveryAfterBusCheck(void);
 /** Poll speed 1..4, position 1..4, then state 1..4 to bound complete group skew. */
 /** @brief Main-loop temporary all-wheel stop feedback, independent of user selection.
  * Release retains the most recent user/task enable and selection policy. */
 void Mecanum_Feedback_StopMonitor(bool active);
 void Mecanum_Feedback_Enable(bool enabled);
-/** Select motor address 1..4, or 0 for all; disables polling until Enable(true). */
+/** @brief Select the next poll's motor address 1..4, or 0 for all.
+ * Disables new polling until Enable(true). An outstanding read/reply completes
+ * normally with its original identity; selection does not cancel it or move motors.
+ * @return true for a valid selection, including while a read/reply is pending.
+ */
 bool Mecanum_Feedback_Select(uint8_t address);
 bool Mecanum_FeedbackGet(unsigned wheel, Mecanum_Feedback_t *feedback);
 /* 整车速度模式的重复发送周期，防止驱动器速度命令超时。 */
@@ -160,11 +177,15 @@ bool Mecanum_Wheel_Test(MecanumWheel_t wheel, int16_t rpm);
  * @note     发送失败保留忙状态；发送成功不代表已取得电机实际静止反馈。
  */
 bool Mecanum_Test_Stop(void);
-/** @brief Read-only main-loop gate for planned stops: no chassis or feedback
- * transaction remains queued, on wire, or awaiting event consumption.
- * @note Call immediately before Test_Stop. Emergency stops do not wait on this gate.
+/** @brief Read-only gate: the wheel batch is complete and no feedback is on wire.
+ * @note Unsent queries may be cancelled. Planned stops use RequestPlannedStop
+ * to drain the current reply; emergency stops do not wait on this gate.
  */
 bool Mecanum_CanStopCleanly(void);
+/** @brief 零速批次确认后，受理普通停车并等待当前反馈应答结束。
+ * @return 已受理；实际停止与静止确认仍由状态/轮反馈判定。
+ * @note 暂不排下一条反馈，保持当前应答完整；紧急停车仍用Test_Stop。 */
+bool Mecanum_RequestPlannedStop(void);
 
 /** @brief 是否存在未结束的速度/航向任务或尚未显式停车的运动命令。
  * @return true时不得开始IMU标定或静止验证。

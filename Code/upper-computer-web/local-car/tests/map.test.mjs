@@ -17,6 +17,14 @@ test('station handoff telemetry is valid without claiming the full sixteen-segme
   assert.match(model.routeStatusText({...finished,segment:16,reason:'reached'}),/完整路线结束/);
 });
 
+test('mission station work remains visible while local ring movement owns the chassis',()=>{
+  const m=new Telemetry();m.begin(42,0);send(m,config,1);
+  const route={state:'work',reason:'station_work',segment:4,action_id:12,target:[1200,350,180],error:[0,0,0],feedback_valid:true,stop_confirmed:true};
+  send(m,{...state(2),route},2);
+  assert.equal(m.route?.state,'work');assert.match(model.routeStatusText(m.route),/工位作业/);
+  assert.match(model.routeStatusText({...route,state:'waiting',reason:'auto_continue'}),/停稳后自动继续/);
+});
+
 test('standalone distance diagnostics share subscribed freshness, with active route taking priority',()=>{
   const m=new Telemetry();
   const route={state:'idle',reason:'none',segment:0,action_id:0,target:[0,0,0],error:[0,0,0],feedback_valid:false,stop_confirmed:false};

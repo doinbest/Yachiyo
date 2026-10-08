@@ -11,7 +11,8 @@ static uint8_t sent[32];
 static unsigned sends, handled, position_commands, zero_commands, stop_commands;
 static int32_t position_raw = 16384; /* Actual driver position = 90 degrees. */
 static int speed_rpm, moving, missing, reject, hold_position, missing_motion_ack, disabled;
-static unsigned last_pulses, last_direction;
+static unsigned last_pulses, last_direction, power_disabled, saves, homes, home_busy, aborts;
+static int32_t saved_zero;
 static char console[2048];
 uint32_t HAL_GetTick(void) { return tick; }
 HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef *u,uint8_t *p,uint16_t n)
@@ -33,14 +34,18 @@ static void step(void)
       r[2]=position_raw<0;r[3]=mag>>24;r[4]=mag>>16;r[5]=mag>>8;r[6]=mag;length=8;
     } else if(sent[1]==0x35) {
       r[3]=(uint8_t)((unsigned)speed_rpm>>8);r[4]=(uint8_t)speed_rpm;r[5]=0x6b;length=6;
-    } else if(sent[1]==0x3a) { r[2]=moving?1:3;if(disabled)r[2]&=(uint8_t)~1U;r[3]=0x6b; }
+    } else if(sent[1]==0x3a) { r[2]=moving?1:3;if(disabled || power_disabled)r[2]&=(uint8_t)~1U;r[3]=0x6b; }
     else if(sent[1]==0xfd) {
       last_pulses=((unsigned)sent[6]<<24)|((unsigned)sent[7]<<16)|((unsigned)sent[8]<<8)|sent[9];
       last_direction=sent[2];assert(sent[10]==2 && !sent[11]);position_commands++;
       if(!hold_position && !reject) position_raw+=(int32_t)lround((double)last_pulses*65536/3200)*(last_direction?-1:1);
       r[2]=reject?0xee:2;r[3]=0x6b;if(missing_motion_ack)length=0;
-    } else if(sent[1]==0xfe) { moving=0;speed_rpm=0;length=0;stop_commands++; }
-    else if(sent[1]==0xf3) { assert(sent[2]==0xab && sent[3]==1);r[2]=2;r[3]=0x6b; }
+    } else if(sent[1]==0xfe) { moving=0;speed_rpm=0;r[2]=2;r[3]=0x6b;stop_commands++; }
+    else if(sent[1]==0xf3) { assert(sent[2]==0xab && sent[3]<=1);power_disabled=!sent[3];r[2]=2;r[3]=0x6b; }
+    else if(sent[1]==0x93) { assert(sent[2]==0x88 && sent[3]==1);saved_zero=position_raw;saves++;r[2]=2;r[3]=0x6b; }
+    else if(sent[1]==0x9a) { assert(sent[2]==0 && !sent[3]);homes++;home_busy=4;r[2]=2;r[3]=0x6b; }
+    else if(sent[1]==0x3b) { r[2]=home_busy?4:0;r[3]=0x6b;if(home_busy && !--home_busy)position_raw=saved_zero+65536; }
+    else if(sent[1]==0x9c) { aborts++;home_busy=0;r[2]=2;r[3]=0x6b; }
     else { zero_commands++;assert(0); }
     /* Split every response; address 7 noise cannot consume ID8's event. */
     if(length && !missing) {
@@ -67,6 +72,19 @@ int main(void)
   char *set[]={"turntable","set","slot2_deg","270"};
   char *empty[]={"turntable","inventory","empty"};
   assert(MotorBus_Init(&uart)==HAL_OK);Turntable_Init();
+  /* Boot waits for arm clearance, homes once, and derives reference from
+   * actual multi-turn feedback rather than assuming raw position zero. */
+  Turntable_BootHomeProcess(false);step();assert(!homes && !Turntable_ReferenceValid());
+  Turntable_BootHomeProcess(true);assert(Turntable_IsBusy() && !Turntable_ReferenceValid());
+  run();Turntable_StatusGet(&s);
+  assert(homes==1 && s.reference_valid && s.arrived && s.slot==1);
+  assert(position_raw==saved_zero+65536 && fabsf(s.angle_deg)<0.01f && zero_commands==0 && saves==0);
+  assert(Turntable_InventoryGet(1).state==TURNTABLE_UNKNOWN);
+  Turntable_BootHomeProcess(true);step();assert(homes==1);
+  Turntable_Init();Turntable_Stop();run();Turntable_BootHomeProcess(true);step();assert(homes==1);
+  /* Explicit manual actions take ownership; no late boot home may follow. */
+  Turntable_Init();assert(Turntable_Origin());run();Turntable_BootHomeProcess(true);step();assert(homes==1);
+  homes=0;Turntable_Init();
   assert(!Turntable_ReferenceValid());assert(!Turntable_Index(1));
   inv=Turntable_InventoryGet(1);assert(inv.state==TURNTABLE_UNKNOWN && !inv.color);
   assert(!Turntable_FindEmpty());command(3,get);assert(strstr(console,"value=unset"));
@@ -107,6 +125,21 @@ int main(void)
   assert(Turntable_Index(2));step();Turntable_Stop();run();
   assert(!MotorBus_IsQuarantined());
   assert(Turntable_ReferenceValid());
+  /* Release ID8 for hand alignment; saving mechanical zero persists in the driver. */
+  assert(Turntable_Enable(false));run();assert(power_disabled);
+  position_raw=12345; /* operator aligned the first slot */
+  assert(Turntable_Enable(true));run();assert(!power_disabled);
+  assert(Turntable_SaveZero());run();assert(saves==1 && saved_zero==12345);
+  position_raw+=20000;
+  assert(Turntable_Home());
+  for(unsigned i=0;i<12;i++)step();
+  assert(Turntable_IsBusy()); /* ACK alone is not home completion. */
+  run();Turntable_StatusGet(&s);
+  assert(homes==1 && s.arrived && s.reference_valid && s.slot==1);
+  assert(!strcmp(s.reason,"home_complete") && fabsf(s.angle_deg)<0.01f);
+  assert(position_raw==saved_zero+65536 && zero_commands==0);
+  assert(Turntable_InventoryGet(1).state==TURNTABLE_OCCUPIED);
+  assert(Turntable_Home());step();Turntable_Stop();run();assert(aborts==1);
   missing=1;assert(Turntable_Index(2));run();Turntable_StatusGet(&s);
   assert(MotorBus_IsQuarantined() && !s.arrived && !s.feedback_valid);
   Turntable_Stop();run();Turntable_StatusGet(&s);
@@ -117,7 +150,7 @@ int main(void)
     unsigned before_stop=stop_commands;
     /* The motor executes, but its ACK is missing: still send priority Stop. */
     int32_t old_position=position_raw;
-    missing_motion_ack=1;assert(Turntable_Index(1));run();Turntable_StatusGet(&s);
+    missing_motion_ack=1;assert(Turntable_Index(2));run();Turntable_StatusGet(&s);
     assert(position_raw!=old_position);
     assert(stop_commands==before_stop+1 && !s.arrived && !s.feedback_valid);
     assert(MotorBus_IsQuarantined());missing_motion_ack=0;

@@ -22,16 +22,16 @@ static const char *const Names[PARAM_COUNT] = {
 static float Params[PARAM_COUNT];
 static Turntable_Inventory_t Inventory[TURNTABLE_SLOT_COUNT];
 static Turntable_Status_t Status;
-typedef enum { OP_NONE, OP_ORIGIN, OP_INDEX, OP_JOG, OP_STOP } Operation;
-typedef enum { TT_PHASE_SAMPLE, TT_PHASE_ENABLE, TT_PHASE_MOVE, TT_PHASE_STOP_FRAME } Phase;
+typedef enum { OP_NONE, OP_ORIGIN, OP_INDEX, OP_JOG, OP_STOP, OP_POWER, OP_SAVE_ZERO, OP_HOME } Operation;
+typedef enum { TT_PHASE_SAMPLE, TT_PHASE_ENABLE, TT_PHASE_MOVE, TT_PHASE_STOP_FRAME, TT_PHASE_SAVE_ZERO, TT_PHASE_HOME, TT_PHASE_ABORT_HOME } Phase;
 static Operation Op;
 static Phase Step;
-static uint8_t SampleKind, Flags;
-static int64_t PositionRaw, OriginRaw;
+static uint8_t SampleKind, Flags, HomeFlags;
+static int64_t PositionRaw, OriginRaw, HomeLastRaw;
 static double TargetRaw, RequestedJog, DeltaDeg;
 static uint32_t Token, PendingToken, SampleTick[3], LastCycle, StableSince;
 static uint32_t Started, MotionBudget, StopStarted;
-static bool Pending, Stable, MotionStarted;
+static bool Pending, Stable, MotionStarted, PowerEnabled, BootHomePending;
 static const char *StopReason;
 
 static float wrap(float degree)
@@ -81,8 +81,8 @@ static void stop_start(const char *reason)
 {
   MotorBus_Cancel(MOTOR_BUS_TURNTABLE);
   MotorBus_Release(MOTOR_BUS_TURNTABLE);
+  Step = Op == OP_HOME ? TT_PHASE_ABORT_HOME : TT_PHASE_STOP_FRAME;
   Op = OP_STOP;
-  Step = TT_PHASE_STOP_FRAME;
   Pending = false;
   StopReason = reason;
   StopStarted = HAL_GetTick();
@@ -116,6 +116,7 @@ void Turntable_Init(void)
   Op = OP_NONE;
   Pending = Stable = MotionStarted = false;
   Token = 0;
+  BootHomePending = true;
 }
 bool Turntable_IsBusy(void) { return Op != OP_NONE; }
 bool Turntable_ReferenceValid(void) { return Status.reference_valid; }
@@ -152,6 +153,7 @@ static bool start(Operation op)
   if (Turntable_IsBusy()) { Status.reason = "busy"; return false; }
   if (MotorBus_IsQuarantined()) { Status.reason = "bus_locked"; return false; }
   if (!MotorBus_Reserve(MOTOR_BUS_TURNTABLE)) { Status.reason = "bus_busy"; return false; }
+  BootHomePending = false; /* An accepted explicit operation owns the turntable. */
   Op = op;
   Step = TT_PHASE_SAMPLE;
   SampleKind = 0;
@@ -191,8 +193,37 @@ bool Turntable_Jog(float degree)
   Status.target_deg = NAN;
   return true;
 }
+bool Turntable_SaveZero(void)
+{
+  return start(OP_SAVE_ZERO);
+}
+bool Turntable_Home(void)
+{
+  if (!start(OP_HOME)) return false;
+  Step = TT_PHASE_ENABLE;
+  HomeLastRaw = PositionRaw;
+  return true;
+}
+bool Turntable_Enable(bool enabled)
+{
+  if (!start(OP_POWER)) return false;
+  PowerEnabled = enabled;
+  Step = TT_PHASE_ENABLE;
+  Status.state = enabled ? "enabling" : "disabling";
+  return true;
+}
+void Turntable_BootHomeProcess(bool arm_ready)
+{
+  if (!BootHomePending || !arm_ready) return;
+  if (Turntable_Home()) reply("OK turntable boot_home accepted mode=near\r\n");
+  else if (MotorBus_IsQuarantined()) {
+    BootHomePending = false;
+    reply("ERR turntable boot_home reason=bus_locked\r\n");
+  } /* A draining shared-bus transaction is retried by the next main loop. */
+}
 void Turntable_Stop(void)
 {
+  BootHomePending = false;
   if (Op != OP_STOP) stop_start("stopped");
 }
 static bool submit(const uint8_t *data, uint8_t length, uint8_t reply_length, bool priority)
@@ -218,7 +249,39 @@ static void sampled(void)
   if (Flags & 0x0cU) { fail("driver_fault"); return; }
   if (Op == OP_STOP) {
     /* Position/state/speed come from a complete post-stop cycle. */
-    if (Status.feedback_valid && stationary && (Flags & 2U)) finish(StopReason, false);
+    if (Status.feedback_valid && stationary) finish(StopReason, false);
+    return;
+  }
+  if (Op == OP_SAVE_ZERO) {
+    if (!stationary) { finish("motor_moving", false); return; }
+    Step = TT_PHASE_SAVE_ZERO;
+    return;
+  }
+  if (Op == OP_HOME) {
+    if (HomeFlags & 8U) { fail("home_failed"); return; }
+    bool settled = !(HomeFlags & 4U) && stationary && (Flags & 1U) &&
+                   fabs((double)(PositionRaw - HomeLastRaw) * 360.0 / FEEDBACK_UNITS_PER_REV) <= Params[POS_TOL_DEG];
+    HomeLastRaw = PositionRaw;
+    if (!settled) Stable = false;
+    else if (!Stable) { Stable = true; StableSince = now; }
+    else if ((uint32_t)(now - StableSince) >= (uint32_t)Params[STABLE_MS]) {
+      OriginRaw = PositionRaw;
+      Status.reference_valid = true;
+      Status.slot = 1;
+      Status.angle_deg = Status.target_deg = 0;
+      finish("home_complete", true);
+      reply("OK turntable home complete ref=1\r\n");
+      return;
+    }
+    if ((uint32_t)(now - Started) > 60000U) fail("home_timeout");
+    return;
+  }
+  if (Op == OP_POWER) {
+    bool matched = ((Flags & 1U) != 0U) == PowerEnabled;
+    finish(matched ? (PowerEnabled ? "enabled" : "disabled") : "enable_state_mismatch", false);
+    reply("%s turntable %s action=%s en=%u\r\n", matched ? "OK" : "ERR",
+          matched ? "confirmed" : "enable_state_mismatch", PowerEnabled ? "enable" : "disable",
+          (unsigned)((Flags & 1U) != 0U));
     return;
   }
   if (Op == OP_ORIGIN) {
@@ -267,10 +330,20 @@ void Turntable_Process(void)
      * here so neither mechanical arm nor chassis can consume this owner's event. */
     if (Pending && event.token == PendingToken) {
       Pending = false;
-      if ((Step == TT_PHASE_STOP_FRAME && event.result != MOTOR_BUS_TX_DONE) ||
-          (Step != TT_PHASE_STOP_FRAME && event.result != MOTOR_BUS_REPLY)) {
+      if (((Step == TT_PHASE_STOP_FRAME || Step == TT_PHASE_ABORT_HOME) && event.result != MOTOR_BUS_TX_DONE) ||
+          (Step != TT_PHASE_STOP_FRAME && Step != TT_PHASE_ABORT_HOME && event.result != MOTOR_BUS_REPLY)) {
         Status.feedback_valid = false;
         fail(event.result == MOTOR_BUS_TIMEOUT ? "feedback_timeout" : "transport_error");
+      } else if (Step == TT_PHASE_ABORT_HOME) {
+        Step = TT_PHASE_STOP_FRAME;
+      } else if (Step == TT_PHASE_SAVE_ZERO) {
+        if (event.length != 4 || event.data[2] != 2U) { fail("driver_rejected"); return; }
+        OriginRaw = PositionRaw;
+        Status.reference_valid = true;
+        Status.slot = 1;
+        Status.angle_deg = Status.target_deg = 0;
+        finish("mechanical_zero_saved", false);
+        reply("OK turntable zero_saved stored=1 ref=1\r\n");
       } else if (Step == TT_PHASE_STOP_FRAME) {
         if (MotorBus_IsQuarantined()) { finish("stopped_unverified", false); return; }
         (void)MotorBus_Reserve(MOTOR_BUS_TURNTABLE);
@@ -278,9 +351,13 @@ void Turntable_Process(void)
         SampleKind = 0;
         memset(SampleTick, 0, sizeof(SampleTick));
         LastCycle = now - 50U;
-      } else if (Step == TT_PHASE_ENABLE || Step == TT_PHASE_MOVE) {
+      } else if (Step == TT_PHASE_ENABLE || Step == TT_PHASE_MOVE || Step == TT_PHASE_HOME) {
         if (event.length != 4 || event.data[2] != 2U) { fail("driver_rejected"); return; }
-        if (Step == TT_PHASE_ENABLE) Step = TT_PHASE_MOVE;
+        if (Step == TT_PHASE_ENABLE && Op == OP_POWER) {
+          Step = TT_PHASE_SAMPLE;
+          SampleKind = 0;
+          LastCycle = now - 50U;
+        } else if (Step == TT_PHASE_ENABLE) Step = Op == OP_HOME ? TT_PHASE_HOME : TT_PHASE_MOVE;
         else {
           Step = TT_PHASE_SAMPLE;
           SampleKind = 0;
@@ -293,6 +370,7 @@ void Turntable_Process(void)
           Status.reason = "monitoring";
         }
       } else {
+        if(event.length==4 && (event.data[2]==0xe2 || event.data[2]==0xee)) { fail("driver_rejected");return; }
         if (SampleKind == 0) {
           uint32_t magnitude = ((uint32_t)event.data[3] << 24) | ((uint32_t)event.data[4] << 16) |
                                ((uint32_t)event.data[5] << 8) | event.data[6];
@@ -300,9 +378,10 @@ void Turntable_Process(void)
         } else if (SampleKind == 1) {
           Status.speed_rpm = (float)(((unsigned)event.data[3] << 8) | event.data[4]);
           if (event.data[2]) Status.speed_rpm = -Status.speed_rpm;
-        } else Flags = event.data[2];
-        SampleTick[SampleKind] = event.tick_ms ? event.tick_ms : 1U;
-        if (++SampleKind == 3) { SampleKind = 0; sampled(); }
+        } else if (SampleKind == 2) Flags = event.data[2];
+        else HomeFlags = event.data[2];
+        if (SampleKind < 3) SampleTick[SampleKind] = event.tick_ms ? event.tick_ms : 1U;
+        if (++SampleKind == (Op == OP_HOME ? 4 : 3)) { SampleKind = 0; sampled(); }
       }
     }
   }
@@ -310,15 +389,24 @@ void Turntable_Process(void)
   if (Op == OP_STOP && (uint32_t)(now - StopStarted) > (uint32_t)Params[FEEDBACK_MS] + 500U) {
     finish("stop_unconfirmed", false); return;
   }
-  if (MotorBus_IsQuarantined() && Step != TT_PHASE_STOP_FRAME) {
+  if (MotorBus_IsQuarantined() && Step != TT_PHASE_STOP_FRAME && Step != TT_PHASE_ABORT_HOME) {
     fail("bus_locked"); return;
   }
   cmd[0] = MOTOR_ID_TURNTABLE;
-  if (Step == TT_PHASE_STOP_FRAME) {
+  if (Step == TT_PHASE_ABORT_HOME) {
+    cmd[1] = 0x9c; cmd[2] = 0x48; cmd[3] = 0x6b;
+    (void)submit(cmd, 4, 0, true);
+  } else if (Step == TT_PHASE_SAVE_ZERO) {
+    cmd[1] = 0x93; cmd[2] = 0x88; cmd[3] = 1; cmd[4] = 0x6b;
+    (void)submit(cmd, 5, 4, false);
+  } else if (Step == TT_PHASE_HOME) {
+    cmd[1] = 0x9a; cmd[2] = 0; cmd[3] = 0; cmd[4] = 0x6b;
+    if (submit(cmd, 5, 4, false)) MotionStarted = true;
+  } else if (Step == TT_PHASE_STOP_FRAME) {
     cmd[1] = 0xfe; cmd[2] = 0x98; cmd[3] = 0; cmd[4] = 0x6b;
     (void)submit(cmd, 5, 0, true);
   } else if (Step == TT_PHASE_ENABLE) {
-    cmd[1] = 0xf3; cmd[2] = 0xab; cmd[3] = 1; cmd[4] = 0; cmd[5] = 0x6b;
+    cmd[1] = 0xf3; cmd[2] = 0xab; cmd[3] = Op == OP_POWER ? (uint8_t)PowerEnabled : 1; cmd[4] = 0; cmd[5] = 0x6b;
     (void)submit(cmd, 6, 4, false);
   } else if (Step == TT_PHASE_MOVE) {
     uint32_t pulses = (uint32_t)(fabs(DeltaDeg) * COMMAND_PULSES_PER_REV / 360.0 + 0.5);
@@ -331,8 +419,8 @@ void Turntable_Process(void)
      * stayed still. The failure path must issue Stop as well as report failure. */
     if (submit(cmd, 13, 4, false)) MotionStarted = true;
   } else if (SampleKind || (uint32_t)(now - LastCycle) >= 50U) {
-    static const uint8_t functions[] = {0x36, 0x35, 0x3a};
-    static const uint8_t lengths[] = {8, 6, 4};
+    static const uint8_t functions[] = {0x36, 0x35, 0x3a, 0x3b};
+    static const uint8_t lengths[] = {8, 6, 4, 4};
     if (!SampleKind && !MotorBus_Reserve(MOTOR_BUS_TURNTABLE)) return;
     cmd[1] = functions[SampleKind]; cmd[2] = 0x6b;
     (void)submit(cmd, 3, lengths[SampleKind], false);
@@ -395,6 +483,14 @@ bool Turntable_Command(unsigned count, char *tokens[])
           s.state, s.reference_valid, (unsigned)s.slot, s.arrived, s.moving, s.feedback_valid,
           (double)s.angle_deg, (double)s.target_deg, (double)s.speed_rpm, s.reason);
     for (uint8_t slot = 1; slot <= TURNTABLE_SLOT_COUNT; slot++) inventory_reply(slot);
+  } else if (count == 2 && (!strcmp(tokens[1], "save_zero") || !strcmp(tokens[1], "home"))) {
+    accepted = !strcmp(tokens[1], "home") ? Turntable_Home() : Turntable_SaveZero();
+    reply("%s turntable %s action=%s\r\n", accepted ? "OK" : "ERR",
+          accepted ? "accepted" : Status.reason, tokens[1]);
+  } else if (count == 2 && (!strcmp(tokens[1], "enable") || !strcmp(tokens[1], "disable"))) {
+    accepted = Turntable_Enable(!strcmp(tokens[1], "enable"));
+    reply("%s turntable %s action=%s\r\n", accepted ? "OK" : "ERR",
+          accepted ? "accepted" : Status.reason, tokens[1]);
   } else if (count == 2 && !strcmp(tokens[1], "origin")) {
     accepted = Turntable_Origin();
     reply("%s turntable %s action=origin\r\n", accepted ? "OK" : "ERR", accepted ? "accepted" : Status.reason);

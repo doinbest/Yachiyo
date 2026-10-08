@@ -5,7 +5,7 @@
 typedef enum {RADAR_OWNER_NONE=0,RADAR_OWNER_VEHICLE,RADAR_OWNER_HOST} RadarScan_Owner_t;
 
 static RadarMap_Params_t parameters, capture_parameters, published_parameters;
-static RadarMap_t published_map, working_map;
+static RadarMap_t published_map, working_map, merged_map;
 /* One cloud only: recapture invalidates its firmware view until publication.
  * The console/browser can retain the previous complete cloud as history. */
 static RadarSample_t cloud[RADAR_SCAN_POINT_CAPACITY];
@@ -21,15 +21,25 @@ static bool have_pending, have_previous;
 static bool capture_auto,selection_available;
 static RadarStart_Id_t capture_start;
 static uint16_t previous_start;
+/* Learn CE packet cadence from three consistent observed steps. CE carries no
+ * sector width; a missing successor cannot justify stretching its old points. */
+static uint16_t ce_span,ce_candidate,ce_max_span;
+static uint8_t ce_consistent;
 static uint32_t progress, pending_progress, start_tick, capture_origin;
 static uint32_t capture_completed_tick;
 static uint32_t seen_bad, seen_loss, parameter_revision, capture_revision;
 static RadarScan_Raw_t debug_snapshot;
+static RadarScan_Evidence_t evidence;
+static uint32_t evidence_bad_start;
 static bool capture_debug;
 static uint32_t incoming_end, debug_bad_start;
 static RadarScan_LiveStatus_t live;
 static RadarLive_Point_t live_work[RADAR_LIVE_BINS],live_latest[RADAR_LIVE_BINS];
 static bool live_collecting;
+static RadarHostMap_Config_t host_live_config;
+static RadarHostMap_Result_t host_live_work,host_live_latest;
+static uint32_t host_live_scan_id,host_cloud_scan_id;
+static void reset_live_circle(const char *reason);
 
 static bool active(void)
 {
@@ -63,11 +73,13 @@ HAL_StatusTypeDef RadarScan_Init(UART_HandleTypeDef *uart)
   have_pending = have_previous = false;
   capture_auto=selection_available=false;
   capture_debug=false;memset(&debug_snapshot,0,sizeof debug_snapshot);
+  memset(&evidence,0,sizeof evidence);
   memset(&live,0,sizeof live);live.state=RADAR_LIVE_STOPPED;live.reason="not_started";
   memset(&host_status,0,sizeof host_status);host_status.state=RADAR_SCAN_IDLE;
   host_status.reason="not_started";host_status.live_state=RADAR_LIVE_STOPPED;
   host_status.live_reason="not_started";
   live_collecting=false;
+  host_live_scan_id=host_cloud_scan_id=0U;
   capture_owner=live_owner=cloud_owner=live_latest_owner=RADAR_OWNER_NONE;
   capture_start=RADAR_START_LOWER;
   parameter_revision = capture_revision = 0;
@@ -107,22 +119,41 @@ bool RadarScan_LiveCopy(RadarLive_Point_t points[RADAR_LIVE_BINS])
   if(!points || !live.sequence || live_latest_owner!=RADAR_OWNER_VEHICLE)return false;
   memcpy(points,live_latest,sizeof live_latest);return true;
 }
-bool RadarScan_HostLiveStart(const RadarMap_Params_t *params)
+bool RadarScan_HostLiveStart(const RadarMap_Params_t *params,const RadarHostMap_Config_t *config)
 {
   RadarUart_Status_t uart_status;uint32_t id=host_status.live_id+1U;
-  if(active() || live_active() || !RadarMap_ParamsValid(params))return false;
+  if(active() || live_active() || !RadarMap_ParamsValid(params) || !RadarHostMap_ConfigValid(config))return false;
   if(!RadarUart_StartScan())return false;
   live_owner=RADAR_OWNER_HOST;live_latest_owner=RADAR_OWNER_NONE;
   host_status.parameters=*params;host_status.live_id=id?id:1U;
   host_status.live_sequence=0U;host_status.live_completed_tick=0U;
   host_status.live_circle_restarts=host_status.live_unit_changes=host_status.live_unit_overflows=0U;
   host_status.live_points=0U;host_status.live_active=true;
+  /* A fresh live run has no new circle yet; READY belongs to its history. */
+  host_status.state=RADAR_SCAN_PREPARING;
   host_status.live_state=RADAR_LIVE_PREPARING;host_status.live_reason="configuring";
   host_status.live_unit=RADAR_UNIT_UNKNOWN;
+  host_live_config=*config;memset(&host_live_work,0,sizeof host_live_work);
   memset(live_work,0,sizeof live_work);memset(live_latest,0,sizeof live_latest);
   live_collecting=have_previous=have_pending=false;progress=pending_progress=0U;
   RadarUart_StatusGet(&uart_status);seen_bad=uart_status.bad;seen_loss=uart_status.loss_generation;
   return true;
+}
+void RadarScan_HostLiveConfigure(const RadarHostMap_Config_t *config)
+{
+  if(live_owner!=RADAR_OWNER_HOST || !RadarHostMap_ConfigValid(config))return;
+  host_live_config=*config;
+  host_status.parameters.distance_min_mm=config->distance_min_mm;
+  host_status.parameters.distance_max_mm=config->distance_max_mm;
+  host_status.parameters.energy_min=config->energy_min;
+  host_status.parameters.energy_max=config->energy_max;
+  reset_live_circle("config_changed");have_previous=false;
+  host_status.state=RADAR_SCAN_WAIT_WRAP;
+}
+const RadarHostMap_Result_t *RadarScan_HostLiveMap(uint32_t *scan_id)
+{
+  if(scan_id)*scan_id=host_live_scan_id;
+  return host_live_scan_id && host_live_scan_id==host_status.scan_id?&host_live_latest:NULL;
 }
 void RadarScan_HostLiveStop(void)
 {
@@ -139,6 +170,7 @@ bool RadarScan_HostLiveCopy(RadarLive_Point_t points[RADAR_LIVE_BINS])
 static void reset_live_circle(const char *reason)
 {
   memset(live_work,0,sizeof live_work);live_collecting=have_pending=false;
+  if(live_owner==RADAR_OWNER_HOST)memset(&host_live_work,0,sizeof host_live_work);
   progress=pending_progress=0;
   if(live_owner==RADAR_OWNER_HOST){host_status.live_state=RADAR_LIVE_WAITING;host_status.live_reason=reason;}
   else {live.state=RADAR_LIVE_WAITING;live.reason=reason;}
@@ -147,7 +179,10 @@ static void reset_live_circle(const char *reason)
 static void reset_circle(const char *reason)
 {
   have_pending = false; progress = pending_progress = 0;
+  ce_max_span=0U;
   RadarMap_Reset(&working_map);
+  if(capture_owner==RADAR_OWNER_VEHICLE && !capture_auto && status.circles_done<3U)
+    memset(&evidence.circle[status.circles_done],0,sizeof evidence.circle[0]);
   if(capture_auto)RadarStart_Begin(&start_candidates,&capture_parameters);
   status.point_count = status.coverage_tenths = 0;
   status.raw_points = 0; status.truncated = false;
@@ -183,6 +218,7 @@ static bool start_capture(const RadarMap_Params_t *params, uint32_t origin_gener
   capture_origin = origin_generation; start_tick = HAL_GetTick();
   RadarUart_StatusGet(&uart_status); seen_bad = uart_status.bad; seen_loss = uart_status.loss_generation;
   have_previous = have_pending = false; progress = pending_progress = 0;
+  ce_span=ce_candidate=ce_max_span=0U;ce_consistent=0U;
   RadarMap_Reset(&working_map);
   if(owner==RADAR_OWNER_VEHICLE && (capture_auto || capture_start==RADAR_START_UPPER)){
     RadarStart_Begin(&start_candidates,&capture_parameters);
@@ -193,6 +229,11 @@ static bool start_capture(const RadarMap_Params_t *params, uint32_t origin_gener
   status.unit = RADAR_UNIT_UNKNOWN; status.elapsed_ms = 0; status.raw_points = 0;
   status.circle_restarts = status.unit_changes = status.unit_overflows = 0;
   status.coverage_tenths = 0;
+  status.circles_done=0U;status.circles_target=1U;RadarMap_Reset(&merged_map);
+  if(owner==RADAR_OWNER_VEHICLE){
+    memset(&evidence,0,sizeof evidence);evidence.parameters=capture_parameters;
+    evidence.origin_generation=origin_generation;evidence_bad_start=uart_status.bad;
+  }
   return true;
 }
 
@@ -204,6 +245,12 @@ bool RadarScan_StartAt(const RadarMap_Params_t *params,uint32_t origin_generatio
 {
   if(start_id!=RADAR_START_UPPER && start_id!=RADAR_START_LOWER)return false;
   return start_capture(params,origin_generation,false,start_id,RADAR_OWNER_VEHICLE);
+}
+bool RadarScan_StartAtCycles(const RadarMap_Params_t *params,uint32_t origin_generation,
+                            RadarStart_Id_t start_id,uint8_t circles)
+{
+  if((circles!=1U && circles!=3U) || !RadarScan_StartAt(params,origin_generation,start_id))return false;
+  status.circles_target=circles;return true;
 }
 bool RadarScan_HostStart(const RadarMap_Params_t *params)
 { return start_capture(params,0U,false,RADAR_START_LOWER,RADAR_OWNER_HOST); }
@@ -252,11 +299,12 @@ void RadarScan_RawStatusGet(RadarScan_Raw_t *out)
 
 uint16_t RadarScan_RawRead(uint32_t offset,uint8_t *bytes,uint16_t capacity)
 { return debug_snapshot.id?RadarUart_RawRead(offset,bytes,capacity):0; }
-static void publish_map(const RadarMap_t *map,const RadarMap_Params_t *params)
+static void publish_map(const RadarMap_t *map,const RadarMap_Params_t *params,bool finished)
 {
   published_map=*map;published_parameters=*params;
-  RadarMap_Finish(&published_map,&published_parameters);
+  if(!finished)RadarMap_Finish(&published_map,&published_parameters);
   status.map_id++;status.points_map_id=status.map_id;status.map_valid=true;
+  status.map_circles=status.circles_target;
   status.map_applicable=capture_revision==parameter_revision;
   status.origin_generation=capture_origin;status.completed_tick=capture_completed_tick;
 }
@@ -266,7 +314,7 @@ bool RadarScan_SelectStart(RadarStart_Id_t start_id)
   if(active() || live_active() || !selection_available)return false;
   map=RadarStart_Map(&start_candidates,start_id);params=RadarStart_Params(&start_candidates,start_id);
   if(!map || !params)return false;
-  publish_map(map,params);start_status.result.start_id=(uint8_t)start_id;
+  publish_map(map,params,false);start_status.result.start_id=(uint8_t)start_id;
   start_status.result.reason="manual_selection";
   status.state=RADAR_SCAN_READY;status.reason="complete";
   return true;
@@ -326,6 +374,35 @@ static bool packet_sample(const LdsPacket_t *packet,uint16_t span,uint32_t packe
   sample->angle_tenths=(uint16_t)((packet->start_angle_tenths+offset)%3600U);
   sample->distance_mm=(uint16_t)distance;sample->energy=packet->points[i].energy;return true;
 }
+static void record_hit(const LdsPacket_t *packet,uint16_t span,uint16_t index,const RadarSample_t *sample)
+{
+  RadarGrid_t grid;float x,y;int cell;unsigned at;
+  RadarScan_EvidenceCircle_t *circle;
+  if(status.circles_done>=3U || !RadarMap_Project(&capture_parameters,sample,&x,&y))return;
+  RadarGrid_Default(&grid);cell=RadarGrid_FindCell(&grid,y,2400.0f-x,false);
+  if(cell<0)return;
+  cell=(cell%5)*5+4-cell/5;circle=&evidence.circle[status.circles_done];
+  at=circle->hit_count[cell];
+  if(at<RADAR_EVIDENCE_HITS)circle->hit_count[cell]++;
+  else {circle->hits[cell][2]=circle->hits[cell][3];at=3U;}
+  circle->hits[cell][at]=(RadarScan_Hit_t){sample->angle_tenths,sample->distance_mm,
+    packet->points[index].distance,packet->start_angle_tenths,span,packet->count,index,
+    sample->energy,(uint8_t)((packet->fixed?1U:0U)|(status.unit==RADAR_UNIT_CM?2U:0U))};
+}
+static void save_circle_evidence(void)
+{
+  RadarUart_Status_t uart_status;
+  RadarScan_EvidenceCircle_t *circle;
+  if(capture_auto || status.circles_done>=3U)return;
+  circle=&evidence.circle[status.circles_done];RadarUart_StatusGet(&uart_status);
+  memcpy(circle->counts,working_map.counts,sizeof circle->counts);
+  circle->mask=working_map.mask;circle->raw_points=status.raw_points;
+  circle->bad=uart_status.bad-evidence_bad_start;circle->restarts=status.circle_restarts;
+  circle->unit_changes=status.unit_changes;circle->unit_overflows=status.unit_overflows;
+  circle->unit=status.unit;
+}
+const RadarScan_Evidence_t *RadarScan_Evidence(void)
+{return evidence.complete?&evidence:NULL;}
 static void add_packet(const LdsPacket_t *packet, uint16_t span, uint32_t packet_progress)
 {
   uint16_t i;
@@ -335,7 +412,7 @@ static void add_packet(const LdsPacket_t *packet, uint16_t span, uint32_t packet
     status.raw_points++;
     if(capture_owner==RADAR_OWNER_VEHICLE) {
       if(capture_auto)RadarStart_Add(&start_candidates,&sample);
-      else RadarMap_Add(&working_map,&capture_parameters,&sample);
+      else if(RadarMap_Add(&working_map,&capture_parameters,&sample))record_hit(packet,span,i,&sample);
     }
     if (status.point_count < RADAR_SCAN_POINT_CAPACITY) cloud[status.point_count++] = sample;
     else status.truncated = true;
@@ -349,6 +426,7 @@ static void add_live_packet(const LdsPacket_t *packet,uint16_t span,uint32_t pac
   uint32_t *overflows=live_owner==RADAR_OWNER_HOST?&host_status.live_unit_overflows:&live.unit_overflows;
   for(i=0;i<packet->count;i++){
     if(!packet_sample(packet,span,packet_progress,i,unit,&sample,overflows))break;
+    if(live_owner==RADAR_OWNER_HOST)RadarHostMap_Add(&host_live_config,&sample,&host_live_work);
     /* A diagnostic cloud covers all angles and the entire physical scene,
      * including walls outside the map. Only range/energy acceptance applies. */
     if(!sample.distance_mm || sample.distance_mm<p->distance_min_mm || sample.distance_mm>p->distance_max_mm ||
@@ -371,6 +449,12 @@ static void publish_live(void)
   for(unsigned i=0;i<RADAR_LIVE_BINS;i++)if(live_latest[i].distance_mm)points++;
   live_latest_owner=live_owner;
   if(live_owner==RADAR_OWNER_HOST) {
+    RadarHostMap_Finish(&host_live_config,&host_live_work);
+    host_live_latest=host_live_work;memset(&host_live_work,0,sizeof host_live_work);
+    host_status.scan_id++;if(!host_status.scan_id)host_status.scan_id=1U;
+    host_live_scan_id=host_status.scan_id;
+    host_status.state=RADAR_SCAN_READY;host_status.reason="complete";
+    host_status.raw_points=host_live_latest.raw_points;host_status.coverage_tenths=3600U;
     host_status.live_points=points;host_status.live_sequence++;
     if(!host_status.live_sequence)host_status.live_sequence=1U;
     host_status.live_completed_tick=HAL_GetTick();host_status.live_state=RADAR_LIVE_STREAMING;
@@ -382,6 +466,25 @@ static void publish_live(void)
   memset(live_work,0,sizeof live_work);progress=pending_progress=0;have_pending=false;
 }
 
+static uint16_t sum_count(uint16_t a,uint16_t b)
+{ uint32_t sum=(uint32_t)a+b;return (uint16_t)(sum>UINT16_MAX?UINT16_MAX:sum); }
+static void merge_circle(void)
+{
+  RadarMap_Finish(&working_map,&capture_parameters);
+  save_circle_evidence();
+  if(!status.circles_done)merged_map=working_map;
+  else{
+    merged_map.mask|=working_map.mask;merged_map.evidence_mask|=working_map.evidence_mask;
+    for(unsigned i=0;i<RADAR_MAP_CELL_COUNT;i++){
+      merged_map.counts[i]=sum_count(merged_map.counts[i],working_map.counts[i]);
+      merged_map.boundary_counts[i]=sum_count(merged_map.boundary_counts[i],working_map.boundary_counts[i]);
+    }
+    merged_map.accepted_points=sum_count(merged_map.accepted_points,working_map.accepted_points);
+    merged_map.outside_points=sum_count(merged_map.outside_points,working_map.outside_points);
+    merged_map.background_points=sum_count(merged_map.background_points,working_map.background_points);
+    merged_map.cloud_built=merged_map.cloud_built && working_map.cloud_built;
+  }
+}
 static void publish(void)
 {
   if(capture_owner==RADAR_OWNER_HOST) {
@@ -390,14 +493,14 @@ static void publish(void)
     status.coverage_tenths=3600U;status.state=RADAR_SCAN_READY;
     status.reason=status.truncated?"cloud_truncated":"complete";
     host_status.scan_id=next_id?next_id:1U;host_status.completed_tick=capture_completed_tick;
+    host_cloud_scan_id=host_status.scan_id;
     host_status.points_valid=!status.truncated;sync_host_capture(false);
     cloud_owner=host_status.points_valid?RADAR_OWNER_HOST:RADAR_OWNER_NONE;
     have_pending=have_previous=false;RadarUart_StopScan();restore_vehicle_status();return;
   }
-  /* The complete angular sequence is required to distinguish a field-external
-   * surface from the foreground objects that briefly occlude it. Live preview
-   * bins are never used for this step. Keep the streaming result if storage was
-   * truncated: a partial cloud cannot establish a complete contour. */
+  /* Recount the complete raw circle with the same per-cell threshold as the
+   * streaming path. Preview bins never participate in occupancy. If storage
+   * was truncated, retain all-sample streaming counts, not the partial cloud. */
   if(!status.truncated){
     if(capture_auto){
       for(unsigned i=0;i<2U;i++)
@@ -405,6 +508,12 @@ static void publish(void)
                             cloud,status.point_count);
     }else RadarMap_BuildCloud(&working_map,&capture_parameters,cloud,status.point_count);
   }
+  if(status.circles_target>1U){
+    merge_circle();status.circles_done++;
+    if(status.circles_done<status.circles_target){
+      reset_circle("collecting");status.state=RADAR_SCAN_COLLECTING;return;
+    }
+  }else {save_circle_evidence();status.circles_done=1U;}
   status.scan_id++;
   memset(&start_status.result,0,sizeof start_status.result);
   start_status.scan_id=status.scan_id;start_status.automatic=capture_auto;
@@ -415,24 +524,46 @@ static void publish(void)
     RadarStart_Finish(&start_candidates,&start_status.result);selection_available=true;
     if(start_status.result.start_id!=RADAR_START_UNKNOWN)
       publish_map(RadarStart_Map(&start_candidates,(RadarStart_Id_t)start_status.result.start_id),
-                  RadarStart_Params(&start_candidates,(RadarStart_Id_t)start_status.result.start_id));
+                  RadarStart_Params(&start_candidates,(RadarStart_Id_t)start_status.result.start_id),false);
     else {
       status.map_applicable=false;status.points_map_id=0;
       status.reason=!strcmp(start_status.result.reason,"both_conflict")?"start_both_conflict":"start_ambiguous";
     }
   } else {
     unsigned index=capture_start==RADAR_START_UPPER?0U:1U;
-    RadarMap_FinishRaw(&working_map,&capture_parameters);
+    const RadarMap_t *result=status.circles_target>1U?&merged_map:&working_map;
+    if(status.circles_target==1U)RadarMap_FinishRaw(&working_map,&capture_parameters);
     start_status.result.start_id=(uint8_t)capture_start;start_status.result.reason="manual_reference";
-    start_status.result.qr_counts[index]=working_map.counts[14];start_status.result.raw_counts[index]=working_map.counts[22];
-    start_status.result.conflict_mask[index]=working_map.mask&RADAR_MAP_REQUIRED_CLEAR_MASK;
-    publish_map(&working_map,&capture_parameters);
+    start_status.result.qr_counts[index]=result->counts[14];start_status.result.raw_counts[index]=result->counts[22];
+    start_status.result.conflict_mask[index]=result->evidence_mask&RADAR_MAP_REQUIRED_CLEAR_MASK;
+    publish_map(result,&capture_parameters,status.circles_target>1U);
+    if(status.circles_target==1U)evidence.circle[0].mask=published_map.mask;
+    evidence.scan_id=status.scan_id;evidence.map_id=status.map_id;
+    evidence.circles=status.circles_done;evidence.complete=true;
   }
   if(capture_debug)debug_snapshot.circle_end=incoming_end-debug_snapshot.raw.first_position;
   finish_debug(true);
   have_pending = have_previous = false;capture_owner=RADAR_OWNER_NONE; RadarUart_StopScan();
 }
 
+static bool missing_ce_sector(const LdsPacket_t *packet,uint16_t delta)
+{
+  unsigned difference,tolerance;
+  if(capture_owner!=RADAR_OWNER_VEHICLE || live_active() || !have_pending ||
+     pending_packet.fixed || packet->fixed || !delta)return false;
+  if(delta>ce_max_span)ce_max_span=delta;
+  if(!ce_span){
+    difference=delta>ce_candidate?delta-ce_candidate:ce_candidate-delta;
+    tolerance=ce_candidate/10U+1U;
+    if(ce_candidate && difference<=tolerance){
+      if(++ce_consistent>=3U)ce_span=ce_candidate;
+    }else{ce_candidate=delta;ce_consistent=1U;}
+  }
+  /* A >50% step expansion is the measured missing-packet signature (36->72
+   * degrees), not a point/noise threshold. The largest early step is also
+   * checked when cadence becomes known, before publishing this circle. */
+  return ce_span && ce_max_span>(uint32_t)ce_span*3U/2U;
+}
 static void measurement(const LdsPacket_t *packet)
 {
   uint16_t start = packet->start_angle_tenths, delta = 0;
@@ -450,6 +581,10 @@ static void measurement(const LdsPacket_t *packet)
     previous_start = start; have_pending = false; return;
   }
   delta = (uint16_t)((start + 3600U - previous_start) % 3600U);
+  if(missing_ce_sector(packet,delta)){
+    status.circle_restarts++;reset_circle("angle_gap");
+    previous_start=start;have_pending=false;return;
+  }
   if (live_active()?!live_collecting:status.state==RADAR_SCAN_WAIT_WRAP) {
     previous_start = start;
     if (!wrapped) return;
@@ -464,7 +599,7 @@ static void measurement(const LdsPacket_t *packet)
     progress += delta;
     if(!live_active())status.coverage_tenths=(uint16_t)(progress<3600U?progress:3600U);
     previous_start = start;
-    if(progress>=3600U){if(live_active())publish_live();else {publish();return;}}
+    if(progress>=3600U){if(live_active())publish_live();else {publish();if(!active())return;}}
   }
   if (packet->fixed) {
     add_current_packet(packet, packet->sector_angle_tenths, progress); have_pending = false;
@@ -592,7 +727,7 @@ void RadarScan_HostStatusGet(RadarScan_HostStatus_t *out)
 }
 const RadarSample_t *RadarScan_HostPoints(uint16_t *count)
 {
-  bool valid=cloud_owner==RADAR_OWNER_HOST && host_status.points_valid;
+  bool valid=cloud_owner==RADAR_OWNER_HOST && host_status.points_valid && host_cloud_scan_id==host_status.scan_id;
   if(count)*count=valid?host_status.point_count:0U;
   return valid?cloud:0;
 }

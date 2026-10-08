@@ -64,6 +64,8 @@ extern "C"
     MechanicalArm_AxisTypeDef FailureAxis;
     MechanicalArm_ResultTypeDef Result;
     int32_t PositionPulses;
+    uint16_t SpeedRpm; /* Submitted position speed, not measured speed. */
+    uint32_t TxDoneMs; /* UART5 DMA complete; not request/reply/arrival time. */
     int32_t CurrentPosition;
     int64_t
         CurrentPositionRaw; /* Full signed 0x36 protocol payload; inspect on legacy range error. */
@@ -97,6 +99,11 @@ extern "C"
   MechanicalArm_ResultTypeDef MechanicalArm_Home(MechanicalArm_AxisTypeDef Axis, uint8_t HomeMode);
   MechanicalArm_ResultTypeDef MechanicalArm_Zero(MechanicalArm_AxisTypeDef Axis);
   MechanicalArm_ResultTypeDef MechanicalArm_Stop(MechanicalArm_AxisTypeDef Axis);
+  /** @brief Queue a routine single-axis hold without preempting other UART5 work.
+   * @param Axis One of Base/Z/X; ALL is rejected.
+   * @return Accepted/busy/error; completion is reported by ResultGet as STOP.
+   * @note Tracking zero-speed use only. Human/fault stops use Stop for priority. */
+  MechanicalArm_ResultTypeDef MechanicalArm_StopScheduled(MechanicalArm_AxisTypeDef Axis);
   /* Stop(all) preempts active request; single-axis stop retains the existing busy guard.
  * Stop
    * results report completed TX only, remain available after ACK quarantine. */

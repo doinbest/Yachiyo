@@ -6,6 +6,8 @@
 #include "../template/App/arm_console.c"
 #include "../template/Hardware/QR.c"
 static char output[16000];
+void Mecanum_StatusGet(Mecanum_Status_t *s) { memset(s,0,sizeof(*s)); }
+bool MotorBus_FeedbackAllowed(void) { return true; }
 static uint32_t tick = 100;
 static unsigned reset_calls, zero_calls;
 static bool urgent_idle=true;
@@ -26,15 +28,21 @@ bool Turntable_Command(unsigned n,char *t[])
   ArmConsole_Write("OK turntable fake\r\n");return true;
 }
 bool RadarConsole_Command(unsigned n,char *t[]){(void)n;(void)t;return false;}
-bool RadarConsole_ScanBusy(void){return false;}
+static bool radar_scan_busy;
+bool RadarConsole_ScanBusy(void){return radar_scan_busy;}
 static unsigned grab_stops;
+static bool ring_manual;
+bool GrabTask_RingManualAllowed(void){return ring_manual;}
 bool GrabTask_IsBusy(void){return grab_busy;}
 bool GrabRoute_IsBusy(void){return grab_route_busy;}
+bool GrabRoute_CanConfigure(void){return false;}
 void GrabTask_Stop(void){grab_stops++;grab_busy=false;}
 void GrabRoute_Stop(void){grab_route_busy=false;if(grab_busy)GrabTask_Stop();}
-bool GrabRoute_Command(unsigned n,char *t[]){(void)n;(void)t;return false;}
+bool GrabRoute_Command(unsigned n,char *t[]){if(n==3&&!strcmp(t[0],"grab")&&
+ (!strcmp(t[1],"route")||!strcmp(t[1],"mission"))&&!strcmp(t[2],"status"))
+ {ArmConsole_Write("OK grab route query\r\n");return true;}return false;}
 void GrabTask_StatusGet(GrabTask_Status_t *s){memset(s,0,sizeof(*s));}
-bool GrabTask_Command(unsigned n,char *t[]){if(n==2&&!strcmp(t[0],"grab")&&!strcmp(t[1],"status")){const char*s="OK grab state=hold\r\n";return ConsoleTx_Write((const uint8_t*)s,(uint16_t)strlen(s));}return false;}
+bool GrabTask_Command(unsigned n,char *t[]){if(n>=3&&!strcmp(t[0],"grab")&&!strcmp(t[1],"stack")){const char*s="OK grab stack routed\r\n";return ConsoleTx_Write((const uint8_t*)s,(uint16_t)strlen(s));}if(n>=3&&!strcmp(t[0],"grab")&&!strcmp(t[1],"track")){const char*s="OK grab track routed\r\n";return ConsoleTx_Write((const uint8_t*)s,(uint16_t)strlen(s));}if(n==2&&!strcmp(t[0],"grab")&&!strcmp(t[1],"status")){const char*s="OK grab state=hold\r\n";return ConsoleTx_Write((const uint8_t*)s,(uint16_t)strlen(s));}return false;}
 static bool motion_busy;
 static bool bus_locked;
 static MotorBus_Recovery_t recovery_fake={false,false,0,0,"idle"};
@@ -59,6 +67,7 @@ bool MotorBus_Submit(MotorBus_Owner_t owner,const uint8_t *p,uint8_t n,uint8_t r
 bool MotorBus_EventGet(MotorBus_Owner_t owner,MotorBus_Event_t *e)
 { (void)owner;if(!guard_ready)return false;*e=guard_event;guard_ready=false;return true; }
 bool MotorBus_IsQuarantined(void) { return bus_locked; }
+void MotorBus_TimingGet(MotorBus_Timing_t *out) { memset(out,0,sizeof *out); }
 void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out)
 {
   memset(out,0,sizeof(*out));out->locked=bus_locked;
@@ -91,11 +100,13 @@ bool ConsoleTx_Event(const char *data,uint16_t length)
 { assert(length<sizeof(qr_event));if(qr_event[0])qr_event_dropped++;memcpy(qr_event,data,length);qr_event[length]=0;qr_event_count++;return true; }
 void ConsoleTx_EventCancel(void) {if(qr_event[0])qr_event_dropped++;qr_event[0]=0;}
 uint32_t ConsoleTx_EventDropped(void) {return qr_event_dropped;}
-bool ChassisTelemetry_Command(unsigned count,char *tokens[]) {(void)count;(void)tokens;return false;}
+bool ChassisTelemetry_Command(unsigned count,char *tokens[]) {if(count==2&&!strcmp(tokens[0],"chassis")&& !strcmp(tokens[1],"task"))
+ {ArmConsole_Write("OK chassis task query\r\n");return true;}return false;}
 static bool route_reserved;
 bool ChassisRoute_IsBusy(void){return route_reserved;}
 bool ChassisRoute_Cancel(void){route_reserved=false;motion_busy=false;return true;}
-bool ChassisRoute_Command(unsigned n,char *t[]){(void)n;(void)t;return false;}
+bool ChassisRoute_Command(unsigned n,char *t[]){if(n==3&&!strcmp(t[0],"chassis")&&!strcmp(t[1],"route")&&!strcmp(t[2],"status"))
+ {ArmConsole_Write("OK chassis route query\r\n");return true;}return false;}
 bool ChassisMotion_IsBusy(void) {return motion_busy;}
 bool ChassisMotion_Stop(uint32_t ms) {(void)ms;motion_busy=false;return true;}
 static ChassisStop_Status_t stop_status = {0,0,0,false,false,"idle"};
@@ -116,6 +127,8 @@ void Camera_SnapshotGet(Camera_SnapshotTypeDef *out) { *out = snapshot; }
 Camera_VisualStateTypeDef Camera_VisualStateGet(const Camera_SnapshotTypeDef *data)
 { return data->HasValidData ? CAMERA_VIS_OK : CAMERA_VIS_LOST; }
 const char *Camera_VisualStateNameGet(Camera_VisualStateTypeDef state) { return state == CAMERA_VIS_OK ? "Ok" : "Lost"; }
+HAL_StatusTypeDef Camera_RingStart(uint8_t ring)
+{ return Camera_MaterialStart((Camera_ColorTypeDef)(9U+ring)); }
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef color)
 { camera_calls++; if (camera_result == HAL_OK) snapshot.RequestTarget = color; return camera_result; }
 void Camera_RequestStop(void) { snapshot.RequestActive = 0; }
@@ -268,6 +281,10 @@ int main(void)
   UART_HandleTypeDef uart={0};MechanicalArm_EventTypeDef event={0};unsigned before;
   uart.Instance=USART1;ArmConsole_Init(&uart);snapshot.UsbConfigured=1;snapshot.RequestActive=1;
   QR_Init();test_qr();
+  radar_scan_busy=true;
+  command("grab mission 200\r");assert(strstr(output,"stationary capture active"));
+  command("grab pose work\r");assert(strstr(output,"stationary capture active"));
+  radar_scan_busy=false;
   motion_busy=true;
   command("material auto 1\r");assert(strstr(output,"chassis_task_busy") && !material_busy);
   command("imu cal start\r");assert(strstr(output,"chassis_task_busy"));
@@ -343,10 +360,15 @@ int main(void)
     unsigned before_camera = camera_calls, before_motor = motor_calls;
     command("vision calib 1\r");assert(strstr(output,"ERR Unsupported B3"));
     command("vision ring 1\r");assert(strstr(output,"ERR Unsupported B3"));
-    command("camera ring 1\r");assert(strstr(output,"ERR Unsupported B3"));
     assert(camera_calls == before_camera && motor_calls == before_motor);
   }
   command("camera material 3\r");assert(camera_calls==1 && snapshot.RequestTarget==3);
+  for(unsigned ring=1;ring<=3;ring++) {
+    char cmd[32];snprintf(cmd,sizeof cmd,"camera ring %u\r",ring);command(cmd);
+    assert(snapshot.RequestTarget==9+ring && strstr(output,"OK camera ring"));
+  }
+  before=camera_calls;command("camera ring 4\r");assert(camera_calls==before);
+  command("camera material 3\r");
   camera_result=HAL_BUSY;command("camera material 2\r");assert(strstr(output,"busy") && snapshot.RequestTarget==3);
   camera_result=HAL_ERROR;snapshot.UsbConfigured=0;command("camera material 2\r");assert(strstr(output,"usb") && snapshot.RequestTarget==3);
   snapshot.UsbConfigured=1;command("camera material 2\r");assert(strstr(output,"tx"));camera_result=HAL_OK;
@@ -453,13 +475,36 @@ int main(void)
   assert(!ArmConsole_ResetPending() && reset_calls==1 && strstr(output,"ack_timeout"));
   command("system reset\r"); urgent_losses++; ArmConsole_ResetProcess();
   assert(!ArmConsole_ResetPending() && reset_calls==1 && strstr(output,"ack_failed"));
+  command("grab stop\r");assert(grab_stops>0);grab_stops=0;
   grab_busy=true; before=motor_calls;
+  command("grab route status\r");assert(strstr(output,"OK grab route query"));
+  command("grab mission status\r");assert(strstr(output,"OK grab route query"));
+  command("chassis task\r");assert(strstr(output,"OK chassis task query"));
+  command("chassis route status\r");assert(strstr(output,"OK chassis route query"));
+  assert(grab_busy && motor_calls==before);
+
+  command("grab track status\r");assert(strstr(output,"track routed"));
+  command("grab track get body_speed\r");assert(strstr(output,"track routed"));
+  command("grab track start 3\r");assert(strstr(output,"track routed"));
+  { unsigned stops=grab_stops; command("grab track stop\r");assert(!grab_busy && grab_stops==stops+1); grab_busy=true; }
+  grab_stops=0;
   command("pos z 10\r");assert(motor_calls==before&&strstr(output,"grab_busy"));
   command("grip open\r");assert(strstr(output,"grab_busy"));
+  ring_manual=true;
+  command("grip catch\r");assert(!strstr(output,"grab_busy") && grip_duty==ARM_GRIPPER_CATCH);
+  command("grab stack lower -100\r");assert(strstr(output,"stack routed") && motor_calls==before);
+  command("grab stack release\r");assert(strstr(output,"stack routed") && motor_calls==before);
+  command("grab stack lift\r");assert(strstr(output,"stack routed") && motor_calls==before);
+  command("pos z 10\r");assert(motor_calls==before && strstr(output,"grab_busy"));
+  ring_manual=false;
+  /* A moving Z target may be superseded through the task-owned path. The real
+   * task parser decides whether lower/release is valid at its current state. */
+  command("grab stack lower -90\r");assert(strstr(output,"stack routed") && motor_calls==before);
   command("imu verify\r");assert(strstr(output,"grab_busy"));
   command("state x\r");assert(motor_calls==before&&strstr(output,"grab_busy"));
   command("grab status\r");assert(strstr(output,"OK grab state=hold"));
   command("chassis stop\r");assert(!grab_busy&&grab_stops==1);
+  command("grab stack align 3\r");assert(strstr(output,"stack routed") && motor_calls==before);
   grab_busy=grab_route_busy=true;command("stop all\r");assert(!grab_busy&&!grab_route_busy&&grab_stops==2);
   grab_route_busy=true;command("grab start fixed\r");assert(strstr(output,"grab_busy"));
   command("grab stop\r");assert(!grab_route_busy);

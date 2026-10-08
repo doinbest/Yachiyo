@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "motor_bus.h"
 #include "../template/App/GrabTask.c"
 
 static uint32_t clock_ms;
@@ -18,12 +19,19 @@ static Camera_SnapshotTypeDef camera;
 static Camera_ColorTypeDef requested_color;
 static HAL_StatusTypeDef camera_tx_result=HAL_OK;
 static unsigned camera_attempts;
+static unsigned camera_stops;
 static Mecanum_Status_t bus;
 static int64_t wheel_position[4];
-static bool wheel_moving, base_arrives=true, base_stale=false;
+static uint32_t wheel_feedback_delay;
+static uint32_t wheel_position_time[4];
+static bool wheel_moving, base_arrives=true, base_stale=false, base_mode2_absolute=false;
 static unsigned base_moves, homes, aborts;
 static uint8_t home_flags=3, base_state_flags=3;
 static unsigned boot_verify_calls;
+static MechanicalArm_ResultTypeDef home_submit_result;
+static MotorBus_Diagnostic_t home_bus_diag;
+static char home_error_log[512];
+void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out) { *out=home_bus_diag; }
 static bool wheel_stale;
 static unsigned feedback_selected, selection_busy;
 static char output[2048], camera_log[320], progress_log[320], accepted_log[128];
@@ -54,9 +62,12 @@ void Turntable_StatusGet(Turntable_Status_t *out) { *out=tray_status; out->movin
 uint32_t HAL_GetTick(void) { return clock_ms; }
 uint8_t ArmVision_IsBusy(void) { return 0; }
 uint8_t MaterialVision_IsBusy(void) { return 0; }
-bool ChassisRoute_IsBusy(void) { return false; }
-bool ChassisMotion_IsBusy(void) { return false; }
+static bool chassis_pose_route, chassis_pose_motion;
+bool ChassisRoute_IsBusy(void) { return chassis_pose_route; }
+bool ChassisMotion_IsBusy(void) { return chassis_pose_motion; }
 bool Mecanum_IsBusy(void) { return false; }
+void Mecanum_TimingGet(Mecanum_Timing_t *out) { memset(out,0,sizeof *out); }
+void Mecanum_TrackingTiming(bool enabled,uint32_t interval_ms) { (void)enabled;(void)interval_ms; }
 bool HWT101_Cal_IsBusy(void) { return false; }
 void HWT101_Cal_BootVerifyArm(void) { assert(!BootActive && homes==3); boot_verify_calls++; }
 uint8_t MechanicalArm_IsBusy(void) { return pending_valid; }
@@ -69,6 +80,7 @@ static MechanicalArm_ResultTypeDef queue(MechanicalArm_ActionTypeDef action, Mec
 }
 MechanicalArm_ResultTypeDef MechanicalArm_Home(MechanicalArm_AxisTypeDef axis,uint8_t mode)
 {
+  if(home_submit_result!=MECHANICAL_ARM_RESULT_NONE)return home_submit_result;
   assert(axis==BootAxes[homes] && mode==(axis==MECHANICAL_ARM_AXIS_BASE?0:2));
   homes++; return queue(MECHANICAL_ARM_ACTION_HOME,axis);
 }
@@ -82,15 +94,21 @@ MechanicalArm_ResultTypeDef MechanicalArm_StateRead(MechanicalArm_AxisTypeDef ax
 { return queue(MECHANICAL_ARM_ACTION_STATE, axis); }
 MechanicalArm_ResultTypeDef MechanicalArm_Stop(MechanicalArm_AxisTypeDef axis)
 { pending_valid = false; stops++; return queue(MECHANICAL_ARM_ACTION_STOP, axis); }
+MechanicalArm_ResultTypeDef MechanicalArm_StopScheduled(MechanicalArm_AxisTypeDef axis)
+{ if(pending_valid)return MECHANICAL_ARM_RESULT_BUSY; stops++; return queue(MECHANICAL_ARM_ACTION_STOP,axis); }
+static uint16_t x_position_rpm;
+static MechanicalArm_PositionModeTypeDef base_position_mode;
 MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef axis, int32_t pulses,
  uint16_t rpm, uint8_t acc, MechanicalArm_PositionModeTypeDef mode)
 {
   assert(rpm > 0); (void)acc;
+  if(axis==MECHANICAL_ARM_AXIS_X) x_position_rpm=rpm;
   if(axis == MECHANICAL_ARM_AXIS_BASE) {
-    assert(mode == MECHANICAL_ARM_POSITION_RELATIVE_CURRENT);
+    assert(mode == MECHANICAL_ARM_POSITION_RELATIVE_CURRENT || mode == MECHANICAL_ARM_POSITION_ABSOLUTE);
+    base_position_mode=mode;
     assert(fabsf(physical[0]-Config[C_X_MIN])<.11f);
     if(pending_valid) return MECHANICAL_ARM_RESULT_BUSY;
-    destination[2]=physical[2]+pulses*360.0f/3200; base_moves++; positions++;
+    destination[2]=(mode==MECHANICAL_ARM_POSITION_ABSOLUTE || base_mode2_absolute?0:physical[2])+pulses*360.0f/3200; base_moves++; positions++;
     return queue(MECHANICAL_ARM_ACTION_POSITION,axis);
   }
   assert(mode == MECHANICAL_ARM_POSITION_ABSOLUTE);
@@ -104,9 +122,19 @@ uint8_t MechanicalArm_ConfigGet(MechanicalArm_AxisTypeDef axis, MechanicalArm_Co
 void Arm_GripperSet(Arm_GripperStatusTypeDef status)
 { if (status == ARM_GRIPPER_CATCH) closures++; else if (status == ARM_GRIPPER_OPEN) openings++; }
 #ifndef GRAB_COMMAND_SIM
+static char tracking_fault_log[160];
+static char tracking_estimate_log[320];
+static char tracking_live_log[640];
+static unsigned tracking_live_rows;
+bool ConsoleTx_Tracking(const char *text,uint16_t size)
+{ assert(size<sizeof tracking_live_log);memcpy(tracking_live_log,text,size);tracking_live_log[size]=0;tracking_live_rows++;return true; }
+void ConsoleTx_TrackingCancel(void) { tracking_live_log[0]=0; }
 bool ConsoleTx_Write(const uint8_t *text, uint16_t size)
 { assert(size < sizeof output); memcpy(output, text, size); output[size] = 0;
   if(strstr(output,"OK grab start")) { assert(size<sizeof accepted_log); memcpy(accepted_log,output,size+1); }
+  if(strstr(output,"ERR grab home_request")) { assert(size<sizeof home_error_log); memcpy(home_error_log,output,size+1); }
+  if(strstr(output,"OK grab track feedback_fault ")) { assert(size<sizeof tracking_fault_log); memcpy(tracking_fault_log,output,size+1); }
+  if(strstr(output,"OK grab track estimate ")) { assert(size<sizeof tracking_estimate_log); memcpy(tracking_estimate_log,output,size+1); }
   return true; }
 bool ConsoleTx_Debug(unsigned source,const char *text,uint16_t size)
 {
@@ -117,6 +145,8 @@ bool ConsoleTx_Debug(unsigned source,const char *text,uint16_t size)
 }
 void ConsoleTx_DebugCancel(unsigned source) { assert(source==CONSOLE_DEBUG_CAMERA); }
 #endif
+HAL_StatusTypeDef Camera_RingStart(uint8_t ring)
+{ return Camera_MaterialStart((Camera_ColorTypeDef)(9U+ring)); }
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef color)
 {
   camera_attempts++;
@@ -127,7 +157,7 @@ HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef color)
   memset(&camera.Data,0,sizeof camera.Data);
   return HAL_OK;
 }
-void Camera_RequestStop(void) {}
+void Camera_RequestStop(void) { camera_stops++; }
 void Camera_SnapshotGet(Camera_SnapshotTypeDef *out) { *out = camera; }
 bool HWT101_Cal_ControlAngleGet(HWT101_Angle_t *out)
 { memset(out, 0, sizeof *out); out->last_update_ms = clock_ms; return imu_valid; }
@@ -143,7 +173,8 @@ bool Mecanum_FeedbackGet(unsigned wheel, Mecanum_Feedback_t *out)
   assert(wheel < 4); memset(out, 0, sizeof *out);
   if(feedback_selected && wheel+1!=feedback_selected) return false;
   out->speed_valid = out->position_valid = out->state_valid = true;
-  out->speed_ms = out->position_ms = out->state_ms = clock_ms;
+  out->speed_ms = out->position_ms = out->state_ms = clock_ms-wheel_feedback_delay;
+  if(wheel_position_time[wheel])out->position_ms=wheel_position_time[wheel];
   if(wheel_stale) out->speed_ms = out->position_ms = out->state_ms = clock_ms-3000U;
   out->position_raw=wheel_position[wheel];
   out->speed_rpm = wheel_moving ? 30 : 0; out->state_flags = 3; return true;
@@ -159,15 +190,18 @@ static void setting(const char *key, const char *value)
 static void reset(void)
 {
   accepted_log[0]=progress_log[0]=0;
+  home_error_log[0]=0;home_submit_result=MECHANICAL_ARM_RESULT_NONE;
+  memset(&home_bus_diag,0,sizeof home_bus_diag);home_bus_diag.reason="none";
   clock_ms = 1000; pending_valid = false; positions = closures = openings = stops = 0;
   z_position_rpm=0; z_position_acc=0; z_position_pulses=0;
   requested_color=CAMERA_COLOR_RED; camera_requests = velocity_requests = 0; wheel_moving = false;
-  camera_tx_result=HAL_OK; camera_attempts=0;
-  wheel_stale = false; base_arrives=true; base_stale=false; base_moves=0; homes=aborts=0; home_flags=3; base_state_flags=3; boot_verify_calls=0; camera_logs=0; camera_log[0]=0;
+  camera_tx_result=HAL_OK; camera_attempts=camera_stops=0;
+  wheel_stale = false; base_arrives=true; base_stale=false; base_mode2_absolute=false; base_moves=0; homes=aborts=0; home_flags=3; base_state_flags=3; boot_verify_calls=0; camera_logs=0; camera_log[0]=0;
   feedback_selected = selection_busy = 0;
   move_arrives = camera_valid = imu_valid = true;
   memset(physical, 0, sizeof physical); memset(destination, 0, sizeof destination);
-  memset(wheel_position,0,sizeof wheel_position);
+  memset(wheel_position,0,sizeof wheel_position); wheel_feedback_delay=0;
+  memset(wheel_position_time,0,sizeof wheel_position_time);
   memset(&camera, 0, sizeof camera); memset(&bus, 0, sizeof bus);
   bus.ack_profile = MECANUM_ACK_RECEIVE; GrabTask_Init();
   tray_ready=tray_arrives=true; tray_moving=false; tray_indexes=tray_stops=0; tray_unset_slot=0;
@@ -214,7 +248,7 @@ static void step(bool new_capture, unsigned phase, int dx, int dy)
   camera.RequestFunction=0xB2; camera.RequestTarget=requested_color; camera.Data.Function=0xB2;
   camera.Data.Target = requested_color;
   if(new_capture) { camera.Data.Sequence++; camera.Data.Tick = clock_ms; }
-  camera.Data.CX = (uint16_t)(334 + dx); camera.Data.CY = (uint16_t)(338 - dy);
+  camera.Data.CX = (uint16_t)((RingTest?378:334) + dx); camera.Data.CY = (uint16_t)((RingTest?333:338) - dy);
 
   GrabTask_Process();
 }
@@ -226,6 +260,35 @@ static void run_to(GrabTask_State_t desired, unsigned limit, unsigned phase)
     desired,status().state_name,status().reason,PrepareStep,PendingAction,status().stop_confirmed,
     status().z_mm,status().z_target_mm,(unsigned long)clock_ms);
   assert(status().state == desired);
+}
+static void car_x_default_survives_reset_and_verified_home(void)
+{
+  char *read[]={"grab","get","x_car"};
+  reset();
+  assert(GrabTask_Command(3,read));
+  assert(strstr(output,"key=x_car value=100\r\n"));
+  assert(!GrabTask_ConfigReady("fixed") && !positions && !homes);
+  setting("x_car","42");
+  reset();
+  assert(GrabTask_Command(3,read));
+  assert(strstr(output,"key=x_car value=100\r\n"));
+
+  GrabTask_BootHomeStart();
+  assert(GrabTask_Command(3,read));
+  assert(strstr(output,"value=unset")); /* No target using an unverified X origin. */
+  run_to(GRAB_IDLE,250,0);
+  assert(GrabTask_Command(3,read));
+  assert(strstr(output,"key=x_car value=100\r\n"));
+  assert(GrabTask_ConfigReady("fixed") && !strcmp(status().missing,"none"));
+
+  setting("x_car","42");
+  GrabTask_Stop(); run_to(GRAB_IDLE,100,0);
+  assert(GrabTask_Command(3,read));
+  assert(strstr(output,"key=x_car value=42\r\n"));
+  assert(GrabTask_ConfigReady("fixed")); /* Ordinary stop preserves RAM tuning. */
+  GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_X);
+  assert(GrabTask_Command(3,read));
+  assert(strstr(output,"value=unset") && !GrabTask_ConfigReady("fixed"));
 }
 static void missing_and_fixed(void)
 {
@@ -352,9 +415,9 @@ static void boot_defaults_start_align_without_settings(void)
   assert(GrabTask_Start("align"));
   run_to(GRAB_ALIGN,180,1);
   assert(camera_requests==1 && Axes[0].target==0 && Axes[1].target==0);
-  assert(!closures && !base_moves);
+  assert(!closures && base_moves==1 && fabsf(physical[2]-90)<.15f);
   run_to(GRAB_HOLD,250,2);
-  assert(!closures && !base_moves && !strcmp(status().reason,"aligned_wait_check"));
+  assert(!closures && base_moves==1 && !strcmp(status().reason,"color_aligned_low"));
   status_write(false); assert(strstr(output,"model=initial"));
   before=positions; GrabTask_Stop(); run_to(GRAB_IDLE,100,2); assert(positions==before);
 }
@@ -410,10 +473,11 @@ static void fractional_x_survives_alternating_bus_wait(void)
   assert(GrabTask_Start("align")); run_to(GRAB_ALIGN,180,1); before=positions;
   for(i=0;i<20;i++)
   {
-    /* SENT still reserves its first 50ms for readback: each blocked control
+    /* An in-flight wheel batch owns IO: each blocked control
      * opportunity is followed by one free 100ms opportunity worth 0.105 pulse. */
     for(j=0;j<2;j++)
-    { bus.stage=MECANUM_STAGE_SENT; bus.sent_ms=clock_ms+50; step(true,2,0,1); }
+    { bus.stage=MECANUM_STAGE_WHEELS; bus.sent_ms=clock_ms+50; step(true,2,0,1); }
+    bus.stage=MECANUM_STAGE_SENT;
     bus.sent_ms=clock_ms-1000;
     for(j=0;j<2;j++) step(true,2,0,1);
   }
@@ -481,8 +545,8 @@ static void boot_homing(void)
   assert(homes==1); /* Idle homing flag without zero feedback cannot advance. */
   physical[1]=0; run_to(GRAB_IDLE,250,0);
   assert(boot_verify_calls==1 && homes==3 && !strcmp(status().reason,"home_complete") && Config[C_Z_GRAB]==-80 && Config[C_Z_PLACE]==-60);
-  assert(!GrabTask_ConfigReady("fixed") && GrabTask_ConfigReady("align"));
-  setting("x_car","0"); assert(GrabTask_ConfigReady("fixed"));
+  assert(GrabTask_ConfigReady("fixed") && GrabTask_ConfigReady("align"));
+  assert(Config[C_X_CAR]==100 && !strcmp(status().missing,"none"));
   for(i=0;i<50;i++) step(false,0,0,0);
   assert(homes==3);
   reset(); GrabTask_BootHomeStart(); home_flags=11; run_to(GRAB_ERROR,150,0);
@@ -493,6 +557,27 @@ static void boot_homing(void)
   for(i=0;i<50;i++) step(false,0,0,0);
   assert(homes==1);
   reset(); GrabTask_BootHomeStart(); GrabTask_Stop(); run_to(GRAB_IDLE,100,0); assert(!homes && !aborts && !boot_verify_calls);
+}
+static void boot_submit_wait_and_fault_diagnostics(void)
+{
+  reset();GrabTask_BootHomeStart();home_submit_result=MECHANICAL_ARM_RESULT_BUSY;
+  for(unsigned i=0;i<70;i++)step(false,0,0,0);
+  assert(status().state==GRAB_HOMING && !homes && !stops && !aborts && !boot_verify_calls);
+  assert(!strcmp(status().missing,"home_pending"));
+  home_submit_result=MECHANICAL_ARM_RESULT_NONE;run_to(GRAB_IDLE,250,0);
+  assert(homes==3 && boot_verify_calls==1 && !strcmp(status().missing,"none"));
+
+  reset();GrabTask_BootHomeStart();home_submit_result=MECHANICAL_ARM_RESULT_TX_ERROR;
+  home_bus_diag.locked=true;home_bus_diag.reason="uart_error";
+  home_bus_diag.uart_error=HAL_UART_ERROR_NE;home_bus_diag.tick_ms=29;
+  home_bus_diag.owner=MOTOR_BUS_OWNER_COUNT;
+  run_to(GRAB_ERROR,150,0);
+  assert(!homes && !aborts && !boot_verify_calls);
+  assert(!strcmp(status().reason,"home_bus_fault") && !strcmp(status().missing,"home_pending"));
+  assert(strstr(home_error_log,"axis=z") && strstr(home_error_log,"result=tx_error"));
+  assert(strstr(home_error_log,"bus_locked=1") && strstr(home_error_log,"bus_reason=uart_error"));
+  assert(strstr(home_error_log,"uart_error=0x00000002") && strstr(home_error_log,"fault_ms=29"));
+  status_write(false);assert(strstr(output,"missing=home_pending") && !strstr(output,"missing=x_ppm"));
 }
 static void base_home_requires_stable_feedback(void)
 {
@@ -647,6 +732,11 @@ static void restart_after_stop_and_verified_rehome(void)
   assert(GrabTask_Command(2,rehome));
   home_flags=11; run_to(GRAB_ERROR,150,0);
   assert(!GrabTask_ConfigReady("align") && !boot_verify_calls);
+  /* A failed boot is itself a valid reason to request verified rehoming. */
+  home_flags=3;homes=0;
+  assert(GrabTask_Command(2,rehome));assert(status().state==GRAB_HOMING);
+  run_to(GRAB_IDLE,250,0);
+  assert(GrabTask_ConfigReady("align") && boot_verify_calls==1);
 }
 static void alignment_reacquire_boundaries(void)
 {
@@ -836,22 +926,22 @@ static void tuned_initial_response_is_faster_and_bounded(void)
   reset(); GrabTask_BootHomeStart(); run_to(GRAB_IDLE,250,0);
   /* Live run: dx=-95..-57, dy approximately zero. The new profile should
    * exceed the old 10 mm/s cap here, then slow as it approaches the window. */
-  assert(solve(-95,0,0,v) && v[0]>39.9f && v[0]<=40.001f);
-  assert(solve(-61,0,0,v) && v[0]>36.0f && v[0]<37.2f);
-  assert(solve(-6,0,0,v) && v[0]>0 && v[0]<4.0f);
-  assert(solve(95,0,0,v) && v[0]<-39.9f && v[0]>=-40.001f);
+  assert(solve(-95,0,0,v) && v[0]>118.7f && v[0]<118.8f);
+  assert(solve(-61,0,0,v) && v[0]>76.2f && v[0]<76.3f);
+  assert(solve(-6,0,0,v) && v[0]>0 && v[0]<8.0f);
+  assert(solve(95,0,0,v) && v[0]<-118.7f && v[0]>-118.8f);
   assert(solve(-3000,-3000,50,v));
-  assert(hypotf(v[0],v[1])<=40.001f && fabsf(v[2])<=10.001f);
+  assert(hypotf(v[0],v[1])<=160.001f && fabsf(v[2])<=60.001f);
   /* Exercise the production acceleration limiter over consecutive updates. */
   pending_valid=false; PendingAction=MECHANICAL_ARM_ACTION_NONE;
   LastControl=clock_ms; Status.dx=-95; Status.dy=0; FreshVision=true;
   memset(PreviousVelocity,0,sizeof PreviousVelocity); XIntegral=Axes[0].mm;
   for(i=0;i<10;i++) {
     clock_ms+=100; align_control(clock_ms);
-    assert(Status.forward_mm_s>=previous && Status.forward_mm_s-previous<=6.001f);
+    assert(Status.forward_mm_s>=previous && Status.forward_mm_s-previous<=30.001f);
     previous=Status.forward_mm_s;
   }
-  assert(previous>39.9f && previous<=40.001f);
+  assert(previous>118.7f && previous<118.8f);
   Status.dx=0;
   for(i=0;i<11;i++) { clock_ms+=100; align_control(clock_ms); }
   assert(fabsf(Status.forward_mm_s)<1e-5f);
@@ -896,11 +986,12 @@ static void grab_z_speed_matches_500_rpm(void)
   unsigned i;
   reset(); GrabTask_BootHomeStart(); run_to(GRAB_IDLE,250,0);
   setting("x_car","0"); assert(GrabTask_Start("fixed")); run_to(GRAB_DESCEND,100,0);
-  for(i=0;i<10 && !z_position_rpm;i++) step(true,0,0,0);
-  /* 80 mm * 480 command pulses/mm, at the user's 500 RPM target. */
-  assert(z_position_rpm==500 && z_position_pulses==-38400 && z_position_acc==8);
+  for(i=0;i<10 && !Axes[1].commanded;i++) step(true,0,0,0);
+  /* Material descent shares 1000 RPM; normal lift retains 500 RPM. */
+  assert(z_position_rpm==1000 && z_position_pulses==-38400 && z_position_acc==8);
   assert(!closures); /* A submitted descent is not arrival. */
   pending_valid=false; PendingAction=MECHANICAL_ARM_ACTION_NONE;
+  enter(GRAB_LIFT);
   assert(axis_move(1,-40));
   assert(z_position_rpm==500 && z_position_pulses==-19200 && z_position_acc==8);
   /* Preserve the existing mm/s setting, including the value sent by the UI. */
@@ -933,8 +1024,177 @@ static void long_color_wait_and_timeout(void)
   run_to(GRAB_ACQUIRE,180,1);GrabTask_Stop();run_to(GRAB_IDLE,100,1);
 }
 
+static void ring_tracking_parameters(void)
+{
+  reset();configure(true);setting("z_min","-150");float original_body=Config[C_BODY_SPEED],original_x=Config[C_X_SPEED];
+  RingTest=true;
+  assert(align_parameter(C_BODY_SPEED)==original_body);
+  assert(align_parameter(C_X_SPEED)==original_x);
+  assert(align_parameter(C_ACCEL)==Config[C_ACCEL]);
+  assert(align_parameter(C_LAMBDA)==Config[C_LAMBDA]);
+  setting("dx_tol","1");setting("dy_tol","1");
+  Status.dx=Status.dy=1;assert(in_window());Status.dx=2;assert(!in_window());
+  TrackConfig.x_speed_mm_s=42;assert(align_parameter(C_X_SPEED)==original_x);
+  RingTest=true;Status.state=GRAB_HOLD;Status.stop_confirmed=true;
+  Axes[1].mm=Config[C_Z_MAX]-.002f;
+  assert(ring_place_start(-10));assert(RingReturnZ==Config[C_Z_MAX]);
+  RingTest=false;
+  assert(align_parameter(C_BODY_SPEED)==original_body && align_parameter(C_X_SPEED)==original_x);
+}
+static void ring_no_preextension(void)
+{
+  char *cmd[]={"grab","ring","align"};
+  reset();configure(true);setting("z_min","-150");setting("x_min","0");setting("x_max","100");RearReferenceValid=RearPose=true;RearBase=0;
+  base_arrives=false;
+  assert(GrabTask_Command(3,cmd));
+  for(unsigned i=0;i<200 && !base_moves;i++)step(true,1,0,0);
+  assert(base_moves==1 && fabsf(destination[2]-90)<.2f);
+  for(unsigned i=0;i<40;i++)step(true,1,0,0);
+  assert(fabsf(destination[0])<.2f && !camera_requests);
+  base_arrives=true;physical[2]=destination[2];
+  for(unsigned i=0;i<200 && !camera_requests;i++)step(true,1,0,0);
+  assert(camera_requests && fabsf(destination[0])<.2f);
+  run_to(GRAB_HOLD,250,1);
+  assert(requested_color==10 && base_moves==1);
+  GrabTask_Stop();run_to(GRAB_IDLE,150,1);
+}
+static void ring_approach_before_progressive_descent(void)
+{
+  char *cmd[]={"grab","ring","align","3","-100"};
+  reset();configure(true);setting("z_min","-150");setting("z_max","0");
+  setting("z_observe","0");setting("z_lift","0");setting("z_car_lift","0");
+  setting("x_max","100");setting("travel_mm","0");
+  assert(GrabTask_Command(5,cmd));
+  for(unsigned i=0;i<300 && !camera_requests;i++)step(true,1,-330,0);
+  assert(camera_requests && fabsf(physical[1])<.1f);
+  for(unsigned i=0;i<50;i++)step(true,1,-330,0); /* CX=48: keep the top view. */
+  assert(velocity_requests>0 && fabsf(destination[1])<.1f && !RingLowerSent);
+  for(unsigned i=0;i<100;i++)step(true,1,-120,0);
+  assert(physical[1]<-10 && physical[1]>-80 && !RingLowerSent);
+  float partial=physical[1];
+  for(unsigned i=0;i<35;i++)step(true,1,0,310); /* CY=23: vertical edge also holds. */
+  assert(physical[1]>=partial-5.1f && physical[1]>-80);
+  partial=physical[1];
+  for(unsigned i=0;i<35;i++)step(true,1,230,0); /* CX=608: pause descent again. */
+  assert(physical[1]>=partial-5.1f && physical[1]>-80);
+  partial=physical[1];
+  for(unsigned i=0;i<3;i++)step(false,1,0,0);
+  assert(physical[1]>=partial-.1f); /* Repeated packets cannot advance Z. */
+  run_to(GRAB_HOLD,500,1);
+  assert(!strcmp(status().result,"aligned") && fabsf(physical[1])<.1f);
+  GrabTask_Stop();run_to(GRAB_IDLE,150,1);
+}
+static void ring_reference_is_independent_of_material(void)
+{
+  char *cmd[]={"grab","ring","align","3","-100","stay"};
+  reset();configure(true);setting("z_min","-150");setting("x_max","100");setting("travel_mm","0");
+  float material_u=Config[C_REF_U],material_v=Config[C_REF_V];
+  RingTest=true;
+  assert(align_parameter(C_REF_U)==378 && align_parameter(C_REF_V)==333);
+  RingTest=false;
+  assert(align_parameter(C_REF_U)==material_u && align_parameter(C_REF_V)==material_v);
+  assert(GrabTask_Command(6,cmd));run_to(GRAB_ALIGN,300,1);
+  for(unsigned i=0;i<100;i++)step(true,1,-45,-5); /* Old center (333,338) is not aligned. */
+  assert(status().state!=GRAB_HOLD && status().dx==-45 && status().dy==-5);
+  run_to(GRAB_HOLD,500,1);
+  assert(!strcmp(status().reason,"ring_aligned_low") && status().dx==0 && status().dy==0);
+  assert(Config[C_REF_U]==material_u && Config[C_REF_V]==material_v);
+  GrabTask_Stop();run_to(GRAB_IDLE,150,1);
+  assert(GrabTask_Start("align"));run_to(GRAB_HOLD,350,1);
+  assert(!RingTest && status().dx==0 && status().dy==0);
+  assert(Config[C_REF_U]==material_u && Config[C_REF_V]==material_v);
+}
+static void ring_lower_then_raise_without_alignment(void)
+{
+  char *cmd[]={"grab","ring","align","3","-100"};
+  reset();configure(true);setting("z_min","-150");setting("x_max","100");
+  assert(GrabTask_Command(5,cmd));
+  for(unsigned i=0;i<300 && !camera_requests;i++)step(true,1,0,0);
+  assert(camera_requests && fabsf(physical[1]-Config[C_Z_MAX])<.1f);
+  run_to(GRAB_ALIGN,100,1);
+  assert(velocity_requests>0 && destination[1]==Config[C_Z_MAX]);
+  move_arrives=false;
+  for(unsigned i=0;i<80;i++)step(true,1,0,0);
+  assert(status().state==GRAB_ALIGN && !RingLowerSent);
+  assert(destination[1]>=Config[C_Z_MAX]-5.1f); /* ACK cannot advance descent. */
+  move_arrives=true;physical[1]=destination[1];
+  for(unsigned i=0;i<300 && !RingLowerSent;i++)step(true,1,0,0);
+  assert(RingLowerSent && fabsf(destination[1]+100)<.1f);
+  run_to(GRAB_OBSERVE_Z,300,1);
+  assert(RingRaise && !HaveCapture);
+  float x=destination[0];unsigned requests=camera_requests;
+  run_to(GRAB_HOLD,300,1);
+  assert(!RingRaise && fabsf(physical[1]-Config[C_Z_MAX])<.1f);
+  assert(destination[0]==x && camera_requests==requests && !HaveCapture);
+  assert(GrabTask_RingManualAllowed());
+  GrabTask_Stop();run_to(GRAB_IDLE,200,1);assert(!GrabTask_RingManualAllowed());
+}
+static void ring_alignment_can_hold_low_for_observation(void)
+{
+  char *stay[]={"grab","ring","align","1","-60","stay"};
+  char *normal[]={"grab","ring","align","3","-100"};
+  char *bad[]={"grab","ring","align","1","-60","invalid"};
+  reset();configure(true);setting("z_min","-150");setting("x_max","100");
+  assert(GrabTask_Command(6,bad));assert(!positions && status().state==GRAB_IDLE);
+  assert(GrabTask_Command(6,stay));
+  unsigned before=camera_stops;
+  run_to(GRAB_HOLD,500,1);
+  assert(!strcmp(status().reason,"ring_aligned_low") && !strcmp(status().result,"aligned"));
+  assert(fabsf(physical[1]+60)<.1f && fabsf(destination[1]+60)<.1f);
+  assert(camera_stops==before && !closures && GrabTask_RingManualAllowed());
+  unsigned moves=positions, velocities=velocity_requests;
+  for(unsigned i=0;i<50;i++)step(true,1,100,20); /* Observe new error without correcting it. */
+  assert(positions==moves && velocity_requests==velocities && camera_stops==before);
+  assert(status().state==GRAB_HOLD && fabsf(physical[1]+60)<.1f);
+  assert(status().dx==100 && status().dy==20);
+  GrabTask_Stop();run_to(GRAB_IDLE,150,1);
+  assert(camera_stops>before && !GrabTask_RingManualAllowed());
+  assert(GrabTask_Command(5,normal));run_to(GRAB_HOLD,500,1);
+  assert(!strcmp(status().reason,"ring_aligned_ready") && physical[1]==Config[C_Z_MAX]);
+  GrabTask_Stop();run_to(GRAB_IDLE,150,1);
+}
+static void black_ring_manual_place(void)
+{
+  char *align[]={"grab","ring","align"};
+  char *place[]={"grab","ring","place","-150"};
+  reset(); configure(true);setting("z_min","-150"); setting("z_min","-150");setting("x_max","100");
+  assert(GrabTask_Command(4,place)); assert(!positions && !openings);
+  assert(GrabTask_Command(3,align));
+  assert(status().state==GRAB_PREPARE);
+  run_to(GRAB_HOLD,250,1);
+  assert(requested_color==10 && !closures && !tray_indexes);
+  assert(!strcmp(status().operation,"ring_align") && !strcmp(status().result,"aligned"));
+  unsigned before=openings, turns=base_moves, index=tray_indexes;
+  /* User inserts the load and closes the claw; firmware must only descend/release. */
+  assert(GrabTask_Command(4,place)); assert(status().state==GRAB_DESCEND);
+  move_arrives=false;
+  for(unsigned i=0;i<30;i++)step(true,1,0,0);
+  assert(openings==before && status().state==GRAB_DESCEND);
+  move_arrives=true; physical[1]=destination[1];
+  for(unsigned i=0;i<250 && strcmp(status().result,"released");i++)step(true,1,0,0);
+  assert(!strcmp(status().result,"released") && status().state==GRAB_HOLD);
+  assert(openings==before+1 && !closures && tray_indexes==index && base_moves==turns);
+  assert(fabsf(physical[1]-Config[C_Z_MAX])<.11f && tray_inventory[0].state==TURNTABLE_EMPTY);
+  GrabTask_Stop(); run_to(GRAB_IDLE,150,1);
+}
 int main(void)
 {
+  ring_reference_is_independent_of_material();
+  ring_tracking_parameters();
+  ring_approach_before_progressive_descent();
+  ring_lower_then_raise_without_alignment();
+  ring_no_preextension();
+  ring_alignment_can_hold_low_for_observation();
+  black_ring_manual_place();
+  for(unsigned ring=2;ring<=3;ring++) {
+    char number[2]={(char)('0'+ring),0};char *cmd[]={"grab","ring","align",number};
+    reset();configure(true);setting("z_min","-150");setting("x_max","100");
+    assert(GrabTask_Command(4,cmd));run_to(GRAB_HOLD,300,1);
+    assert(requested_color==9+ring);
+    GrabTask_Stop();run_to(GRAB_IDLE,150,1);
+  }
+  boot_submit_wait_and_fault_diagnostics();
+  car_x_default_survives_reset_and_verified_home();
   long_color_wait_and_timeout();
   grab_z_speed_matches_500_rpm();
   tuned_initial_response_is_faster_and_bounded();
@@ -960,4 +1220,3 @@ int main(void)
   reference_invalidation(); placement_feedback_and_cancel(); boot_homing(); restart_after_stop_and_verified_rehome(); base_home_requires_stable_feedback(); coordinate_logging();
   puts("grab_task_test: PASS"); return 0;
 }
-

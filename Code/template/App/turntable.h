@@ -26,12 +26,21 @@ typedef struct
 
 /** @brief 上电初始化；三仓库存为待核对，第二/三仓角度未设置。 */
 void Turntable_Init(void);
+/** @brief 上电仅一次：机械臂回零完成后启动就近回零，完成后采反馈建立参考；不写机械零点。
+ * @param arm_ready 三轴回零已验证。人工转盘操作或停止取消待启动回零。 */
+void Turntable_BootHomeProcess(bool arm_ready);
 /** @brief MotorBus_Process 后调用，读取本模块事件并推进反馈确认。 */
 void Turntable_Process(void);
 bool Turntable_IsBusy(void);
 /** @brief 请求 ID8 停止；普通停止保留参考、参数和库存。
  * 总线隔离时只能确认停止帧发送，status 报 stopped_unverified。 */
 void Turntable_Stop(void);
+/** @brief 单独使能/失能 ID 8；应答后读取状态确认，保留仓位参数、参考及库存。 */
+bool Turntable_Enable(bool enabled);
+/** @brief 将当前单圈机械零点保存到 ID 8 驱动器，并同步第一仓软件参考。 */
+bool Turntable_SaveZero(void);
+/** @brief 单圈就近回零，反馈完成后自动同步第一仓参考；不清位置计数。 */
+bool Turntable_Home(void);
 void Turntable_StatusGet(Turntable_Status_t *out);
 bool Turntable_ReferenceValid(void);
 bool Turntable_SlotConfigured(uint8_t slot);

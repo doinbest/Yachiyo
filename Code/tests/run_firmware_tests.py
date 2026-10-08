@@ -25,6 +25,12 @@ def run(args):
 def build_test(name, *sources):
     exe = OUT / (name + ".exe")
     flags = [BASE[0], "-Itests/radar_stubs", *BASE[1:]] if name in ("test_radar_scan", "test_radar_probe", "test_radar_host", "radar_host_console_test") else BASE
+    if name in ("grab_pose_test", "grab_task_test", "grab_transfer_test", "grab_grace_test", "grab_command_sim_test", "grab_tuning_sim_test", "grab_track_task_test", "grab_track_pick_test", "grab_stack_test"):
+        sources = (*sources, "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    # Existing virtual UART fixtures freeze time at ACK; the dedicated settle
+    # test exercises the production 2 ms handover and emergency bypass.
+    if name != "motor_bus_reply_settle_test":
+        flags = [*flags, "-DMOTOR_BUS_REPLY_SETTLE_MS=0"]
     run(flags + ["tests/" + name + ".c", *sources, "-lm", "-o", exe])
     run([exe])
 
@@ -50,19 +56,28 @@ if __name__ == "__main__":
     build_test("chassis_distance_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
     build_test("chassis_turn_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
     build_test("chassis_route_profile_test", "template/App/chassis_route_profile.c")
+    build_test("chassis_task_profile_test", "template/App/chassis_route_profile.c")
+    build_test("chassis_task_route_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
     build_test("chassis_route_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
     build_test("grab_route_test", "template/App/GrabRoute.c", "template/Hardware/QR.c")
+    build_test("contest_mission_test", "template/App/contest_mission.c", "template/Hardware/QR.c")
+    build_test("grab_pose_test")
     build_test("test_radar_parser", "template/Hardware/lds_parser.c")
     build_test("test_radar_map", "template/App/radar_map.c")
+    build_test("test_radar_point_map", "template/App/radar_map.c", "template/App/radar_host_map.c")
     build_test("test_radar_host_map", "template/App/radar_host_map.c", "template/App/radar_map.c")
     build_test("test_radar_host", "template/App/radar_host.c", "template/App/radar_host_map.c", "template/App/radar_map.c")
     build_test("radar_host_console_test", "template/App/radar_host_console.c")
     build_test("test_radar_start", "template/App/radar_start.c", "template/App/radar_map.c")
     build_test("test_radar_scan", "template/Hardware/lds_parser.c", "template/Hardware/radar_uart.c",
-               "template/App/radar_scan.c", "template/App/radar_map.c", "template/App/radar_start.c")
+               "template/App/radar_scan.c", "template/App/radar_map.c", "template/App/radar_start.c", "template/App/radar_host_map.c")
     build_test("test_radar_probe", "template/Hardware/lds_parser.c", "template/Hardware/radar_uart.c")
     build_test("radar_console_test", "template/App/radar_console.c", "template/App/radar_map.c")
     build_test("grab_task_test")
+    build_test("grab_stack_test")
+    build_test("grab_tracking_test", "template/App/grab_tracking.c")
+    build_test("grab_track_task_test")
+    build_test("grab_track_pick_test")
     build_test("grab_transfer_test")
     build_test("grab_grace_test")
     build_test("grab_command_sim_test", "template/App/console_tx.c")
@@ -71,6 +86,10 @@ if __name__ == "__main__":
     build_test("chassis_localization_test", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("chassis_observer_test", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("chassis_telemetry_test", "template/App/chassis_telemetry.c", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("motor_bus_stop_wire_test", "template/Hardware/motor_bus.c")
+    build_test("motor_bus_ack_timing_test", "template/Hardware/motor_bus.c")
+    build_test("motor_bus_reply_settle_test")
+    build_test("motor_bus_ack_fairness_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_test", "template/Hardware/motor_bus.c")
     build_test("turntable_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
     build_test("turntable_bus_fairness_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
@@ -81,7 +100,13 @@ if __name__ == "__main__":
         run([OUT / "motor_bus_startup_test.exe", scenario])
     build_test("mecanum_bus_test", "template/App/mecanum_chassis.c", "template/Hardware/motor_bus.c")
     build_test("mecanum_feedback_test", "template/App/mecanum_chassis.c", "template/Hardware/motor_bus.c", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("mecanum_tracking_bus_test", "template/App/mecanum_chassis.c", "template/Hardware/motor_bus.c", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    run([OUT / "mecanum_tracking_bus_test.exe", "2"])
+    run([OUT / "mecanum_tracking_bus_test.exe", "2", "explicit80"])
     build_test("mechanical_arm_bus_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
+    build_test("mechanical_arm_emergency_chain_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
+    run([OUT / "mechanical_arm_emergency_chain_test.exe", "first_tx_error"])
+    build_test("motor_cancel_readback_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_circular_rx_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
     build_test("mecanum_heading_test", "-Itemplate/System")
     build_test("w25q128_test", "template/Hardware/w25q128.c")
@@ -95,6 +120,6 @@ if __name__ == "__main__":
                 "template/Hardware/Camera.c", "-o", camera_object])
     run([sys.executable, "tests/display_schedule_test.py"])
     build_test("oled_ui_test", "template/App/oled_ui.c", str(camera_object))
-    for name in ["grab_camera_protocol_test.py", "hwt101_upload_test.py", "w25q128_startup_test.py", "arm_console_test.py", "usb_camera_test.py", "usb_cdc_tx_test.py", "chassis_map_contract_test.py", "radar_capture_unpack_test.py", "radar_host_wire_contract_test.py"]:
+    for name in ["grab_camera_protocol_test.py", "tracking_report_test.py", "hwt101_upload_test.py", "w25q128_startup_test.py", "arm_console_test.py", "usb_camera_test.py", "usb_cdc_tx_test.py", "chassis_map_contract_test.py", "radar_capture_unpack_test.py", "radar_host_wire_contract_test.py"]:
         run([sys.executable, ROOT / "tests" / name])
     print("Firmware host regression suite: PASS")

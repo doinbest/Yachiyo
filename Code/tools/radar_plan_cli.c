@@ -90,7 +90,7 @@ static void print_points(const RadarPlan_Point_t *points,unsigned count)
   putchar(']');
 }
 
-static void print_profile(const RadarPlan_Point_t *points,unsigned count,float speed)
+static void print_profile(const RadarPlan_Point_t *points,unsigned count,float speed,bool task)
 {
   unsigned segment,index,emitted=0U;
   float yaw=90.0f;
@@ -99,14 +99,18 @@ static void print_profile(const RadarPlan_Point_t *points,unsigned count,float s
   printf("{\"points\":");print_points(points,count);printf(",\"phases\":[");
   for(segment=1U;segment<count;segment++) {
     const RadarPlan_Point_t *to=&points[segment];
-    if(!ChassisRouteProfile_Build(&points[segment-1U],to,yaw,speed,first_scan_leg,&profile)) break;
+    if(!(task?ChassisRouteProfile_BuildTask(&points[segment-1U],to,yaw,speed,first_scan_leg,&profile):
+        ChassisRouteProfile_Build(&points[segment-1U],to,yaw,speed,first_scan_leg,&profile))) break;
     for(index=0U;index<profile.count;index++) {
       const ChassisRoute_Phase_t *phase=&profile.phases[index];
       printf("%s{\"kind\":\"%s\",\"phase\":\"%s\",\"direction\":\"%s\",\"segment\":%u,"
-             "\"station\":%u,\"visit\":%u,\"target\":[%.6g,%.6g,%.6g],\"speed_mm_s\":%.6g}",
+             "\"station\":%u,\"visit\":%u,\"target\":[%.6g,%.6g,%.6g],\"speed_mm_s\":%.6g",
              emitted++?",":"",phase->turn?"turn":"move",phase->phase,phase->direction,segment,
              (unsigned)to->station,(unsigned)to->visit,(double)phase->x_mm,(double)phase->y_mm,
              (double)phase->yaw_deg,(double)phase->speed_mm_s);
+      if(task) printf(",\"arm_pose\":\"%s\"",
+        !strncmp(phase->phase,"work_",5) && strcmp(phase->phase,"work_approach")?"work":"rear");
+      putchar('}');
     }
     yaw=profile.final_yaw_deg;
     if(to->station==5U && to->visit==1U) first_scan_leg=false;
@@ -123,7 +127,9 @@ static void print_result(const RadarMap_t *map,const RadarPlan_t *plan,float spe
   printf("{\"algorithm\":\"radar_map_c_v1\",\"valid\":%s,\"failed_leg\":%u,\"mask\":%" PRIu32 ",\"counts\":[",
          plan->valid?"true":"false",(unsigned)plan->failed_leg,map->mask);
   for(i=0U;i<RADAR_MAP_CELL_COUNT;i++) printf("%s%u",i?",":"",(unsigned)map->counts[i]);
-  printf("],\"points\":");print_points(plan->points,plan->count);
+  printf("],\"accepted_points\":%u,\"outside_points\":%u,\"evidence_mask\":%" PRIu32 ",\"points\":",
+         (unsigned)map->accepted_points,(unsigned)map->outside_points,map->evidence_mask);
+  print_points(plan->points,plan->count);
   printf(",\"start\":{\"auto\":%s,\"selected\":%u,\"reason\":\"%s\","
          "\"qr\":[%u,%u],\"raw\":[%u,%u],\"conflicts\":[%" PRIu32 ",%" PRIu32 "]}",
          automatic?"true":"false",(unsigned)start->start_id,start->reason,
@@ -136,9 +142,12 @@ static void print_result(const RadarMap_t *map,const RadarPlan_t *plan,float spe
   else printf("null");
   for(i=0U;i<=CHASSIS_ROUTE_TARGET_COUNT;i++) (void)ChassisRouteProfile_FixedPoint(i,&fixed[i]);
   printf(",\"route_profiles\":{\"fixed\":");
-  print_profile(fixed,CHASSIS_ROUTE_TARGET_COUNT+1U,speed);
+  print_profile(fixed,CHASSIS_ROUTE_TARGET_COUNT+1U,speed,false);
   printf(",\"planned\":");print_profile(plan->points,
-      plan->valid && start->start_id==RADAR_START_LOWER?plan->count:0U,speed);
+      plan->valid && start->start_id==RADAR_START_LOWER?plan->count:0U,speed,false);
+  printf(",\"task_fixed\":");print_profile(fixed,CHASSIS_ROUTE_TARGET_COUNT+1U,speed,true);
+  printf(",\"task_planned\":");print_profile(plan->points,
+      plan->valid && start->start_id==RADAR_START_LOWER?plan->count:0U,speed,true);
   puts("}}");
 }
 

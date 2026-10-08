@@ -34,6 +34,8 @@ static void test_defaults_projection_and_filters(void)
 
   RadarHostMap_Defaults(&config);
   CHECK(RadarHostMap_ConfigValid(&config));
+  CHECK(config.grid.x_mm[0]==150 && config.grid.y_mm[0]==150);
+  CHECK(config.grid.x_mm[5]==2250 && config.grid.y_mm[5]==2250);
   CHECK(config.radar_x_mm==230 && config.radar_y_mm==230);
   CHECK(config.angle_min_tenths==0 && config.angle_max_tenths==3600);
   CHECK(config.distance_min_mm==100 && config.distance_max_mm==40000);

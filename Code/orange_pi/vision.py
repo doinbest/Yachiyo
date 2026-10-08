@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-颜色粗定位 + 色环精定位程序。
+颜色粗定位/色环精定位 + 数字同心圆定位程序。
 
-检测分为两个阶段：
-    1. 收到颜色命令后，先用 wuliao.py 的 HSV 最大轮廓算法粗定位；
-    2. 粗定位的 X、Y 误差都不超过 50 像素时，切换到色环精定位；
-    3. 色环阶段复用整帧 HSV，仅在颜色掩码上提取轮廓，避免逐帧全图 Hough；
-    4. 用面积、圆度和最小包围圆填充率共同排除噪点与方形色块；
-    5. 在原始 640x480 掩码上计算轮廓矩，保证最终坐标精度；
-    6. 使用动态时域滤波抑制静止抖动，并在快速移动时降低延迟；
-    7. 跟踪时拒绝远距离同色干扰物，连续丢失后自动退回粗定位；
-    8. 蓝色色环保留 (-1, +2) 像素补偿；
-    9. 收到新的颜色命令时重新从粗定位开始。
+颜色命令沿用原程序的 HSV 粗定位与色环精定位流程；数字命令使用
+Hough 多重同心圆检测，并识别圆心内的数字 1、2、3。两种模式共用
+物料可配置准心（默认 334,338）、编号环独立准心（默认 378,333）及 B2 通信协议。
 
 摄像头固定请求 V4L2 + MJPG，默认 640x480、120 FPS。
 采集线程持续覆盖最新帧，主线程不会处理摄像头积压的旧帧。
@@ -20,7 +13,7 @@
 USB CDC：用 --usb-port 指定实际设备路径，timeout=0.1，write_timeout=0.2。
 例如 python3 change.py --usb-port /dev/serial/by-id/实际设备名。
 115200仅为CDC线路编码参数，USB数据速率由USB总线决定。
-上电后不进行识别；收到 FF B2 Color FF 后才开始两阶段识别。
+上电后不进行识别；收到 FF B2 Command FF 后才开始识别。
 
 Color：
     0x01 红色
@@ -30,8 +23,13 @@ Color：
     0x05 黑色
     0x06 浅蓝
 
+数字同心圆：
+    0x0A 数字 1 所在的同心圆
+    0x0B 数字 2 所在的同心圆
+    0x0C 数字 3 所在的同心圆
+
 坐标发送帧固定为 14 字节：
-    FF B2 Color Valid CX_H CX_L CY_H CY_L DX_H DX_L DY_H DY_L SUM FE
+    FF B2 Command Valid CX_H CX_L CY_H CY_L DX_H DX_L DY_H DY_L SUM FE
 
     Valid：1=检测有效，0=当前未检测到目标
     CX/CY：目标中心像素坐标，无符号 16 位，大端序
@@ -43,6 +41,7 @@ Color：
 """
 
 import argparse
+import math
 import os
 import struct
 import threading
@@ -60,6 +59,10 @@ CAMERA_COLOR_GREEN = 0x04
 CAMERA_COLOR_BLACK = 0x05
 CAMERA_COLOR_LIGHT_BLUE = 0x06
 
+CAMERA_DIGIT_RING_1 = 0x0A
+CAMERA_DIGIT_RING_2 = 0x0B
+CAMERA_DIGIT_RING_3 = 0x0C
+
 VALID_COLOR_IDS = {
     CAMERA_COLOR_RED,
     CAMERA_COLOR_YELLOW,
@@ -69,6 +72,14 @@ VALID_COLOR_IDS = {
     CAMERA_COLOR_LIGHT_BLUE,
 }
 
+DIGIT_RING_COMMAND_TO_DIGIT = {
+    CAMERA_DIGIT_RING_1: 1,
+    CAMERA_DIGIT_RING_2: 2,
+    CAMERA_DIGIT_RING_3: 3,
+}
+
+VALID_COMMAND_IDS = VALID_COLOR_IDS | set(DIGIT_RING_COMMAND_TO_DIGIT)
+
 COLOR_NAMES = {
     CAMERA_COLOR_RED: "red",
     CAMERA_COLOR_YELLOW: "yellow",
@@ -76,6 +87,13 @@ COLOR_NAMES = {
     CAMERA_COLOR_GREEN: "green",
     CAMERA_COLOR_BLACK: "black",
     CAMERA_COLOR_LIGHT_BLUE: "light_blue",
+}
+
+COMMAND_NAMES = {
+    **COLOR_NAMES,
+    CAMERA_DIGIT_RING_1: "digit_ring_1",
+    CAMERA_DIGIT_RING_2: "digit_ring_2",
+    CAMERA_DIGIT_RING_3: "digit_ring_3",
 }
 
 DRAW_COLORS = {
@@ -132,6 +150,616 @@ CIRCLE_HSV_RANGES = {
         (np.array([82, 25, 110]), np.array([105, 150, 255])),
     ],
 }
+
+
+# 数字同心圆检测参数，沿用第一份程序的配置。
+GAUSSIAN_SIZE = 3
+GAUSSIAN_SIGMA = 0
+
+HOUGH_DP = 1.0
+HOUGH_MIN_DIST = 18
+HOUGH_PARAM1 = 120
+HOUGH_PARAM2 = 0.72
+HOUGH_MIN_RADIUS = 18
+HOUGH_MAX_RADIUS = 65
+
+CENTER_DISTANCE_THRESHOLD = 12
+MIN_RING_COUNT = 3
+RADIUS_MERGE_THRESHOLD = 3.0
+MIN_GROUP_RADIUS = 25
+MAX_GROUP_RADIUS = 65
+
+DIGIT_IMAGE_SIZE = 48
+DIGIT_ROI_INNER_RADIUS_RATIO = 0.78
+DIGIT_ROI_OUTER_RADIUS_RATIO = 0.50
+DIGIT_ROI_MIN_RADIUS = 10
+DIGIT_MIN_SCORE = 0.50
+DIGIT_MIN_MARGIN = 0.015
+
+
+def point_distance(point_1, point_2):
+    delta_x = point_1[0] - point_2[0]
+    delta_y = point_1[1] - point_2[1]
+    return math.hypot(delta_x, delta_y)
+
+
+def remove_duplicate_circles(circles):
+    """合并 Hough 在同一条圆边附近产生的重复结果。"""
+    circles = sorted(circles, key=lambda circle: circle["radius"])
+    result = []
+
+    for circle in circles:
+        duplicate = any(
+            point_distance(circle["center"], saved["center"])
+            <= CENTER_DISTANCE_THRESHOLD
+            and abs(circle["radius"] - saved["radius"])
+            <= RADIUS_MERGE_THRESHOLD
+            for saved in result
+        )
+        if not duplicate:
+            result.append(circle)
+
+    return result
+
+
+def group_concentric_circles(circles):
+    """把圆心距离不超过阈值的圆聚为同心圆候选组。"""
+    groups = []
+    circles = sorted(circles, key=lambda circle: circle["radius"], reverse=True)
+
+    for circle in circles:
+        best_group = None
+        best_distance = float("inf")
+
+        for group in groups:
+            distance = point_distance(circle["center"], group["center"])
+            if distance <= CENTER_DISTANCE_THRESHOLD and distance < best_distance:
+                best_group = group
+                best_distance = distance
+
+        if best_group is None:
+            groups.append({"center": circle["center"], "circles": [circle]})
+            continue
+
+        best_group["circles"].append(circle)
+        best_group["center"] = (
+            float(np.mean([item["center"][0] for item in best_group["circles"]])),
+            float(np.mean([item["center"][1] for item in best_group["circles"]])),
+        )
+
+    return groups
+
+
+def validate_ring_groups(groups):
+    """保留至少包含三个不同半径、尺寸合规的同心圆组。"""
+    valid_groups = []
+
+    for group in groups:
+        circles = remove_duplicate_circles(group["circles"])
+        if len(circles) < MIN_RING_COUNT:
+            continue
+
+        circles = sorted(circles, key=lambda circle: circle["radius"])
+        max_radius = max(circle["radius"] for circle in circles)
+        if max_radius < MIN_GROUP_RADIUS or max_radius > MAX_GROUP_RADIUS:
+            continue
+
+        center_x = float(np.mean([circle["center"][0] for circle in circles]))
+        center_y = float(np.mean([circle["center"][1] for circle in circles]))
+        valid_groups.append(
+            {
+                "center": (center_x, center_y),
+                "circles": circles,
+                "min_radius": float(min(circle["radius"] for circle in circles)),
+                "max_radius": float(max_radius),
+                "detected_digit": None,
+                "digit_score": 0.0,
+                "digit_margin": 0.0,
+            }
+        )
+
+    return valid_groups
+
+
+def detect_hough_circles(gray):
+    """使用第一份程序的 HOUGH_GRADIENT_ALT 参数检测圆形边缘。"""
+    circles = cv2.HoughCircles(
+        gray,
+        cv2.HOUGH_GRADIENT_ALT,
+        HOUGH_DP,
+        HOUGH_MIN_DIST,
+        param1=HOUGH_PARAM1,
+        param2=HOUGH_PARAM2,
+        minRadius=HOUGH_MIN_RADIUS,
+        maxRadius=HOUGH_MAX_RADIUS,
+    )
+    if circles is None:
+        return []
+
+    return [
+        {
+            "center": (float(center_x), float(center_y)),
+            "radius": float(radius),
+        }
+        for center_x, center_y, radius in circles.reshape(-1, 3)
+    ]
+
+
+def select_target_ring(valid_groups, target_digit):
+    """选择中央数字匹配的最佳同心圆。"""
+    candidates = [
+        group
+        for group in valid_groups
+        if group.get("detected_digit") == target_digit
+    ]
+    if not candidates:
+        return None
+
+    return max(
+        candidates,
+        key=lambda group: (
+            group["digit_score"],
+            group["digit_margin"],
+            group["max_radius"],
+        ),
+    )
+
+
+def resolve_command_mode(command):
+    """把统一 B2 命令映射到颜色模式或数字同心圆模式。"""
+    if command in VALID_COLOR_IDS:
+        return "color", command
+    if command in DIGIT_RING_COMMAND_TO_DIGIT:
+        return "digit_ring", DIGIT_RING_COMMAND_TO_DIGIT[command]
+    raise ValueError(f"不支持的 B2 命令：0x{command:02X}")
+
+
+def build_digit_ring_detection(target_group, target_digit, reference_center):
+    """把数字同心圆候选转换为与颜色检测一致的坐标结果。"""
+    target_name = f"digit_ring_{target_digit}"
+    if target_group is None:
+        return {
+            "detected": False,
+            "state": "digit_ring_not_found",
+            "mode": "digit_ring",
+            "next_mode": "digit_ring",
+            "target": target_name,
+            "center": None,
+            "error_x": 0,
+            "error_y": 0,
+            "area": 0.0,
+            "radius": 0.0,
+            "circle_count": 0,
+            "digit": target_digit,
+            "digit_score": 0.0,
+            "digit_margin": 0.0,
+        }
+
+    center_x = int(round(target_group["center"][0]))
+    center_y = int(round(target_group["center"][1]))
+    reference_x, reference_y = reference_center
+    return {
+        "detected": True,
+        "state": "digit_ring_detected",
+        "mode": "digit_ring",
+        "next_mode": "digit_ring",
+        "target": target_name,
+        "center": (center_x, center_y),
+        "error_x": int(center_x - reference_x),
+        "error_y": int(reference_y - center_y),
+        "area": 0.0,
+        "radius": float(target_group["max_radius"]),
+        "circle_count": len(target_group["circles"]),
+        "digit": target_digit,
+        "digit_score": float(target_group["digit_score"]),
+        "digit_margin": float(target_group["digit_margin"]),
+    }
+
+
+class Digit123Recognizer:
+    """使用合成字体模板和 HOG 相似度识别圆心内的数字 1、2、3。"""
+
+    def __init__(self):
+        self.hog = cv2.HOGDescriptor(
+            (DIGIT_IMAGE_SIZE, DIGIT_IMAGE_SIZE),
+            (16, 16),
+            (8, 8),
+            (8, 8),
+            9,
+        )
+        self.template_features, self.template_labels = self._build_templates()
+
+    @staticmethod
+    def _normalize_glyph(binary):
+        binary = np.where(binary > 0, 255, 0).astype(np.uint8)
+        points = cv2.findNonZero(binary)
+        if points is None:
+            return None
+
+        x, y, width, height = cv2.boundingRect(points)
+        if width < 1 or height < 3:
+            return None
+
+        glyph = binary[y:y + height, x:x + width]
+        padding = 5
+        available = DIGIT_IMAGE_SIZE - 2 * padding
+        scale = min(available / width, available / height)
+        resized_width = max(1, int(round(width * scale)))
+        resized_height = max(1, int(round(height * scale)))
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+        glyph = cv2.resize(
+            glyph,
+            (resized_width, resized_height),
+            interpolation=interpolation,
+        )
+        _, glyph = cv2.threshold(glyph, 127, 255, cv2.THRESH_BINARY)
+
+        normalized = np.zeros(
+            (DIGIT_IMAGE_SIZE, DIGIT_IMAGE_SIZE),
+            dtype=np.uint8,
+        )
+        offset_x = (DIGIT_IMAGE_SIZE - resized_width) // 2
+        offset_y = (DIGIT_IMAGE_SIZE - resized_height) // 2
+        normalized[
+            offset_y:offset_y + resized_height,
+            offset_x:offset_x + resized_width,
+        ] = glyph
+        return normalized
+
+    def _feature(self, normalized_glyph):
+        feature = self.hog.compute(normalized_glyph).reshape(-1).astype(np.float32)
+        norm = float(np.linalg.norm(feature))
+        if norm <= 1e-8:
+            return None
+        return feature / norm
+
+    @staticmethod
+    def _render_seven_segment(digit, thickness):
+        canvas = np.zeros((96, 72), dtype=np.uint8)
+        left, right = 15, 56
+        top, middle, bottom = 10, 47, 84
+        segments = {
+            "a": ((left, top), (right, top)),
+            "b": ((right, top), (right, middle)),
+            "c": ((right, middle), (right, bottom)),
+            "d": ((left, bottom), (right, bottom)),
+            "e": ((left, middle), (left, bottom)),
+            "f": ((left, top), (left, middle)),
+            "g": ((left, middle), (right, middle)),
+        }
+        active_segments = {1: "bc", 2: "abged", 3: "abgcd"}[digit]
+
+        for segment_name in active_segments:
+            start, end = segments[segment_name]
+            cv2.line(canvas, start, end, 255, thickness, cv2.LINE_AA)
+        return canvas
+
+    def _append_rotated_templates(self, images, labels, image, digit):
+        height, width = image.shape
+        center = (width / 2.0, height / 2.0)
+
+        for angle in (-12, -6, 0, 6, 12):
+            matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            rotated = cv2.warpAffine(
+                image,
+                matrix,
+                (width, height),
+                flags=cv2.INTER_LINEAR,
+                borderValue=0,
+            )
+            _, rotated = cv2.threshold(rotated, 80, 255, cv2.THRESH_BINARY)
+            normalized = self._normalize_glyph(rotated)
+            if normalized is not None:
+                images.append(normalized)
+                labels.append(digit)
+
+    def _build_templates(self):
+        images = []
+        labels = []
+        fonts = (
+            cv2.FONT_HERSHEY_SIMPLEX,
+            cv2.FONT_HERSHEY_DUPLEX,
+            cv2.FONT_HERSHEY_COMPLEX,
+            cv2.FONT_HERSHEY_TRIPLEX,
+            cv2.FONT_HERSHEY_PLAIN,
+        )
+
+        for digit in (1, 2, 3):
+            for font in fonts:
+                for thickness in (1, 2, 3, 4):
+                    canvas = np.zeros((96, 96), dtype=np.uint8)
+                    text = str(digit)
+                    scale = 2.3 if font == cv2.FONT_HERSHEY_PLAIN else 2.0
+                    (text_width, text_height), baseline = cv2.getTextSize(
+                        text,
+                        font,
+                        scale,
+                        thickness,
+                    )
+                    origin = (
+                        (canvas.shape[1] - text_width) // 2,
+                        (canvas.shape[0] + text_height - baseline) // 2,
+                    )
+                    cv2.putText(
+                        canvas,
+                        text,
+                        origin,
+                        font,
+                        scale,
+                        255,
+                        thickness,
+                        cv2.LINE_AA,
+                    )
+                    self._append_rotated_templates(
+                        images,
+                        labels,
+                        canvas,
+                        digit,
+                    )
+
+            for thickness in (4, 6, 8, 10):
+                seven_segment = self._render_seven_segment(digit, thickness)
+                self._append_rotated_templates(
+                    images,
+                    labels,
+                    seven_segment,
+                    digit,
+                )
+
+        features = []
+        feature_labels = []
+        for image, label in zip(images, labels):
+            feature = self._feature(image)
+            if feature is not None:
+                features.append(feature)
+                feature_labels.append(label)
+
+        return (
+            np.asarray(features, dtype=np.float32),
+            np.asarray(feature_labels, dtype=np.int32),
+        )
+
+    @staticmethod
+    def _extract_candidate(binary):
+        binary = binary.copy()
+        height, width = binary.shape
+        border = max(2, min(height, width) // 20)
+        binary[:border, :] = 0
+        binary[-border:, :] = 0
+        binary[:, :border] = 0
+        binary[:, -border:] = 0
+
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(
+            binary,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+
+        best_contour = None
+        best_score = -1.0
+        roi_area = float(width * height)
+        roi_center_x = width / 2.0
+        roi_center_y = height / 2.0
+
+        for contour in contours:
+            x, y, box_width, box_height = cv2.boundingRect(contour)
+            area = float(cv2.contourArea(contour))
+            if area < roi_area * 0.006 or area > roi_area * 0.55:
+                continue
+            if box_height < height * 0.28 or box_height > height * 0.96:
+                continue
+            if box_width < 2 or box_width > width * 0.90:
+                continue
+
+            center_distance = math.hypot(
+                (x + box_width / 2.0 - roi_center_x) / max(1.0, width),
+                (y + box_height / 2.0 - roi_center_y) / max(1.0, height),
+            )
+            if center_distance > 0.34:
+                continue
+
+            contour_score = (
+                box_height / max(1.0, height)
+                + 0.35 * area / roi_area
+                - 0.8 * center_distance
+            )
+            if contour_score > best_score:
+                best_score = contour_score
+                best_contour = contour
+
+        if best_contour is None:
+            return None
+
+        selection_mask = np.zeros_like(binary)
+        cv2.drawContours(selection_mask, [best_contour], -1, 255, -1)
+        return cv2.bitwise_and(binary, selection_mask)
+
+    @staticmethod
+    def _threshold_candidates(roi):
+        roi = cv2.GaussianBlur(roi, (3, 3), 0)
+        candidates = []
+
+        for threshold_type in (cv2.THRESH_BINARY_INV, cv2.THRESH_BINARY):
+            _, otsu = cv2.threshold(
+                roi,
+                0,
+                255,
+                threshold_type | cv2.THRESH_OTSU,
+            )
+            candidates.append(otsu)
+
+        min_side = min(roi.shape)
+        block_size = max(11, (min_side // 2) | 1)
+        if block_size >= min_side:
+            block_size = min_side - 1 if min_side % 2 == 0 else min_side - 2
+        if block_size >= 3:
+            candidates.append(
+                cv2.adaptiveThreshold(
+                    roi,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY_INV,
+                    block_size,
+                    5,
+                )
+            )
+
+        return candidates
+
+    def _classify_normalized(self, normalized):
+        feature = self._feature(normalized)
+        if feature is None:
+            return None, 0.0, 0.0
+
+        similarities = self.template_features @ feature
+        digit_scores = {}
+        for digit in (1, 2, 3):
+            values = similarities[self.template_labels == digit]
+            top_count = min(6, len(values))
+            if top_count == 0:
+                digit_scores[digit] = 0.0
+                continue
+            digit_scores[digit] = float(np.mean(np.partition(values, -top_count)[-top_count:]))
+
+        ranked = sorted(digit_scores.items(), key=lambda item: item[1], reverse=True)
+        best_digit, best_score = ranked[0]
+        return best_digit, best_score, best_score - ranked[1][1]
+
+    def recognize_group(self, gray, group):
+        center_x = int(round(group["center"][0]))
+        center_y = int(round(group["center"][1]))
+        roi_radius = int(
+            round(
+                max(
+                    DIGIT_ROI_MIN_RADIUS,
+                    min(
+                        group["min_radius"] * DIGIT_ROI_INNER_RADIUS_RATIO,
+                        group["max_radius"] * DIGIT_ROI_OUTER_RADIUS_RATIO,
+                    ),
+                )
+            )
+        )
+
+        x_1 = max(0, center_x - roi_radius)
+        y_1 = max(0, center_y - roi_radius)
+        x_2 = min(gray.shape[1], center_x + roi_radius + 1)
+        y_2 = min(gray.shape[0], center_y + roi_radius + 1)
+        roi = gray[y_1:y_2, x_1:x_2]
+        if roi.shape[0] < 12 or roi.shape[1] < 12:
+            return None, 0.0, 0.0
+
+        best_digit = None
+        best_score = 0.0
+        best_margin = 0.0
+        for threshold_image in self._threshold_candidates(roi):
+            candidate = self._extract_candidate(threshold_image)
+            if candidate is None:
+                continue
+            normalized = self._normalize_glyph(candidate)
+            if normalized is None:
+                continue
+            digit, score, margin = self._classify_normalized(normalized)
+            if score + 0.35 * margin > best_score + 0.35 * best_margin:
+                best_digit = digit
+                best_score = score
+                best_margin = margin
+
+        if (
+            best_digit is None
+            or best_score < DIGIT_MIN_SCORE
+            or best_margin < DIGIT_MIN_MARGIN
+        ):
+            return None, best_score, best_margin
+        return best_digit, best_score, best_margin
+
+
+class DigitRingDetector:
+    """检测多重同心圆，并按中央数字 1、2、3 选择目标。"""
+
+    def __init__(self, center_x=378, center_y=333, recognizer=None):
+        self.center_x = int(center_x)
+        self.center_y = int(center_y)
+        self.target_digit = None
+        self.recognizer = recognizer or Digit123Recognizer()
+
+    def set_digit(self, digit):
+        if digit not in (1, 2, 3):
+            raise ValueError(f"不支持的数字同心圆：{digit}")
+        self.target_digit = int(digit)
+
+    def reset(self):
+        self.target_digit = None
+
+    def draw_crosshair(self, frame):
+        half_length = 14
+        cv2.line(
+            frame,
+            (self.center_x - half_length, self.center_y),
+            (self.center_x + half_length, self.center_y),
+            (0, 255, 0),
+            1,
+        )
+        cv2.line(
+            frame,
+            (self.center_x, self.center_y - half_length),
+            (self.center_x, self.center_y + half_length),
+            (0, 255, 0),
+            1,
+        )
+        cv2.circle(frame, (self.center_x, self.center_y), 2, (0, 255, 0), -1)
+
+    def process(self, frame):
+        if self.target_digit not in (1, 2, 3):
+            raise RuntimeError("尚未收到有效数字同心圆命令")
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(
+            gray,
+            (GAUSSIAN_SIZE, GAUSSIAN_SIZE),
+            GAUSSIAN_SIGMA,
+        )
+        hough_circles = detect_hough_circles(blurred)
+        valid_groups = validate_ring_groups(
+            group_concentric_circles(hough_circles)
+        )
+
+        for group in valid_groups:
+            digit, score, margin = self.recognizer.recognize_group(gray, group)
+            group["detected_digit"] = digit
+            group["digit_score"] = float(score)
+            group["digit_margin"] = float(margin)
+
+        target_group = select_target_ring(valid_groups, self.target_digit)
+        detection = build_digit_ring_detection(
+            target_group,
+            target_digit=self.target_digit,
+            reference_center=(self.center_x, self.center_y),
+        )
+        detection["hough_count"] = len(hough_circles)
+        detection["ring_group_count"] = len(valid_groups)
+
+        result = frame.copy()
+        if target_group is not None:
+            for circle in target_group["circles"]:
+                circle_center = (
+                    int(round(circle["center"][0])),
+                    int(round(circle["center"][1])),
+                )
+                cv2.circle(
+                    result,
+                    circle_center,
+                    int(round(circle["radius"])),
+                    (0, 0, 255),
+                    2,
+                )
+
+            target_center = detection["center"]
+            cv2.circle(result, target_center, 4, (0, 0, 255), -1)
+
+        self.draw_crosshair(result)
+        return result, gray, detection
 
 
 class AdaptiveCenterFilter:
@@ -328,7 +956,7 @@ class LatestFrameCamera:
 
 
 class USBController:
-    """USB CDC 接收颜色命令，并持续发送识别坐标帧。"""
+    """USB CDC 接收统一 B2 目标命令，并持续发送识别坐标帧。"""
 
     RX_HEADER = bytes((0xFF, 0xB2))
     RX_FRAME_LENGTH = 4
@@ -355,8 +983,8 @@ class USBController:
         self.state_lock = threading.Lock()
         self.write_lock = threading.Lock()
 
-        # 上电默认不识别；只有收到合法命令后才设置颜色。
-        self.active_color = None
+        # 上电默认不识别；只有收到合法命令后才设置目标。
+        self.active_command = None
         self.command_version = 0
 
     def start(self):
@@ -366,7 +994,7 @@ class USBController:
         self.running = True
         self.thread = threading.Thread(
             target=self._reader_loop,
-            name="usb-color-command",
+            name="usb-target-command",
             daemon=True,
         )
         self.thread.start()
@@ -388,7 +1016,7 @@ class USBController:
             self.running = False
 
     def _parse_rx_buffer(self):
-        """从任意分段或粘连的字节流中提取 FF B2 Color FF。"""
+        """从任意分段或粘连的字节流中提取 FF B2 Command FF。"""
         while True:
             header_index = self.rx_buffer.find(self.RX_HEADER)
 
@@ -410,20 +1038,20 @@ class USBController:
                 del self.rx_buffer[0]
                 continue
 
-            color = int(self.rx_buffer[2])
+            command = int(self.rx_buffer[2])
             del self.rx_buffer[:self.RX_FRAME_LENGTH]
 
-            if color not in VALID_COLOR_IDS:
-                print(f"收到无效颜色命令: 0x{color:02X}")
+            if command not in VALID_COMMAND_IDS:
+                print(f"收到无效目标命令: 0x{command:02X}")
                 continue
 
             with self.state_lock:
-                self.active_color = color
+                self.active_command = command
                 self.command_version += 1
 
             print(
-                "收到颜色命令: "
-                f"FF B2 {color:02X} FF -> {COLOR_NAMES[color]}"
+                "收到目标命令: "
+                f"FF B2 {command:02X} FF -> {COMMAND_NAMES[command]}"
             )
 
     def get_command(self):
@@ -431,7 +1059,7 @@ class USBController:
             raise RuntimeError("USB CDC接收线程异常") from self.reader_error
 
         with self.state_lock:
-            return self.active_color, self.command_version
+            return self.active_command, self.command_version
 
     @staticmethod
     def clamp_int16(value):
@@ -441,9 +1069,9 @@ class USBController:
     def clamp_uint16(value):
         return max(0, min(65535, int(round(value))))
 
-    def send_detection(self, color, detection):
+    def send_detection(self, command, detection):
         """发送固定 14 字节坐标帧；识别无效时坐标和误差均发送 0。"""
-        if color not in VALID_COLOR_IDS:
+        if command not in VALID_COMMAND_IDS:
             return
 
         valid = 1 if detection.get("detected", False) else 0
@@ -464,7 +1092,7 @@ class USBController:
             ">BBBBHHhh",
             0xFF,
             self.TX_TYPE,
-            int(color),
+            int(command),
             valid,
             center_x,
             center_y,
@@ -758,6 +1386,7 @@ class ColorCircleDetector:
             "next_mode": self.mode,
             "color_id": self.choose_color,
             "color": COLOR_NAMES[self.choose_color],
+            "target": COLOR_NAMES[self.choose_color],
             "center": center,
             "error_x": int(error_x),
             "error_y": int(error_y),
@@ -855,6 +1484,7 @@ class ColorCircleDetector:
             "next_mode": self.mode,
             "color_id": self.choose_color,
             "color": COLOR_NAMES[self.choose_color],
+            "target": COLOR_NAMES[self.choose_color],
             "center": center,
             "error_x": int(error_x),
             "error_y": int(error_y),
@@ -866,6 +1496,18 @@ class ColorCircleDetector:
 
 # 保留旧类名，避免其他代码若曾导入 MaterialDetector 时失效。
 MaterialDetector = ColorCircleDetector
+
+
+def activate_command(command, color_detector, digit_ring_detector):
+    """切换统一 B2 命令，并清除另一种检测模式留下的状态。"""
+    mode, target = resolve_command_mode(command)
+    if mode == "color":
+        digit_ring_detector.reset()
+        color_detector.set_color(target)
+    else:
+        color_detector.reset()
+        digit_ring_detector.set_digit(target)
+    return mode
 
 
 def draw_status(frame, detection, fps):
@@ -884,15 +1526,22 @@ def draw_status(frame, detection, fps):
     mode = detection.get("mode", "unknown")
     next_mode = detection.get("next_mode", mode)
     mode_text = mode if next_mode == mode else f"{mode} -> {next_mode}"
+    target_name = detection.get("target", detection.get("color", "none"))
     lines = [
-        f"Target: {detection['color']}  State: {detection['state']}",
+        f"Target: {target_name}  State: {detection['state']}",
         f"Mode: {mode_text}",
         f"Center: {center_text}",
         f"Error X: {detection['error_x']}",
         f"Error Y: {detection['error_y']}",
-        f"Area: {detection['area']:.0f}",
-        f"FPS: {fps:.1f}",
     ]
+    if mode == "digit_ring":
+        lines.append(
+            f"Circles: {detection.get('circle_count', 0)}  "
+            f"Score: {detection.get('digit_score', 0.0):.3f}"
+        )
+    else:
+        lines.append(f"Area: {detection['area']:.0f}")
+    lines.append(f"FPS: {fps:.1f}")
 
     for index, text in enumerate(lines):
         cv2.putText(
@@ -909,14 +1558,28 @@ def draw_status(frame, detection, fps):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="HSV coarse positioning + Hough color-circle detector"
+        description="HSV color-circle + Hough digit-concentric-ring detector"
     )
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=float, default=120.0)
-    parser.add_argument("--center-x", type=int, default=334)
-    parser.add_argument("--center-y", type=int, default=338)
+    parser.add_argument(
+        "--center-x",
+        type=int,
+        default=334,
+        help="物料颜色准心 X，默认 334",
+    )
+    parser.add_argument(
+        "--center-y",
+        type=int,
+        default=338,
+        help="物料颜色准心 Y，默认 338",
+    )
+    parser.add_argument("--ring-center-x", type=int, default=378,
+                        help="编号色环独立准心 X，默认 378")
+    parser.add_argument("--ring-center-y", type=int, default=333,
+                        help="编号色环独立准心 Y，默认 333")
     parser.add_argument(
         "--coarse-min-area",
         type=float,
@@ -955,13 +1618,18 @@ def main():
     center_x = args.center_x
     center_y = args.center_y
 
-    detector = ColorCircleDetector(
+    color_detector = ColorCircleDetector(
         center_x=center_x,
         center_y=center_y,
         min_contour_area=args.coarse_min_area,
         min_color_area=args.min_area,
         switch_tolerance=args.switch_tolerance,
     )
+    digit_ring_detector = DigitRingDetector(
+        center_x=args.ring_center_x,
+        center_y=args.ring_center_y,
+    )
+    active_mode = None
     usb = USBController(
         port=args.usb_port,
         baudrate=args.baudrate,
@@ -990,8 +1658,8 @@ def main():
             f"{camera.actual_fourcc}, {camera.actual_fps:.3f} FPS"
         )
         print(
-            "等待USB CDC颜色命令：FF B2 Color FF；"
-            "收到命令后先粗定位，再进行色环精定位"
+            "等待 USB CDC 命令：FF B2 Command FF；"
+            "01-06=颜色，0A-0C=数字同心圆"
         )
         print("按 q 或 Esc 退出")
 
@@ -1005,16 +1673,20 @@ def main():
                 continue
 
             previous_sequence = sequence
-            active_color, command_version = usb.get_command()
+            active_command, command_version = usb.get_command()
 
             if command_version != last_command_version:
-                detector.set_color(active_color)
+                active_mode = activate_command(
+                    active_command,
+                    color_detector,
+                    digit_ring_detector,
+                )
                 last_command_version = command_version
                 next_send_time = 0.0
 
-            if active_color is None:
+            if active_command is None:
                 # 上电等待阶段：只显示原图、准星和状态，不执行识别。
-                result = detector.make_waiting_frame(frame)
+                result = color_detector.make_waiting_frame(frame)
                 detection = {
                     "detected": False,
                     "state": "waiting_usb",
@@ -1022,13 +1694,20 @@ def main():
                     "next_mode": "waiting",
                     "color_id": None,
                     "color": "none",
+                    "target": "none",
                     "center": None,
                     "error_x": 0,
                     "error_y": 0,
                     "area": 0.0,
                 }
+            elif active_mode == "color":
+                result, _, detection = color_detector.process(frame)
             else:
-                result, _, detection = detector.process(frame)
+                result, _, detection = digit_ring_detector.process(frame)
+
+            if active_command is not None:
+                detection["command_id"] = active_command
+                detection.setdefault("target", COMMAND_NAMES[active_command])
 
             completed_time = time.monotonic()
             elapsed = completed_time - previous_frame_time
@@ -1043,17 +1722,21 @@ def main():
 
             draw_status(result, detection, display_fps)
 
-            # 收到首个颜色命令后持续发送；未检测到时发送 Valid=0 和零坐标。
-            if active_color is not None and completed_time >= next_send_time:
-                usb.send_detection(active_color, detection)
+            # 收到首个目标命令后持续发送；未检测到时发送 Valid=0 和零坐标。
+            if active_command is not None and completed_time >= next_send_time:
+                usb.send_detection(active_command, detection)
                 next_send_time = completed_time + send_interval
 
             if completed_time - last_print_time >= args.print_interval:
-                if active_color is None:
-                    print("等待USB CDC颜色命令，当前未执行识别")
+                target_name = detection.get(
+                    "target",
+                    detection.get("color", "none"),
+                )
+                if active_command is None:
+                    print("等待 USB CDC 目标命令，当前未执行识别")
                 elif detection["detected"]:
                     print(
-                        f"[{detection['mode']}] {detection['color']} "
+                        f"[{detection['mode']}] {target_name} "
                         f"中心={detection['center']} "
                         f"误差=({detection['error_x']}, "
                         f"{detection['error_y']}) "
@@ -1063,12 +1746,12 @@ def main():
                 else:
                     print(
                         f"[{detection['mode']}] "
-                        f"未检测到 {detection['color']}  "
+                        f"未检测到 {target_name}  "
                         f"FPS={display_fps:.1f}"
                     )
                 last_print_time = completed_time
 
-            cv2.imshow("Coarse + circle detection", result)
+            cv2.imshow("Color + digit ring detection", result)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q") or key == 27:

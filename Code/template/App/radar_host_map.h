@@ -82,6 +82,18 @@ typedef struct {
 void RadarHostMap_Defaults(RadarHostMap_Config_t *config);
 /** @return 配置范围、动态网格、任务顺序和端点完整合法时为true。 */
 bool RadarHostMap_ConfigValid(const RadarHostMap_Config_t *config);
+/** @brief 将一个毫米原始点加入当前圈的统计；result须先清零，config须合法。
+ * @param config 同圈冻结的筛选、位姿及网格。
+ * @param sample 原始角度、毫米距离及能量。
+ * @param result 当前圈累计结果；尚未完成时不发布。
+ */
+void RadarHostMap_Add(const RadarHostMap_Config_t *config,const RadarSample_t *sample,
+                      RadarHostMap_Result_t *result);
+/** @brief 完整圈结束后按F1阈值/保护格生成障碍和路线；也用于同圈重规划。
+ * @param config 合法的筛选、网格及路线配置。
+ * @param result 已累计完整圈点数的结果。
+ */
+void RadarHostMap_Finish(const RadarHostMap_Config_t *config,RadarHostMap_Result_t *result);
 /** @brief 从同一完整圈纯计算点数、障碍与展开路径；路径失败不丢失地图结果。
  * @return 配置及输入指针合法并完成建图时为true。
  */

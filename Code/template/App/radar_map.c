@@ -13,10 +13,19 @@
 #define RADAR_DEG_TO_RAD 0.01745329251994329577f
 #define RADAR_CELL_NONE  0xFFU
 #define RADAR_COST_MAX   0xFFFFFFFFUL
+#define RADAR_BOUNDARY_TOLERANCE_MM 40.0f
+#define RADAR_BOUNDARY_GAP_MM 150.0f
+#define RADAR_BOUNDARY_SPAN_MM 400.0f
+#define RADAR_BOUNDARY_MIN_POINTS 8U
 
 static const RadarGrid_t DefaultGrid = {
   {150,550,1000,1400,1850,2250},
   {150,550,1000,1400,1850,2250}
+};
+/* The physical field remains 0..2400; occupancy excludes its 150 mm edge belt.
+ * Keep the proven vehicle-center corridors and station connectors unchanged. */
+static const RadarGrid_t WaypointGrid = {
+  {150,550,1000,1400,1850,2250},{150,550,1000,1400,1850,2250}
 };
 static const uint8_t MissionOrder[RADAR_PLAN_MISSION_VISITS] = {1,5,4,2,3,4,2,3,1};
 /* Indexed by station-1: START, ROUGH, STORE, RAW, QR. Vehicle-center targets. */
@@ -30,7 +39,7 @@ void RadarMap_Defaults(RadarMap_Params_t *p)
   memset(p,0,sizeof(*p));
   p->lidar_x_mm=2250.0f;p->lidar_y_mm=150.0f;p->zero_deg=180.0f;
   p->distance_min_mm=100U;p->distance_max_mm=40000U;
-  p->angle_min_tenths=0U;p->angle_max_tenths=900U;
+  p->angle_min_tenths=0U;p->angle_max_tenths=3600U;
   p->threshold=1U;p->energy_min=0U;p->energy_max=255U;
 }
 
@@ -68,8 +77,12 @@ void RadarGrid_Default(RadarGrid_t *grid)
 bool RadarGrid_Valid(const RadarGrid_t *grid)
 {
   unsigned i;
-  if(grid==NULL || grid->x_mm[0]!=150 || grid->x_mm[5]!=2250 ||
-     grid->y_mm[0]!=150 || grid->y_mm[5]!=2250) return false;
+  if(grid==NULL) return false;
+  /* Current inset grid and the previous full-field grid used by old snapshots. */
+  if(!((grid->x_mm[0]==0 && grid->x_mm[5]==2400 &&
+        grid->y_mm[0]==0 && grid->y_mm[5]==2400) ||
+       (grid->x_mm[0]==150 && grid->x_mm[5]==2250 &&
+        grid->y_mm[0]==150 && grid->y_mm[5]==2250))) return false;
   for(i=0U;i<5U;i++)
     if(grid->x_mm[i+1U]-grid->x_mm[i]<50 || grid->y_mm[i+1U]-grid->y_mm[i]<50) return false;
   return true;
@@ -99,14 +112,91 @@ static int find_cell(float x,float y,bool endpoint)
 
 static bool sample_allowed(const RadarMap_Params_t *p,const RadarSample_t *s)
 {
-  uint16_t angle;
+  uint16_t angle,minimum,maximum;
   bool allowed;
   angle=(uint16_t)(s->angle_tenths%3600U);
-  allowed=p->angle_min_tenths<=p->angle_max_tenths?
-    angle>=p->angle_min_tenths && angle<=p->angle_max_tenths:
-    angle>=p->angle_min_tenths || angle<=p->angle_max_tenths;
+  minimum=(uint16_t)(p->angle_min_tenths%3600U);
+  maximum=(uint16_t)(p->angle_max_tenths%3600U);
+  if(p->angle_min_tenths==0U && p->angle_max_tenths==3600U)allowed=true;
+  else allowed=p->angle_min_tenths<=p->angle_max_tenths?
+    angle>=minimum && angle<=maximum:angle>=minimum || angle<=maximum;
   return allowed && s->distance_mm>=p->distance_min_mm && s->distance_mm<=p->distance_max_mm &&
     s->energy>=p->energy_min && s->energy<=p->energy_max;
+}
+
+static uint16_t saturated_add(uint16_t a,uint16_t b)
+{
+  uint32_t sum=(uint32_t)a+b;
+  return (uint16_t)(sum>0xFFFFU?0xFFFFU:sum);
+}
+
+static bool boundary_endpoints_join(float x,float y,const RadarMap_BoundaryRun_t *run)
+{
+  float dx=x-run->last_x_mm,dy=y-run->last_y_mm;
+  return dx*dx+dy*dy<=RADAR_BOUNDARY_GAP_MM*RADAR_BOUNDARY_GAP_MM;
+}
+
+static void confirm_boundary_run(RadarMap_t *m,const RadarMap_BoundaryRun_t *run)
+{
+  if(run->hits<RADAR_BOUNDARY_MIN_POINTS || !run->outside_hits ||
+     run->tangent_max_mm-run->tangent_min_mm<RADAR_BOUNDARY_SPAN_MM)return;
+  for(unsigned i=0U;i<RADAR_MAP_CELL_COUNT;i++)
+    m->boundary_counts[i]=saturated_add(m->boundary_counts[i],run->counts[i]);
+}
+
+static void close_boundary_run(RadarMap_t *m)
+{
+  if(!m->boundary_pending.hits)return;
+  if(m->boundary_pending_is_first)m->boundary_first=m->boundary_pending;
+  else confirm_boundary_run(m,&m->boundary_pending);
+  memset(&m->boundary_pending,0,sizeof m->boundary_pending);
+  m->boundary_pending_is_first=false;
+}
+
+/* Only a contiguous long return with outward evidence is a field edge.
+ * The measured wall varies by up to 28 mm in actual circles. Its 40 mm
+ * tolerance is not a blind perimeter exclusion: detached hits remain obstacles. */
+static void add_boundary_evidence(RadarMap_t *m,float x,float y,int cell)
+{
+  const float normal[4]={x,2400.0f-x,y,2400.0f-y};
+  RadarMap_BoundaryRun_t *run=&m->boundary_pending;
+  unsigned edge=0U,i;
+  float distance=fabsf(normal[0]),tangent;
+  for(i=1U;i<4U;i++)if(fabsf(normal[i])<distance) {
+    edge=i;distance=fabsf(normal[i]);
+  }
+  if(distance>RADAR_BOUNDARY_TOLERANCE_MM){close_boundary_run(m);return;}
+  if(run->hits && (run->edge!=edge || !boundary_endpoints_join(x,y,run)))close_boundary_run(m);
+  tangent=edge<2U?y:x;
+  if(!run->hits) {
+    run->edge=(uint8_t)edge;
+    run->first_x_mm=x;run->first_y_mm=y;
+    run->tangent_min_mm=run->tangent_max_mm=tangent;
+    m->boundary_pending_is_first=!m->accepted_points && !m->outside_points;
+  } else {
+    if(tangent<run->tangent_min_mm)run->tangent_min_mm=tangent;
+    if(tangent>run->tangent_max_mm)run->tangent_max_mm=tangent;
+  }
+  run->last_x_mm=x;run->last_y_mm=y;
+  if(run->hits<0xFFFFU)++run->hits;
+  if(normal[edge]<0.0f && run->outside_hits<0xFFFFU)++run->outside_hits;
+  if(cell>=0 && run->counts[cell]<0xFFFFU)++run->counts[cell];
+}
+
+static void finish_boundary_evidence(RadarMap_t *m)
+{
+  RadarMap_BoundaryRun_t *first=&m->boundary_first,*last=&m->boundary_pending;
+  if(first->hits && last->hits && first->edge==last->edge &&
+     boundary_endpoints_join(first->first_x_mm,first->first_y_mm,last)) {
+    for(unsigned i=0U;i<RADAR_MAP_CELL_COUNT;i++)first->counts[i]=saturated_add(first->counts[i],last->counts[i]);
+    first->hits=saturated_add(first->hits,last->hits);
+    first->outside_hits=saturated_add(first->outside_hits,last->outside_hits);
+    if(last->tangent_min_mm<first->tangent_min_mm)first->tangent_min_mm=last->tangent_min_mm;
+    if(last->tangent_max_mm>first->tangent_max_mm)first->tangent_max_mm=last->tangent_max_mm;
+  } else confirm_boundary_run(m,last);
+  confirm_boundary_run(m,first);
+  memset(first,0,sizeof *first);memset(last,0,sizeof *last);
+  m->boundary_pending_is_first=false;
 }
 
 bool RadarMap_Add(RadarMap_t *m,const RadarMap_Params_t *p,const RadarSample_t *s)
@@ -115,200 +205,36 @@ bool RadarMap_Add(RadarMap_t *m,const RadarMap_Params_t *p,const RadarSample_t *
   int cell;
   if(m==NULL || s==NULL || !RadarMap_ParamsValid(p) || !sample_allowed(p,s) ||
      !RadarMap_Project(p,s,&x,&y)) return false;
-  cell=find_cell(x,y,false);
-  if(cell<0) return false;
+  /* Half-open reference boundaries must rotate with the points, too.
+   * F1 (row,column) becomes vehicle (column,4-row), not a mirrored grid. */
+  cell=RadarGrid_FindCell(&DefaultGrid,y,2400.0f-x,false);
+  if(cell>=0)cell=(cell%5)*5+4-cell/5;
   m->cloud_built=false;m->evidence_mask=0U;
+  add_boundary_evidence(m,x,y,cell);
+  if(cell<0) {
+    if(m->outside_points<0xFFFFU)++m->outside_points;
+    return false;
+  }
   if(m->counts[cell]<0xFFFFU) ++m->counts[cell];
   if(m->accepted_points<0xFFFFU) ++m->accepted_points;
   return true;
 }
 
-/* 1534点实测：短物直径12/28mm，邻段间隔323..923mm；长背景端部
- * 各10点共线RMS为5.7/3.0mm。80..300mm分段均同结果，采用100mm。
- * 只在真实场外延伸证据下去掉长轮廓，不把所有长物或拟合线当墙。
- */
-#define RADAR_CONTOUR_GAP_MM       100.0f
-#define RADAR_CONTOUR_SHORT_MM     200.0f
-#define RADAR_CONTOUR_LONG_MM      600.0f
-#define RADAR_CONTOUR_SIDE_MM      400.0f
-#define RADAR_CONTOUR_DROP_MM      150.0f
-#define RADAR_CONTOUR_BRIDGE_MM    300.0f
-#define RADAR_CONTOUR_LINE_RMS_MM  20.0f
-#define RADAR_CONTOUR_LINE_MAX_MM  50.0f
-#define RADAR_CONTOUR_LINE_POINTS  10U
-
-typedef struct {
-  uint16_t first,last,points,outside,inside;
-  uint16_t counts[RADAR_MAP_CELL_COUNT];
-  uint32_t cells;
-  float first_x,first_y,last_x,last_y;
-  float min_x,max_x,min_y,max_y,max_distance;
-} RadarContour_t;
-
-typedef struct {
-  const RadarSample_t *samples;
-  uint16_t count,start;
-} RadarCloudView_t;
-
-/* 只映射虚拟顺序，不移动/复制原始缓存；邻域拟合也使用这一顺序。 */
-static const RadarSample_t *cloud_sample(const RadarCloudView_t *cloud,uint16_t index)
-{
-  uint32_t actual=(uint32_t)cloud->start+index;
-  if(actual>=cloud->count)actual-=cloud->count;
-  return &cloud->samples[actual];
-}
-
-static float contour_span(const RadarContour_t *s)
-{
-  float dx=s->max_x-s->min_x,dy=s->max_y-s->min_y;
-  return sqrtf(dx*dx+dy*dy);
-}
-
-static void contour_add(RadarContour_t *s,uint16_t index,const RadarSample_t *sample,float x,float y)
-{
-  int cell=find_cell(x,y,false);
-  if(s->points==0U) {
-    s->first=index;s->first_x=x;s->first_y=y;
-    s->min_x=s->max_x=x;s->min_y=s->max_y=y;
-  }
-  s->last=index;s->last_x=x;s->last_y=y;++s->points;
-  if(x<s->min_x)s->min_x=x;
-  if(x>s->max_x)s->max_x=x;
-  if(y<s->min_y)s->min_y=y;
-  if(y>s->max_y)s->max_y=y;
-  if((float)sample->distance_mm>s->max_distance)s->max_distance=(float)sample->distance_mm;
-  if(x<0.0f || x>2400.0f || y<0.0f || y>2400.0f)++s->outside;
-  if(cell>=0) {++s->inside;++s->counts[cell];s->cells|=1UL<<cell;}
-}
-
-/* 游标指向下一段首点；跳过筛选无效点，仍保存场外轮廓连接证据。 */
-static bool contour_next(RadarContour_t *s,const RadarMap_Params_t *p,
-                         const RadarCloudView_t *cloud,uint16_t *cursor)
-{
-  uint16_t i=*cursor;
-  memset(s,0,sizeof(*s));
-  while(i<cloud->count) {
-    float x,y,dx,dy;
-    const RadarSample_t *point=cloud_sample(cloud,i);
-    if(!sample_allowed(p,point) || !RadarMap_Project(p,point,&x,&y)) {++i;continue;}
-    dx=x-s->last_x;dy=y-s->last_y;
-    if(s->points && dx*dx+dy*dy>RADAR_CONTOUR_GAP_MM*RADAR_CONTOUR_GAP_MM)break;
-    contour_add(s,i,point,x,y);++i;
-  }
-  *cursor=i;return s->points!=0U;
-}
-
-static void contour_merge(RadarContour_t *group,const RadarContour_t *s)
-{
-  group->points+=s->points;group->inside+=s->inside;group->outside+=s->outside;
-  group->cells|=s->cells;
-  for(unsigned i=0U;i<RADAR_MAP_CELL_COUNT;i++)group->counts[i]+=s->counts[i];
-  if(s->min_x<group->min_x)group->min_x=s->min_x;
-  if(s->max_x>group->max_x)group->max_x=s->max_x;
-  if(s->min_y<group->min_y)group->min_y=s->min_y;
-  if(s->max_y>group->max_y)group->max_y=s->max_y;
-}
-
-static void contour_publish(RadarMap_t *m,const RadarMap_Params_t *p,const RadarContour_t *s)
-{
-  m->outside_points+=s->outside;
-  if(s->outside>=3U && contour_span(s)>=RADAR_CONTOUR_LONG_MM) {
-    m->background_points+=s->points;return;
-  }
-  m->accepted_points+=s->inside;
-  for(unsigned i=0U;i<RADAR_MAP_CELL_COUNT;i++)m->counts[i]+=s->counts[i];
-  if(s->points>=p->threshold)m->evidence_mask|=s->cells;
-}
-
-typedef struct {
-  float x,y,xx,yy,xy;
-  uint16_t count;
-} RadarLineMoments_t;
-
-/* 局部坐标平移仅用于拟合数值稳定；地图和测距始终保持原值。 */
-static bool contour_line(const RadarMap_Params_t *p,const RadarCloudView_t *cloud,
-                         const RadarContour_t *a,const RadarContour_t *c)
-{
-  RadarLineMoments_t moments={0};
-  float angle,nx,ny,mx,my,variance;
-  for(unsigned pass=0U;pass<2U;pass++) {
-    if(pass) {
-      mx=moments.x/(float)moments.count;my=moments.y/(float)moments.count;
-      float xx=moments.xx-moments.x*mx,yy=moments.yy-moments.y*my;
-      float xy=moments.xy-moments.x*my;
-      angle=0.5f*atan2f(2.0f*xy,xx-yy);nx=-sinf(angle);ny=cosf(angle);
-      variance=0.5f*(xx+yy-sqrtf((xx-yy)*(xx-yy)+4.0f*xy*xy))/(float)moments.count;
-      if(variance>RADAR_CONTOUR_LINE_RMS_MM*RADAR_CONTOUR_LINE_RMS_MM)return false;
-    }
-    for(unsigned side=0U;side<2U;side++) {
-      unsigned kept=0U;
-      int index=side?(int)c->first:(int)a->last;
-      int end=side?(int)c->last:(int)a->first;
-      int step=side?1:-1;
-      while((side?index<=end:index>=end) && kept<RADAR_CONTOUR_LINE_POINTS) {
-        float x,y;
-        const RadarSample_t *sample=cloud_sample(cloud,(uint16_t)index);
-        if(sample_allowed(p,sample) && RadarMap_Project(p,sample,&x,&y)) {
-          x-=a->last_x;y-=a->last_y;++kept;
-          if(!pass) {
-            moments.x+=x;moments.y+=y;moments.xx+=x*x;moments.yy+=y*y;moments.xy+=x*y;++moments.count;
-          } else if(fabsf((x-mx)*nx+(y-my)*ny)>RADAR_CONTOUR_LINE_MAX_MM)return false;
-        }
-        index+=step;
-      }
-    }
-  }
-  return true;
-}
-
-static bool contour_bridge(const RadarMap_Params_t *p,const RadarCloudView_t *cloud,
-                           const RadarContour_t *a,const RadarContour_t *b,const RadarContour_t *c)
-{
-  float dx=c->first_x-a->last_x,dy=c->first_y-a->last_y;
-  if(contour_span(b)>RADAR_CONTOUR_SHORT_MM || contour_span(a)<RADAR_CONTOUR_SIDE_MM ||
-     contour_span(c)<RADAR_CONTOUR_SIDE_MM ||
-     (float)cloud_sample(cloud,a->last)->distance_mm-b->max_distance<RADAR_CONTOUR_DROP_MM ||
-     (float)cloud_sample(cloud,c->first)->distance_mm-b->max_distance<RADAR_CONTOUR_DROP_MM ||
-     dx*dx+dy*dy>RADAR_CONTOUR_BRIDGE_MM*RADAR_CONTOUR_BRIDGE_MM)return false;
-  return contour_line(p,cloud,a,c);
-}
-
 void RadarMap_BuildCloud(RadarMap_t *m,const RadarMap_Params_t *p,
                          const RadarSample_t *samples,uint16_t count)
 {
-  RadarContour_t a,b,c,group;
-  RadarCloudView_t cloud={samples,count,0U};
-  uint16_t cursor=0U;
-  bool have_b,have_c;
   if(m==NULL)return;
   RadarMap_Reset(m);
   if(!RadarMap_ParamsValid(p) || (count && samples==NULL))return;
+  /* Use the same per-cell point threshold as the verified F1 host profile.
+   * Preserve all raw counts, including the known-field-edge evidence. */
+  for(uint16_t i=0U;i<count;i++)RadarMap_Add(m,p,&samples[i]);
+  /* The circle is complete: resolve its cache seam before publishing the raw
+   * map. Keep pending run state out of the frozen result; Finish remains
+   * idempotent and raw counts/evidence are not changed here. */
+  finish_boundary_evidence(m);
   m->cloud_built=true;
-  /* 默认0..90从最小raw角开始；跨0的选域从其min开始，不能在原缓存
-   * index0处拆开物体，也不借用选域外点盲拼首尾以满足阈值。
-   */
-  uint16_t minimum=3600U;
-  for(uint16_t i=0U;i<count;i++) {
-    uint16_t angle=(uint16_t)(((uint32_t)samples[i].angle_tenths%3600U+3600U-
-                              (uint32_t)p->angle_min_tenths%3600U)%3600U);
-    if(angle<minimum) {minimum=angle;cloud.start=i;}
-  }
-  if(!contour_next(&a,p,&cloud,&cursor)) {RadarMap_FinishRaw(m,p);return;}
-  group=a;
-  have_b=contour_next(&b,p,&cloud,&cursor);
-  have_c=have_b && contour_next(&c,p,&cloud,&cursor);
-  while(have_b) {
-    if(have_c && contour_bridge(p,&cloud,&a,&b,&c)) {
-      contour_publish(m,p,&b);contour_merge(&group,&c);a=c;
-      have_b=contour_next(&b,p,&cloud,&cursor);
-      have_c=have_b && contour_next(&c,p,&cloud,&cursor);
-    } else {
-      contour_publish(m,p,&group);group=b;a=b;
-      have_b=have_c;
-      if(have_b) {b=c;have_c=contour_next(&c,p,&cloud,&cursor);}
-    }
-  }
-  contour_publish(m,p,&group);RadarMap_FinishRaw(m,p);
+  RadarMap_FinishRaw(m,p);
 }
 
 void RadarMap_FinishRaw(RadarMap_t *m,const RadarMap_Params_t *p)
@@ -316,15 +242,35 @@ void RadarMap_FinishRaw(RadarMap_t *m,const RadarMap_Params_t *p)
   unsigned i;
   if(m==NULL || !RadarMap_ParamsValid(p)) return;
   m->mask=RADAR_MAP_FIXED_MASK;
-  if(m->cloud_built)m->mask|=m->evidence_mask;
-  else for(i=0U;i<RADAR_MAP_CELL_COUNT;i++) if(m->counts[i]>=p->threshold) m->mask|=1UL<<i;
+  m->evidence_mask=0U;
+  m->background_points=0U;
+  for(i=0U;i<RADAR_MAP_CELL_COUNT;i++)
+    if(m->counts[i]>=p->threshold)m->evidence_mask|=1UL<<i;
+  m->mask|=m->evidence_mask;
 }
 
 void RadarMap_Finish(RadarMap_t *m,const RadarMap_Params_t *p)
 {
+  uint32_t clear_mask=RADAR_MAP_TASK_CLEAR_MASK;
+  uint32_t background=0U;
+  unsigned i;
+  int sensor_cell;
   if(m==NULL || !RadarMap_ParamsValid(p)) return;
   RadarMap_FinishRaw(m,p);
-  m->mask=(m->mask&~RADAR_MAP_REQUIRED_CLEAR_MASK)|RADAR_MAP_FIXED_MASK;
+  finish_boundary_evidence(m);
+  m->mask=RADAR_MAP_FIXED_MASK;
+  for(i=0U;i<RADAR_MAP_CELL_COUNT;i++) {
+    uint32_t boundary_hits=m->boundary_counts[i];
+    if(boundary_hits>m->counts[i])boundary_hits=m->counts[i];
+    background+=boundary_hits;
+    if((uint32_t)m->counts[i]-boundary_hits>=p->threshold)m->mask|=1UL<<i;
+  }
+  m->background_points=(uint16_t)(background>0xFFFFU?0xFFFFU:background);
+  /* Rotate F1 task protection into the vehicle frame, retaining counts and
+   * raw evidence. Only the installed corner is protected, not both starts. */
+  sensor_cell=RadarGrid_FindCell(&DefaultGrid,p->lidar_x_mm,p->lidar_y_mm,true);
+  if(sensor_cell==4 || sensor_cell==24)clear_mask|=1UL<<(unsigned)sensor_cell;
+  m->mask=(m->mask&~clear_mask)|RADAR_MAP_FIXED_MASK;
 }
 
 void RadarMap_LegacyPoint(float old_x,float old_y,float *x,float *y)
@@ -353,7 +299,7 @@ bool RadarGrid_CellCenter(const RadarGrid_t *grid,uint8_t cell,int16_t *x,int16_
 
 static void cell_center(uint8_t cell,int16_t *x,int16_t *y)
 {
-  (void)RadarGrid_CellCenter(&DefaultGrid,cell,x,y);
+  (void)RadarGrid_CellCenter(&WaypointGrid,cell,x,y);
 }
 
 static uint32_t cell_distance(const RadarGrid_t *grid,uint8_t a,uint8_t b)
@@ -422,7 +368,17 @@ bool RadarGrid_Path(const RadarGrid_t *grid,uint32_t mask,uint8_t start,uint8_t 
 
 static bool cell_path(uint32_t mask,uint8_t start,uint8_t goal,uint8_t path[25],uint8_t *count)
 {
-  return RadarGrid_Path(&DefaultGrid,mask,start,goal,path,count);
+  uint32_t reference_mask=0U;
+  unsigned cell;
+  /* Inverse T: formal (row,column) -> reference (4-column,row).
+   * Search in F1's frame so equal-cost ties rotate with N/E/S/W, too. */
+  for(cell=0U;cell<25U;cell++)if(mask&(1UL<<cell))
+    reference_mask|=1UL<<((4U-cell%5U)*5U+cell/5U);
+  start=(uint8_t)((4U-start%5U)*5U+start/5U);
+  goal=(uint8_t)((4U-goal%5U)*5U+goal/5U);
+  if(!RadarGrid_Path(&WaypointGrid,reference_mask,start,goal,path,count))return false;
+  for(cell=0U;cell<*count;cell++)path[cell]=(uint8_t)((path[cell]%5U)*5U+4U-path[cell]/5U);
+  return true;
 }
 
 static bool append_point(RadarPlan_t *p,int16_t x,int16_t y,uint8_t station,uint8_t visit)
@@ -448,6 +404,22 @@ static bool append_point(RadarPlan_t *p,int16_t x,int16_t y,uint8_t station,uint
   return true;
 }
 
+static bool segment_clear(uint32_t mask,int16_t sx,int16_t sy,int16_t ex,int16_t ey);
+
+/** @brief 将实际线段判障后加入路线；同点由append_point合并。
+ * @param p 当前已包含至少一个点的路线。
+ * @param mask 正式判障网格低25位占用掩码，包含人工障碍。
+ * @param x,y 下一个实际世界坐标，mm。
+ * @param station,visit 业务工位及访问编号；中转为0。
+ * @return 线段不碰占用矩形且路点容量足够时为true。
+ */
+static bool append_checked_point(RadarPlan_t *p,uint32_t mask,int16_t x,int16_t y,
+                                 uint8_t station,uint8_t visit)
+{
+  const RadarPlan_Point_t *last=&p->points[p->count-1U];
+  return segment_clear(mask,last->x_mm,last->y_mm,x,y) && append_point(p,x,y,station,visit);
+}
+
 static bool append_leg(const RadarMap_t *m,int16_t sx,int16_t sy,int16_t ex,int16_t ey,
                        uint8_t station,uint8_t visit,RadarPlan_t *p)
 {
@@ -457,15 +429,24 @@ static bool append_leg(const RadarMap_t *m,int16_t sx,int16_t sy,int16_t ex,int1
   int16_t x,y;
   if(start<0 || goal<0 || !cell_path(mask,(uint8_t)start,(uint8_t)goal,path,&count)) return false;
   if(!append_point(p,sx,sy,0U,0U)) return false;
-  if(start==goal) return append_point(p,ex,sy,0U,0U) && append_point(p,ex,ey,station,visit);
+  if(start==goal)
+    return append_checked_point(p,mask,ex,sy,0U,0U) &&
+           append_checked_point(p,mask,ex,ey,station,visit);
   cell_center(path[0],&x,&y);
-  /* Axis-aligned connectors stay inside their unblocked endpoint cells. */
-  if(!append_point(p,x,sy,0U,0U)) return false;
+  /* Only endpoint-cell connectors adapt the F1 grid chain to real stations.
+   * Do not select another cross-grid shortcut merely because it is clear. */
+  if(path[1]/5U==path[0]/5U) {
+    if(!append_checked_point(p,mask,sx,y,0U,0U))return false;
+  } else if(!append_checked_point(p,mask,x,sy,0U,0U))return false;
   for(i=0U;i<count;i++) {
     cell_center(path[i],&x,&y);
-    if(!append_point(p,x,y,0U,0U)) return false;
+    if(!append_checked_point(p,mask,x,y,0U,0U)) return false;
   }
-  return append_point(p,ex,y,0U,0U) && append_point(p,ex,ey,station,visit);
+  if(path[count-1U]/5U==path[count-2U]/5U)
+    return append_checked_point(p,mask,ex,y,0U,0U) &&
+           append_checked_point(p,mask,ex,ey,station,visit);
+  return append_checked_point(p,mask,x,ey,0U,0U) &&
+         append_checked_point(p,mask,ex,ey,station,visit);
 }
 
 /* Closed cell rectangles include their edges and corners. The shortcut is only
@@ -512,11 +493,16 @@ bool RadarPlan_BuildFromStart(const RadarMap_t *m,RadarStart_Id_t start_id,Radar
     int16_t from_y=from==1U?start_y:Stations[from-1U][1];
     bool ok;
     if(leg==0U && segment_clear((m->mask|RADAR_MAP_FIXED_MASK)&RADAR_MAP_ALL_CELLS,
-                               2250,start_y,2100,1200)) {
-      ok=append_point(p,2100,1200,5U,1U);
+                               2250,start_y,2100,staging_y) &&
+       segment_clear((m->mask|RADAR_MAP_FIXED_MASK)&RADAR_MAP_ALL_CELLS,
+                     2100,staging_y,2100,1200)) {
+      /* Publish the same short lane-entry move used by the motion profile;
+       * do not display or collision-check an abandoned long diagonal. */
+      ok=append_point(p,2100,staging_y,0U,0U) && append_point(p,2100,1200,5U,1U);
     } else if(leg+2U==RADAR_PLAN_MISSION_VISITS) {
       ok=append_leg(m,from_x,from_y,2100,staging_y,0U,0U,p) &&
-         append_point(p,2250,start_y,1U,8U);
+         append_checked_point(p,(m->mask|RADAR_MAP_FIXED_MASK)&RADAR_MAP_ALL_CELLS,
+                              2250,start_y,1U,8U);
     } else {
       ok=append_leg(m,from_x,from_y,
                     Stations[to-1U][0],Stations[to-1U][1],to,(uint8_t)(leg+1U),p);

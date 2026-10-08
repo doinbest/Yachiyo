@@ -37,7 +37,7 @@ const stopSource=app.slice(app.indexOf('async function requestStop(){'),app.inde
 test('global stop cancels an active radar page read before waiting for the stop response',async()=>{
   const wires=[],elements=new Map();let finishStop;
   const exchange=new RadarExchange({timeoutMs:40,send:async wire=>{wires.push(wire);return true;}});
-  const context={radarExchange:exchange,presetCancelled:false,paramsView:null,prepView:null,
+  const context={radarExchange:exchange,presetCancelled:false,paramsView:null,prepView:null,stackingPanel:null,
     attempts:{supersede(){}},appendLog(){},communicationError(){},
     $:id=>{if(!elements.has(id))elements.set(id,{textContent:'',dataset:{}});return elements.get(id);},
     bridge:{stop:()=>new Promise(resolve=>{finishStop=resolve;})}};

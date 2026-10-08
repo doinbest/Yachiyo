@@ -106,6 +106,19 @@ test('disconnect cancels a pending read and ignores late replies',async()=>{
   assert.equal(exchange.busy,false);
 });
 
+test('missing parameter reply releases busy and a fresh read can succeed',async()=>{
+  let exchange,respond=false;const wires=[];
+  exchange=createParameterExchange({timeoutMs:20,send:async wire=>{
+    wires.push(wire);
+    if(respond)queueMicrotask(()=>exchange.receive('OK grab config key=x_car value=100'));
+    return true;
+  }});
+  await assert.rejects(exchange.readGrab('x_car'),/读回超时/);
+  assert.equal(exchange.busy,false);respond=true;
+  assert.equal((await exchange.readGrab('x_car')).value,100);
+  assert.deepEqual(wires,['grab get x_car','grab get x_car']);assert.equal(exchange.busy,false);
+});
+
 test('opening the parameter page sends nothing; route speed stays local until route start',()=>{
   const ui=parameterSurface();
   try{

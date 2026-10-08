@@ -512,6 +512,11 @@ static bool stopped_feedback(uint32_t now)
   unsigned i;
   bool quiet = true; /* Physical stop evidence is independent of target accuracy. */
   if (Position.feedback_sequence == StopSequence) return false;
+  /* Position groups and speed reads are independent UART transactions. Wait
+   * for all four new speeds before consuming evidence; a reused fresh sample
+   * is not movement and must not reset an already quiet interval. */
+  for(i=0;i<4;i++)
+    if(Position.wheels[i].speed_ms==StopSpeedTime[i]) return false;
   StopSequence = Position.feedback_sequence;
   for(i=0;i<4;i++)
   {
@@ -647,11 +652,17 @@ void ChassisMotion_Process(void)
         DistanceBraking=false;FinishAsError=true;Motion.reason="bus_fault";
         (void)Mecanum_Test_Stop();return;
       }
-      if(!Mecanum_CanStopCleanly() || bus.stage!=MECANUM_STAGE_SENT || !bus.tx_complete || !bus.sent_velocity_valid ||
-         (uint32_t)(bus.sent_ms-DistanceStopTick)>0x7FFFFFFFU ||
+      if(bus.stage!=MECANUM_STAGE_SENT || !bus.tx_complete || !bus.sent_velocity_valid ||
          bus.sent_rpm[0] || bus.sent_rpm[1] || bus.sent_rpm[2] || bus.sent_rpm[3]) return;
+      if((uint32_t)(bus.sent_ms-DistanceStopTick)>0x7FFFFFFFU)
+      {
+        /* A just-sent identical zero may have been deduplicated. The request
+         * API owns its refresh interval: retry until a post-stop TX completes. */
+        (void)Mecanum_Velocity_Request(0,0,0,0);
+        return;
+      }
       DistanceBraking=false;
-      if(!Mecanum_Test_Stop())
+      if(!Mecanum_RequestPlannedStop())
       { Motion.state=CHASSIS_MOTION_ERROR;Motion.reason="stop_rejected";WaitingForStop=false; }
       return;
     }

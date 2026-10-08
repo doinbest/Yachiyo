@@ -16,7 +16,9 @@ typedef enum
   GRAB_IDLE, GRAB_PREPARE, GRAB_ACQUIRE, GRAB_ALIGN, GRAB_SETTLE,
   GRAB_DESCEND, GRAB_CLOSE, GRAB_LIFT, GRAB_TURN, GRAB_PLACE, GRAB_RELEASE, GRAB_RETRACT, GRAB_HOLD, GRAB_STOPPING, GRAB_ERROR, GRAB_HOMING, GRAB_VISION_PAUSE, GRAB_VISION_GRACE,
   GRAB_X_RETRACT, GRAB_INDEX, GRAB_CAR_EXTEND, GRAB_RETURN_TURN,
-  GRAB_EXTERNAL_EXTEND, GRAB_OBSERVE_Z, GRAB_OBSERVE_X, GRAB_COMPLETE
+  GRAB_EXTERNAL_EXTEND, GRAB_OBSERVE_Z, GRAB_OBSERVE_X, GRAB_COMPLETE,
+  GRAB_TRACK_OBSERVE, GRAB_TRACK_MATCH, GRAB_TRACK_FOLLOW, GRAB_TRACK_PAUSE,
+  GRAB_ROUTE_POSE, GRAB_MANUAL_Z
 } GrabTask_State_t;
 typedef struct
 {
@@ -52,14 +54,28 @@ void GrabTask_BootHomeStart(void);
 void GrabTask_Process(void);
 /** @brief fixed/align/pick；返回受理，不等于到位或抓持确认。必须先排除其他任务。 */
 bool GrabTask_Start(const char *mode);
+/** @brief 统一静态对准入口：B2颜色1..6或编号环10..12，Z绝对高度mm。
+ * 先横向接近、按新坐标渐进下降；stay保持低位，否则停止视觉控制后抬至最高。
+ * 不夹取、不操作车载转盘；完成后允许人工夹爪及独立高度调整。
+ */
+bool GrabTask_AlignStart(uint8_t target,float z_mm,bool stay);
 /** @brief 只读检查所选模式标定完整性和数值/机械边界，不访问硬件。 */
 bool GrabTask_ConfigReady(const char *mode);
+#define GRAB_TASK_POSE 1
+/** @brief 从已验证的后向机械回零锚点切换姿态；先抬Z收X，work为顺时针90°。
+ * @return 受理；完成结果为work_ready/travel_ready，不操作夹爪或重新回零。
+ */
+bool GrabTask_PoseStart(bool work);
+/** @brief 任务内部单件取放；operation=store/take，scene=raw/proc/rough/temp1/temp2。 */
+bool GrabTask_TransferStart(const char *operation,const char *scene,uint8_t slot,uint8_t color);
 /** @brief 已受理的参考变化通知：X/Z清除绝对边界/位置，BASE清除准心/J；
  * ALL仅清除X/Z，all home调用者另通知BASE；不自动重标定或改变硬件。
  */
 void GrabTask_ReferenceInvalidate(MechanicalArm_AxisTypeDef axis);
 /** @brief align HOLD仍拥有机构；单件COMPLETE释放占用，可显式开始下一件。 */
 bool GrabTask_IsBusy(void);
+/** @brief 兼容命名：所有静态对准的停稳HOLD允许人工夹爪、独立调高/松爪。 */
+bool GrabTask_RingManualAllowed(void);
 /** @brief 取消自动推进并请求停车；重复请求保留停稳证据，保持夹爪输出与Z使能，检查状态确认停车。 */
 void GrabTask_Stop(void);
 /** @brief 消费本任务发起的机械臂事件；非本任务返回0。 */

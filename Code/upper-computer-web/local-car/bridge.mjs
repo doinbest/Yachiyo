@@ -1,21 +1,36 @@
 import {frameCommand} from './protocol.mjs?v=heading-hold-1';
 
-export const scopedStopCommand=wire=>/^(?:stop (?:all|base|z|x)|chassis route cancel|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|imu cal cancel|(?:vision|material|camera|grab) stop)$/.test(wire);
+export const scopedStopCommand=wire=>/^(?:stop (?:all|base|z|x)|chassis route cancel|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|imu cal cancel|grab track stop|(?:vision|material|camera|grab) stop)$/.test(wire);
 
-export const readOnlyCommand=wire=>/^(?:info|help|bus status|console status|turntable (?:status|inventory|get [a-z][a-z0-9_]*)|radar host (?:status|get (?:active|draft)|live status|fetch (?:config|map|path|preview|cloud):\d+ \d+)|radar (?:status|get|probe(?: status)?|nav status|start status|debug status|live status|fetch (?:map|path|points|cloud|params|raw) \d+ \d+)|(?:state|position|config) (?:all|base|z|x)|chassis (?:task|status|snapshot|stop-status|feedback|route status)|imu status|qr (?:status|read)|(?:vision|material|camera|map|grab) status|grab get [a-z][a-z0-9_]*)$/.test(wire);
+export const readOnlyCommand=wire=>/^(?:info|help|bus status|console status|turntable (?:status|inventory|get [a-z][a-z0-9_]*)|radar host (?:status(?: fast)?|bundle \d+ (?:all|\d+(?:,\d+)*)|(?:ack|result) \d+|get (?:active|draft)|live status|fetch (?:config|map|path|preview|cloud):\d+ \d+)|radar (?:status|get|result \d+|probe(?: status)?|nav status|start status|debug status|live status|fetch (?:map|path|points|cloud|params|raw|evidence) \d+ \d+)|(?:state|position|config) (?:all|base|z|x)|chassis (?:task|status|snapshot|stop-status|feedback|route status)|imu status|qr (?:status|read)|(?:vision|material|camera|map|grab) status|grab track (?:status|trace(?: \d+)?|get [a-z][a-z0-9_]*|log(?: (?:status|stop|start(?: \d+)?))?)|grab (?:route|mission) status|grab status (?:base|x|z)|grab get [a-z][a-z0-9_]*)$/.test(wire);
 
 /** Attach to the single host-owned port. Attaching and reconnecting never send commands. */
 export class BridgeLink {
-  constructor({fetch:fetcher=globalThis.fetch.bind(globalThis),receive=()=>{},state=()=>{},error=()=>{},event=()=>{},configuration=()=>{}}={}) {
-    Object.assign(this,{fetcher,receive,state,error,event,configuration});
+  constructor({fetch:fetcher=globalThis.fetch.bind(globalThis),receive=()=>{},state=()=>{},error=()=>{},event=()=>{},configuration=()=>{},requestTimeoutMs=12000}={}) {
+    Object.assign(this,{fetcher,receive,state,error,event,configuration,requestTimeoutMs});
     this.connected=false;this.disconnecting=false;this.displayState='disconnected';this.port='';this.available=false;this.stopLatched=false;this.cursor=0;
     this.connectionRevision=0;this.stopRevision=0;
     this.pending=new Map();this.completed=new Map();this.generation=0;this.running=false;
   }
   async api(path,body,signal){
-    const response=await this.fetcher('/api/'+path,{method:body===undefined?'GET':'POST',cache:'no-store',signal,
-      ...(body===undefined?{}:{headers:{'Content-Type':'application/json','X-Console-Token':this.token},body:JSON.stringify(body)})});
-    const data=await response.json();if(!response.ok)throw new Error(data.error||`本地服务错误 ${response.status}`);return data;
+    // Cover both response headers and body: a stalled HTTP request must release UI busy gates.
+    const controller=new AbortController();let timer,onAbort;
+    // Offline planning can spend 30s compiling and 15s running the shared C core.
+    const timeoutMs=path==='radar/plan'?Math.max(this.requestTimeoutMs,50000):this.requestTimeoutMs;
+    const interrupted=new Promise((_resolve,reject)=>{
+      onAbort=()=>{const error=signal.reason||new DOMException('请求已取消。','AbortError');reject(error);controller.abort(error);};
+      if(signal?.aborted){onAbort();return;}
+      signal?.addEventListener('abort',onAbort,{once:true});
+      timer=setTimeout(()=>{const error=new Error('本地服务请求超时，结果未确认；请查看日志或读取状态，不会自动重发。');reject(error);controller.abort(error);},timeoutMs);
+    });
+    const work=async()=>{
+      if(controller.signal.aborted)throw controller.signal.reason;
+      const response=await this.fetcher('/api/'+path,{method:body===undefined?'GET':'POST',cache:'no-store',signal:controller.signal,
+        ...(body===undefined?{}:{headers:{'Content-Type':'application/json','X-Console-Token':this.token},body:JSON.stringify(body)})});
+      const data=await response.json();if(!response.ok)throw new Error(data.error||`本地服务错误 ${response.status}`);return data;
+    };
+    try{return await Promise.race([work(),interrupted]);}
+    finally{clearTimeout(timer);signal?.removeEventListener('abort',onAbort);}
   }
   setConnected(value,disconnecting=false){const closing=!!value&&disconnecting;if(this.connected!==value||this.disconnecting!==closing||this.displayState==='connecting')this.connectionRevision++;this.connected=value;this.disconnecting=closing;const state=this.disconnecting?'disconnecting':value?'connected':'disconnected';if(state!==this.displayState){this.displayState=state;this.state(state);}}
   rejectPending(message){for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new Error(message));}this.pending.clear();this.completed.clear();}

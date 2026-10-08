@@ -5,6 +5,7 @@
 static uint32_t tick;
 static uint8_t *dma;
 static unsigned tx_count;
+static bool defer_stop_ack;
 static HAL_StatusTypeDef tx_result;
 static UART_HandleTypeDef uart;
 uint32_t HAL_GetTick(void)
@@ -35,6 +36,7 @@ static void finish(void)
 {
   MotorBus_TxCpltCallback(&uart);
   MotorBus_Process();
+  if(dma[1]==0xfe && !defer_stop_ack) { uint8_t ack[]={dma[0],0xfe,2,0x6b};MotorBus_RxBytes(ack,4);MotorBus_Process(); }
 }
 int main(void)
 {
@@ -59,7 +61,7 @@ int main(void)
   cmd[0] = 3;
   assert(MotorBus_Submit(MOTOR_BUS_ARM, cmd, 3, 6, 18, false));
   MotorBus_Process();
-  assert(tx_count == 1);
+  assert(tx_count == 2);
   tick = 10;
   MotorBus_Process();
   assert(tx_count == 2);
@@ -69,14 +71,15 @@ int main(void)
   assert(MotorBus_EventGet(MOTOR_BUS_ARM, &e) && e.result == MOTOR_BUS_TIMEOUT);
   assert(MotorBus_IsQuarantined());
   assert(!MotorBus_Submit(MOTOR_BUS_ARM, cmd, 3, 6, 19, false));
-  assert(MotorBus_Submit(MOTOR_BUS_STOP, cmd, 3, 0, 20, true));
+  uint8_t urgent[]={1,0xfe,0x98,0,0x6b};
+  assert(MotorBus_Submit(MOTOR_BUS_STOP, urgent, 5, 0, 20, true));
   tick = 120;
   MotorBus_Process();
   finish();
   assert(MotorBus_EventGet(MOTOR_BUS_STOP, &e) && e.result == MOTOR_BUS_TX_DONE);
   assert(MotorBus_RecoverAfterReset());
   /* Reservation spans gaps between commands, even if arm was queued first. */
-  cmd[0] = 5;
+  cmd[0] = 5;cmd[1]=0x50; /* Unknown raw TX fixture, not an Emm query. */
   assert(MotorBus_Submit(MOTOR_BUS_ARM, cmd, 3, 0, 100, false));
   assert(MotorBus_Reserve(MOTOR_BUS_CHASSIS));
   cmd[0] = 1;
@@ -98,7 +101,7 @@ int main(void)
   assert(dma[0] == 5);
   finish();
   assert(MotorBus_EventGet(MOTOR_BUS_ARM, &e) && e.token == 100);
-  cmd[0] = 1;
+  cmd[0] = 1;cmd[1]=0x35;
   tick = 170;
   assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK, cmd, 3, 6, 102, false));
   MotorBus_Process();
@@ -143,7 +146,7 @@ int main(void)
   assert(MotorBus_EventGet(MOTOR_BUS_ARM, &e) && e.result == MOTOR_BUS_CANCELLED);
   tick = 222;
   MotorBus_Process();
-  assert(dma[1] == 0x35);
+  assert(dma[1] == 0xfe);
   tick = 223;
   MotorBus_Process();
   assert(dma[1] == 0xfe);
@@ -157,6 +160,7 @@ int main(void)
   MotorBus_Process();
   finish();
   MotorBus_RxBytes(reply + 6, 3);
+  defer_stop_ack=true;
   MotorBus_Process(); /* Partial old response must survive priority Stop TX. */
   tick = 251;
   assert(MotorBus_Submit(MOTOR_BUS_STOP, emergency, 5, 0, 108, true));
@@ -172,6 +176,8 @@ int main(void)
   MotorBus_Process();
   assert(tx_count == saved); /* No new query can steal the abandoned reply. */
   MotorBus_RxBytes(reply + 9, 3);
+  { const uint8_t stop_ack[]={1,0xfe,2,0x6b}; MotorBus_RxBytes(stop_ack,4); }
+  defer_stop_ack=false;
   MotorBus_Process();
   assert(tx_count == saved + 1);
   assert(!MotorBus_EventGet(MOTOR_BUS_FEEDBACK, &e));

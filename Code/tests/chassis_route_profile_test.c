@@ -35,6 +35,15 @@ int main(void)
   close_to(first.phases[1].x_mm,2100);close_to(first.phases[1].y_mm,1200);
   assert(!first.phases[1].turn && !strcmp(first.phases[1].direction,"forward"));
   close_to(first.nominal_time_s,(hypotf(150,150)+900)/200);
+  /* Explicit radar staging points must not be split or visited twice. */
+  const RadarPlan_Point_t staged={2100,300,0,0};
+  ChassisRoute_Profile_t entry=build(expected[0],staged,90,true);
+  assert(entry.count==1 && !entry.phases[0].turn);
+  close_to(entry.phases[0].x_mm,2100);close_to(entry.phases[0].y_mm,300);
+  ChassisRoute_Profile_t qr=build(staged,expected[1],entry.final_yaw_deg,true);
+  assert(qr.count==1 && !qr.phases[0].turn);
+  close_to(qr.phases[0].x_mm,2100);close_to(qr.phases[0].y_mm,1200);
+  close_to(entry.nominal_time_s+qr.nominal_time_s,first.nominal_time_s);
   /* A later pass and a planned detour must keep their own geometry. */
   first=build(expected[0],expected[1],90,false);assert(first.count==3);
   for(unsigned j=0;j<first.count;j++) assert(first.phases[j].y_mm!=300);

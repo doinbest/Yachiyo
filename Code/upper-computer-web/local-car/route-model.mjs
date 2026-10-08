@@ -22,9 +22,15 @@ export const defaultRoute = () => [
 ];
 // Official initial envelope, not wheel-center geometry or an unfolded arm model.
 export const BODY_SIZE_MM = 300;
+export const DEFAULT_BODY_SIZE = Object.freeze({length_mm:BODY_SIZE_MM,width_mm:BODY_SIZE_MM});
 export const TURNTABLE = Object.freeze({x:1200,y:2470,radius:150});
-export function bodyCorners(p){
-  return [[150,150],[-150,150],[-150,-150],[150,-150]].map(v=>{
+export function validBodySize(size){
+  return !!size && Number.isFinite(size.length_mm)&&Number.isFinite(size.width_mm)&&
+    size.length_mm>0&&size.length_mm<=BODY_SIZE_MM&&size.width_mm>0&&size.width_mm<=BODY_SIZE_MM;
+}
+export function bodyCorners(p,size=DEFAULT_BODY_SIZE){
+  const halfLength=size.length_mm/2,halfWidth=size.width_mm/2;
+  return [[halfLength,halfWidth],[-halfLength,halfWidth],[-halfLength,-halfWidth],[halfLength,-halfWidth]].map(v=>{
     const [x,y]=rotate(v,p.yaw_rad);return [p.x_mm+x,p.y_mm+y];
   });
 }
@@ -44,9 +50,9 @@ export function routeResultText(r,{wholeRoute=true,rowNumber=r.index+1}={}){
   const returnHint=wholeRoute&&r.startZone&&r.index===r.rows.length-1&&r.reason==='boundary'?' · 返回阶段需末端精定位':'';
   return `第 ${rowNumber} 段：${issue} · 已在上一有效位置停止${returnHint}`;
 }
-export function turntableGap(p){
-  const [x,y]=rotate([TURNTABLE.x-p.x_mm,TURNTABLE.y-p.y_mm],-p.yaw_rad);
-  return Math.hypot(Math.max(Math.abs(x)-150,0),Math.max(Math.abs(y)-150,0))-TURNTABLE.radius;
+export function turntableGap(p,size=DEFAULT_BODY_SIZE){
+  const [x,y]=rotate([TURNTABLE.x-p.x_mm,TURNTABLE.y-p.y_mm],-p.yaw_rad),halfLength=size.length_mm/2,halfWidth=size.width_mm/2;
+  return Math.hypot(Math.max(Math.abs(x)-halfLength,0),Math.max(Math.abs(y)-halfWidth,0))-TURNTABLE.radius;
 }
 function overlaps(corners,box,yaw){
   const other=[[box.x,box.y],[box.x+box.w,box.y],[box.x+box.w,box.y+box.h],[box.x,box.y+box.h]];
@@ -58,14 +64,14 @@ function overlaps(corners,box,yaw){
   }
   return true;
 }
-export function footprintDiagnostic(p,{mask=0}={}){
-  const corners=bodyCorners(p);
+export function footprintDiagnostic(p,{mask=0,bodySize=DEFAULT_BODY_SIZE}={}){
+  const corners=bodyCorners(p,bodySize);
   if(corners.some(c=>c.some(v=>v < -1e-7||v > 2400+1e-7)))return {reason:'boundary',obstacle:'场地边界'};
-  if(turntableGap(p)<=0)return {reason:'turntable',obstacle:'原料转盘'};
+  if(turntableGap(p,bodySize)<=0)return {reason:'turntable',obstacle:'原料转盘'};
   const boxes=[...FIELD.blocks.map(b=>({...b,w:450,h:450})),{x:0,y:910,w:150,h:580},{x:910,y:0,w:580,h:150}];
   const fixed=boxes.findIndex(b=>overlaps(corners,b,p.yaw_rad));
   if(fixed>=0)return {reason:'forbidden_area',obstacle:`非行车区 ${fixed+1}`};
-  const grid=[150,550,1000,1400,1850,2250];
+  const grid=[0,550,1000,1400,1850,2400];
   for(let i=0;i<25;i++)if(mask&(1<<i)){
     const row=Math.floor(i/5),col=i%5,box={x:grid[col],y:grid[row],w:grid[col+1]-grid[col],h:grid[row+1]-grid[row]};
     if(overlaps(corners,box,p.yaw_rad))return {reason:'forbidden_area',obstacle:`地图障碍 R${row+1}C${col+1}`};

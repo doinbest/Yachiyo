@@ -657,6 +657,12 @@ int main(void)
     ChassisRoute_Process();
     GrabRoute_Process();
     GrabTask_Process();
+    {
+      GrabTask_Status_t boot_arm;
+      GrabTask_StatusGet(&boot_arm);
+      Turntable_BootHomeProcess(boot_arm.state == GRAB_IDLE &&
+          strcmp(boot_arm.reason, "home_complete") == 0);
+    }
     Mecanum_Velocity_Process(); /* 航向控制使用本圈已检查的模块角度。 */
     ImuTiming_Mark(IMU_TIME_CHASSIS);
     ChassisTelemetry_Process();

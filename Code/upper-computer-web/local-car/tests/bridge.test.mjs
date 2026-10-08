@@ -2,9 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {BridgeLink,readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
 test('F407 radar host reads and scoped stops keep the global stop latch',()=>{
-  for(const wire of ['radar host status','radar host get active','radar host get draft','radar host live status','radar host fetch map:4294967295 65535'])assert.equal(readOnlyCommand(wire),true,wire);
+  for(const wire of ['radar host status fast','radar host bundle 5 all','radar host bundle 5 0,2,4'])assert.equal(readOnlyCommand(wire),true,wire);
+  for(const wire of ['radar host scan fast','radar host live start fast','radar host bundle 5 -1','radar host bundle 5 0,','radar host status fast extra'])assert.equal(readOnlyCommand(wire),false,wire);
+  for(const wire of ['radar host status','radar host result 4294967295','radar host get active','radar host get draft','radar host live status','radar host fetch map:4294967295 65535'])assert.equal(readOnlyCommand(wire),true,wire);
   for(const wire of ['radar host stop','radar host live stop'])assert.equal(scopedStopCommand(wire),true,wire);
   for(const wire of ['radar host start','radar host scan','radar host live start','radar host draft reset','radar host set threshold 1','radar host apply 1'])assert.equal(readOnlyCommand(wire),false,wire);
+});
+
+test('radar result acknowledgement is allowed while stopped and cannot start a scan',()=>{
+  assert.equal(readOnlyCommand('radar host ack 4294967295'),true);
+  for(const wire of ['radar host ack','radar host ack 1 extra','radar host ack -1','radar host result -1','radar host result 1 extra','radar host live start'])assert.equal(readOnlyCommand(wire),false);
 });
 test('live radar status is readable and live stop bypasses a stop latch without enabling motion',async()=>{
   assert.equal(readOnlyCommand('radar live status'),true);
@@ -20,7 +27,7 @@ test('live radar status is readable and live stop bypasses a stop latch without 
   await assert.rejects(f.bridge.send('radar live start lower'),/停止/);
 });
 test('raw radar downloads and debug status remain readable while scans stay explicit',async()=>{
-  for(const wire of ['radar debug status','radar fetch raw 1 0'])assert.equal(readOnlyCommand(wire),true);
+  for(const wire of ['radar debug status','radar fetch raw 1 0','radar fetch evidence 17 23'])assert.equal(readOnlyCommand(wire),true);
   for(const wire of ['radar debug scan lower','radar debug scan upper','radar debug scan auto','radar debug status extra'])assert.equal(readOnlyCommand(wire),false);
   const f=fixture();f.setStatus({stop_latched:true});await f.bridge.attach();
   const sent=f.bridge.send('radar fetch raw 1 0');await new Promise(setImmediate);
@@ -61,6 +68,46 @@ function fixture(){
   },receive:x=>received.push(x),event:x=>events.push(x),state:x=>states.push(x)});
   return {bridge,requests,received,events,states,setStatus:s=>{status={...status,...s};}};
 }
+
+for(const phase of ['headers','body'])test(`HTTP ${phase} stall has a finite deadline and aborts the request`,async()=>{
+  let signal,calls=0;
+  const never=new Promise(()=>{});
+  const bridge=new BridgeLink({requestTimeoutMs:20,fetch:async(_url,options)=>{
+    calls++;signal=options.signal;
+    return phase==='headers'?never:{ok:true,json:()=>never};
+  }});
+  let deadline;
+  try {
+    const result=await Promise.race([
+      bridge.api('send',{command:'info'}).then(()=> 'resolved',e=>e.message),
+      new Promise(resolve=>{deadline=setTimeout(()=>resolve('hung'),500);})
+    ]);
+    assert.match(result,/超时/);assert.equal(signal.aborted,true);assert.equal(calls,1);
+  } finally {clearTimeout(deadline);}
+});
+
+test('parent abort settles an API request even when the transport ignores abort',async()=>{
+  const parent=new AbortController();let signal;
+  const bridge=new BridgeLink({requestTimeoutMs:1000,fetch:async(_url,options)=>{
+    signal=options.signal;return new Promise(()=>{});
+  }});
+  const request=bridge.api('events',undefined,parent.signal);
+  parent.abort();let deadline;
+  try {
+    const result=await Promise.race([request.then(()=> 'resolved',e=>e.name),
+      new Promise(resolve=>{deadline=setTimeout(()=>resolve('hung'),100);})]);
+    assert.equal(result,'AbortError');assert.equal(signal.aborted,true);
+  } finally {clearTimeout(deadline);}
+});
+
+test('offline C planning keeps its build/run budget but still has a finite deadline',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});let settled=false;
+  const bridge=new BridgeLink({fetch:async()=>new Promise(()=>{})});
+  const request=bridge.api('radar/plan',{}).catch(e=>{settled=true;return e.message;});
+  t.mock.timers.tick(12001);await Promise.resolve();await Promise.resolve();
+  assert.equal(settled,false);
+  t.mock.timers.tick(38000);assert.match(await request,/超时/);
+});
 
 test('grasp stop remains sendable under stop latch while starts remain blocked',async()=>{
   const f=fixture();f.setStatus({stop_latched:true});await f.bridge.attach();

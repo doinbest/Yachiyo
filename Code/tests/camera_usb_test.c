@@ -187,6 +187,26 @@ int main(void)
   Camera_UsbRxCallback(frame, 5); Camera_Process();
   Camera_UsbRxCallback(overflow, CAMERA_RX_BUFFER_SIZE); Camera_Process();
   Camera_SnapshotGet(&snapshot); assert(snapshot.OverflowCount == 1);
+  Camera_Init(); Camera_MaterialStart(CAMERA_COLOR_BLUE);
+  make_frame(frame, 1); tick=100; Camera_UsbRxCallback(frame, 7); Camera_Process();
+  tick=110; Camera_UsbRxCallback(frame+7, 7);
+  tick=130; Camera_Process(); Camera_SnapshotGet(&snapshot);
+  assert(snapshot.Data.Tick==130 && snapshot.Data.HasReceiveTime && snapshot.Data.ReceivedTick==110);
+  tick=140; Camera_UsbRxCallback(frame, sizeof(frame));
+  tick=150; Camera_UsbRxCallback(frame, sizeof(frame));
+  tick=160; Camera_Process(); Camera_SnapshotGet(&snapshot);
+  assert(snapshot.Data.Tick==160 && snapshot.Data.ReceivedTick==150);
+  for(uint8_t ring=1;ring<=3;ring++) {
+    uint8_t reply[14]; Camera_SnapshotTypeDef snapshot;
+    assert(Camera_RingStart(ring)==HAL_OK);
+    assert(tx_length==4 && tx[0]==0xff && tx[1]==0xb2 && tx[2]==9+ring && tx[3]==0xff);
+    make_frame(reply,1); reply[2]=9+ring;reply[12]=0;
+    for(unsigned j=1;j<=11;j++)reply[12]+=reply[j];
+    Camera_UsbRxCallback(reply,14);Camera_Process();Camera_SnapshotGet(&snapshot);
+    assert(snapshot.TargetValid && snapshot.Data.Target==9+ring);
+  }
+  assert(Camera_RingStart(0)==HAL_ERROR && Camera_RingStart(4)==HAL_ERROR);
+  assert(Camera_MaterialStart((Camera_ColorTypeDef)10)==HAL_ERROR);
   request_cache_test();
   b2_boundaries();
   puts("camera USB snapshot, counters, B2 protocol and visual-state tests passed");

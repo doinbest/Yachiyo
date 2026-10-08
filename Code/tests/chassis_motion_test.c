@@ -32,6 +32,7 @@ void Mecanum_StatusGet(Mecanum_Status_t *out){*out=bus;}
 bool Mecanum_Velocity_Request(float vx,float vy,float w,uint8_t acc)
 {assert(acc==0);sends++;sent_vx=vx;sent_vy=vy;sent_omega=w;return accept;}
 bool Mecanum_Test_Stop(void){stops++;bus.stop_sequence++;bus.tx_complete=false;bus.stage=MECANUM_STAGE_STOPPING;bus.stop_pending=true;return accept;}
+bool Mecanum_RequestPlannedStop(void){return Mecanum_Test_Stop();}
 /* PID math has its own real-module regression; here inspect the units passed to it. */
 void Mecanum_HeadingPid_Init(Mecanum_HeadingPid_t *p,float kp,float ki,float kd,float dt,float il,float ol)
 {(void)kp;(void)ki;(void)kd;(void)il;memset(p,0,sizeof(*p));p->sample_time_s=dt;p->output_limit=ol;}

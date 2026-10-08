@@ -36,6 +36,11 @@ static unsigned simulate_profile(bool tuned, bool coupled, FILE *trace)
     dy+=2*s.left_mm_s*.05f+2*(physical[0]-last_x); last_x=physical[0];
     step(true,1,(int)lroundf(dx),(int)lroundf(dy));
   }
+  if(status().state!=GRAB_HOLD)fprintf(stderr,"tuning stage=%s dx=%.2f dy=%.2f z=%.3f zt=%.3f lower=%u quiet=%u capture=%lu stop=%u\n",
+    status().state_name,dx,dy,Axes[1].mm,Axes[1].target,RingLowerSent,Axes[1].quiet,(unsigned long)CaptureCount,status().stop_confirmed);
+  if(status().state!=GRAB_HOLD)fprintf(stderr,"z_arrived=%u ztarget=%.9g zmm=%.9g cmd=%lu qs=%lu now=%lu xquiet=%u xspeed=%.4f wheels=%u zflags=%u cap=%lu\n",
+    arrived(1,clock_ms),Axes[1].target,Axes[1].mm,(unsigned long)Axes[1].command_tick,(unsigned long)Axes[1].quiet_since,(unsigned long)clock_ms,
+    Axes[0].quiet,Axes[0].speed,WheelQuiet,Axes[1].flags,(unsigned long)CaptureCount);
   assert(status().state==GRAB_HOLD && status().stop_confirmed);
   assert(labs(lroundf(dx))<=5 && labs(lroundf(dy))<=5);
   printf("TUNING %s %s first_window_ms=%u hold_ms=%lu max_speed=%.3f gain=%.3f accel=%.3f\n",

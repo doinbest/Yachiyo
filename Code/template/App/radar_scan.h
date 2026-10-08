@@ -5,6 +5,7 @@
 #define RADAR_SCAN_H
 #include "radar_uart.h"
 #include "radar_start.h"
+#include "radar_host_map.h"
 #define RADAR_SCAN_POINT_CAPACITY 4096U
 #define RADAR_SCAN_TIMEOUT_MS 10000U
 #define RADAR_LIVE_BINS 120U
@@ -71,12 +72,39 @@ typedef struct {
   uint16_t point_count, coverage_tenths;
   uint16_t last_alarm; /**< Latest LDS alarm code, little-endian on the sensor wire. */
   RadarScan_Unit_t unit;
+  uint8_t circles_done, circles_target; /**< Complete circles in the active capture. */
+  uint8_t map_circles; /**< Number of circles merged into the retained complete map. */
 } RadarScan_Status_t;
 typedef struct {
   uint32_t scan_id; /**< Last completed circle; survives stop/error/new capture. */
   bool automatic;
   RadarStart_Result_t result;
 } RadarScan_StartStatus_t;
+/** @brief Bounded per-cell provenance: first two and latest two returns. */
+#define RADAR_EVIDENCE_HITS 4U
+typedef struct {
+  uint16_t angle_tenths,distance_mm,raw_distance;
+  uint16_t packet_start,packet_span,packet_count,packet_index;
+  uint8_t energy,flags; /**< bit0: CF; bit1: sensor distance unit was cm. */
+} RadarScan_Hit_t;
+typedef struct {
+  uint16_t counts[RADAR_MAP_CELL_COUNT];
+  uint8_t hit_count[RADAR_MAP_CELL_COUNT];
+  RadarScan_Hit_t hits[RADAR_MAP_CELL_COUNT][RADAR_EVIDENCE_HITS];
+  uint32_t mask,raw_points,bad,restarts,unit_changes,unit_overflows;
+  RadarScan_Unit_t unit;
+} RadarScan_EvidenceCircle_t;
+typedef struct {
+  RadarMap_Params_t parameters;
+  RadarScan_EvidenceCircle_t circle[3];
+  uint32_t scan_id,map_id,origin_generation;
+  uint8_t circles;
+  bool complete;
+} RadarScan_Evidence_t;
+/** @brief Last completed manual capture's per-circle evidence, read-only.
+ * New manual/auto capture invalidates this bounded buffer (not the old map).
+ * Ordinary scans record in RAM only; no extra automatic wireless upload. */
+const RadarScan_Evidence_t *RadarScan_Evidence(void);
 /** @brief Explicit debug scan and its frozen raw/cloud binding.
  * circle_start/end delimit the first included measurement header and the final
  * boundary frame end, relative to raw.first_position. complete requires that
@@ -119,6 +147,13 @@ bool RadarScan_StartAuto(const RadarMap_Params_t *lower_reference, uint32_t orig
  */
 bool RadarScan_StartAt(const RadarMap_Params_t *lower_reference, uint32_t origin_generation,
                       RadarStart_Id_t start_id);
+/** @brief One stationary run of 1 or 3 complete circles, using a frozen corner reference.
+ * Classify each circle independently, then OR its effective obstacles; publish
+ * and plan once after all circles. Diagnostics sum counts; cloud is last circle.
+ * @param circles 1 retains ordinary scan behavior; 3 improves sparse returns.
+ * @return Accepted only; no chassis/arm movement or per-circle motor restart. */
+bool RadarScan_StartAtCycles(const RadarMap_Params_t *lower_reference, uint32_t origin_generation,
+                            RadarStart_Id_t start_id, uint8_t circles);
 /** @brief Publish one retained candidate from the last completed automatic circle.
  * @return False during/new capture or before a complete automatic circle. */
 bool RadarScan_SelectStart(RadarStart_Id_t start_id);
@@ -142,8 +177,21 @@ void RadarScan_HostStop(void);
 void RadarScan_HostStatusGet(RadarScan_HostStatus_t *status);
 /** @return 仅当唯一点云缓存当前属于完整、未截断的主机圈时返回。 */
 const RadarSample_t *RadarScan_HostPoints(uint16_t *count);
-/** @brief 使用共享120分区缓存启动页面持续预览，不改变实车实时状态。 */
-bool RadarScan_HostLiveStart(const RadarMap_Params_t *params);
+/** @brief 页面持续采集：所有原始点逐圈建图，120分区只作预览；不改实车状态。
+ * @param params 冻结的雷达采集参数，距离mm，角度0.1度。
+ * @param config 合法F1筛选/网格/规划配置，内部复制到RAM。
+ * @return 已受理启动；完整结果由Process发布，不代表雷达已物理转动。
+ */
+bool RadarScan_HostLiveStart(const RadarMap_Params_t *params,const RadarHostMap_Config_t *config);
+/** @brief 更新持续建图的RAM配置并重采当前不完整圈，不启动/停止雷达。
+ * @param config 合法新配置；仅在主机持续采集活动时生效。
+ */
+void RadarScan_HostLiveConfigure(const RadarHostMap_Config_t *config);
+/** @brief 返回最近完整持续圈的F1地图及路线，不提供半圈结果。
+ * @param scan_id 可选输出，该完整结果绑定的圈号。
+ * @return 内部只读结果，下一完整圈可覆盖；无匹配完整圈时NULL。
+ */
+const RadarHostMap_Result_t *RadarScan_HostLiveMap(uint32_t *scan_id);
 void RadarScan_HostLiveStop(void);
 bool RadarScan_HostLiveCopy(RadarLive_Point_t points[RADAR_LIVE_BINS]);
 /** @brief Update the next capture's RAM parameters; never starts or clears a map. */

@@ -25,7 +25,13 @@ void RadarHostMap_Defaults(RadarHostMap_Config_t *config)
 {
   if(config==NULL) return;
   memset(config,0,sizeof(*config));
-  RadarGrid_Default(&config->grid);
+  /* Keep the verified backup/F1 workspace independent of the vehicle grid. */
+  {
+    static const RadarGrid_t diagnostic_grid={
+      {150,550,1000,1400,1850,2250},{150,550,1000,1400,1850,2250}
+    };
+    config->grid=diagnostic_grid;
+  }
   config->radar_x_mm=230U;config->radar_y_mm=230U;
   config->angle_min_tenths=0U;config->angle_max_tenths=3600U;
   config->distance_min_mm=100U;config->distance_max_mm=40000U;
@@ -185,31 +191,43 @@ static void plan_point(const RadarHostMap_Config_t *config,RadarHostMap_Result_t
     (void)fill_waypoints(config,path,count,&config->start,&config->goal,false,result);
 }
 
-bool RadarHostMap_Build(const RadarHostMap_Config_t *config,
-                        const RadarSample_t *samples,uint16_t count,
-                        RadarHostMap_Result_t *result)
+void RadarHostMap_Add(const RadarHostMap_Config_t *config,const RadarSample_t *sample,
+                      RadarHostMap_Result_t *result)
 {
-  uint16_t i;
-  uint32_t scanned=0U;
-  if(result==NULL) return false;
-  memset(result,0,sizeof(*result));
-  if(!RadarHostMap_ConfigValid(config) || (count>0U && samples==NULL)) return false;
-  result->raw_points=count;
-  for(i=0U;i<count;i++) if(sample_allowed(config,&samples[i])) {
+  if(result->raw_points<0xFFFFU)++result->raw_points;
+  if(sample_allowed(config,sample)) {
     float x,y;
     int8_t cell;
     if(result->filtered_points<0xFFFFU) ++result->filtered_points;
-    project(config,&samples[i],&x,&y);
+    project(config,sample,&x,&y);
     cell=RadarGrid_FindCell(&config->grid,x,y,false);
-    if(cell<0) {if(result->outside_points<0xFFFFU) ++result->outside_points;continue;}
+    if(cell<0) {if(result->outside_points<0xFFFFU) ++result->outside_points;return;}
     if(result->counts[(uint8_t)cell]<0xFFFFU) ++result->counts[(uint8_t)cell];
   }
-  for(i=0U;i<RADAR_MAP_CELL_COUNT;i++)
+}
+
+void RadarHostMap_Finish(const RadarHostMap_Config_t *config,RadarHostMap_Result_t *result)
+{
+  uint32_t scanned=0U;
+  result->path_valid=false;result->waypoint_count=0U;
+  result->failed_from_task=result->failed_to_task=0U;
+  for(unsigned i=0U;i<RADAR_MAP_CELL_COUNT;i++)
     if(result->counts[i]>=config->threshold) scanned|=1UL<<i;
   result->manual_mask=config->manual_mask&RADAR_MAP_ALL_CELLS&~config->protected_mask&~config->fixed_mask;
   result->scanned_mask=scanned&~config->protected_mask;
   result->effective_mask=(config->fixed_mask|result->manual_mask|result->scanned_mask)&RADAR_MAP_ALL_CELLS;
   if(config->planning_mode==RADAR_HOST_PLAN_MISSION) plan_mission(config,result);
   else plan_point(config,result);
+}
+
+bool RadarHostMap_Build(const RadarHostMap_Config_t *config,
+                        const RadarSample_t *samples,uint16_t count,
+                        RadarHostMap_Result_t *result)
+{
+  if(result==NULL) return false;
+  memset(result,0,sizeof(*result));
+  if(!RadarHostMap_ConfigValid(config) || (count>0U && samples==NULL)) return false;
+  for(uint16_t i=0U;i<count;i++)RadarHostMap_Add(config,&samples[i],result);
+  RadarHostMap_Finish(config,result);
   return true;
 }

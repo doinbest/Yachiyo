@@ -1,7 +1,7 @@
 import {RouteRunner,defaultSegment,defaultRoute,bodyCorners,turntableGap,routeResultText} from './route-model.mjs?v=two-batch-1';
 import {DEFAULT_GEOMETRY,SIM_MAX_RPM,FIELD,inverse,forward,quantize,rotate,midpoint,wheelCenters,FixedStepper,Telemetry,motionDisplay} from './map-model.mjs?v=route-20260925';
 import {RouteProfileRunner,profilePhaseText,profileResultText,PROFILE_MAX_RPM} from './route-profile.mjs';
-import {RADAR_GRID} from './radar-model.mjs';
+import {monitorGrid} from './monitor-radar.mjs';
 
 const $=id=>document.getElementById(id);
 const fmt=(v,n=1)=>Number.isFinite(v)?v.toFixed(n):'—';
@@ -14,7 +14,15 @@ function fieldDrawing(){
   const root=$('field-static');
   root.append(svg('rect',{x:0,y:0,width:2400,height:2400,fill:'#c5c9ce',stroke:'#607486','stroke-width':8}));
   for(const b of FIELD.blocks)root.append(svg('rect',{x:b.x,y:b.y,width:450,height:450,fill:'#f8edb7',stroke:'#d0b25c','stroke-width':3}));
-  for(const mm of RADAR_GRID)root.append(svg('path',{d:`M ${mm} 150 V 2250 M 150 ${mm} H 2250`,stroke:'#607486','stroke-width':5,'data-radar-grid':mm}));
+  const gridLines=Array.from({length:6},()=>svg('path',{stroke:'#607486','stroke-width':5})),gridLabels=[];
+  root.append(...gridLines);
+  for(let r=0;r<5;r++)for(let c=0;c<5;c++){const label=svg('text',{class:'monitor-grid-label','text-anchor':'middle',fill:'#486070','font-size':36,'pointer-events':'none'},`R${r+1}C${c+1}`);gridLabels.push(label);root.append(label);}
+  const setRadarGrid=edges=>{
+    for(let i=0;i<6;i++){const mm=edges[i];gridLines[i].setAttribute('d',`M ${mm} ${edges[0]} V ${edges[5]} M ${edges[0]} ${mm} H ${edges[5]}`);gridLines[i].setAttribute('data-radar-grid',mm);}
+    for(let r=0;r<5;r++)for(let c=0;c<5;c++)gridLabels[r*5+c].setAttribute('transform',`translate(${(edges[c]+edges[c+1])/2} ${edges[r+1]-130}) scale(1 -1)`);
+    $('radar-grid-legend')?.setAttribute('title',`本图判障边界：${edges.join('、')} mm`);
+  };
+  setRadarGrid(monitorGrid());
   for(const b of [{x:0,y:910,w:150,h:580},{x:910,y:0,w:580,h:150}])root.append(svg('rect',{x:b.x,y:b.y,width:b.w,height:b.h,fill:'#e9cc83',stroke:'#a08046','stroke-width':3}));
   for(const y of [0,2100])root.append(svg('rect',{x:2100,y,width:300,height:300,fill:'#92bfdf',stroke:'#467ba6','stroke-width':3}));
   root.append(svg('circle',{cx:1200,cy:2470,r:150,fill:'#fff3d2',stroke:'#996c3e','stroke-width':5}),svg('path',{d:'M 2400 1100 V 1300',stroke:'#193b59','stroke-width':15}));
@@ -23,6 +31,7 @@ function fieldDrawing(){
   const labels=$('field-labels');
   for(const [x,y,text]of [[0,0,'O (0,0)'],[2450,0,'X →'],[0,2500,'Y ↑'],[1200,2690,'原料区 · 中心 (1200,2470) · Ø300'],[2680,1200,'二维码'],[2400,1020,'(2400,1200)'],[2240,2250,'300'],[2240,150,'返回启停区'],[1200,-140,'粗加工区'],[-160,1360,'暂存区'],[775,775,'450 × 450'],[1625,1625,'450 × 450']])labels.append(svg('text',{x,y:2400-y,'text-anchor':x===0?'start':'middle','font-size':x===2680?44:42,fill:'#294457'},text));
   for(let i=600;i<=2400;i+=600){labels.append(svg('text',{x:i,y:2490,'text-anchor':'middle','font-size':38,fill:'#496277'},String(i)));labels.append(svg('text',{x:-50,y:2410-i,'text-anchor':'end','font-size':38,fill:'#496277'},String(i)));}
+  return setRadarGrid;
 }
 function observeFieldLabels(){
   if(typeof ResizeObserver!=='function')return;
@@ -55,7 +64,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   const layerVisible=Object.fromEntries(Object.keys(layerPaths).map(key=>[key,true]));
   const legendButtons=[...$('map-legend').querySelectorAll('[data-map-layer]')];
   const stepper=new FixedStepper();let last=performance.now(),lastRender=0;
-  fieldDrawing();observeFieldLabels();
+  const setRadarGrid=fieldDrawing();observeFieldLabels();
   const offlineFields=[['start-x','初始 X / mm',2250,-5000,5000,1],['start-y','初始 Y / mm',150,-5000,5000,1],['start-theta','初始 θ / °',90,-3600,3600,1],['geom-l','轴距 L / mm · 估计',210,1,2000,1],['geom-w','轮距 W / mm · 估计',240,1,2000,1],['geom-d','轮径 D / mm · 假设',80,1,1000,.1],['geom-g','减速比 G · 假设',1,.01,100,.01]];
   for(const [id,text,value,min,max,step]of offlineFields){const label=document.createElement('label');label.textContent=text;const input=document.createElement('input');Object.assign(input,{id,type:'number',value,min,max,step,required:true});label.append(input);$('sim-fields').append(label);}
   function readInputs(){
@@ -219,5 +228,5 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   }
   document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseSimulation('页面已隐藏 · 模拟暂停，可继续');});
   render();requestAnimationFrame(frame);
-  return {setSource,setPreviewSource,startProfile,beginPreparedTelemetry(nonce){pauseSimulation('准备实车跑图 · 离线模拟暂停');mode='feedback';$('sim-controls').hidden=true;$('route-editor').hidden=true;$('simulation-actions').hidden=true;$('online-controls').hidden=false;telemetry.begin(nonce,performance.now());render();},snapshot(){telemetry.tick(performance.now());return telemetry;},receive(line){telemetry.accept(line,performance.now());},connection(value){connected=value;telemetry.stop(value?'已连接 · 遥测需手动开启':'串口未连接');render();}};
+  return {setSource,setPreviewSource,startProfile,setRadarGrid,beginPreparedTelemetry(nonce){pauseSimulation('准备实车跑图 · 离线模拟暂停');mode='feedback';$('sim-controls').hidden=true;$('route-editor').hidden=true;$('simulation-actions').hidden=true;$('online-controls').hidden=false;telemetry.begin(nonce,performance.now());render();},snapshot(){telemetry.tick(performance.now());return telemetry;},receive(line){telemetry.accept(line,performance.now());},connection(value){connected=value;telemetry.stop(value?'已连接 · 遥测需手动开启':'串口未连接');render();}};
 }

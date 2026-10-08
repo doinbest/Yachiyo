@@ -13,6 +13,7 @@ static HWT101_Angle_t angle;
 static unsigned sends, stops;
 static HAL_StatusTypeDef tx_result;
 static UART_HandleTypeDef uart;
+static uint8_t sent_address,sent_function;
 bool ChassisRoute_IsBusy(void) { return false; }
 bool ChassisMotion_IsBusy(void) { return false; }
 uint32_t HAL_GetTick(void)
@@ -39,6 +40,7 @@ HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef *u, uint8_t *p, uint1
   if (p[1] == 0xfe)
     stops++;
   in_flight = tx_result == HAL_OK;
+  sent_address=p[0]?p[0]:1;sent_function=p[1];
   return tx_result;
 }
 HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef *u, uint8_t *p, uint16_t n)
@@ -64,6 +66,7 @@ static void pump(unsigned ms)
     {
       in_flight = false;
       MotorBus_TxCpltCallback(&uart);
+      const uint8_t ack[]={sent_address,sent_function,2,0x6b};MotorBus_RxBytes(ack,4);
     }
     MotorBus_Process();
     Mecanum_Process();

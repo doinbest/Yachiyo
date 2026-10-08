@@ -5,11 +5,11 @@ export const RADAR_PARAMETERS=[
   ['lidar_x_mm','下方参考雷达 X / mm',2250,0,2400],['lidar_y_mm','下方参考雷达 Y / mm',150,0,2400],
   ['zero_deg','起点雷达零角 / °',180,-360,360],['distance_min_mm','距离下限 / mm',100,0,65535],
   ['distance_max_mm','距离上限 / mm',40000,0,65535],['angle_min_tenths','角度下限 / 0.1°',0,0,3600],
-  ['angle_max_tenths','顺时针角度上限 / 0.1°',900,0,3600],['threshold','连续物体点数阈值',1,1,65535],
+  ['angle_max_tenths','顺时针角度上限 / 0.1°',3600,0,3600],['threshold','每格判障最少点数',1,1,65535],
   ['energy_min','能量下限',0,0,255],['energy_max','能量上限',255,0,255]
 ].map(([key,label,value,min,max])=>({key,label,value,min,max}));
 export const STATIONS={1:'启停区',2:'粗加工区',3:'暂存区',4:'原料区',5:'扫码区'};
-export const RADAR_GRID=Object.freeze([150,550,1000,1400,1850,2250]);
+export const RADAR_GRID=Object.freeze([0,550,1000,1400,1850,2400]);
 export const RADAR_FIXED_MASK=0x00050140;
 export {radarStateText,radarReasonText} from './radar-format.mjs';
 /** Full raw measurements only; transport-complete display samples are still partial. */
@@ -24,8 +24,10 @@ export function preferredRadarCloud(...snapshots){
 const u32=x=>Number.isInteger(x)&&x>=0&&x<=0xffffffff;
 export function parseRadar(line){
   if(typeof line!=='string')return null;
-  line=line.trim().replace(/^(?:arm>\s*)+/,'');
-  if(!line.startsWith('@RADAR '))return null;
+  // A complete atomic radar line can follow a partially echoed CLI command.
+  // Recover at its marker; JSON and identity validation still reject damaged pages.
+  const marker=line.indexOf('@RADAR ');if(marker<0)return null;
+  line=line.slice(marker).trim();
   try{const f=JSON.parse(line.slice(7));return f?.v===1&&typeof f.k==='string'&&['session','origin','scan','map','plan'].every(k=>u32(f[k]))?f:null;}catch{return null;}
 }
 const idFor=(kind,f)=>kind==='raw'?f.id:kind==='path'?f.plan:kind==='params'?0:['points','cloud'].includes(kind)?f.scan:f.map;
@@ -87,6 +89,7 @@ export class RadarModel{
         items.push(...p[field]);
       }
       complete[field]=items;
+      if(f.k==='map')for(const key of ['a','f','c']){const metadata=ordered.find(p=>Object.hasOwn(p,key));if(metadata)complete[key]=metadata[key];}
       if(f.k==='map'&&('mask' in complete||Array.isArray(complete.pose)||f.pages===6)&&items.length!==25)return true;
       if(['points','cloud'].includes(f.k)&&Number.isInteger(f.total)&&items.length!==f.total)return true;
       if(f.k==='points'||f.k==='cloud'){const map=this.snapshots.map;if(map&&['session','origin','scan','map'].every(k=>map[k]===f[k])){complete.pose=[...map.pose];complete.age_ms=(map.age_ms??0)+now-map.receivedAt;}}
@@ -106,7 +109,11 @@ export class RadarExchange{
   notifyState(type){for(const listener of this.listeners)listener({type,busy:this.busy});}
   cancel(reason='读取已取消，保留已完成快照'){this.revision++;if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error(reason));this.pending=null;}this.notifyState('cancel');}
   receive(line){
+    line=line.trim().replace(/^(?:arm>\s*)+/,'');
     const f=parseRadar(line),p=this.pending;
+    // Another attached page can request the same packet. The matching packet
+    // already in flight remains authoritative; do not add a retry delay.
+    if(p?.pageRead&&line==='ERR radar page_pending')return true;
     if(p&&/^ERR radar\b/.test(line)){clearTimeout(p.timer);this.pending=null;p.reject(new Error(line));return true;}
     if(p?.matchLine&&p.matchLine(line)){clearTimeout(p.timer);this.pending=null;p.resolve({accepted:true});return true;}
     if(!f||!p||!p.match(f))return false;
@@ -116,7 +123,7 @@ export class RadarExchange{
   read(wire,match,revision,matchLine){
     frameCommand(wire);if(revision!==this.revision)return Promise.reject(new Error('读取已取消'));
     const reply=new Promise((resolve,reject)=>{
-      const item={match,matchLine,resolve,reject,timer:setTimeout(()=>{if(this.pending===item){this.pending=null;reject(new Error('雷达页读回超时，已完成快照仍保留'));}},this.timeoutMs)};this.pending=item;
+      const item={match,matchLine,resolve,reject,pageRead:wire==='radar get'||wire.startsWith('radar fetch ')||wire.startsWith('radar result '),timer:setTimeout(()=>{if(this.pending===item){this.pending=null;reject(new Error('雷达页读回超时，已完成快照仍保留'));}},this.timeoutMs)};this.pending=item;
     });
     const writing=Promise.resolve().then(()=>this.send(wire)).then(ok=>{if(ok!==true)throw new Error('串口写出未确认');if(revision!==this.revision)throw new Error('读取已取消');}).catch(error=>{if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(error);this.pending=null;}throw error;});
     return Promise.all([reply,writing]).then(([result])=>result);
@@ -133,6 +140,41 @@ export class RadarExchange{
     return result;
   }
   fetch(kind,id){if(!['map','path','points','cloud','raw','params'].includes(kind)||!u32(id)||(!id&&kind!=='params'))return Promise.reject(new Error('尚无可读取结果'));return this.run(revision=>this.pages(kind,id,revision));}
+  result(target){
+    const keys=['session','origin','scan','map','plan'];
+    if(!target||keys.some(k=>!u32(target[k]))||!target.map||!target.plan)return Promise.reject(new Error('尚无可读取结果'));
+    const identity=Object.fromEntries(keys.map(k=>[k,target[k]]));
+    return this.run(async revision=>{
+      const groups={map:{pages:null,items:new Map()},path:{pages:null,items:new Map()}};
+      const matches=f=>keys.every(k=>f[k]===identity[k]);
+      const complete=g=>g.pages!==null&&g.items.size===g.pages;
+      const collect=f=>{
+        const g=groups[f.k];
+        if(!Number.isInteger(f.pages)||f.pages<1||f.pages>4096||!Number.isInteger(f.page)||f.page<0||f.page>=f.pages)return false;
+        if(g.pages!==null&&g.pages!==f.pages)return false;
+        g.pages=f.pages;g.items.set(f.page,f);
+        this.onProgress({kind:f.k,page:g.items.size,pages:g.pages});return true;
+      };
+      await this.read(`radar result ${identity.plan}`,f=>{
+        if(!matches(f))return false;
+        if(groups[f.k]){collect(f);return complete(groups.map)&&complete(groups.path);}
+        if(f.k!=='result_end')return false;
+        for(const[k,total]of [['map',f.mp],['path',f.pp]]){
+          if(!Number.isInteger(total)||total<1||total>4096||groups[k].pages!==null&&groups[k].pages!==total)return false;
+        }
+        groups.map.pages=f.mp;groups.path.pages=f.pp;return true;
+      },revision);
+      for(const kind of ['map','path']){
+        const g=groups[kind];
+        for(let page=0;page<g.pages;page++)if(!g.items.has(page)){
+          const id=kind==='map'?identity.map:identity.plan;
+          const f=await this.read(`radar fetch ${kind} ${id} ${page}`,f=>matches(f)&&f.k===kind&&f.page===page&&f.pages===g.pages,revision);
+          collect(f);
+        }
+      }
+      return Object.fromEntries(Object.entries(groups).map(([kind,g])=>[kind,Array.from({length:g.pages},(_,page)=>g.items.get(page))]));
+    });
+  }
   async settings(revision){const first=await this.read('radar get',f=>f.k==='params'&&f.page===0,revision);return this.pages('params',0,revision,first);}
   get(){return this.run(revision=>this.settings(revision));}
   set(key,value){return this.run(async revision=>{

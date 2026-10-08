@@ -41,6 +41,8 @@ static RadarUart_Status_t uart_status;
 static RadarScan_Raw_t raw;
 static uint8_t raw_bytes[RADAR_UART_RAW_BYTES];
 static unsigned debug_scans;
+static RadarScan_Evidence_t evidence_fixture;
+const RadarScan_Evidence_t *RadarScan_Evidence(void){return evidence_fixture.complete?&evidence_fixture:NULL;}
 static RadarScan_LiveStatus_t live_fixture;
 static RadarLive_Point_t live_points[RADAR_LIVE_BINS];
 static unsigned live_starts,live_stops,live_copies;
@@ -96,6 +98,9 @@ bool RadarScan_StartAuto(const RadarMap_Params_t *p,uint32_t origin){auto_scans+
 bool RadarScan_StartAt(const RadarMap_Params_t *p,uint32_t origin,RadarStart_Id_t start){
   requested_start=start;manual_scans++;return RadarScan_Start(p,origin);
 }
+bool RadarScan_StartAtCycles(const RadarMap_Params_t *p,uint32_t origin,RadarStart_Id_t start,uint8_t circles){
+  assert(circles==3);scan.circles_target=circles;return RadarScan_StartAt(p,origin,start);
+}
 bool RadarScan_SelectStart(RadarStart_Id_t start){
   if(!start_status.scan_id || !start_status.automatic || RadarConsole_ScanBusy() || start==RADAR_START_UNKNOWN)return false;
   start_status.result.start_id=(uint8_t)start;start_status.result.reason="manual_selection";
@@ -110,6 +115,7 @@ bool ChassisRoute_StationReserved(void){return false;}
 bool ChassisMotion_IsBusy(void){return busy;}
 bool Mecanum_IsBusy(void){return false;}
 bool GrabRoute_IsBusy(void){return false;}
+bool GrabTask_RingManualAllowed(void){return false;}
 bool GrabTask_IsBusy(void){return false;}
 uint8_t MechanicalArm_IsBusy(void){return 0;}
 uint8_t ArmVision_IsBusy(void){return 0;}
@@ -151,9 +157,17 @@ static void fetch(const char *kind,uint32_t id,unsigned number)
 static unsigned fetch_map(uint32_t id)
 {
   unsigned seen=0;fetch("map",id,0);unsigned pages=page_field("pages");
+  assert(page_field("g")==3);
   assert(strstr(page,"\"mask\":328000") && strstr(page,"\"pose\":[2250.0,150.0,180.0]"));
   for(unsigned number=1;number<pages;number++){
     fetch("map",id,number);assert(page_field("pages")==pages && page_field("offset")==seen);
+    if(number==1U){
+      char frozen_filter[96];
+      snprintf(frozen_filter,sizeof(frozen_filter),"\"f\":[%u,%u,%u,%u,%u,%u,%u]",
+        captured.distance_min_mm,captured.distance_max_mm,captured.angle_min_tenths,
+        captured.angle_max_tenths,captured.threshold,captured.energy_min,captured.energy_max);
+      assert(page_field("a")==3 && strstr(page,frozen_filter));
+    }
     const char *at=strstr(page,"\"counts\":[");assert(at);at+=10;
     while(*at!=']'){
       char *end;unsigned long value=strtoul(at,&end,10);
@@ -187,7 +201,7 @@ static unsigned fetch_path(uint32_t id,bool extremes)
     fetch("path",id,number);
     if(!number)pages=page_field("pages");else assert(page_field("pages")==pages);
     assert(page_field("offset")==seen);
-    assert(page_field("start")==RADAR_START_LOWER);
+    if(!number)assert(page_field("start")==RADAR_START_LOWER);
     const char *at=strstr(page,"\"points\":[");assert(at);at+=10;
     while(*at!=']'){
       int x,y,used=0;unsigned station,visit;
@@ -295,11 +309,27 @@ static void test_live_console(void)
   command("radar live start lower");assert(live_starts==2);command("radar stop");assert(live_stops==2 && !live_fixture.active);
   assert(scans==static_scans && debug_scans==debug_count && moves==movement_count);
 }
+static void test_evidence_console(void)
+{
+  unsigned movement_count=moves,scan_count=scans;
+  evidence_fixture.complete=true;evidence_fixture.scan_id=17;evidence_fixture.map_id=12;
+  evidence_fixture.circles=3;RadarMap_Defaults(&evidence_fixture.parameters);
+  evidence_fixture.circle[0].counts[11]=20;evidence_fixture.circle[0].hit_count[11]=1;
+  evidence_fixture.circle[0].hits[11][0]=(RadarScan_Hit_t){355,1810,1810,355,0,1,0,80,1};
+  fetch("evidence",17,23);
+  assert(strstr(page,"\"circle\":0") && strstr(page,"\"cell\":11") && strstr(page,"\"count\":20"));
+  assert(strstr(page,"355,1810,80,1810,355,0,1,0,1") && moves==movement_count && scans==scan_count);
+  evidence_fixture.scan_id=UINT32_MAX;evidence_fixture.map_id=UINT32_MAX;
+  evidence_fixture.circle[2].counts[24]=UINT16_MAX;evidence_fixture.circle[2].hit_count[24]=4;
+  for(unsigned i=0;i<4;i++)evidence_fixture.circle[2].hits[24][i]=(RadarScan_Hit_t){3599,65535,65535,3599,3600,256,255,255,3};
+  fetch("evidence",UINT32_MAX,152);assert(strlen(page)<=256 && page_field("cell")==24);
+  evidence_fixture.complete=false;
+}
 int main(void)
 {
   RadarMap_Defaults(&params);captured=params;RadarMap_Reset(&map);
   assert(params.lidar_x_mm==2250 && params.lidar_y_mm==150 && params.zero_deg==180 &&
-    params.angle_min_tenths==0 && params.angle_max_tenths==900 && params.threshold==1);
+    params.angle_min_tenths==0 && params.angle_max_tenths==3600 && params.threshold==1);
   scan.state=RADAR_SCAN_READY;scan.reason="complete";scan.map_valid=scan.map_applicable=scan.points_valid=true;
   scan.map_id=scan.scan_id=4;scan.origin_generation=7;scan.coverage_tenths=3600;
   scan.points_map_id=4;start_status.scan_id=4;start_status.result.start_id=RADAR_START_LOWER;start_status.result.reason="manual_reference";
@@ -309,6 +339,7 @@ int main(void)
   route.state=route.reason="idle";
   for(unsigned i=0;i<360;i++)samples[i]=(RadarSample_t){(uint16_t)(i*10),65535,255};
   RadarConsole_Init();command("radar status");assert(!moves && !scans);
+  fetch("map",4,0);assert(page_field("pages")==2U); /* 25 zero counts fit one data page. */
   command("radar host status");assert(host_inits==1U && host_commands==1U && !moves && !scans);
   command("radar status");
   assert(foreground_count==6 && strstr(foreground[1],"\"page\":0,\"pages\":3"));
@@ -334,6 +365,22 @@ int main(void)
   unsigned map_pages=fetch_map(4),points_pages=fetch_points(4),path_pages=fetch_path(1,false);
   assert(map_pages<6 && points_pages<120);
   printf("normal identity pages: map=%u path=%u points=%u\n",map_pages,path_pages,points_pages);
+  /* One read-only command streams the same pages on consecutive main-loop
+   * ticks. No client round trips or one-second page gaps, no scan or motion. */
+  unsigned stream_scans=scans,stream_moves=moves;
+  command("radar result 1");assert(!strstr(reply,"ERR"));
+  for(unsigned number=0;number<map_pages;number++){
+    tick+=100U;
+    page[0]=0;fast_pump();assert(strstr(page,"\"k\":\"map\"") && page_field("page")==number);
+    page[0]=0;fast_pump();assert(!page[0]); /* air-link drain is nonblocking */
+    if(number==0U){command("radar result 1");assert(!strstr(reply,"ERR"));} /* coalesce */
+  }
+  for(unsigned number=0;number<path_pages;number++){
+    tick+=100U;
+    page[0]=0;fast_pump();assert(strstr(page,"\"k\":\"path\"") && page_field("page")==number);
+  }
+  tick+=100U;page[0]=0;fast_pump();assert(strstr(page,"\"k\":\"result_end\"") && page_field("mp")==map_pages && page_field("pp")==path_pages);
+  assert(scans==stream_scans && moves==stream_moves);
   command("radar get");pump();assert(strstr(page,"\"key\":\"lidar_x_mm\""));
   for(unsigned i=1;i<10;i++){fetch("params",0,i);assert(strstr(page,"\"k\":\"params\""));}
   command("radar nav start 50");assert(moves==1 && submitted_speed==50);
@@ -444,7 +491,7 @@ int main(void)
   assert(page_field("start")==RADAR_START_UPPER && strstr(page,"[2250,2250,1,0]"));
   unsigned upper_pages=page_field("pages");
   for(unsigned number=1;number<upper_pages;number++){
-    fetch("path",1,number);assert(page_field("start")==RADAR_START_UPPER);
+    fetch("path",1,number);
   }
   assert(strstr(page,"[2250,2250,1,8]"));
   command("radar nav start");assert(strstr(reply,"upper_start_plan_only") && moves==movement_count);
@@ -455,7 +502,12 @@ int main(void)
   command("radar stop");busy=true;command("radar scan upper");
   assert(manual_scans==2 && strstr(reply,"stationary_capture_required"));busy=false;
   command("radar scan sideways");assert(manual_scans==2 && strstr(reply,"format"));
+  command("radar scan lower 3");
+  assert(manual_scans==3 && requested_start==RADAR_START_LOWER && scan.circles_target==3 &&
+    captured.lidar_x_mm==2250 && captured.lidar_y_mm==150 && captured.zero_deg==90 && moves==movement_count);
+  command("radar stop");
   test_raw_console();
   test_live_console();
+  test_evidence_console();
   puts("radar_console_test: PASS (paging, pose, first scan, no implicit drive, origin and parameter validity)");
 }

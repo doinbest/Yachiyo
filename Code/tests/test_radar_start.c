@@ -66,7 +66,7 @@ static void test_reference_and_poses(void)
   if(upper && lower) {
     CHECK(near(upper->lidar_x_mm,2250) && near(upper->lidar_y_mm,2250) && near(upper->zero_deg,270));
     CHECK(near(lower->lidar_x_mm,2250) && near(lower->lidar_y_mm,150) && near(lower->zero_deg,180));
-    CHECK(upper->threshold==1 && lower->threshold==1 && lower->angle_max_tenths==900);
+    CHECK(upper->threshold==1 && lower->threshold==1 && lower->angle_max_tenths==3600);
   }
   CHECK(reference.lidar_x_mm==2250 && reference.lidar_y_mm==150 && reference.zero_deg==180);
   reference.lidar_x_mm=2100;reference.lidar_y_mm=300;reference.zero_deg=-90;
@@ -137,7 +137,8 @@ static void test_board_classification_both_starts(void)
     CHECK(result.conflict_mask[2U-id]==(1UL<<(id==RADAR_START_LOWER?14:22)));
     CHECK((id==RADAR_START_LOWER?result.qr_counts[0]:result.raw_counts[1])==3);
     const RadarMap_t *map=RadarStart_Map(&context,start);
-    CHECK(map && map->mask==(RADAR_MAP_FIXED_MASK|(1UL<<17)|(1UL<<(id==RADAR_START_LOWER?2:10))) && map->counts[17]==3);
+    CHECK(map && map->mask==(RADAR_MAP_FIXED_MASK|(1UL<<17)) && map->counts[17]==3 &&
+          map->counts[id==RADAR_START_LOWER?2:10]==3);
     /* Classification evidence can occupy a business cell; plan an independent clear map. */
     RadarMap_t clear;RadarPlan_t plan;RadarMap_Reset(&clear);
     CHECK(RadarPlan_BuildFromStart(&clear,start,&plan));

@@ -12,7 +12,7 @@ static RadarHostMap_Config_t ActiveConfig,DraftConfig;
 static RadarHostMap_Result_t Result;
 static RadarLive_Point_t Preview[RADAR_LIVE_BINS];
 static RadarHost_Status_t Status;
-static uint32_t SessionSeed,ResultScanId,ObservedScanId,ObservedLiveSequence;
+static uint32_t SessionSeed,ResultScanId,ResultConfigId,ObservedScanId,ObservedLiveSequence;
 static bool DraftAvailable;
 
 static uint32_t next_nonzero(uint32_t value)
@@ -85,7 +85,7 @@ static bool rebuild(uint32_t scan_id,const RadarSample_t *cloud,uint16_t count)
 {
   RadarHostMap_Result_t next;
   if(scan_id==0U || cloud==NULL || !RadarHostMap_Build(&ActiveConfig,cloud,count,&next))return false;
-  Result=next;ResultScanId=scan_id;
+  Result=next;ResultScanId=scan_id;ResultConfigId=Status.config_id;
   Status.map_id=next_nonzero(Status.map_id);Status.plan_id=next_nonzero(Status.plan_id);
   Status.filtered_points=Result.filtered_points;return true;
 }
@@ -96,7 +96,7 @@ void RadarHost_Init(void)
   RadarHostMap_Defaults(&ActiveConfig);DraftConfig=ActiveConfig;
   SessionSeed=next_nonzero(SessionSeed);Status.session_id=SessionSeed;Status.config_id=1U;
   Status.scan_state=RADAR_SCAN_IDLE;Status.live_state=RADAR_LIVE_STOPPED;Status.reason="idle";
-  ResultScanId=ObservedScanId=ObservedLiveSequence=0U;DraftAvailable=false;
+  ResultScanId=ResultConfigId=ObservedScanId=ObservedLiveSequence=0U;DraftAvailable=false;
 }
 
 void RadarHost_Process(void)
@@ -105,14 +105,24 @@ void RadarHost_Process(void)
   RadarScan_HostStatusGet(&scan);
   if(scan.scan_id!=0U && scan.scan_id!=ObservedScanId) {
     uint16_t count=0U;const RadarSample_t *cloud=RadarScan_HostPoints(&count);
+    uint32_t live_scan=0U;
+    const RadarHostMap_Result_t *live_map=RadarScan_HostLiveMap(&live_scan);
     ObservedScanId=scan.scan_id;
-    if(scan.points_valid && !scan.truncated && cloud!=NULL) (void)rebuild(scan.scan_id,cloud,count);
+    if(live_map && live_scan==scan.scan_id) {
+      Result=*live_map;ResultScanId=live_scan;ResultConfigId=Status.config_id;
+      Status.map_id=next_nonzero(Status.map_id);Status.plan_id=next_nonzero(Status.plan_id);
+      Status.filtered_points=Result.filtered_points;
+    } else if(scan.points_valid && !scan.truncated && cloud!=NULL) (void)rebuild(scan.scan_id,cloud,count);
   }
   if(scan.live_sequence!=0U && scan.live_sequence!=ObservedLiveSequence) {
     RadarLive_Point_t next[RADAR_LIVE_BINS];
     if(RadarScan_HostLiveCopy(next)) {
-      memcpy(Preview,next,sizeof Preview);ObservedLiveSequence=scan.live_sequence;
-      Status.preview_id=scan.live_sequence;Status.preview_points=scan.live_points;
+      uint16_t count=0U;
+      for(unsigned i=0U;i<RADAR_LIVE_BINS;i++)
+        if(next[i].distance_mm)Preview[count++]=next[i];
+      ObservedLiveSequence=scan.live_sequence;
+      /* Backend live_sequence restarts on live start; the wire id does not. */
+      Status.preview_id=next_nonzero(Status.preview_id);Status.preview_points=count;
     }
   }
 }
@@ -121,11 +131,18 @@ bool RadarHost_StartRotation(void) {return RadarUart_StartScan();}
 void RadarHost_Stop(void) {RadarScan_HostStop();}
 bool RadarHost_Scan(void)
 {
-  RadarMap_Params_t parameters;scan_parameters(&parameters);return RadarScan_HostStart(&parameters);
+  RadarScan_HostStatus_t scan;
+  RadarMap_Params_t parameters;scan_parameters(&parameters);
+  RadarScan_HostStatusGet(&scan);
+  /* An explicit single scan replaces host live viewing, never vehicle work. */
+  if(scan.live_active)RadarScan_HostLiveStop();
+  return RadarScan_HostStart(&parameters);
 }
 bool RadarHost_LiveStart(void)
 {
-  RadarMap_Params_t parameters;scan_parameters(&parameters);return RadarScan_HostLiveStart(&parameters);
+  RadarMap_Params_t parameters;scan_parameters(&parameters);
+  if(!RadarScan_HostLiveStart(&parameters,&ActiveConfig))return false;
+  ObservedLiveSequence=0U;return true;
 }
 void RadarHost_LiveStop(void) {RadarScan_HostLiveStop();}
 
@@ -142,9 +159,9 @@ void RadarHost_StatusGet(RadarHost_Status_t *out)
   Status.unit_changes=scan.unit_changes;Status.unit_overflows=scan.unit_overflows;
   Status.active=scan.active;Status.live_active=scan.live_active;
   Status.cloud_valid=RadarScan_HostPoints(&cloud_count)!=NULL;
-  Status.cloud_points=cloud_count;Status.map_valid=Status.map_id!=0U;
+  Status.cloud_points=cloud_count;Status.map_valid=Status.map_id!=0U && ResultConfigId==Status.config_id;
   Status.path_valid=Status.map_valid && Result.path_valid;
-  Status.historical=Status.map_valid && ResultScanId!=scan.scan_id;
+  Status.historical=Status.map_id!=0U && (ResultScanId!=scan.scan_id || ResultConfigId!=Status.config_id);
   *out=Status;
 }
 
@@ -203,7 +220,8 @@ bool RadarHost_Apply(uint32_t revision)
   ActiveConfig=next;DraftConfig=next;Status.config_id=next_nonzero(Status.config_id);
   DraftAvailable=false;
   RadarScan_HostStatusGet(&scan);cloud=RadarScan_HostPoints(&count);
-  if(scan.points_valid && !scan.truncated && cloud!=NULL)(void)rebuild(scan.scan_id,cloud,count);
+  if(scan.live_active)RadarScan_HostLiveConfigure(&ActiveConfig);
+  else if(scan.points_valid && !scan.truncated && cloud!=NULL)(void)rebuild(scan.scan_id,cloud,count);
   return true;
 }
 

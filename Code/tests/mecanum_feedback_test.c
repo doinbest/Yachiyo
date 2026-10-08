@@ -12,6 +12,7 @@ static uint8_t frame[32];
 static unsigned count;
 static bool flying;
 static bool drop_replies;
+static bool acknowledge_motion;
 static unsigned stop_count;
 static bool all_wheels, reply_pending;
 static uint8_t reply_address, reply_function;
@@ -48,6 +49,9 @@ HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef *u, uint8_t *p, uint1
     stop_count++;
   memcpy(frame, p, n);
   count++;
+  #ifdef UART5_DEBUG
+  if(tick>690 && tick<1300)fprintf(stderr,"wire t=%lu id=%u fn=%02x\n",(unsigned long)tick,p[0],p[1]);
+  #endif
   flying = true;
   return HAL_OK;
 }
@@ -72,11 +76,14 @@ static void step(void)
   {
     flying = false;
     MotorBus_TxCpltCallback(&uart);
-    if (!drop_replies && frame[1] < 0x40)
+    if(frame[1]==0xfe) {
+      const uint8_t stopped[]={frame[0],0xfe,2,0x6b};MotorBus_RxBytes(stopped,4);
+    }
+    else if (!drop_replies && (frame[1] < 0x40 || (acknowledge_motion && (frame[1]==0xf6 || frame[1]==0xfd || frame[1]==0xff))))
     {
       reply_pending = true;
       reply_due = tick + reply_delay;
-      reply_address = frame[0];
+      reply_address = frame[0]?frame[0]:1;
       reply_function = frame[1];
     }
   }
@@ -86,6 +93,7 @@ static void step(void)
     p[0] = reply_address;
     p[1] = reply_function;
     n = p[1] == 0x36 ? 8 : p[1] == 0x35 ? 6 : 4;
+    if(p[1]>=0xf3)p[2]=2;
     p[n - 1] = 0x6b;
     MotorBus_RxBytes(p, 2);
     MotorBus_RxBytes(p + 2, (uint16_t)(n - 2));
@@ -95,6 +103,8 @@ static void step(void)
 }
 /* Actual bus arbitration + feedback parser + observer, with a simulated driver.
  * TX completes after 1ms; reply_delay models driver turnaround, not real hardware. */
+static bool request_planned_stop(void)
+{ return Mecanum_RequestPlannedStop(); }
 static void continuous_feedback_test(uint32_t delay)
 {
   ChassisLocalization_Status_t position;
@@ -104,7 +114,7 @@ static void continuous_feedback_test(uint32_t delay)
   for (unsigned i = 0; i < 30; i++) step();
   assert(Mecanum_RecoveryAfterReset());
   assert(Mecanum_Feedback_Select(0));
-  all_wheels = true; drop_replies = false; reply_delay = delay;
+  all_wheels = true; drop_replies = false; reply_delay = delay; acknowledge_motion=true;
   ChassisLocalization_Init();
   assert(ChassisLocalization_ConfirmPositionUnits(65536));
   assert(ChassisLocalization_Origin(0, 0, 0));
@@ -144,6 +154,7 @@ static void continuous_feedback_test(uint32_t delay)
     }
   }
   assert(groups >= 5 && max_group_gap <= 600);
+  assert(!Mecanum_RequestPlannedStop()); /* Never treat a nonzero snapshot as a stop. */
   /* Send a zero snapshot; wait for completion and an active query to drain.
    * The planned stop must not cancel the protocol's unsequenced query reply. */
   {
@@ -157,26 +168,90 @@ static void continuous_feedback_test(uint32_t delay)
       zero_sent = status.stage == MECANUM_STAGE_SENT && status.tx_complete &&
                   status.sent_velocity_valid && status.sent_rpm[0] == 0 &&
                   status.sent_rpm[1] == 0 && status.sent_rpm[2] == 0 && status.sent_rpm[3] == 0;
-      if (zero_sent && MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK))
+      if (zero_sent && MotorBus_OwnerInFlight(MOTOR_BUS_FEEDBACK))
       {
         saw_query_busy = true;
         assert(!Mecanum_CanStopCleanly());
-      }
-      if (zero_sent && saw_query_busy && Mecanum_CanStopCleanly())
-      {
-        assert(Mecanum_Test_Stop());
-        clean_stop = true;
+        unsigned before=stop_count;
+        assert(request_planned_stop()); /* Accept intent while a query is active. */
+        assert(stop_count==before); /* Do not send FE over that query's reply. */
+        clean_stop=true;
         break;
       }
     }
     assert(clean_stop && saw_query_busy);
-    for (unsigned i = 0; i < 100; i++) step();
+    for (unsigned i = 0; i < 100; i++) {
+      step();ChassisLocalization_Process();ChassisLocalization_Get(&position);
+      /* Cancelling a queued query to send stop is not loss of the last
+       * valid measurement. It must not destroy the odometry generation. */
+      assert(position.feedback_valid && position.speed_valid);
+      assert(position.generation==generation);
+    }
     Mecanum_StatusGet(&status);
     assert(status.stage == MECANUM_STAGE_STOPPED && !status.locked);
     assert(status.error == MECANUM_ERROR_NONE && !MotorBus_IsQuarantined());
   }
   printf("feedback schedule: reply delay=%lums, groups=%u, max gap=%lums, max span=%lums PASS\n",
          (unsigned long)delay, groups, (unsigned long)max_group_gap, (unsigned long)max_span);
+}
+/* Selection changes the NEXT poll, not the identity of an outstanding read.
+ * Cover queued TX, driver reply wait and a reply waiting for its consumer. */
+static void select_with_outstanding_feedback(unsigned phase)
+{
+  Mecanum_Feedback_t old;
+  unsigned saved_count, saved_stops;
+  uint32_t selected_at;
+  Mecanum_Feedback_Enable(false);
+  for(unsigned i=0;i<60;i++)step();
+  assert(Mecanum_RecoveryAfterReset());
+  all_wheels=true;drop_replies=false;reply_delay=8;acknowledge_motion=true;
+  assert(Mecanum_Feedback_Select(2));
+  Mecanum_Feedback_Enable(true);
+  Mecanum_Process(); /* First speed query queued for ID 2. */
+  assert(MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK));
+  if(phase)
+  {
+    for(unsigned i=0;i<30 && !reply_pending;i++)step();
+    assert(reply_pending && reply_address==2 && reply_function==0x35);
+  }
+  if(phase==2)
+  {
+    const uint8_t reply[]={2,0x35,0,0,42,0x6b};
+    tick=reply_due;reply_pending=false;
+    MotorBus_RxBytes(reply,sizeof reply);MotorBus_Process();
+    assert(!MotorBus_OwnerInFlight(MOTOR_BUS_FEEDBACK));
+    assert(MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK)); /* Unconsumed reply. */
+  }
+  selected_at=tick;saved_count=count;saved_stops=stop_count;
+  assert(Mecanum_Feedback_Select(4)); /* Must not wait for an idle polling gap. */
+  assert(count==saved_count && stop_count==saved_stops);
+  for(unsigned i=0;i<40;i++)step();
+  assert(!MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK));
+  assert(Mecanum_FeedbackGet(1,&old) && old.speed_valid);
+  assert(old.speed_ms>=selected_at); /* Old answer still belongs to ID 2. */
+  if(phase==2)assert(old.speed_rpm==42);
+  saved_count=count;
+  for(unsigned i=0;i<20;i++)step();
+  assert(count==saved_count); /* Select retains its explicit Enable contract. */
+  Mecanum_Feedback_Enable(true);
+  for(unsigned i=0;i<120;i++)step();
+  assert(frame[0]==4 && count>saved_count && stop_count==saved_stops);
+  assert(Mecanum_FeedbackGet(1,&old) && old.speed_ms>=selected_at);
+  selected_at=tick;
+  assert(MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK));
+  assert(Mecanum_Feedback_Select(0));Mecanum_Feedback_Enable(true);
+  for(unsigned i=0;i<220;i++)step();
+  for(unsigned w=0;w<4;w++)
+  {
+    assert(Mecanum_FeedbackGet(w,&old));
+    assert(old.speed_valid && old.position_valid && old.state_valid);
+    assert(old.speed_ms>selected_at && old.position_ms>selected_at && old.state_ms>selected_at);
+  }
+  saved_count=count;
+  assert(!Mecanum_Feedback_Select(5));
+  for(unsigned i=0;i<40;i++)step();
+  assert(count>saved_count && stop_count==saved_stops);
+  printf("feedback selection: pending phase=%u, old reply retained, single/all wheel resume PASS\n",phase);
 }
 int main(void)
 {
@@ -197,6 +272,21 @@ int main(void)
   Mecanum_Feedback_Enable(false);
   for (unsigned i = 0; i < 20; i++)
     step();
+  /* A planned stop cancels unsent feedback queries. Keep the last sample,
+   * including its original timestamp; cancellation is not a bad reply. */
+  {
+    Mecanum_Feedback_t before, after;
+    const uint8_t query[] = {2, 0x36, 0x6b};
+    assert(Mecanum_FeedbackGet(1, &before) && before.position_valid);
+    assert(!MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK));
+    assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK, query, 3, 8, 4, false));
+    MotorBus_Cancel(MOTOR_BUS_FEEDBACK);
+    Mecanum_Process();
+    assert(Mecanum_FeedbackGet(1, &after));
+    assert(after.position_valid);
+    assert(after.position_raw == before.position_raw);
+    assert(after.position_ms == before.position_ms);
+  }
   unsigned saved = count;
   for (unsigned i = 0; i < 300; i++)
     step();
@@ -244,6 +334,8 @@ int main(void)
     assert(f.speed_valid && f.position_valid && f.state_valid);
     assert(tick - f.speed_ms < 600 && tick - f.position_ms < 600);
   }
+  for(unsigned phase=0;phase<3;phase++)select_with_outstanding_feedback(phase);
   puts("mecanum_feedback_test: opt-in single wheel, signed speed, full 32-bit magnitude, "
        "validity/timestamps OK");
+  return 0;
 }

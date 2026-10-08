@@ -22,6 +22,13 @@ test('preview stops before a swept narrow turn and identifies first target, phas
   assert.equal(footprintIssue(r.pose),null);assert.ok(r.pose.yaw_rad>0);
   assert.match(module.profileResultText(r),/目标 1.*转向.*非行车区/);
 });
+test('preview body size can be smaller without changing the formal 300 mm check',()=>{
+  const profile=make([phase('turn',[1200,350,115.8])],[[1200,350,0,0]]);
+  const formal=new module.RouteProfileRunner(profile);formal.advance(3);
+  assert.equal(formal.state,'error');assert.equal(formal.issue.obstacle,'非行车区 6');
+  const preview=new module.RouteProfileRunner(profile,{bodySize:{length_mm:299,width_mm:299}});preview.advance(3);
+  assert.equal(preview.state,'done');assert.equal(preview.issue,null);
+});
 test('QR approach leaves diagonally then follows a straight lane at 200 mm/s',()=>{
   assert.equal(typeof module.RouteProfileRunner,'function');
   const r=new module.RouteProfileRunner(make([phase('move',[2100,300,90],{direction:'diagonal'}),phase('move',[2100,1200,90])],[[2250,150,0,0]]));

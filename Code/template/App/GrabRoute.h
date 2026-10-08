@@ -8,6 +8,8 @@ void GrabRoute_Init(void);
 void GrabRoute_Process(void);
 /** @brief 组合调度占用持续至首件反馈完成；不扩展后续赛事调度。 */
 bool GrabRoute_IsBusy(void);
+/** @brief 新任务当前场景缺项等待时允许补齐RAM参数，随后grab mission continue。 */
+bool GrabRoute_CanConfigure(void);
 /** @brief Explicitly start the QR→RAW→single pick test using a completed map
  * plan. Keeps the current simulated test code and existing pick controller. */
 bool GrabRoute_StartPlanned(const RadarPlan_t *plan,float speed);

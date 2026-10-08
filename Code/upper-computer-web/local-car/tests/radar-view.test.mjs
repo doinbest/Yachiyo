@@ -58,7 +58,7 @@ test('radar workspace fits the full field without intercepting zoom or drag, kee
     workspace.receive('@RADAR '+JSON.stringify({...base,k:'nav',page:0,pages:1,state:'stopping',reason:'cancelled',index:1,total:8,station:5,visit:1,stopped:true}));
     assert.match(ui.get('radar-nav-status').textContent,/停车已确认/);
     await ui.get('radar-offline-plan').onclick();assert.equal(requests[0].path,'radar/plan');assert.equal(requests[0].body.points.length,0);assert.deepEqual(wires,[]);
-    assert.deepEqual(['lidar_x_mm','lidar_y_mm','zero_deg','angle_max_tenths','threshold'].map(key=>requests[0].body.params[key]),[2250,150,180,900,1]);
+    assert.deepEqual(['lidar_x_mm','lidar_y_mm','zero_deg','angle_max_tenths','threshold'].map(key=>requests[0].body.params[key]),[2250,150,180,3600,1]);
     assert.equal(ui.get('radar-offline-path').attributes.d,'M2250,150');
     await ui.get('radar-offline-plan').onclick();assert.match(ui.get('radar-offline-status').textContent,/第 2 路段/);
     workspace.connection(false);workspace.connection(true);workspace.selectTab('radar');
@@ -96,12 +96,17 @@ const flush=()=>new Promise(setImmediate);
 function liveWorkspace(ui,{respond=true,canSend=()=>true}={}){
   const wires=[],busy=[];let workspace,answer=respond;
   const reply=wire=>{
+    if(wire.startsWith('radar result '))return [
+      ...Array.from({length:3},(_,page)=>reply(`radar fetch map ${model.status.map} ${page}`)),
+      ...Array.from({length:2},(_,page)=>reply(`radar fetch path ${model.status.plan} ${page}`))];
     const [, ,kind,idText,pageText]=wire.split(' '),id=Number(idText),page=Number(pageText);
     if(kind==='map')return frame({k:kind,origin:model.status?.origin??2,scan:model.status?.scan??id-4,map:id,plan:model.status?.plan??id+1,page,pages:3,...(page===0?{mask:4,pose:[2170,230,180]}:{offset:page===1?0:7,counts:Array(page===1?7:18).fill(page)})});
     if(kind==='path')return frame({k:kind,origin:model.status?.origin??2,scan:model.status?.scan??id-5,map:model.status?.map??id-1,plan:id,page,pages:2,start:model.snapshots.start?.selected??2,valid:true,offset:page===0?0:3,points:page===0?[[2250,150,1,0],[2100,300,0,0],[2100,1200,5,1]]:[[350,1200,4,2]]});
     return frame({k:kind,page:0,pages:1,offset:0,total:1,points:[[900,200,50]]});
   };
-  const exchange=new RadarExchange({timeoutMs:100,send:async wire=>{wires.push(wire);if(answer&&wire.startsWith('radar fetch '))queueMicrotask(()=>workspace.receive(reply(wire)));return true;}});
+  const exchange=new RadarExchange({timeoutMs:100,send:async wire=>{wires.push(wire);if(answer&&/^radar (?:fetch|result) /.test(wire))queueMicrotask(()=>{
+    const revision=exchange.revision;for(const line of [reply(wire)].flat()){if(revision!==exchange.revision)break;workspace.receive(line);}
+  });return true;}});
   const model=new RadarModel();
   workspace=mountRadarWorkspace({model,exchange,send:async wire=>{wires.push(wire);return true;},canSend,mapView:{setSource(){}},api:async()=>({}),onBusy:value=>busy.push(value)});
   workspace.connection(true);
@@ -189,7 +194,8 @@ test('full diagnostic cloud displays every valid downloaded point rather than re
 
 test('fixed obstacle cells and newly scanned cells have visibly different map colors',async()=>{
   const ui=surface(),h=liveWorkspace(ui);try{
-    h.model.snapshots.map={k:'map',session:9,origin:2,scan:3,map:7,plan:8,mask:0x50140|(1<<13),counts:Array(25).fill(0)};h.workspace.render();
+    h.model.snapshots.map={k:'map',session:9,origin:2,scan:3,map:7,plan:8,mask:0x50140|(1<<13),counts:Array(25).fill(0)};
+    h.model.snapshots.path={k:'path',session:9,origin:2,scan:3,map:7,plan:8,valid:true,points:[]};h.workspace.render();
     const cells=ui.get('radar-obstacles').children;
     const fixed=cells.find(cell=>cell.attributes['data-cell']==='6'),scanned=cells.find(cell=>cell.attributes['data-cell']==='13');
     assert.equal(fixed?.attributes['data-obstacle'],'fixed');assert.equal(scanned?.attributes['data-obstacle'],'scan');
@@ -205,7 +211,7 @@ test('explicit diagnostic circle downloads matching map path cloud and raw and b
     if(kind==='raw'&&page===6)held=frames[page];
     else if(kind==='raw')queueMicrotask(()=>h.workspace.receive(rawLine(frames[page])));
     else if(kind==='cloud')queueMicrotask(()=>h.workspace.receive(frame({k:'cloud',scan:4,map:8,plan:9,total:2,offset:0,truncated:false,points:[[0,100,1],[900,200,2]]})));
-    else queueMicrotask(()=>h.workspace.receive(h.reply(wire)));
+    else queueMicrotask(()=>{for(const line of [h.reply(wire)].flat())h.workspace.receive(line);});
     return true;
   };
   try{
@@ -216,7 +222,7 @@ test('explicit diagnostic circle downloads matching map path cloud and raw and b
     h.workspace.receive(frame({k:'status',state:'wait_wrap',scan:3,map:7,plan:8}));
     h.workspace.receive(frame({k:'status',state:'ready',scan:4,map:8,plan:9,applicable:true,points_valid:true}));
     h.workspace.receive(rawLine(frames[0]));await flush();await flush();
-    assert.deepEqual(h.wires.filter(wire=>wire.startsWith('radar fetch ')),['radar fetch map 8 0','radar fetch map 8 1','radar fetch map 8 2','radar fetch path 9 0','radar fetch path 9 1','radar fetch cloud 4 0',...Array.from({length:7},(_,page)=>`radar fetch raw 12 ${page}`)]);
+    assert.deepEqual(h.wires.filter(wire=>/^radar (?:fetch|result) /.test(wire)),['radar result 9','radar fetch cloud 4 0',...Array.from({length:7},(_,page)=>`radar fetch raw 12 ${page}`)]);
     assert.equal(ui.get('radar-debug-export').disabled,true);assert.equal(ui.get('radar-export').disabled,true);
     assert.match(ui.get('radar-debug-status').textContent,/下载.*原始.*6\/7/);
     h.workspace.receive(rawLine(held));await flush();
@@ -263,7 +269,7 @@ function headingReplies(h,{value=180,reject=false,mismatchKey=null}={}){
   h.exchange.send=async wire=>{h.wires.push(wire);if(wire.startsWith('radar set ')){[, ,key,written]=wire.split(' ');written=Number(written);}
     queueMicrotask(()=>h.workspace.receive(wire.startsWith('radar set ')?(reject?'ERR radar scan_busy_or_parameters':'OK radar parameter_updated_ram'):frame({k:'params',rev:3,key,value:key==='zero_deg'?value:key===mismatchKey?written-1:written})));return true;};
 }
-const geometryWrites=value=>[['lidar_x_mm',2250],['lidar_y_mm',150],['angle_min_tenths',0],['angle_max_tenths',900],['zero_deg',value]].flatMap(([key,value])=>[`radar set ${key} ${value}`,'radar get']);
+const geometryWrites=value=>[['lidar_x_mm',2250],['lidar_y_mm',150],['angle_min_tenths',0],['angle_max_tenths',3600],['zero_deg',value]].flatMap(([key,value])=>[`radar set ${key} ${value}`,'radar get']);
 
 test('map start selection is local before a first scan and offers only inward zero-degree arrows',async()=>{
   const ui=surface(),h=liveWorkspace(ui,{canSend:()=>false});
@@ -373,7 +379,7 @@ test('a parameter readback uses the selected map frame and a controller restart 
   const ui=surface(),h=liveWorkspace(ui);
   try{
     ui.get('radar-select-upper').onclick();chooseHeading(ui,270);
-    for(const [key,value]of [['lidar_x_mm',2250],['lidar_y_mm',150],['angle_min_tenths',0],['angle_max_tenths',900],['zero_deg',180]])h.workspace.receive(frame({k:'params',key,value,rev:1}));
+    for(const [key,value]of [['lidar_x_mm',2250],['lidar_y_mm',150],['angle_min_tenths',0],['angle_max_tenths',3600],['zero_deg',180]])h.workspace.receive(frame({k:'params',key,value,rev:1}));
     assert.match(ui.get('radar-heading-status').textContent,/设备参数读回：地图 270°.*读回一致/);assert.equal(ui.get('radar-scan-selected').disabled,false);
     h.workspace.receive(frame({k:'status',session:10,state:'idle'}));assert.match(ui.get('radar-heading-status').textContent,/历史参数读回.*待应用/);assert.equal(ui.get('radar-scan-selected').disabled,true);assert.deepEqual(h.wires,[]);
   }finally{await h.close();}
@@ -384,11 +390,11 @@ test('a completed observed scan automatically displays compact map and path exac
   try{
     h.workspace.receive(frame({k:'status',state:'collecting',points_valid:false,applicable:true,scan:2,map:6,plan:7}));
     h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',points_valid:true,applicable:true}));await flush();
-    assert.deepEqual(h.wires,['radar fetch map 7 0','radar fetch map 7 1','radar fetch map 7 2','radar fetch path 8 0','radar fetch path 8 1']);
+    assert.deepEqual(h.wires,['radar result 8']);
     assert.equal(h.model.snapshots.map.counts.length,25);assert.equal(ui.get('radar-obstacles').children.length,1);
     assert.equal(ui.get('radar-device-path').attributes.d,'M2250,150 L2100,300 L2100,1200 L350,1200');
     assert.match(ui.get('radar-status').textContent,/采集与规划/);assert.match(ui.get('radar-transfer').textContent,/地图.*路径.*已显示/);
-    h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',points_valid:true,applicable:true}));await flush();assert.equal(h.wires.length,5);
+    h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',points_valid:true,applicable:true}));await flush();assert.equal(h.wires.length,1);
   }finally{await h.close();}
 });
 
@@ -399,8 +405,8 @@ test('ready on connection or page navigation does not fetch; an explicit scan ca
     ui.get('radar scan').onclick();await flush();
     h.workspace.receive('OK radar scan_accepted');
     h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',points_valid:true,applicable:true,scan:4,map:8,plan:9}));await flush();
-    assert.deepEqual(h.wires,['radar scan','radar fetch map 8 0','radar fetch map 8 1','radar fetch map 8 2','radar fetch path 9 0','radar fetch path 9 1']);
-    h.workspace.connection(false);h.workspace.connection(true);h.workspace.selectTab('monitor');h.workspace.receive(frame({k:'status',state:'ready',scan:4,map:8,plan:9}));await flush();assert.equal(h.wires.length,6);
+    assert.deepEqual(h.wires,['radar scan','radar result 9']);
+    h.workspace.connection(false);h.workspace.connection(true);h.workspace.selectTab('monitor');h.workspace.receive(frame({k:'status',state:'ready',scan:4,map:8,plan:9}));await flush();assert.equal(h.wires.length,2);
   }finally{await h.close();}
 });
 
@@ -411,7 +417,7 @@ test('a first scan request needs observed scan progression before accepting a qu
     h.workspace.receive(frame({k:'status',state:'ready',reason:'complete'}));await flush();assert.deepEqual(h.wires,['radar scan']);
     h.workspace.receive('OK radar scan_accepted');h.workspace.receive(frame({k:'status',state:'ready',reason:'complete'}));await flush();assert.deepEqual(h.wires,['radar scan']);
     h.workspace.receive(frame({k:'status',state:'preparing'}));h.setRespond(true);h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',scan:4,map:8,plan:9}));await flush();
-    assert.equal(h.model.snapshots.path?.plan,9);assert.equal(h.wires.length,6);
+    assert.equal(h.model.snapshots.path?.plan,9);assert.equal(h.wires.length,2);
   }finally{await h.close();}
 });
 
@@ -431,7 +437,7 @@ test('a known baseline still waits for scan acceptance when no active scan state
     h.workspace.receive(frame({k:'status',state:'ready',scan:2,map:6,plan:7}));ui.get('radar scan').onclick();await flush();
     h.workspace.receive(frame({k:'status',state:'ready',reason:'complete'}));await flush();assert.deepEqual(h.wires,['radar scan']);
     h.workspace.receive('OK radar scan_accepted');h.setRespond(true);h.workspace.receive(frame({k:'status',state:'ready',reason:'complete'}));await flush();
-    assert.equal(h.model.snapshots.path?.plan,8);assert.equal(h.wires.length,6);
+    assert.equal(h.model.snapshots.path?.plan,8);assert.equal(h.wires.length,2);
   }finally{await h.close();}
 });
 
@@ -453,7 +459,7 @@ test('scan result waits for occupied parameter exchange and downloads once that 
     h.workspace.receive(frame({k:'status',state:'preparing',scan:2,map:6,plan:7}));h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',applicable:true}));await flush();assert.deepEqual(h.wires,['radar get']);
     h.workspace.receive(frame({k:'status',state:'collecting'}));h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',applicable:true,scan:4,map:8,plan:9}));
     h.workspace.receive(frame({k:'params',rev:1,key:'threshold',value:3}));await reading;parameterBusy=false;h.workspace.render();await flush();
-    assert.equal(h.model.snapshots.path.plan,9);assert.deepEqual(h.wires,['radar get','radar fetch map 8 0','radar fetch map 8 1','radar fetch map 8 2','radar fetch path 9 0','radar fetch path 9 1']);
+    assert.equal(h.model.snapshots.path.plan,9);assert.deepEqual(h.wires,['radar get','radar result 9']);
   }finally{await h.close();}
 });
 
@@ -492,7 +498,7 @@ test('a newer scan supersedes the old result read and cancel suppresses repeated
   try{
     h.workspace.receive(frame({k:'map',mask:4,pose:[2170,230,180],offset:0,counts:Array(25).fill(0)}));
     h.workspace.receive(frame({k:'status',state:'collecting',scan:2,map:6,plan:7}));h.workspace.receive(frame({k:'status',state:'ready',reason:'complete'}));await flush();
-    assert.deepEqual(h.wires,['radar fetch map 7 0']);
+    assert.deepEqual(h.wires,['radar result 8']);
     h.workspace.receive(frame({k:'status',state:'preparing'}));await flush();assert.equal(h.exchange.busy,false);assert.equal(h.model.snapshots.map.map,7);
     h.setRespond(true);h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',scan:4,map:8,plan:9}));await flush();assert.equal(h.model.snapshots.path.plan,9);
     h.setRespond(false);h.workspace.receive(frame({k:'status',state:'collecting',scan:4,map:8,plan:9}));h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',scan:5,map:9,plan:10}));await flush();
@@ -512,12 +518,12 @@ test('stopped and failed captures retain history without fetching old ready data
   }finally{await h.close();}
 });
 
-test('cancel at the final map page cannot start the following automatic path read',async()=>{
+test('cancel at the final map page ends the result read without another request',async()=>{
   const ui=surface(),h=liveWorkspace(ui),progress=h.exchange.onProgress;
   try{
     h.exchange.onProgress=value=>{progress(value);if(value.kind==='map'&&value.page===value.pages)ui.get('radar-cancel-transfer').onclick();};
     h.workspace.receive(frame({k:'status',state:'collecting',scan:2,map:6,plan:7}));h.workspace.receive(frame({k:'status',state:'ready',reason:'complete'}));await flush();
-    assert.deepEqual(h.wires,['radar fetch map 7 0','radar fetch map 7 1','radar fetch map 7 2']);
+    assert.deepEqual(h.wires,['radar result 8']);
     assert.equal(h.model.snapshots.map.map,7);assert.equal(h.model.snapshots.path,undefined);assert.match(ui.get('radar-transfer').textContent,/取消/);
   }finally{await h.close();}
 });
@@ -536,7 +542,7 @@ test('a stopped canceled capture permits the next externally observed scan with 
   try{
     h.workspace.receive(frame({k:'status',state:'collecting'}));h.exchange.cancel();h.workspace.receive(frame({k:'status',state:'stopped'}));
     h.workspace.receive(frame({k:'status',state:'preparing'}));h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',scan:4,map:8,plan:9}));await flush();
-    assert.equal(h.model.snapshots.path?.plan,9);assert.equal(h.wires.length,5);
+    assert.equal(h.model.snapshots.path?.plan,9);assert.equal(h.wires.length,1);
   }finally{await h.close();}
 });
 
@@ -597,7 +603,7 @@ test('manual start selection refreshes map and path from the same complete circl
     classification(h);h.workspace.receive(frame({k:'status',state:'ready',reason:'start_ambiguous',scan:4,applicable:false,points_valid:false}));
     ui.get('radar start upper').onclick();await flush();classification(h,{selected:1,reason:'manual_selection',map:8,plan:9});
     h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',scan:4,map:8,plan:9,applicable:true,points_valid:true}));await flush();
-    assert.deepEqual(h.wires,['radar start upper','radar fetch map 8 0','radar fetch map 8 1','radar fetch map 8 2','radar fetch path 9 0','radar fetch path 9 1']);
+    assert.deepEqual(h.wires,['radar start upper','radar result 9']);
     ui.get('radar start lower').onclick();await flush();classification(h,{selected:2,reason:'manual_selection',map:9,plan:10});
     h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',scan:4,map:9,plan:10,applicable:true,points_valid:true}));await flush();
     assert.equal(h.model.snapshots.path.start,2);assert.equal(ui.get('radar-nav-start').disabled,false);assert.equal(h.wires.filter(w=>w.startsWith('radar scan')).length,0);
@@ -612,7 +618,7 @@ test('selecting an unresolved circle can publish its capture origin while the ol
     classification(h);h.workspace.receive(frame({k:'status',state:'ready',reason:'start_ambiguous',scan:4,applicable:false,points_valid:false}));
     ui.get('radar start lower').onclick();await flush();classification(h,{selected:2,reason:'manual_selection',map:8,plan:9,origin:3});
     h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',origin:3,scan:4,map:8,plan:9,applicable:true,points_valid:true}));await flush();
-    assert.equal(h.model.snapshots.path?.origin,3);assert.equal(h.model.snapshots.map?.scan,4);assert.equal(h.wires.length,6);
+    assert.equal(h.model.snapshots.path?.origin,3);assert.equal(h.model.snapshots.map?.scan,4);assert.equal(h.wires.length,2);
   }finally{await h.close();}
 });
 
@@ -631,7 +637,7 @@ test('first auto scan with a foreground active status accepts its fresh complete
     ui.get('radar scan auto').onclick();await flush();h.workspace.receive('OK radar scan_accepted');
     h.workspace.receive(frame({k:'status',state:'preparing',scan:0,map:0,plan:0}));classification(h,{selected:2,reason:'clear_regions',scan:1,map:1,plan:1});
     h.workspace.receive(frame({k:'status',state:'ready',reason:'complete',scan:1,map:1,plan:1,applicable:true,points_valid:true}));await flush();
-    assert.deepEqual(h.wires,['radar scan auto','radar fetch map 1 0','radar fetch map 1 1','radar fetch map 1 2','radar fetch path 1 0','radar fetch path 1 1']);assert.equal(ui.get('radar scan auto').disabled,false);
+    assert.deepEqual(h.wires,['radar scan auto','radar result 1']);assert.equal(ui.get('radar scan auto').disabled,false);
   }finally{await h.close();}
 });
 
@@ -686,10 +692,53 @@ test('planning paths and station marks render without a second visibility checkb
   try{
     const workspace=mountRadarWorkspace({model,exchange:new RadarExchange({send:async wire=>{wires.push(wire);return true;}}),send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource(){}},api:async()=>({})});
     ui.get('radar-device-path').style.display='none';ui.get('radar-stations').style.display='none';
+    workspace.receive('@RADAR '+JSON.stringify({v:1,k:'map',g:2,session:1,origin:1,scan:1,map:1,plan:1,page:0,pages:1,offset:0,mask:0x50140,counts:Array(25).fill(0)}));
+    assert.equal(ui.get('radar-obstacles').children.length,0); // Wait for the paired route.
     workspace.receive('@RADAR '+JSON.stringify({v:1,k:'path',session:1,origin:1,scan:1,map:1,plan:1,page:0,pages:1,offset:0,valid:true,points:[[2250,150,1,0],[2100,1200,5,1]]}));
     assert.equal(ui.get('radar-device-path').attributes.d,'M2250,150 L2100,1200');assert.equal(ui.get('radar-stations').children.length,2);
     workspace.render();assert.equal(ui.get('radar-device-path').style.display,'none');assert.equal(ui.get('radar-stations').style.display,'none');assert.deepEqual(wires,[]);
   }finally{ui.restore();}
+});
+
+test('monitor grid lines, obstacle cells and protected counts follow the paired capture through g2 and g3 results',()=>{
+  const ui=surface(),model=new RadarModel(),grids=[],wires=[];
+  try{
+    ui.get('radar-show-counts').checked=true;
+    const workspace=mountRadarWorkspace({model,exchange:new RadarExchange({send:async()=>true}),send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource(){},setRadarGrid:edges=>grids.push([...edges])},api:async()=>({})});
+    assert.deepEqual(grids.at(-1),[150,550,1000,1400,1850,2250]);
+    const base={v:1,session:1,origin:1,page:0,pages:1,offset:0};
+    const receive=(capture,g)=>{
+      workspace.receive('@RADAR '+JSON.stringify({...base,scan:capture,map:capture,plan:capture,k:'map',g,a:3,mask:1<<4,pose:[2250,150,180],counts:Array(25).fill(1)}));
+      workspace.receive('@RADAR '+JSON.stringify({...base,scan:capture,map:capture,plan:capture,k:'path',valid:true,points:[[2250,150,1,0],[2100,300,0,0]]}));
+    };
+    receive(1,2);
+    assert.deepEqual(grids.at(-1),[0,550,1000,1400,1850,2400]);
+    assert.deepEqual([ui.get('radar-obstacles').children[0].attributes.x,ui.get('radar-obstacles').children[0].attributes.y,ui.get('radar-obstacles').children[0].attributes.width,ui.get('radar-obstacles').children[0].attributes.height],['1850','0','550','550']);
+    assert.equal(ui.get('radar-counts').children[4].attributes.transform,'translate(2125 275) scale(1 -1)');
+    assert.equal(ui.get('radar-counts').children[4].textContent,'1 · 保护');
+    workspace.receive('@RADAR '+JSON.stringify({...base,scan:2,map:2,plan:2,k:'map',g:3,a:3,mask:1<<4,pose:[2250,150,180],counts:Array(25).fill(2)}));
+    assert.deepEqual(grids.at(-1),[0,550,1000,1400,1850,2400],'keep complete previous map while next route is pending');
+    receive(2,3);
+    assert.deepEqual(grids.at(-1),[150,550,1000,1400,1850,2250]);
+    assert.deepEqual([ui.get('radar-obstacles').children[0].attributes.x,ui.get('radar-obstacles').children[0].attributes.y,ui.get('radar-obstacles').children[0].attributes.width,ui.get('radar-obstacles').children[0].attributes.height],['1850','150','400','400']);
+    assert.equal(ui.get('radar-counts').children[4].attributes.transform,'translate(2050 350) scale(1 -1)');
+    assert.equal(ui.get('radar-counts').children[4].textContent,'1 · 保护');
+    assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+
+test('monitor explicitly reads preserved complete map and route after radar stop, without scanning or motion',async()=>{
+  const ui=surface(),h=liveWorkspace(ui);
+  try{
+    const send=h.exchange.send;
+    h.exchange.send=async wire=>{
+      if(wire==='radar status'){h.wires.push(wire);queueMicrotask(()=>h.workspace.receive(frame({k:'status',state:'stopped',map:7,plan:8})));return true;}
+      return send(wire);
+    };
+    await h.workspace.readResult();await flush();
+    assert.equal(h.model.snapshots.map?.map,7);assert.equal(h.model.snapshots.path?.plan,8);
+    assert.equal(h.wires.some(wire=>/^radar scan|^chassis|radar (nav|task) start/.test(wire)),false);
+  }finally{await h.close();}
 });
 
 test('radar parameter group mounts without writes and preserves pending inputs on readback',()=>{
@@ -731,13 +780,13 @@ test('corner arrows preview the clockwise 90deg wedge and warn about outward sec
     let sector=ui.get('radar-heading-options').children.find(child=>child.attributes['data-scan-sector']);
     assert.ok(sector);assert.equal(sector.attributes['data-zero-deg'],'180');assert.equal(sector.attributes['data-end-deg'],'90');assert.equal(sector.attributes['data-inward'],'true');
     assert.match(sector.attributes.d,/M2250 150 L1350 150 A900 900 0 0 0 2250 1050 Z/);
-    assert.match(ui.get('radar-heading-status').textContent,/0°.*顺时针90°.*场内/);
-    chooseHeading(ui,90);assert.match(ui.get('radar-heading-status').textContent,/扇区.*场外/);assert.equal(ui.get('radar-heading-apply').disabled,false);
+    assert.match(ui.get('radar-heading-status').textContent,/0°～360°.*阴影.*不是筛选/);
+    chooseHeading(ui,90);assert.match(ui.get('radar-heading-status').textContent,/0°～360°/);assert.equal(ui.get('radar-heading-apply').disabled,false);
     ui.get('radar-select-upper').onclick();chooseHeading(ui,270);
     sector=ui.get('radar-heading-options').children.find(child=>child.attributes['data-scan-sector']);
     assert.equal(sector.attributes['data-zero-deg'],'270');assert.equal(sector.attributes['data-end-deg'],'180');assert.equal(sector.attributes['data-inward'],'true');
     assert.match(sector.attributes.d,/M2250 2250 L2250 1350 A900 900 0 0 0 1350 2250 Z/);
-    chooseHeading(ui,180);assert.match(ui.get('radar-heading-status').textContent,/扇区.*场外/);assert.deepEqual(h.wires,[]);
+    chooseHeading(ui,180);assert.match(ui.get('radar-heading-status').textContent,/0°～360°.*不是筛选/);assert.deepEqual(h.wires,[]);
   }finally{await h.close();}
 });
 

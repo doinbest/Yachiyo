@@ -86,12 +86,25 @@ static bool ArmConsole_RadarMotionGuard(unsigned n,char *t[])
   unsigned i;
   if(!RadarConsole_ScanBusy() || n<2U) return false;
   if(!strcmp(t[0],"wheel") && strcmp(t[1],"status") && strcmp(t[1],"stop")) return true;
-  if(!strcmp(t[0],"grab") && (!strcmp(t[1],"start") || !strcmp(t[1],"route") || !strcmp(t[1],"store") || !strcmp(t[1],"take") || !strcmp(t[1],"return"))) return true;
+  if(!strcmp(t[0],"grab") && (!strcmp(t[1],"start") || !strcmp(t[1],"route") ||
+     !strcmp(t[1],"mission") || !strcmp(t[1],"place") || !strcmp(t[1],"pose") || !strcmp(t[1],"store") ||
+     !strcmp(t[1],"take") || !strcmp(t[1],"return") || !strcmp(t[1],"align") ||
+     !strcmp(t[1],"stack") || !strcmp(t[1],"ring"))) return true;
+  if(n>=3U && !strcmp(t[0],"grab") && !strcmp(t[1],"track") && !strcmp(t[2],"start")) return true;
   if(strcmp(t[0],"chassis")) return false;
   for(i=0;i<sizeof(moves)/sizeof(moves[0]);i++) if(!strcmp(t[1],moves[i])) return true;
   return n>=3U && !strcmp(t[1],"route") && (!strcmp(t[2],"start") || !strcmp(t[2],"auto") || !strcmp(t[2],"next"));
 }
 
+/* Held static operations retain their owned feedback token; no manual motion producer. */
+static bool ArmConsole_RingCommandHandle(unsigned count,char *tokens[])
+{
+  if(count>=3U && !strcmp(tokens[0],"grab") && !strcmp(tokens[1],"stack"))
+    return GrabTask_Command(count,tokens);
+  if(count!=4U || strcmp(tokens[0],"grab") || strcmp(tokens[1],"ring") ||
+     strcmp(tokens[2],"place") || !GrabTask_RingManualAllowed())return false;
+  return GrabTask_Command(count,tokens);
+}
 static uint8_t ArmConsole_CommandExecute(char *Line);
 
 static void ArmConsole_ManualGuardCancel(void)
@@ -559,7 +572,7 @@ static void ArmConsole_HelpShow(void)
 {
   ArmConsole_Write("console status | chassis snapshot (read-only diagnostics)\r\n");
   ArmConsole_Write("bus recover (stop tasks, verify motors, never resume) | bus status\r\n");
-  ArmConsole_Write("turntable get/set <key> [value] | origin | index <slot> | jog <degree> | stop | status\r\n");
+  ArmConsole_Write("turntable get/set <key> [value] | enable | disable | save_zero | home | origin | index <slot> | jog <degree> | stop | status\r\n");
   ArmConsole_Write("grab store proc <slot> <color> | grab take <slot> rough|temp1|temp2 | grab return\r\n");
   /* 按命令组入队，由USART1 DMA发送；不占用底盘控制周期等待串口。 */
   ArmConsole_Write(
@@ -596,7 +609,7 @@ static void ArmConsole_HelpShow(void)
       "grip duty <2.5..12.5>\r\n"
       "grip <idle|open|catch>\r\n");
   ArmConsole_Write(
-      "camera material <1|2|3|4|5|6>  recognition only, no motion\r\n"
+      "camera ring <1|2|3> | camera material <1|2|3|4|5|6>  recognition only, no motion\r\n"
       "camera status  readonly recognition and USB statistics\r\n"
       "camera stop\r\n"
       "imu status     readonly HWT101 angle and I2C statistics\r\n"
@@ -630,6 +643,12 @@ static void ArmConsole_HelpShow(void)
       "wheel stop\r\n");
   ArmConsole_Write("grab start fixed|align|pick [color 1..6] | grab route [speed_mm_s, default 200]\r\n"
                    "grab status | grab stop | grab rehome | grab set <key> <value> | grab get <key>\r\n");
+  ArmConsole_Write("grab ring align [1|2|3] [z_mm] [stay] | grab ring place <z_mm>\r\n");
+  ArmConsole_Write("grab mission [speed_mm_s, default 200] | grab mission continue | grab pose rear|work | grab place car\r\n");
+  ArmConsole_Write("grab track observe [color] | reference | start [color] | stop | status | trace [index]\r\n"
+                   "grab track begin [color] [remaining_mm] | grab track pick [color] [z_mm] [speed_mm_s]\r\n"
+                   "grab track log start [50..1000 ms] | stop | status (passive diagnostics, default off)\r\n"
+                   "grab track get <key> | set <key> <value> (independent tracking RAM parameters)\r\n");
 }
 
 /**
@@ -1241,11 +1260,12 @@ static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[]
     return 1U;
   }
   if ((TokenCount == 3U) && (strcmp(Tokens[0], "camera") == 0) &&
-      (strcmp(Tokens[1], "material") == 0))
+      ((strcmp(Tokens[1], "material") == 0) || (strcmp(Tokens[1], "ring") == 0)))
   {
-    if (ArmConsole_ColorParse(Tokens[2], &Color) == 0U)
+    if (ArmConsole_ColorParse(Tokens[2], &Color) == 0U ||
+        (!strcmp(Tokens[1],"ring") && Color > CAMERA_COLOR_BLUE))
     {
-      ArmConsole_Write("ERR color\r\n");
+      ArmConsole_Write("ERR camera target\r\n");
       return 1U;
     }
     if ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U))
@@ -1253,12 +1273,13 @@ static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[]
       ArmConsole_Write("ERR vision_busy\r\n");
       return 1U;
     }
-    CameraStatus = Camera_MaterialStart(Color);
+    CameraStatus = !strcmp(Tokens[1],"ring") ? Camera_RingStart((uint8_t)Color) : Camera_MaterialStart(Color);
     if (CameraStatus == HAL_OK)
     {
       ArmConsole_CameraTraceDirectStart();
-      ArmConsole_Printf("OK camera material color=%u sent\r\n",
-                        (unsigned int)Color);
+      if(!strcmp(Tokens[1],"ring"))
+        ArmConsole_Printf("OK camera ring ring=%u target=%u sent\r\n",(unsigned int)Color,(unsigned int)(9U+Color));
+      else ArmConsole_Printf("OK camera material color=%u sent\r\n",(unsigned int)Color);
     }
     else if (CameraStatus == HAL_BUSY)
     {
@@ -2050,11 +2071,27 @@ static void ArmConsole_StopRequest(uint32_t token)
 static void ArmConsole_BusStatusShow(void)
 {
   MotorBus_Recovery_t s;
+  MotorBus_Timing_t timing;
   MotorBus_RecoveryGet(&s);
   ArmConsole_Printf("OK bus recovery active=%u success=%u reason=%s addr=%u checked=0x%02X locked=%u\r\n",
     (unsigned)(BusRecoveryPending!=0 || s.active),(unsigned)s.success,
     BusRecoveryPending==1?"stopping_tasks":s.reason,(unsigned)s.address,
     (unsigned)s.checked_mask,(unsigned)MotorBus_IsQuarantined());
+  Mecanum_Status_t chassis; Mecanum_StatusGet(&chassis);
+  ArmConsole_Printf("OK bus motion locked=%u error=%u feedback_allowed=%u\r\n",
+    (unsigned)chassis.locked,(unsigned)chassis.error,(unsigned)MotorBus_FeedbackAllowed());
+  MotorBus_TimingGet(&timing);
+  ArmConsole_Printf("OK bus timing transactions=%lu ordinary=%lu emergency=%lu drained=%lu clock_ms=1\r\n",
+    (unsigned long)timing.transactions,(unsigned long)timing.ordinary,
+    (unsigned long)timing.emergency,(unsigned long)timing.drained);
+  for(unsigned i=0;i<8;i++) {
+    const MotorBus_IdTiming_t *t=&timing.id[i];
+    ArmConsole_Printf("OK bus id=%u requests=%lu success=%lu rejected=%lu timeouts=%lu tx_ms=%lu reply_ms=%lu reply_last_ms=%lu reply_max_ms=%lu queue_last_ms=%lu queue_max_ms=%lu\r\n",
+      i+1,(unsigned long)t->requests,(unsigned long)t->success,(unsigned long)t->rejected,
+      (unsigned long)t->timeouts,(unsigned long)t->tx_ms,(unsigned long)t->reply_ms,
+      (unsigned long)t->reply_last_ms,(unsigned long)t->reply_max_ms,
+      (unsigned long)t->queue_last_ms,(unsigned long)t->queue_max_ms);
+  }
 }
 static void ArmConsole_BusRecoveryProcess(void)
 {
@@ -2077,7 +2114,7 @@ static void ArmConsole_BusRecoveryProcess(void)
   BusRecoveryPending=0;
   if (s.success) {
     bool chassis_ready=Mecanum_RecoveryAfterBusCheck();
-    ArmConsole_Printf("OK bus recover complete arm_ready=1 chassis_ready=%u reason=%s tasks_resumed=0 home_reference=check\r\n",
+    ArmConsole_Printf("OK bus recover complete arm_ready=1 chassis_ready=%u reason=%s tasks_resumed=0 home_reference=check chassis_cache=cleared wheels_stopped=1\r\n",
       (unsigned)chassis_ready,chassis_ready?"complete":"chassis_cache_or_state_requires_reset");
   } else ArmConsole_Printf("ERR bus recover reason=%s addr=%u locked=1\r\n",s.reason,(unsigned)s.address);
 }
@@ -2288,6 +2325,51 @@ static uint8_t ArmConsole_TurntableBusyGuard(unsigned count,char *tokens[])
   return 0U;
 }
 
+static uint8_t ArmConsole_TrackCommandHandle(unsigned count,char *tokens[])
+{
+  if(count<3U || strcmp(tokens[0],"grab") || strcmp(tokens[1],"track"))return 0U;
+  if(GrabRoute_IsBusy()) { ArmConsole_Write("ERR grab track route_busy\r\n"); return 1U; }
+  if(!strcmp(tokens[2],"observe") || !strcmp(tokens[2],"start"))ArmConsole_CameraTraceStop();
+  (void)GrabTask_Command(count,tokens);
+  return 1U;
+}
+
+static uint8_t ArmConsole_GrabQueryHandle(unsigned count,char *tokens[])
+{
+  /* Cached status queries do not compete for actuator ownership. */
+  if(!strcmp(tokens[0],"chassis"))
+  {
+    if(count==2U && !strcmp(tokens[1],"task"))
+      return ChassisTelemetry_Command(count,tokens)?1U:0U;
+    if(count==3U && !strcmp(tokens[1],"route") && !strcmp(tokens[2],"status"))
+      return ChassisRoute_Command(count,tokens)?1U:0U;
+  }
+  if(strcmp(tokens[0],"grab"))return 0U;
+  if(count==3U && (!strcmp(tokens[1],"route") || !strcmp(tokens[1],"mission")) &&
+     !strcmp(tokens[2],"status")) return GrabRoute_Command(count,tokens)?1U:0U;
+  if(!(((count==2U || count==3U) && !strcmp(tokens[1],"status")) || (count==3U && !strcmp(tokens[1],"get")) ||
+       (count>=3U && !strcmp(tokens[1],"track") &&
+        (!strcmp(tokens[2],"status") || !strcmp(tokens[2],"get") || !strcmp(tokens[2],"trace") || !strcmp(tokens[2],"log")))))return 0U;
+  (void)GrabRoute_Command(count,tokens); (void)GrabTask_Command(count,tokens);
+  return 1U;
+}
+
+static bool ArmConsole_GrabBusyGuard(unsigned TokenCount,char *Tokens[])
+{
+  if ((GrabTask_IsBusy() || GrabRoute_IsBusy()) &&
+      !(TokenCount==2U && !strcmp(Tokens[0],"grip") && GrabTask_RingManualAllowed()) &&
+      !(GrabRoute_CanConfigure() && !strcmp(Tokens[0],"grab") &&
+        ((TokenCount==4U && !strcmp(Tokens[1],"set")) ||
+         (TokenCount==3U && !strcmp(Tokens[1],"mission") && !strcmp(Tokens[2],"continue")))) &&
+      !((TokenCount==1U && (!strcmp(Tokens[0],"help") || !strcmp(Tokens[0],"info"))) ||
+        (TokenCount==2U && ((!strcmp(Tokens[1],"status") &&
+           (!strcmp(Tokens[0],"camera") || !strcmp(Tokens[0],"vision") ||
+            !strcmp(Tokens[0],"material") || !strcmp(Tokens[0],"console") || !strcmp(Tokens[0],"qr"))) ||
+          (!strcmp(Tokens[0],"qr") && !strcmp(Tokens[1],"read")))) ||
+        (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"status"))))
+    return true;
+  return false;
+}
 static uint8_t ArmConsole_CommandExecute(char *Line)
 {
   char *Tokens[ARM_CONSOLE_TOKEN_COUNT];
@@ -2307,19 +2389,23 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
        (TokenCount==3U && !strcmp(Tokens[1],"get"))))
     return Turntable_Command(TokenCount,Tokens) ? 1U : 0U;
   if (ArmConsole_BusCommandHandle(TokenCount,Tokens)) return 1U;
-  if (TokenCount==2 && (!strcmp(Tokens[0],"stop") || !strcmp(Tokens[1],"stop"))) {
+  if ((TokenCount==2 && (!strcmp(Tokens[0],"stop") || !strcmp(Tokens[1],"stop"))) ||
+      (TokenCount==3 && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"track") && !strcmp(Tokens[2],"stop"))) {
     ArmConsole_ManualGuardCancel();
     BusRecoveryPending=0;MotorBus_RecoveryCancel();
     if (!strcmp(Tokens[0],"stop") && !strcmp(Tokens[1],"all")) Turntable_Stop();
   }
   if ((BusRecoveryPending || ManualGuardActive) &&
       !(TokenCount==1 && (!strcmp(Tokens[0],"info") || !strcmp(Tokens[0],"help"))) &&
-      !(TokenCount==2 && (!strcmp(Tokens[1],"status") || !strcmp(Tokens[0],"state") || !strcmp(Tokens[0],"position")))) {
+      !(TokenCount==2 && (!strcmp(Tokens[1],"status") || !strcmp(Tokens[0],"state") || !strcmp(Tokens[0],"position"))) &&
+      !(TokenCount>=3 && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"track") &&
+        (!strcmp(Tokens[2],"status") || !strcmp(Tokens[2],"get") || !strcmp(Tokens[2],"trace") || !strcmp(Tokens[2],"stop")))) {
     ArmConsole_Write("ERR operation_busy command_not_queued\r\n");return 1;
   }
   /* Stopping any owned actuator cancels the whole grasp producer before dispatch.
    * Claw PWM and the load-bearing Z enable remain unchanged. */
   if ((TokenCount==2U && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"stop")) ||
+      (TokenCount==3U && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"track") && !strcmp(Tokens[2],"stop")) ||
       ((GrabTask_IsBusy() || GrabRoute_IsBusy()) &&
        ((TokenCount==2U && ((!strcmp(Tokens[0],"stop") &&
           MechanicalArm_AxisGet(Tokens[1])!=MECHANICAL_ARM_AXIS_INVALID) ||
@@ -2327,7 +2413,9 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
           !strcmp(Tokens[0],"material") || !strcmp(Tokens[0],"camera") || !strcmp(Tokens[0],"turntable"))))) ||
         (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"cancel")))))
   {
-    ArmConsole_ResetCancel();GrabRoute_Stop();Turntable_Stop();
+    ArmConsole_ResetCancel();
+    if(!GrabTask_IsBusy())GrabTask_Stop(); /* An error is inactive but still needs cancellation. */
+    GrabRoute_Stop();Turntable_Stop();
     ArmConsole_Write("OK grab stop requested physical_stop=unconfirmed claw=held\r\n");
     return 1U;
   }
@@ -2345,18 +2433,13 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   if (RadarConsole_Command(TokenCount,Tokens)) return 1U;
   if(ArmConsole_RadarMotionGuard(TokenCount,Tokens))
   { ArmConsole_Write("ERR radar stationary capture active; radar stop before driving\r\n");return 1U; }
-  if (!strcmp(Tokens[0],"grab") &&
-      ((TokenCount==2U && !strcmp(Tokens[1],"status")) ||
-       (TokenCount==3U && !strcmp(Tokens[1],"get"))))
-  { (void)GrabRoute_Command(TokenCount,Tokens);(void)GrabTask_Command(TokenCount,Tokens);return 1U; }
+  if(ArmConsole_GrabQueryHandle(TokenCount,Tokens))return 1U;
   if (ArmConsole_TurntableBusyGuard(TokenCount,Tokens)) return 1U;
-  if ((GrabTask_IsBusy() || GrabRoute_IsBusy()) &&
-      !((TokenCount==1U && (!strcmp(Tokens[0],"help") || !strcmp(Tokens[0],"info"))) ||
-        (TokenCount==2U && ((!strcmp(Tokens[1],"status") &&
-           (!strcmp(Tokens[0],"camera") || !strcmp(Tokens[0],"vision") ||
-            !strcmp(Tokens[0],"material") || !strcmp(Tokens[0],"console") || !strcmp(Tokens[0],"qr"))) ||
-          (!strcmp(Tokens[0],"qr") && !strcmp(Tokens[1],"read")))) ||
-        (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"status"))))
+  /* Track owns its feedback reads while observing/holding; do not mistake an
+   * in-flight owned query for a competing manual motion producer. */
+  if(ArmConsole_TrackCommandHandle(TokenCount,Tokens))return 1U;
+  if(ArmConsole_RingCommandHandle(TokenCount,Tokens))return 1U;
+  if(ArmConsole_GrabBusyGuard(TokenCount,Tokens))
   { ArmConsole_Write("ERR grab_busy use grab status or grab stop\r\n");return 1U; }
   if (ArmConsole_TurntableCommandHandle(TokenCount,Tokens)) return 1U;
   if (!strcmp(Tokens[0],"grab"))
@@ -2364,7 +2447,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
     if (ArmVision_IsBusy() || MaterialVision_IsBusy() || MechanicalArm_IsBusy() ||
         Mecanum_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy())
     { ArmConsole_Write("ERR grab other_task_busy\r\n");return 1U; }
-    if(TokenCount>=2U && (!strcmp(Tokens[1],"start") || !strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"store") || !strcmp(Tokens[1],"take") || !strcmp(Tokens[1],"return")))
+    if(TokenCount>=2U && (!strcmp(Tokens[1],"start") || !strcmp(Tokens[1],"mission") || !strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"store") || !strcmp(Tokens[1],"take") || !strcmp(Tokens[1],"return") || !strcmp(Tokens[1],"ring") || !strcmp(Tokens[1],"align")))
       ArmConsole_CameraTraceStop(); /* Give the latest-only vision slot to grab progress. */
     if (GrabRoute_Command(TokenCount,Tokens)) return 1U;
     return GrabTask_Command(TokenCount,Tokens) ? 1U : 0U;
@@ -2407,9 +2490,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   if (((TokenCount >= 2U) && (strcmp(Tokens[0], "vision") == 0) &&
        ((strcmp(Tokens[1], "ring") == 0) ||
         ((strcmp(Tokens[1], "calib") == 0) && (TokenCount == 3U)) ||
-        ((TokenCount >= 3U) && (strcmp(Tokens[2], "ring") == 0)))) ||
-      ((TokenCount >= 2U) && (strcmp(Tokens[0], "camera") == 0) &&
-       (strcmp(Tokens[1], "ring") == 0)))
+        ((TokenCount >= 3U) && (strcmp(Tokens[2], "ring") == 0)))))
   {
     ArmConsole_Write("ERR Unsupported B3\r\n");
     return 1U;

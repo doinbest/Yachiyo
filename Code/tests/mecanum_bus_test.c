@@ -9,6 +9,7 @@ static UART_HandleTypeDef uart;
 static uint8_t frame[512][32], lengths[512];
 static unsigned count;
 static bool in_flight;
+static bool auto_ack=true;
 static HAL_StatusTypeDef tx_result;
 bool ChassisRoute_IsBusy(void) { return false; }
 bool ChassisMotion_IsBusy(void) { return false; }
@@ -52,6 +53,10 @@ static void step(void)
   {
     in_flight = false;
     MotorBus_TxCpltCallback(&uart);
+    uint8_t *p=frame[count-1];
+    if(p[1]==0xfe || auto_ack) {
+      uint8_t ack[]={p[0]?p[0]:1,p[1],2,0x6b};MotorBus_RxBytes(ack,4);
+    }
   }
   MotorBus_Process();
   Mecanum_Process();
@@ -71,6 +76,11 @@ static void recover_bus(void)
       handled=count;
       if(p[1]==0x35)MotorBus_RxBytes(r,6);
       else if(p[1]==0x3a || p[1]==0x3b) { r[2]=3;r[3]=0x6b;MotorBus_RxBytes(r,4); }
+      else if(p[1]==0xf6 || p[1]==0xff) {
+        assert(p[0]>=1 && p[0]<=4);
+        if(p[1]==0xf6)assert(p[3]==0 && p[4]==0 && p[6]==1);
+        r[2]=2;r[3]=0x6b;MotorBus_RxBytes(r,4);
+      }
       else assert(p[1]==0xfe || p[1]==0x9c);
     }
     step();MotorBus_RecoveryGet(&s);
@@ -90,7 +100,7 @@ int main(void)
   assert(Mecanum_Velocity_Request(200, 0, 0, 0));
   Mecanum_StatusGet(&s);assert(s.motion_sequence == 2);
   advance(50);
-  assert(count == 5);
+  assert(count == 10); /* Both acknowledged batches run without the old 100ms gate. */
   for (unsigned i = 0; i < 4; i++)
   {
     assert(frame[i][0] == i + 1 && frame[i][1] == 0xf6 && frame[i][6] == 1);
@@ -110,6 +120,7 @@ int main(void)
   assert(s.stage == MECANUM_STAGE_STOPPED && !s.stop_pending);
   assert(s.tx_complete && s.sent_ms > 0 && s.stop_sequence == 1 && s.motion_sequence == 2);
   assert(!Mecanum_IsBusy());
+  auto_ack=false;
   assert(Mecanum_Move_Control(10, 0, 0));
   Mecanum_StatusGet(&s);assert(s.motion_sequence == 3);
   advance(15);
@@ -123,7 +134,7 @@ int main(void)
   assert(!Mecanum_Move_Control(10, 0, 0));
   assert(Mecanum_RecoveryAfterReset());
   assert(Mecanum_Velocity_Request(100, 0, 0, 0));
-  advance(12);
+  advance(1);
   tx_result = HAL_ERROR;
   advance(80);
   Mecanum_StatusGet(&s);
@@ -139,6 +150,7 @@ int main(void)
   advance(60);
   assert(Mecanum_RecoveryAfterReset());
   assert(Mecanum_AckProfile_Set(MECANUM_ACK_RECEIVE));
+  auto_ack=false;
   unsigned base = count;
   assert(Mecanum_Velocity_Request(100, 0, 0, 0));
   advance(15);
@@ -162,6 +174,7 @@ int main(void)
     advance(15);
   }
   assert(count == base + 5 && frame[base + 4][1] == 0xff);
+  { const uint8_t sync_ack[]={1,0xff,2,0x6b};MotorBus_RxBytes(sync_ack,4);MotorBus_Process();Mecanum_Process(); }
   Mecanum_StatusGet(&s);
   assert(s.tx_complete && s.acknowledged && s.acknowledged_wheels == 4);
   assert(s.sent_velocity_valid && s.sent_rpm[0] == 24);
@@ -206,6 +219,7 @@ int main(void)
   assert(s.locked && s.error == MECANUM_ERROR_CANCELLED && s.stage == MECANUM_STAGE_STOPPED);
   assert(!Mecanum_Velocity_Request(20, 0, 0, 0));
   Mecanum_Feedback_Enable(false);
+  MotorBus_Cancel(MOTOR_BUS_FEEDBACK);Mecanum_Process();
   assert(Mecanum_Feedback_Select(2)); /* User selected one wheel, polling is OFF. */
   Mecanum_Feedback_StopMonitor(true);
   for (unsigned i = 0; i < 12; i++)
@@ -227,6 +241,7 @@ int main(void)
     assert(feedback.speed_valid && feedback.position_valid && feedback.state_valid);
   }
   Mecanum_Feedback_StopMonitor(false);
+  MotorBus_Cancel(MOTOR_BUS_FEEDBACK);Mecanum_Process();
   before=count;advance(30);assert(count==before); /* User's OFF policy survives. */
   Mecanum_Feedback_StopMonitor(true);
   Mecanum_Feedback_Enable(true); /* New user demand while stop polling is active. */
@@ -244,10 +259,38 @@ int main(void)
   Mecanum_Feedback_Enable(false);
   recover_bus();
   assert(!MotorBus_IsQuarantined());
-  assert(!Mecanum_RecoveryAfterBusCheck()); /* Abandoned sync cache stays locked. */
-  assert(!Mecanum_Velocity_Request(20,0,0,0));
-  assert(Mecanum_RecoveryAfterReset());
+  /* Main loop may enqueue stop-monitor feedback between recovery completion
+   * and console consumption. A read is not an unverified motion cache. */
+  const uint8_t recovery_read[]={1,0x35,0x6b};
+  assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK,recovery_read,3,6,0,false));
+  assert(Mecanum_RecoveryAfterBusCheck()); /* Verified zero cache permits restart. */
+  Mecanum_StatusGet(&s);assert(!s.locked);
+  advance(15);MotorBus_RxBytes(speed,sizeof speed);MotorBus_Process();Mecanum_Process();
   MotorBus_ErrorCallback(&uart);MotorBus_Process();
   recover_bus();assert(Mecanum_RecoveryAfterBusCheck());
+  /* A past recovery must not unlock a subsequently interrupted motion batch. */
+  assert(Mecanum_AckProfile_Set(MECANUM_ACK_NONE));
+  assert(Mecanum_Velocity_Request(20,0,0,0));advance(15);
+  assert(Mecanum_Test_Stop());advance(60);
+  assert(!Mecanum_RecoveryAfterBusCheck());
+  recover_bus();assert(Mecanum_RecoveryAfterBusCheck());
+  /* A normal tracking tail sends all-zero F6 batches. Interrupting one leaves
+   * only zero-speed sync entries, not a latent motion requiring driver reset. */
+  assert(Mecanum_AckProfile_Set(MECANUM_ACK_NONE));
+  assert(Mecanum_Velocity_Request(0,0,0,20));
+  advance(15);
+  before=count;
+  assert(Mecanum_Test_Stop());
+  advance(60);
+  Mecanum_StatusGet(&s);
+  assert(s.tx_complete && !s.locked && s.error==MECANUM_ERROR_NONE);
+  for(unsigned i=before;i<count;i++)assert(frame[i][1]!=0xff);
+  { const uint8_t zero_ack[]={1,0xf6,2,0x6b};MotorBus_RxBytes(zero_ack,4);MotorBus_Process(); }
+  auto_ack=true;
+  /* New nonzero motion still has to overwrite all four entries before sync. */
+  assert(Mecanum_Velocity_Request(20,0,0,20));
+  advance(150);
+  Mecanum_StatusGet(&s);assert(s.tx_complete && !s.locked);
+  assert(Mecanum_Test_Stop());advance(60);
   puts("mecanum_bus_test: frozen batch, latest target, synchronized TX, stop and fault lock OK");
 }

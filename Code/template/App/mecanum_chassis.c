@@ -46,26 +46,46 @@ typedef struct
   uint8_t count;
 } Mecanum_Batch_t;
 static Mecanum_Batch_t Batch, NextBatch;
+static Mecanum_Timing_t BatchTiming;
+static uint32_t BatchStartedMs;
+void Mecanum_TimingGet(Mecanum_Timing_t *out) { if(out)*out=BatchTiming; }
 static bool BatchActive, NextValid, BatchWaiting, BatchStarted, LastBatchValid;
 static uint8_t BatchIndex, StopIndex;
 static uint32_t LastBatchMs;
+static uint32_t TrackingBatchMs;
+static bool TrackingEnabled;
+
+static unsigned TrackingFeedbackTurn, TrackingSlowWheel;
+void Mecanum_TrackingTiming(bool enabled,uint32_t interval_ms)
+{ if(enabled && !TrackingEnabled)memset(&BatchTiming,0,sizeof BatchTiming);
+  TrackingEnabled=enabled;TrackingBatchMs=interval_ms<=200?interval_ms:0; }
 /* Confirmed Emm42 factory configuration: receive acknowledgement. */
 static Mecanum_Status_t BusStatus = {.ack_profile = MECANUM_ACK_RECEIVE};
 static Mecanum_Feedback_t Feedback[4];
 static bool FeedbackEnabled;
 static bool StopFeedbackDemand;
+static bool PlannedStopPending;
 static uint8_t FeedbackIndex;
 static uint8_t FeedbackAddress;
-static uint32_t FeedbackLastMs;
+
 static bool FaultStopPending;
 static bool StopFailed;
-/* A stopped motor can still contain an untriggered synchronous command. */
+/* A stopped motor can still contain an untriggered nonzero synchronous command.
+ * Zero F6 entries cannot restart motion; later motion overwrites all four. */
 static bool SyncCacheUncertain;
+
+static bool BatchZeroVelocity(void)
+{
+  if (!Batch.sync || Batch.count != MECANUM_WHEEL_COUNT) return false;
+  for (unsigned i = 0; i < MECANUM_WHEEL_COUNT; i++)
+    if (Batch.length[i] != 8 || Batch.frame[i][1] != 0xf6 || Batch.rpm[i]) return false;
+  return true;
+}
 
 static bool Mecanum_Ready(void)
 {
   /* Preserve the communication fault when a new request is rejected. */
-  if (BusStatus.locked || BusStatus.stop_pending || MotorBus_IsQuarantined())
+  if (BusStatus.locked || BusStatus.stop_pending || PlannedStopPending || MotorBus_IsQuarantined())
     return false;
   if (BusStatus.ack_profile == MECANUM_ACK_UNKNOWN)
   {
@@ -117,6 +137,11 @@ static bool QueuePosition(float forward, float left, float yaw, uint16_t speed, 
     next.length[i] = 13;
   }
   Mecanum_VelocityRefresh_Stop();
+  if(LastBatchValid && next.length[0]==8 &&
+     (uint32_t)(HAL_GetTick()-LastBatchMs)<MECANUM_VELOCITY_REFRESH_MS) {
+    const Mecanum_Batch_t *previous=NextValid?&NextBatch:&Batch;
+    if(previous->length[0]==8 && !memcmp(next.frame,previous->frame,sizeof next.frame))return true;
+  }
   NextBatch = next;
   NextValid = true;
   BusStatus.motion_sequence++;
@@ -162,8 +187,10 @@ static void FeedbackProcess(void)
     wheel = (uint8_t)(e.token / 3);
     kind = (uint8_t)(e.token % 3);
     f = &Feedback[wheel];
-    if (e.result == MOTOR_BUS_REPLY)
+    if (e.result == MOTOR_BUS_REPLY && e.length==length[kind] &&
+        !(e.length==4 && (e.data[2]==0xe2 || e.data[2]==0xee)))
     {
+
       if (kind == 0)
       {
         f->speed_rpm = (int32_t)(((uint32_t)e.data[3] << 8) | e.data[4]);
@@ -189,12 +216,17 @@ static void FeedbackProcess(void)
     }
     else
     {
-      if (kind == 0)
-        f->speed_valid = false;
-      else if (kind == 1)
-        f->position_valid = false;
-      else
-        f->state_valid = false;
+      /* Stop cancels unsent queries. No new sample does not invalidate the
+       * previous measurement; its unchanged timestamp still expires normally. */
+      if (e.result != MOTOR_BUS_CANCELLED)
+      {
+        if (kind == 0)
+          f->speed_valid = false;
+        else if (kind == 1)
+          f->position_valid = false;
+        else
+          f->state_valid = false;
+      }
       if (MotorBus_IsQuarantined() &&
           !(e.result == MOTOR_BUS_CANCELLED && MotorBus_FeedbackAllowed()))
       {
@@ -218,10 +250,10 @@ static void FeedbackProcess(void)
       }
     }
   }
-  if ((!FeedbackEnabled && !StopFeedbackDemand) || BusStatus.stop_pending ||
+  if ((!FeedbackEnabled && !StopFeedbackDemand) || PlannedStopPending || BusStatus.stop_pending ||
       (BusStatus.locked && BusStatus.error != MECANUM_ERROR_CANCELLED) ||
       !MotorBus_FeedbackAllowed() ||
-      MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK) || (uint32_t)(HAL_GetTick() - FeedbackLastMs) < 16U)
+      MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK))
     return;
   wheel = (uint8_t)(FeedbackIndex / 3);
   kind = (uint8_t)(FeedbackIndex % 3);
@@ -230,14 +262,24 @@ static void FeedbackProcess(void)
   cmd[2] = 0x6b;
   if (MotorBus_Submit(MOTOR_BUS_FEEDBACK, cmd, 3, length[kind], FeedbackIndex, false))
   {
-    if (FeedbackAddress && !StopFeedbackDemand)
+    if(TrackingEnabled && !StopFeedbackDemand)
+    {
+      /* Four positions, then one wheel's speed/state pair. With X writes and
+       * reads sharing UART5, the former 40-read slow cycle exceeded 2 seconds. */
+      TrackingFeedbackTurn=(TrackingFeedbackTurn+1U)%6U;
+      if(TrackingFeedbackTurn==0)TrackingSlowWheel=(TrackingSlowWheel+1U)%4U;
+      if(TrackingFeedbackTurn<4)FeedbackIndex=(uint8_t)(TrackingFeedbackTurn*3+1);
+      else if(TrackingFeedbackTurn==4)FeedbackIndex=(uint8_t)(TrackingSlowWheel*3);
+      else FeedbackIndex=(uint8_t)(TrackingSlowWheel*3+2);
+    }
+    else if (FeedbackAddress && !StopFeedbackDemand)
       FeedbackIndex = (uint8_t)((FeedbackAddress - 1) * 3 + (FeedbackIndex + 1) % 3);
     else
       /* Keep each four-wheel measurement group together across velocity batches.
        * Speed 1..4, position 1..4, state 1..4; tokens still encode wheel*3+kind. */
       FeedbackIndex = (uint8_t)(((wheel + 1U) % 4U) * 3U +
                                  (wheel == 3U ? (kind + 1U) % 3U : kind));
-    FeedbackLastMs = HAL_GetTick();
+
   }
 }
 void Mecanum_Process(void)
@@ -268,18 +310,33 @@ void Mecanum_Process(void)
       BatchIndex++;
       if (BatchIndex > Batch.count || (!Batch.sync && BatchIndex == Batch.count))
       {
+        if(BatchTiming.batches && LastBatchValid) {
+          uint32_t interval=e.tick_ms-BatchTiming.last_ms;
+          BatchTiming.intervals++;BatchTiming.interval_bins[interval<200?interval:200]++;
+          if(interval>BatchTiming.interval_max_ms)BatchTiming.interval_max_ms=interval;
+        }
+        BatchTiming.batches++;BatchTiming.last_ms=e.tick_ms;
+        if(e.tick_ms-BatchStartedMs>BatchTiming.duration_max_ms)BatchTiming.duration_max_ms=e.tick_ms-BatchStartedMs;
         if (Batch.sync) SyncCacheUncertain = false;
         BatchActive = false;
         BusStatus.stage = MECANUM_STAGE_SENT;
         MotorBus_Release(MOTOR_BUS_CHASSIS);
         memcpy(BusStatus.sent_rpm, Batch.rpm, sizeof(Batch.rpm));
-        BusStatus.sent_ms = e.tick_ms;
+        BusStatus.sent_ms = e.tx_ms; /* FF Receive time is not the DMA send time. */
         BusStatus.sent_velocity_valid = Batch.length[0] == 8;
         BusStatus.tx_complete = true;
         BusStatus.acknowledged = BusStatus.ack_profile == MECANUM_ACK_RECEIVE &&
                                  BusStatus.acknowledged_wheels == Batch.count;
+
       }
     }
+  }
+  if (PlannedStopPending)
+  {
+    /* Consume the current query's matched reply, without enqueueing another.
+     * The next main-loop gap then belongs to the planned stop. */
+    FeedbackProcess();
+    if (Mecanum_CanStopCleanly()) (void)Mecanum_Test_Stop();
   }
   if (BusStatus.stop_pending)
   {
@@ -338,16 +395,20 @@ void Mecanum_Process(void)
   if (BusStatus.locked)
     return;
   if (!BatchActive && NextValid &&
-      (!LastBatchValid || (uint32_t)(HAL_GetTick() - LastBatchMs) >= 100U))
+      (!TrackingEnabled || !TrackingBatchMs || !LastBatchValid ||
+       (uint32_t)(HAL_GetTick()-LastBatchMs)>=TrackingBatchMs))
   {
     if (!MotorBus_Reserve(MOTOR_BUS_CHASSIS))
+    {
+      FeedbackProcess(); /* Consume/queue feedback even while yielding a batch. */
       return;
+    }
     Batch = NextBatch;
     NextValid = false;
     BatchActive = true;
     BatchIndex = 0;
     BatchStarted = false;
-    LastBatchMs = HAL_GetTick();
+    LastBatchMs = HAL_GetTick();BatchStartedMs=LastBatchMs;
     LastBatchValid = true;
     BusStatus.sequence++;
     BusStatus.stage = MECANUM_STAGE_WHEELS;
@@ -366,7 +427,7 @@ void Mecanum_Process(void)
       {
         BatchWaiting = true;
         BatchStarted = true;
-        if (Batch.sync) SyncCacheUncertain = true;
+        if (Batch.sync && !BatchZeroVelocity()) SyncCacheUncertain = true;
       }
       else
         BatchFault(MECANUM_ERROR_TX);
@@ -374,7 +435,7 @@ void Mecanum_Process(void)
     else
     {
       BusStatus.stage = MECANUM_STAGE_SYNC;
-      if (MotorBus_Submit(MOTOR_BUS_CHASSIS, sync, 4, 0, BusStatus.sequence, false))
+      if (MotorBus_SubmitReplyTo(MOTOR_BUS_CHASSIS, sync, 4, 1, 4, BusStatus.sequence, false))
         BatchWaiting = true;
       else
         BatchFault(MECANUM_ERROR_TX);
@@ -404,30 +465,43 @@ bool Mecanum_AckProfile_Set(Mecanum_AckProfile_t profile)
   BusStatus.error = MECANUM_ERROR_NONE;
   return true;
 }
-bool Mecanum_RecoveryAfterReset(void)
+/** @brief Clear local stopped-batch state after physical reset or verified
+ * zero-cache recovery. Keeps user settings and wheel position snapshots.
+ * @retval None. @note Caller must validate the corresponding recovery proof. */
+static void RecoveryClear(void)
 {
-  if (BusStatus.stop_pending || BatchActive || NextValid || !MotorBus_RecoverAfterReset())
-    return false;
   SyncCacheUncertain = false;
-  memset(Feedback, 0, sizeof(Feedback));
   BusStatus.locked = false;
   BusStatus.error = MECANUM_ERROR_NONE;
   BusStatus.stage = MECANUM_STAGE_IDLE;
   MecanumMotionPending = false;
   BatchWaiting = false;
   LastBatchValid = false;
-  FaultStopPending = false;
+  FaultStopPending = PlannedStopPending = false;
   memset(BusStatus.sent_rpm, 0, sizeof(BusStatus.sent_rpm));
   BusStatus.sent_ms = HAL_GetTick();
   BusStatus.sent_velocity_valid = false;
+}
+bool Mecanum_RecoveryAfterReset(void)
+{
+  if (BusStatus.stop_pending || BatchActive || NextValid || !MotorBus_RecoverAfterReset())
+    return false;
+  memset(Feedback, 0, sizeof(Feedback));
+  RecoveryClear();
   return true;
 }
 bool Mecanum_RecoveryAfterBusCheck(void)
 {
   MotorBus_Recovery_t status;
   MotorBus_RecoveryGet(&status);
-  if (!status.success || status.active || SyncCacheUncertain) return false;
-  return Mecanum_RecoveryAfterReset();
+  /* Recovery success now includes ACK-confirmed zero overwrite, addressed sync
+   * and fresh stopped feedback. Ordinary stopping alone still cannot unlock. */
+  if (!status.success || status.active || BusStatus.stop_pending || BatchActive || NextValid ||
+      MotorBus_IsQuarantined()) return false;
+  /* The recovery owner already drained/recovered the transport. Fresh read-only
+   * stop polling may now be queued; do not mistake it for an unfinished batch. */
+  RecoveryClear();
+  return true;
 }
 void Mecanum_Feedback_StopMonitor(bool active)
 {
@@ -442,8 +516,12 @@ void Mecanum_Feedback_Enable(bool enabled)
 }
 bool Mecanum_Feedback_Select(uint8_t address)
 {
-  if (address > 4 || MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK))
+  if (address > 4)
     return false;
+  /* Only the next poll's schedule changes. The queued/in-flight read and its
+   * reply retain their MotorBus token; FeedbackProcess consumes that reply
+   * before submitting another. Waiting for OwnerBusy to clear here deadlocks
+   * foreground callers against a continuously replenished feedback stream. */
   FeedbackEnabled = false;
   FeedbackAddress = address;
   FeedbackIndex = (!StopFeedbackDemand && address) ? (uint8_t)((address - 1) * 3) : 0;
@@ -710,6 +788,11 @@ bool Mecanum_Wheel_Test(MecanumWheel_t wheel, int16_t rpm)
   next.rpm[(unsigned)wheel] = rpm;
   VelocityFrame(next.frame[0], (unsigned)wheel, rpm, CHASSIS_POLARITY_TEST_ACCELERATION, false);
   Mecanum_VelocityRefresh_Stop();
+  if(LastBatchValid && next.length[0]==8 &&
+     (uint32_t)(HAL_GetTick()-LastBatchMs)<MECANUM_VELOCITY_REFRESH_MS) {
+    const Mecanum_Batch_t *previous=NextValid?&NextBatch:&Batch;
+    if(previous->length[0]==8 && !memcmp(next.frame,previous->frame,sizeof next.frame))return true;
+  }
   NextBatch = next;
   NextValid = true;
   BusStatus.motion_sequence++;
@@ -726,14 +809,29 @@ bool Mecanum_CanStopCleanly(void)
 {
   return !BatchActive && !BatchWaiting && !BusStatus.locked && !BusStatus.stop_pending &&
          !MotorBus_IsQuarantined() && !MotorBus_OwnerBusy(MOTOR_BUS_CHASSIS) &&
-         !MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK);
+         !MotorBus_OwnerInFlight(MOTOR_BUS_FEEDBACK);
+}
+
+bool Mecanum_RequestPlannedStop(void)
+{
+  if (PlannedStopPending || BusStatus.stop_pending) return true;
+  if (BusStatus.locked || BusStatus.error != MECANUM_ERROR_NONE || MotorBus_IsQuarantined() ||
+      !BusStatus.tx_complete || !BusStatus.sent_velocity_valid) return false;
+  for (unsigned i=0;i<4;i++) if (BusStatus.sent_rpm[i]) return false;
+  /* The synchronized zero snapshot is already confirmed. Stop refreshing it
+   * and let the current query finish before FE, rather than racing polling. */
+  PlannedStopPending = true;
+  NextValid = false;
+  Mecanum_VelocityRefresh_Stop();
+  return true;
 }
 
 bool Mecanum_Test_Stop(void)
 {
+  PlannedStopPending = false;
   if (BusStatus.stop_pending)
     return true;
-  if (BatchActive && BatchStarted)
+  if (BatchActive && BatchStarted && (!BatchZeroVelocity() || SyncCacheUncertain))
   {
     BusStatus.locked = true;
     BusStatus.error = MECANUM_ERROR_CANCELLED;
@@ -760,7 +858,7 @@ bool Mecanum_Test_Stop(void)
 
 bool Mecanum_IsBusy(void)
 {
-  return MecanumVelocityActive || HeadingTest.active || MecanumMotionPending ||
+  return PlannedStopPending || MecanumVelocityActive || HeadingTest.active || MecanumMotionPending ||
          BusStatus.stop_pending || BatchActive || NextValid ||
          BusStatus.stage == MECANUM_STAGE_FAULT;
 }
@@ -809,6 +907,11 @@ bool Mecanum_Velocity_Request(float forward_mm_s, float left_mm_s, float yaw_rad
     next.rpm[i] = (int32_t)(value >= 0 ? value + 0.5f : value - 0.5f);
     VelocityFrame(next.frame[i], i, next.rpm[i], acc, true);
     next.length[i] = 8;
+  }
+  if(LastBatchValid && next.length[0]==8 &&
+     (uint32_t)(HAL_GetTick()-LastBatchMs)<MECANUM_VELOCITY_REFRESH_MS) {
+    const Mecanum_Batch_t *previous=NextValid?&NextBatch:&Batch;
+    if(previous->length[0]==8 && !memcmp(next.frame,previous->frame,sizeof next.frame))return true;
   }
   NextBatch = next;
   NextValid = true;

@@ -5,6 +5,65 @@ import {BridgeLink,readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
 import {frameCommand,moduleForWire} from '../protocol.mjs';
 import {chineseTerminalLine} from '../terminal-format.mjs';
 
+test('one result request assembles the exact map and path without per-page round trips',async()=>{
+  const model=new radar.RadarModel(),wires=[],target={session:13,origin:0,scan:7,map:7,plan:7};let exchange;
+  const frames=[{k:'map',page:0,pages:2,mask:1378624,pose:[2170,230,180]},
+    {k:'map',page:1,pages:2,offset:0,a:3,f:[100,40000,0,3600,1,0,255],counts:Array(25).fill(1)},
+    {k:'path',page:0,pages:2,offset:0,valid:true,points:[[2250,150,1,0]]},
+    {k:'path',page:1,pages:2,offset:1,points:[[2100,300,0,0],[2100,1200,5,1]]}];
+  exchange=new radar.RadarExchange({timeoutMs:50,send:async wire=>{wires.push(wire);queueMicrotask(()=>{
+    for(const frame of frames){const line='@RADAR '+JSON.stringify({v:1,...target,...frame});model.accept(line);exchange.receive(line);}
+  });return true;}});
+  await exchange.result(target);
+  assert.deepEqual(wires,['radar result 7']);assert.equal(model.snapshots.map.mask,1378624);
+  assert.deepEqual(model.snapshots.path.points,[[2250,150,1,0],[2100,300,0,0],[2100,1200,5,1]]);
+});
+
+test('result end repairs only the missing page and ignores another capture',async()=>{
+  const model=new radar.RadarModel(),wires=[],target={session:13,origin:0,scan:7,map:7,plan:7};let exchange;
+  const emit=frame=>{const line='@RADAR '+JSON.stringify({v:1,...target,...frame});model.accept(line);exchange.receive(line);};
+  exchange=new radar.RadarExchange({timeoutMs:50,send:async wire=>{wires.push(wire);queueMicrotask(()=>{
+    if(wire==='radar result 7'){
+      emit({scan:6,k:'path',page:0,pages:1,offset:0,valid:false,points:[]});
+      emit({k:'map',page:0,pages:2,mask:1378624,pose:[2170,230,180]});
+      emit({k:'path',page:0,pages:1,offset:0,valid:true,points:[[2250,150,1,0]]});
+      emit({k:'result_end',mp:2,pp:1});
+    }else emit({k:'map',page:1,pages:2,offset:0,counts:Array(25).fill(0)});
+  });return true;}});
+  await exchange.result(target);assert.deepEqual(wires,['radar result 7','radar fetch map 7 1']);
+  assert.equal(model.snapshots.map.counts.length,25);assert.equal(model.snapshots.path.scan,7);
+  assert.equal(readOnlyCommand('radar result 7'),true);frameCommand('radar result 7');
+});
+
+test('intact radar JSON after an interrupted command echo still updates the device state',()=>{
+  const wire='arm> rad@RADAR {"v":1,"k":"status","session":13,"origin":0,"scan":7,"map":7,"plan":7,"page":0,"pages":1,"state":"ready","reason":"complete"}';
+  const model=new radar.RadarModel();
+  assert.equal(model.accept(wire),true);
+  assert.equal(model.status.scan,7);assert.equal(model.status.state,'ready');
+  assert.equal(radar.parseRadar('arm> rad@RADAR {"v":1,"k":"status"'),null);
+  assert.equal(radar.parseRadar('radar fetch path 7 2'),null);
+});
+
+test('a complete radar page after command echo satisfies the exact pending read without retry',async()=>{
+  const wires=[];let exchange;
+  exchange=new radar.RadarExchange({timeoutMs:50,send:async wire=>{
+    wires.push(wire);queueMicrotask(()=>exchange.receive('arm> rad@RADAR {"v":1,"k":"path","session":13,"origin":0,"scan":7,"map":7,"plan":7,"page":0,"pages":1,"offset":0,"start":2,"valid":true,"failed_leg":0,"points":[[2100,1200,5,1]]}'));
+    return true;
+  }});
+  assert.equal((await exchange.fetch('path',7)).length,1);
+  assert.deepEqual(wires,['radar fetch path 7 0']);
+});
+
+test('frozen filter and algorithm metadata on the first counts page bind to the complete map',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'map',session:9,origin:2,scan:3,map:7,plan:8,pages:3};
+  model.accept('@RADAR '+JSON.stringify({...base,page:1,offset:0,a:3,f:[100,40000,0,3600,1,0,255],counts:Array(12).fill(1)}));
+  model.accept('@RADAR '+JSON.stringify({...base,page:0,g:2,mask:0x50140,pose:[2250,150,180]}));
+  assert.equal(model.snapshots.map,undefined);
+  model.accept('@RADAR '+JSON.stringify({...base,page:2,offset:12,counts:Array(13).fill(2)}));
+  assert.equal(model.snapshots.map.a,3);assert.deepEqual(model.snapshots.map.f,[100,40000,0,3600,1,0,255]);
+  assert.deepEqual(model.snapshots.map.pose,[2250,150,180]);assert.equal(model.snapshots.map.counts.length,25);
+});
+
 test('complete radar pages are assembled out of order without mixing maps or erasing history',()=>{
   const model=new radar.RadarModel(),base={v:1,k:'map',session:9,origin:2,scan:3,map:7,plan:0,pages:2};
   model.accept('@RADAR '+JSON.stringify({...base,page:1,offset:5,counts:[6,7,8,9,10]}),100);
@@ -31,6 +90,26 @@ test('serial page fetch waits for its exact reply and ignores unrelated and old 
   const result=await fetcher.fetch('map',7);
   assert.equal(result.length,2);
   assert.deepEqual(wires,['radar fetch map 7 0','radar fetch map 7 1']);
+});
+
+test('overlapping page_pending preserves the exact read until its already queued reply arrives',async()=>{
+  const wires=[];let exchange;
+  exchange=new radar.RadarExchange({send:async wire=>{
+    wires.push(wire);queueMicrotask(()=>{
+      exchange.receive('arm> ERR radar page_pending');
+      exchange.receive('@RADAR '+JSON.stringify({v:1,k:'map',session:1,origin:0,scan:3,map:3,plan:3,page:0,pages:1,counts:Array(25).fill(0),offset:0}));
+    });return true;
+  },timeoutMs:100});
+  assert.equal((await exchange.fetch('map',3)).length,1);
+  assert.deepEqual(wires,['radar fetch map 3 0']);
+});
+
+test('page_pending without a matching page still times out and other device errors still fail',async()=>{
+  let exchange;
+  exchange=new radar.RadarExchange({send:async()=>{queueMicrotask(()=>exchange.receive('ERR radar page_pending'));return true;},timeoutMs:20});
+  await assert.rejects(exchange.fetch('map',3),/超时/);
+  exchange.send=async()=>{queueMicrotask(()=>exchange.receive('arm> ERR radar snapshot_changed_or_page_range'));return true;};
+  await assert.rejects(exchange.fetch('map',3),/snapshot_changed_or_page_range/);
 });
 
 test('radar write rejected before get preserves the device reason',async()=>{
@@ -154,6 +233,14 @@ test('firmware maps require all 25 counts independently of compact page capaciti
   assert.equal(model.snapshots.map,undefined,'a short compact map must not publish a partial grid');
   model.accept(frame({page:2,offset:7,counts:Array(18).fill(2)}));
   assert.deepEqual(model.snapshots.map.counts,[...Array(7).fill(1),...Array(18).fill(2)]);
+});
+
+test('three-circle map retains frozen aggregation metadata from the counts page',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'map',session:1,origin:2,scan:3,map:7,plan:8,pages:2};
+  model.accept('@RADAR '+JSON.stringify({...base,page:0,mask:4,pose:[2170,230,180]}));
+  model.accept('@RADAR '+JSON.stringify({...base,page:1,a:3,c:3,f:[100,40000,0,3600,1,0,255],offset:0,counts:Array(25).fill(3)}));
+  assert.equal(model.snapshots.map.c,3);assert.equal(model.snapshots.map.a,3);
+  assert.deepEqual(model.snapshots.map.f,[100,40000,0,3600,1,0,255]);
 });
 
 test('default page transport immediately requests the next page after the matched reply',async()=>{

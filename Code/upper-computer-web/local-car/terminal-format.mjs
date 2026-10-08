@@ -1,9 +1,13 @@
 import {radarReasonText,radarProbeText} from './radar-format.mjs';
+import {parseTrack,trackText} from './grab-track.mjs';
 export const visualStateText=state=>({Idle:'无活动视觉请求',Off:'USB 未枚举',Wait:'等待首个回复',Lost:'已收到报文，当前无有效坐标',Ok:'有效坐标',Stale:'坐标已过期'})[state]??'未报告';
 // Presentation only. Never feed translated text back into a protocol parser.
 const names={vision_grace:'短暂漏检，减速等待',vision_gap_decelerating:'沿原运动趋势减速，等待连续有效坐标',vision_gap_recovered:'短暂漏检已恢复，未消耗停车恢复次数',vision_pause:'视觉暂停，不会下降夹取',vision_pause_stopping:'漏检，正在停车',vision_recover_wait:'已停稳，等待目标恢复',vision_reacquire_wait:'已重发目标颜色识别，等待新坐标',vision_recovered:'已恢复对准',vision_acquire_timeout:'等待目标颜色超时',vision_recover_timeout:'恢复窗口超时',vision_recover_limit:'恢复次数耗尽',vision_usb_off:'视觉 USB 断开',vision_request_lost:'视觉请求失效',vision_stale:'有效坐标接收超时',vision_lost:'视觉坐标失效',feedback_stale:'机械反馈过期',chassis_tx:'底盘通信故障',base:'Base 底座',x:'X 伸缩轴',z:'Z 升降轴',all:'全部轴',fixed:'固定取放',align:'仅协同对准',pick:'视觉取放',idle:'空闲',prepare:'准备中',acquire:'等待视觉',homing:'正在回零',descend:'下降夹取',close:'夹紧等待',lift:'提起',turn:'Base 转向',place:'下降放置',release:'松爪等待',retract:'提起复位',hold:'动作完成，等待验收',stopping:'正在停止',error:'故障',running:'运行中',waiting:'等待中',station:'站点等待',done:'已完成',complete:'已完成',failed:'失败',none:'无',cancelled:'已取消',pending_tx:'等待停车发送',monitoring:'等待四轮停稳',stopped:'四轮已确认停稳',missing_feedback:'缺少新鲜反馈',timeout:'超时',tx_failed:'发送失败',new_motion:'出现新动作，原停车确认失效',reply_timeout:'驱动回复超时',uart_error:'串口通信错误',motor_request:'电机请求失败',motor_feedback:'电机反馈异常',config_missing:'缺少参数',home_z:'Z 碰撞回零',home_x:'X 碰撞回零',home_base:'Base 就近回零',home_complete:'三轴回零完成',home_stop_unconfirmed:'回零停止未确认',aligned_wait_check:'对准完成，等待验收',placed_wait_check:'取放完成，等待验收',VERIFYING:'静止验证中',DONE:'完成',PASS:'通过',FAIL:'失败',Idle:'空闲',Wait:'等待相机回复',ALIGNED:'对准完成',ERROR:'故障',unlimited:'不限',initial:'初始模型',custom:'自定义模型'};
 const fields={ref_cause:'参考状态',loss_ms:'本次或最近中断(ms)',loss_max_ms:'本任务最长中断(ms)',grace_count:'减速期间恢复观测(/3)',recovery_used:'已恢复次数',recovery_count:'连续恢复观测(/3)',recovery_left_ms:'设备报告剩余(ms)',state:'状态',mode:'模式',reason:'原因',missing:'缺少参数',axis:'轴',step:'步骤',elapsed:'耗时(ms)',elapsed_ms:'耗时(ms)',rpm:'转速(RPM)',acc:'加速度',limit_pulses:'脉冲限制',raw_units:'位置原始单位',raw_rpm:'转速原始值',en:'使能',reached:'到位',degree:'角度(°)',pulses:'命令脉冲',raw:'原始状态',flags:'状态位',stop_requested:'已请求停止',stop_confirmed:'停止已确认',tx_complete:'停车发送完成',wheels_stopped:'四轮停稳确认',locked:'总线锁定',bus_locked:'总线锁定',fault_ms:'故障时刻(ms)',owner:'事务来源',addr:'电机ID',func:'功能码',active:'活动',wait:'等待应答',arm_ready:'机械臂就绪',chassis_ready:'底盘就绪',tasks_resumed:'已自动续跑',home_reference:'回零参考',color:'Color',cx:'CX',cy:'CY',dx:'像素水平偏差',dy:'像素垂直偏差',x:'X位置(mm)',xt:'X目标(mm)',z:'Z位置(mm)',zt:'Z目标(mm)',b:'Base角度(°)',bt:'Base目标(°)',model:'视觉模型',protocol:'视觉协议',age_source:'时间来源',rx_seq:'MCU接收序号',vision:'坐标状态',age:'坐标接收间隔(ms)',usb:'USB已枚举',fn:'功能码',target:'目标',frame:'收到过匹配报文',current_valid:'当前数据有效',target_valid:'目标有效',seq:'MCU接收序号',data_tick:'MCU接收时刻(ms)',invalid_reports:'本请求无效坐标报文数',rx_bytes:'收到字节数',checksum_errors:'校验错误',overflows:'溢出',frame_age_ms:'最近匹配报文接收间隔(ms)',last_frame_ms:'最后收帧时刻(ms)',vf:'前向速度(mm/s)',vl:'左向速度(mm/s)',yaw_deg:'航向(°)',target_deg:'目标航向(°)',yaw_valid:'航向有效',verified:'验证通过',control_ready:'控制就绪',keep_still:'需保持静止',elapsed_s:'已用时(s)',total_s:'总时间(s)',verify_elapsed_s:'验证用时(s)',wheel:'轮ID',valid:'有效标志',segment:'路段',error:'错误',ack:'应答模式',units:'单位/圈',duty:'占空比',rx_overflow:'接收溢出',reply_dropped:'普通回复丢失',urgent_dropped:'紧急回复丢失',debug_dropped:'旧调试样本替换或丢弃',reply_pending:'回复队列字节',reply_peak:'回复队列峰值',rx_peak:'接收队列峰值',rx_bytes_total:'累计接收字节',tx_bytes:'累计发送字节',rx_restarts:'接收重启次数'};
+Object.assign(names,{first_slot_inventory_unknown:'第一仓库存待核对：确认实物为空后校正库存',first_slot_occupied:'第一仓已有物料',first_slot_angle_unset:'第一仓角度未配置'});
+Object.assign(names,{manual_z:'人工调整Z高度',color_align:'颜色中心静态对准',color_aligned_ready:'颜色对准完成，已抬至最高',color_aligned_low:'颜色对准完成，保持低位',color_raise_no_align:'已停止纠偏，正在抬高',stack_height:'码垛高度调整',stack_height_running:'正在调整高度，保持夹持',stack_height_ready:'高度到位，保持夹持',stack_release:'码垛松爪',stack_released:'已松爪，保持当前高度',static_alignment_required:'请先完成静态对准并保留保持状态',static_alignment_required_or_height_moving:'请先完成静态对准并等待高度到位',stack_height_outside_limits:'目标高度超出Z行程'});
 const colors={1:'red',2:'yellow',3:'blue',4:'green',5:'black',6:'light_blue'};
+Object.assign(names,{stack_align:'码垛静态对准与补偿',stack_center_align:'正在对准绿色准心',stack_compensating:'准心已对准，正在执行码垛补偿',stack_aligned_ready:'码垛补偿到位，等待人工装料'});
 const referenceNames={boot_pending:'上电待验证',home_verifying:'三轴正在验证',home_verified:'三轴已验证',base_place_turn:'Base 已转向放置处',manual_home_all:'手动全部回零后待验证',manual_home_x:'手动 X 回零后待验证',manual_home_z:'手动 Z 回零后待验证',manual_home_base:'手动 Base 回零后待验证',manual_zero_all:'手动全部清零后待验证',manual_zero_x:'手动 X 清零后待验证',manual_zero_z:'手动 Z 清零后待验证',manual_zero_base:'手动 Base 清零后待验证',manual_base_move:'Base 已手动移动',x_reference_changed:'X 参考失效',z_reference_changed:'Z 参考失效',base_reference_changed:'Base 参考失效',all_reference_changed:'全部参考失效'};
 const value=v=>referenceNames[v]??names[v]??v;
 export function replyIsFault(line){
@@ -15,10 +19,15 @@ function uartErrors(raw){
   if(n&~31)labels.push(`未知错误位 ${raw}`);
   return `${labels.join('、')||'无'}（${raw}）`;
 }
+Object.assign(names,{home_bus_fault:'回零电机总线故障',home_request_failed:'回零请求提交失败',home_feedback_failed:'回零反馈失败',home_driver_fault:'回零驱动故障',home_axis_fault:'回零轴状态异常',home_timeout:'回零超时',home:'回零',tx_error:'发送失败',param_error:'请求参数错误'});
+Object.assign(fields,{action:'动作',result:'结果',bus_reason:'总线原因'});
+Object.assign(names,{zeroing_chassis:'清零四轮同步缓存',syncing_zero:'执行四轮零速同步',verifying_zero:'验证同步后四轮停稳',zero_ack_failed:'零速缓存写入被驱动拒绝',sync_ack_failed:'零速同步被驱动拒绝',cleared:'已清除'});
+Object.assign(fields,{chassis_cache:'同步缓存'});
 function translateToken(token){
   const pair=token.match(/^([a-z_]+)=(.*)$/i);
   if(!pair)return value(token);
   const [,key,v]=pair;
+  if(key==='missing' && v==='home_pending')return '回零未完成，参考尚未验证';
   if(key==='uart_error')return `串口错误：${uartErrors(v)}`;
   if(key==='vision')return `坐标状态：${visualStateText(v)}`;
   if(key==='age_source' && v==='rx')return '时间来源：MCU 接收';
@@ -52,6 +61,8 @@ function grabStatusSummary(line){
 }
 export function chineseTerminalLine(original){
   const line=original.replace(/^(?:arm>\s*)+/, '');
+  const track=parseTrack(line);
+  if(track?.state)return `动态追踪：${trackText(track.state)}；${trackText(track.reason)}；速度 前/左/X ${track.vf}/${track.vl}/${track.vx} mm/s；剩余接近 ${track.room} mm；停车反馈 ${track.stop_confirmed===1?'已确认':track.stop_requested===1?'等待确认':'未请求'}`;
   if(line.startsWith('@RADAR '))try{
     const frame=JSON.parse(line.slice(7));
     if(frame?.v===1&&frame.k==='probe'){
@@ -78,6 +89,7 @@ export function chineseTerminalLine(original){
     }
   }catch{}
   const radar=line.match(/^(OK|ERR) radar ([a-z_]+)$/);if(radar)return `雷达${radar[1]==='ERR'?'未受理':'设备回复'}：${radarReasonText(radar[2])}`;
+  if(line.startsWith('ERR grab home_request '))return '故障 · 回零请求失败：'+line.slice(22).split(/\s+/).map(translateToken).join('；');
   if(/^(?:OK|ERR|EVT) grab state=/.test(line)){
     const summary=grabStatusSummary(line);
     if(summary)return summary;
@@ -125,12 +137,12 @@ export function chineseTerminalLine(original){
 export function bootProgress(line,current=''){
   if(line==='STM32 mechanical arm console ready')return '正在回零';
   if(!current)return current;
+  if(/\breason=home_/.test(line)&&replyIsFault(line))return '启动失败：'+chineseTerminalLine(line);
   if(/^OK grab state=homing\b/.test(line)){
     const reason=line.match(/\breason=(\w+)/)?.[1];
     return value(reason??'homing');
   }
   if(/\breason=home_complete\b/.test(line))return '回零完成，等待 IMU 静止验证';
-  if(/\breason=home_/.test(line)&&replyIsFault(line))return '启动失败：'+chineseTerminalLine(line);
   if(/^\[IMU CAL\]/.test(line)){
     if(/\bresult=PASS\b/.test(line)&&/\bcontrol_ready=1\b/.test(line))return '已就绪';
     if(/\bresult=FAIL\b/.test(line))return '验证失败：'+chineseTerminalLine(line);

@@ -42,9 +42,16 @@ static uint32_t ProbeReportedId;
 static RadarUart_ProbeState_t ProbeReportedState;
 static uint32_t RawSession,RawReportedId;
 static RadarScan_State_t RawReportedState;
-static char Kind[8],Line[257];
+static char Kind[9],Line[257];
 static uint32_t RequestedId;
 static unsigned RequestedPage,Length;
+static bool ResultSending;
+static uint32_t ResultOrigin,ResultScan,ResultMap,ResultPlan;
+static unsigned ResultStage,ResultPage,ResultMapPages,ResultPathPages;
+static uint32_t LastResultPage;
+/* DL-20 bench: uninterrupted result bursts lose pages. This local, nonblocking
+ * page cadence leaves air-link drain time; no USART1 chunk/command wait is added. */
+#define RESULT_PAGE_MS 100U
 static const char *const ParamNames[]={"lidar_x_mm","lidar_y_mm","zero_deg",
   "distance_min_mm","distance_max_mm","angle_min_tenths","angle_max_tenths",
   "threshold","energy_min","energy_max"};
@@ -142,6 +149,8 @@ static void status_page(bool foreground)
   append("\"state\":\"%s\",\"reason\":\"%s\",\"elapsed\":%lu,\"applicable\":%s,\"points_valid\":%s",
     States[Scan.state],Scan.reason?Scan.reason:"none",(unsigned long)Scan.elapsed_ms,
     applicable()?"true":"false",Scan.points_valid?"true":"false");
+  if(Scan.circles_target>1U && Length+14U<=253U)
+    append(",\"c\":[%u,%u]",Scan.circles_done,Scan.circles_target);
   (void)finish(foreground);
 }
 static void start_pages(void)
@@ -194,6 +203,25 @@ static unsigned page_capacity(unsigned total,unsigned item_bytes)
   unsigned capacity=FormatOk && Length+4U<256U?(256U-Length-4U)/item_bytes:0U;
   if(!capacity) capacity=1U;
   if(total && capacity>total) capacity=total;
+  return capacity;
+}
+static unsigned counts_capacity(const RadarMap_t *map)
+{
+  unsigned available=FormatOk && Length+4U<256U?256U-Length-4U:0U,capacity=1U;
+  /* Frozen counts determine wire widths. Use the largest window, so uniform
+   * offsets and all re-reads remain stable without budgeting six bytes for 0. */
+  for(unsigned n=1;n<=RADAR_MAP_CELL_COUNT;n++){
+    bool fits=true;
+    for(unsigned from=0;from+n<=RADAR_MAP_CELL_COUNT;from++){
+      unsigned bytes=0;
+      for(unsigned i=from;i<from+n;i++){
+        unsigned value=map->counts[i];bytes+=2U;while(value>=10U){bytes++;value/=10U;}
+      }
+      if(bytes>available){fits=false;break;}
+    }
+    if(!fits)break;
+    capacity=n;
+  }
   return capacity;
 }
 static void begin_raw(unsigned page,unsigned pages)
@@ -258,9 +286,34 @@ static void cloud_pose(void)
     append("\"pose\":[%.9g,%.9g,%.9g],",(double)Raw.parameters.lidar_x_mm,
       (double)Raw.parameters.lidar_y_mm,(double)Raw.parameters.zero_deg);
 }
-static bool fetch_page(void)
+static bool fetch_page(unsigned *page_count)
 {
   unsigned i,offset,total,pages,capacity;uint16_t count=0;const RadarSample_t *points;
+  if(!strcmp(Kind,"evidence")){
+    const RadarScan_Evidence_t *e=RadarScan_Evidence();
+    const RadarScan_EvidenceCircle_t *c;
+    unsigned circle=RequestedPage/51U,part=RequestedPage%51U;
+    if(!e || RequestedId!=e->scan_id || circle>=e->circles)return false;
+    c=&e->circle[circle];Length=0;FormatOk=true;
+    append("@RADAR {\"v\":1,\"k\":\"evidence\",\"scan\":%lu,\"map\":%lu,\"page\":%u,\"pages\":%u,\"circle\":%u,",
+      (unsigned long)e->scan_id,(unsigned long)e->map_id,RequestedPage,e->circles*51U,circle);
+    if(!part)append("\"mask\":%lu,\"pose\":[%.1f,%.1f,%.1f],\"rx\":[%u,%lu,%lu,%lu,%lu],\"raw\":%lu",
+      (unsigned long)c->mask,(double)e->parameters.lidar_x_mm,(double)e->parameters.lidar_y_mm,
+      (double)e->parameters.zero_deg,c->unit,(unsigned long)c->bad,(unsigned long)c->restarts,
+      (unsigned long)c->unit_changes,(unsigned long)c->unit_overflows,(unsigned long)c->raw_points);
+    else{
+      unsigned cell=(part-1U)/2U,first=((part-1U)%2U)*2U;
+      append("\"cell\":%u,\"count\":%u,\"n\":%u,\"offset\":%u,\"data\":\"",cell,c->counts[cell],c->hit_count[cell],first);
+      for(i=first;i<first+2U && i<c->hit_count[cell];i++){
+        const RadarScan_Hit_t *h=&c->hits[cell][i];
+        append("%s%u,%u,%u,%u,%u,%u,%u,%u,%u",i==first?"":";",h->angle_tenths,h->distance_mm,
+          h->energy,h->raw_distance,h->packet_start,h->packet_span,h->packet_count,h->packet_index,h->flags);
+      }
+      append("\"");
+    }
+    if(page_count)*page_count=e->circles*51U;
+    return finish(false);
+  }
   if(!strcmp(Kind,"raw")){
     if(!Raw.id || RequestedId!=Raw.id || Raw.raw.active)return false;
     return raw_page(RequestedPage,false);
@@ -270,27 +323,47 @@ static bool fetch_page(void)
     const RadarMap_t *m=RadarScan_Map();const RadarMap_Params_t *p=RadarScan_MapParams();
     if(!Scan.map_valid || RequestedId!=Scan.map_id) return false;
     begin("map",RADAR_MAP_CELL_COUNT,RADAR_MAP_CELL_COUNT+1U);
-    append("\"offset\":%u,\"counts\":[",RADAR_MAP_CELL_COUNT);
-    capacity=page_capacity(RADAR_MAP_CELL_COUNT,6U);
+    append("\"a\":3,\"c\":%u,\"f\":[%u,%u,%u,%u,%u,%u,%u],\"offset\":%u,\"counts\":[",
+      Scan.map_circles?Scan.map_circles:1U,
+      p->distance_min_mm,p->distance_max_mm,p->angle_min_tenths,p->angle_max_tenths,
+      p->threshold,p->energy_min,p->energy_max,RADAR_MAP_CELL_COUNT);
+    capacity=counts_capacity(m);
     pages=1U+(RADAR_MAP_CELL_COUNT+capacity-1U)/capacity;
     if(RequestedPage>=pages) return false;
     begin("map",RequestedPage,pages);
-    if(!RequestedPage) append("\"mask\":%lu,\"pose\":[%.1f,%.1f,%.1f],\"coverage\":%u,\"age_ms\":%lu,\"applicable\":%s",
+    if(!RequestedPage) append("\"g\":3,\"mask\":%lu,\"pose\":[%.1f,%.1f,%.1f],\"coverage\":%u,\"age_ms\":%lu,\"applicable\":%s",
       (unsigned long)m->mask,(double)p->lidar_x_mm,(double)p->lidar_y_mm,(double)p->zero_deg,
       3600U,(unsigned long)(HAL_GetTick()-Scan.completed_tick),applicable()?"true":"false");
-    else {offset=(RequestedPage-1U)*capacity;append("\"offset\":%u,\"counts\":[",offset);
+    else {offset=(RequestedPage-1U)*capacity;
+      if(RequestedPage==1U)append("\"a\":3,\"c\":%u,\"f\":[%u,%u,%u,%u,%u,%u,%u],",
+        Scan.map_circles?Scan.map_circles:1U,
+        p->distance_min_mm,p->distance_max_mm,p->angle_min_tenths,p->angle_max_tenths,
+        p->threshold,p->energy_min,p->energy_max);
+      append("\"offset\":%u,\"counts\":[",offset);
       for(i=offset;i<RADAR_MAP_CELL_COUNT && i<offset+capacity;i++) append("%s%u",i==offset?"":",",m->counts[i]);
       append("]");}
   }
   else if(!strcmp(Kind,"path"))
   {
+    unsigned first_capacity,later_capacity,item_bytes=1U;char item[32];
     if(!PlanId || RequestedId!=PlanId) return false;
+    for(i=0;i<Plan.count;i++){
+      unsigned bytes=(unsigned)snprintf(item,sizeof(item),"[%d,%d,%u,%u],",Plan.points[i].x_mm,
+        Plan.points[i].y_mm,Plan.points[i].station,Plan.points[i].visit);
+      if(bytes>item_bytes)item_bytes=bytes;
+    }
     begin("path",Plan.count,Plan.count);
     append("\"offset\":%u,\"start\":%u,\"valid\":%s,\"failed_leg\":%u,\"points\":[",Plan.count,Plan.start_id,Plan.valid?"true":"false",Plan.failed_leg);
-    capacity=page_capacity(Plan.count,26U);
-    pages=Plan.count?(Plan.count+capacity-1U)/capacity:1U;if(RequestedPage>=pages) return false;
-    begin("path",RequestedPage,pages);offset=RequestedPage*capacity;
-    append("\"offset\":%u,\"start\":%u,\"valid\":%s,\"failed_leg\":%u,\"points\":[",offset,Plan.start_id,Plan.valid?"true":"false",Plan.failed_leg);
+    first_capacity=page_capacity(Plan.count,item_bytes);
+    begin("path",Plan.count,Plan.count);append("\"offset\":%u,\"points\":[",Plan.count);
+    later_capacity=page_capacity(Plan.count,item_bytes);
+    pages=1U+(Plan.count>first_capacity?(Plan.count-first_capacity+later_capacity-1U)/later_capacity:0U);
+    if(RequestedPage>=pages)return false;
+    offset=RequestedPage?first_capacity+(RequestedPage-1U)*later_capacity:0U;
+    capacity=RequestedPage?later_capacity:first_capacity;
+    begin("path",RequestedPage,pages);append("\"offset\":%u,",offset);
+    if(!RequestedPage)append("\"start\":%u,\"valid\":%s,\"failed_leg\":%u,",Plan.start_id,Plan.valid?"true":"false",Plan.failed_leg);
+    append("\"points\":[");
     for(i=offset;i<Plan.count && i<offset+capacity;i++) append("%s[%d,%d,%u,%u]",i==offset?"":",",
       Plan.points[i].x_mm,Plan.points[i].y_mm,Plan.points[i].station,Plan.points[i].visit);
     append("]");
@@ -316,17 +389,40 @@ static bool fetch_page(void)
   else if(!strcmp(Kind,"params"))
   {
     if((RequestedId && RequestedId!=ParamsRevision) || RequestedPage>=10U) return false;
+    pages=10U;
     begin("params",RequestedPage,10);append("\"rev\":%lu,\"key\":\"%s\",\"value\":%.1f",
       (unsigned long)ParamsRevision,ParamNames[RequestedPage],(double)param_value(RequestedPage));
   }
   else return false;
+  if(page_count)*page_count=pages;
   return finish(false);
+}
+/* Send the existing pages consecutively, without a radio round trip per page.
+ * Static results are unchanged until replaced; identity changes end this stream
+ * rather than joining pages from two captures. Missing pages remain fetchable. */
+static void result_page(void)
+{
+  unsigned pages;
+  if(!Scan.map_valid || Scan.origin_generation!=ResultOrigin || Scan.scan_id!=ResultScan ||
+     Scan.map_id!=ResultMap || PlanId!=ResultPlan || PlanMap!=ResultMap){
+    ResultSending=false;reply(false,"snapshot_changed_or_page_range");return;
+  }
+  if(ResultStage<2U){
+    strcpy(Kind,ResultStage?"path":"map");RequestedId=ResultStage?ResultPlan:ResultMap;
+    RequestedPage=ResultPage;
+    if(!fetch_page(&pages)){ResultSending=false;reply(false,"snapshot_changed_or_page_range");return;}
+    if(ResultStage)ResultPathPages=pages;else ResultMapPages=pages;
+    if(++ResultPage==pages){ResultStage++;ResultPage=0;}
+  }else{
+    begin("result_end",0,1);append("\"mp\":%u,\"pp\":%u",ResultMapPages,ResultPathPages);
+    if(finish(false))ResultSending=false;
+  }
 }
 void RadarConsole_Init(void)
 {
   memset(&Plan,0,sizeof(Plan));Session=HAL_GetTick()+1U;if(!Session) Session=1;
   PlanId=PlanMap=SeenMap=LastBulk=LastStatus=LastNav=CaptureOrigin=0;ParamsRevision=1;
-  Watching=Pending=false;Kind[0]=0;
+  Watching=Pending=ResultSending=false;Kind[0]=0;
   StartReportedScan=StartReportedMap=0;
   ProbeReportedId=0;ProbeReportedState=RADAR_PROBE_IDLE;
   RawSession=Session;RawReportedId=0;RawReportedState=RADAR_SCAN_IDLE;
@@ -356,7 +452,11 @@ void RadarConsole_Process(void)
   if(Live.id && (Live.id!=LiveReportedId || Live.state!=LiveReportedState ||
       (Live.active && (uint32_t)(now-LiveStateTick)>=2000U)))live_state_page();
   if(!Watching || !ConsoleTx_BulkReady()) return;
-  if(Pending){if(!fetch_page()) reply(false,"snapshot_changed_or_page_range");Pending=false;LastBulk=now;return;}
+  if(Pending){if(!fetch_page(NULL)) reply(false,"snapshot_changed_or_page_range");Pending=false;LastBulk=now;return;}
+  if(ResultSending){
+    if((uint32_t)(now-LastResultPage)>=RESULT_PAGE_MS){result_page();LastResultPage=LastBulk=now;}
+    return;
+  }
   if(Live.active){
     if(!LiveSending && Live.sequence && (Live.id!=LiveTxId || Live.sequence!=LiveTxSequence) &&
        (uint32_t)(now-LiveFrameTick)>=1000U && RadarScan_LiveCopy(LiveTx)){
@@ -445,7 +545,7 @@ bool RadarConsole_Command(unsigned n,char *t[])
     }
     reply(ok,reason);
     if(ok){
-      CaptureOrigin=Location.generation;RawSession=Session;refresh();status_page(true);
+      ResultSending=false;CaptureOrigin=Location.generation;RawSession=Session;refresh();status_page(true);
       (void)raw_page(0,true);RawReportedId=Raw.id;RawReportedState=Raw.state;LastStatus=HAL_GetTick();
     }
     return true;
@@ -461,9 +561,10 @@ bool RadarConsole_Command(unsigned n,char *t[])
     if(was_live){LiveSending=false;refresh();live_state_page();}return true;
   }
   if((n==2U || (n==3U && (!strcmp(t[2],"auto") || !strcmp(t[2],"upper") ||
-                          !strcmp(t[2],"lower")))) && !strcmp(t[1],"scan")){
+                          !strcmp(t[2],"lower"))) ||
+      (n==4U && (!strcmp(t[2],"upper") || !strcmp(t[2],"lower")) && !strcmp(t[3],"3"))) && !strcmp(t[1],"scan")){
     bool automatic=n==3U && !strcmp(t[2],"auto");
-    RadarStart_Id_t start=n==3U && !strcmp(t[2],"upper")?RADAR_START_UPPER:RADAR_START_LOWER;
+    RadarStart_Id_t start=n>=3U && !strcmp(t[2],"upper")?RADAR_START_UPPER:RADAR_START_LOWER;
     if(Live.active){reply(false,"live_in_progress");return true;}
     RadarUart_Probe_t p;RadarUart_ProbeGet(&p);
     if(p.state==RADAR_PROBE_TX || p.state==RADAR_PROBE_WAITING){reply(false,"query_in_progress");return true;}
@@ -480,6 +581,7 @@ bool RadarConsole_Command(unsigned n,char *t[])
         p.zero_deg+=yaw*180.0f/CHASSIS_MODEL_PI;
       }
       if(automatic)ok=RadarScan_StartAuto(&p,Location.generation);
+      else if(n==4U)ok=RadarScan_StartAtCycles(&p,Location.generation,start,3U);
       else if(n==3U)ok=RadarScan_StartAt(&p,Location.generation,start);
       else ok=RadarScan_Start(&p,Location.generation);
       reason=ok?"scan_accepted":"scan_busy_or_parameters";
@@ -489,7 +591,7 @@ bool RadarConsole_Command(unsigned n,char *t[])
       /* Establish the capture baseline even if its circle completes before the
        * periodic bulk status slot becomes available. This also keeps queued
        * historical ready frames from masquerading as the requested scan. */
-      reply(true,reason);refresh();status_page(true);LastStatus=HAL_GetTick();return true;
+      ResultSending=false;reply(true,reason);refresh();status_page(true);LastStatus=HAL_GetTick();return true;
     }
   }
   else if(n==2U && !strcmp(t[1],"plan")){
@@ -504,8 +606,18 @@ bool RadarConsole_Command(unsigned n,char *t[])
     ok=RadarScan_SetParam(t[2],value);if(ok) ParamsRevision++;
     reason=ok?"parameter_updated_ram":"parameter_range_or_key";
   }
+  else if(n==3U && !strcmp(t[1],"result") && integer(t[2],&id)){
+    if(!id || id!=PlanId || !Scan.map_valid || PlanMap!=Scan.map_id)reason="snapshot_changed_or_page_range";
+    else{
+      if(!ResultSending || ResultPlan!=id){
+        ResultOrigin=Scan.origin_generation;ResultScan=Scan.scan_id;ResultMap=Scan.map_id;ResultPlan=id;
+        ResultStage=ResultPage=ResultMapPages=ResultPathPages=0;LastResultPage=HAL_GetTick()-RESULT_PAGE_MS;ResultSending=true;
+      }
+      return true;
+    }
+  }
   else if(n==5U && !strcmp(t[1],"fetch") && integer(t[3],&id) && integer(t[4],&page)){
-    if(strcmp(t[2],"map") && strcmp(t[2],"path") && strcmp(t[2],"points") && strcmp(t[2],"cloud") && strcmp(t[2],"params") && strcmp(t[2],"raw")) reason="fetch_kind";
+    if(strcmp(t[2],"map") && strcmp(t[2],"path") && strcmp(t[2],"points") && strcmp(t[2],"cloud") && strcmp(t[2],"params") && strcmp(t[2],"raw") && strcmp(t[2],"evidence")) reason="fetch_kind";
     else if(Pending) reason="page_pending";
     else if(page>65535U) reason="page_range";
     else {strcpy(Kind,t[2]);RequestedId=id;RequestedPage=(unsigned)page;Pending=true;return true;}

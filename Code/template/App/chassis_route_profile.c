@@ -105,3 +105,39 @@ bool ChassisRouteProfile_Build(const RadarPlan_Point_t *from,const RadarPlan_Poi
   out->final_yaw_deg=final_yaw;
   return true;
 }
+
+bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan_Point_t *to,
+                                 float previous_yaw_deg,float speed_mm_s,bool first_scan_leg,
+                                 ChassisRoute_Profile_t *out)
+{
+  float x,y,yaw,dx,dy,length,travel,work,stage_x,stage_y,dock;
+  ChassisRoute_Profile_t transit;
+  RadarPlan_Point_t neutral;
+  if(!from || !to || !out || !isfinite(previous_yaw_deg) ||
+     !isfinite(speed_mm_s) || speed_mm_s<=0) return false;
+  if(to->station!=4U && to->station!=2U && to->station!=3U)
+    return ChassisRouteProfile_Build(from,to,previous_yaw_deg,speed_mm_s,first_scan_leg,out);
+  memset(out,0,sizeof(*out));
+  x=from->x_mm;y=from->y_mm;yaw=normalized(previous_yaw_deg);
+  dx=to->x_mm-x;dy=to->y_mm-y;length=hypotf(dx,dy);
+  work=to->station==4U?0:(to->station==2U?180:90);
+  travel=yaw;
+  if(to->station==4U && fabsf(dy)<0.01f) travel=90; /* left translation before raw */
+  else if(to->station==2U && fabsf(dx)<0.01f && dy<0) travel=-90;
+  else if(to->station==3U) travel=90;
+  else if(length>300)
+  {
+    neutral=*to;neutral.station=0;
+    if(!ChassisRouteProfile_Build(from,&neutral,yaw,speed_mm_s,false,&transit)) return false;
+    travel=transit.phases[0].yaw_deg;
+  }
+  dock=fminf(length,75.0f);
+  stage_x=length>0?to->x_mm-dx*dock/length:x;
+  stage_y=length>0?to->y_mm-dy*dock/length:y;
+  add(out,true,"turn",&x,&y,&yaw,x,y,travel,0);
+  add(out,false,"work_approach",&x,&y,&yaw,stage_x,stage_y,travel,speed_mm_s);
+  add(out,true,"work_turn",&x,&y,&yaw,x,y,work,0);
+  add(out,false,"work_dock",&x,&y,&yaw,to->x_mm,to->y_mm,work,fminf(speed_mm_s,50));
+  out->final_yaw_deg=work;
+  return true;
+}

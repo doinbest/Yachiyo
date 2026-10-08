@@ -4,7 +4,6 @@
 #include <stdbool.h>
 
 #define MOTOR_BUS_FRAME_MAX 32U
-#define MOTOR_BUS_GAP_MS 10U
 #define MOTOR_BUS_TIMEOUT_MS 100U
 typedef enum
 {
@@ -30,6 +29,7 @@ typedef struct
 {
   MotorBus_Result_t result;
   uint32_t token, tick_ms;
+  uint32_t tx_ms; /* DMA completion timestamp; valid only when tx_completed. */
   uint8_t data[MOTOR_BUS_FRAME_MAX], length;
   bool tx_completed;
 } MotorBus_Event_t;
@@ -56,8 +56,26 @@ HAL_StatusTypeDef MotorBus_Init(UART_HandleTypeDef *uart);
 /** Copies the complete frame; true means accepted, never means transmitted. */
 bool MotorBus_Submit(MotorBus_Owner_t owner, const uint8_t *data, uint8_t length,
                      uint8_t reply_length, uint32_t token, bool priority);
+/** @brief Submit a copied frame with a distinct reply address (broadcast FF: ID1). */
+bool MotorBus_SubmitReplyTo(MotorBus_Owner_t owner, const uint8_t *data, uint8_t length,
+                           uint8_t reply_address, uint8_t reply_length,
+                           uint32_t token, bool priority);
+typedef struct
+{
+  uint32_t requests, success, rejected, timeouts;
+  uint32_t tx_ms, reply_ms, reply_last_ms, reply_max_ms, queue_last_ms, queue_max_ms;
+} MotorBus_IdTiming_t;
+typedef struct
+{
+  MotorBus_IdTiming_t id[8];
+  uint32_t transactions, ordinary, emergency, drained;
+} MotorBus_Timing_t;
+/** @brief Main-loop RAM snapshot; timestamps/durations in MCU milliseconds. */
+void MotorBus_TimingGet(MotorBus_Timing_t *out);
 bool MotorBus_EventGet(MotorBus_Owner_t owner, MotorBus_Event_t *event);
 bool MotorBus_OwnerBusy(MotorBus_Owner_t owner);
+/** @brief True only while this owner has an on-wire/waiting transaction. */
+bool MotorBus_OwnerInFlight(MotorBus_Owner_t owner);
 /** Reserve complete transaction; existing in-flight request drains, stop can preempt. */
 bool MotorBus_Reserve(MotorBus_Owner_t owner);
 void MotorBus_Release(MotorBus_Owner_t owner);
@@ -86,7 +104,10 @@ typedef struct
 } MotorBus_Recovery_t;
 /** @brief Start explicit recovery after all producers have stopped and drained.
  * Keeps normal traffic locked; stops/aborts IDs 1..8, drains old replies, then
- * checks three rounds of speed/state/home flags. Never enables, homes or resumes.
+ * checks three rounds of speed/state/home flags, overwrites IDs1..4 sync caches
+ * with 0 RPM (Receive ACK each), triggers addressed sync, then verifies fresh
+ * wheel speed/state/home flags. success means caches cleared and stopped.
+ * Never enables, resets position, homes, broadcasts sync or resumes a task.
  * Returns false if another transaction, event or reservation remains. */
 bool MotorBus_RecoveryStart(void);
 /** @brief Cancel recovery; leave motion locked. Main-loop only. */

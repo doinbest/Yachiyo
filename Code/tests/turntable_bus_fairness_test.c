@@ -46,7 +46,7 @@ static void step(void)
       target_deg=actual_deg+(sent[2]?-1.0:1.0)*pulses*360.0/3200.0;
       r[2]=2;r[3]=0x6b;
     } else if(sent[1]==0xf3) { assert(sent[0]==8);r[2]=2;r[3]=0x6b; }
-    else if(sent[1]==0xfe) { target_deg=actual_deg;length=0; }
+    else if(sent[1]==0xfe) { target_deg=actual_deg;r[2]=2;r[3]=0x6b; }
     else assert(0);
     if(length)MotorBus_RxBytes(r,(uint16_t)length);
   }

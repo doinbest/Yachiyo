@@ -58,9 +58,8 @@ int main(int argc,char **argv)
   tick=1000;
   assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_Z,2)==MECHANICAL_ARM_RESULT_NONE);
   /* A second boot transient with HOME queued must preserve that request. */
-  frame_error(); assert(!tx_count && !MotorBus_IsQuarantined());
-  tick+=MOTOR_BUS_GAP_MS-1; MotorBus_Process(); assert(!tx_count);
-  tick++; MotorBus_Process();
+  frame_error(); assert(tx_count==1 && !MotorBus_IsQuarantined());
+  /* Recovered RX now dispatches the preserved HOME without an artificial gap. */
   assert(tx_count==1 && sent[0]==6 && sent[1]==0x9a && sent[2]==2);
   if(argc>1) {
     tick++; frame_error(); MechanicalArm_Process();

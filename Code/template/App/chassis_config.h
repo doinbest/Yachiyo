@@ -55,7 +55,7 @@
 #define CHASSIS_TEST_SPEED_RPM             120U
 #define CHASSIS_TEST_ACCELERATION          20U
 #define CHASSIS_VELOCITY_ACCELERATION      20U
-#define CHASSIS_UART_COMMAND_INTERVAL_MS   10U
+/* UART5 transactions advance on matched Receive replies; no fixed TX gap. */
 
 /* 控制台极性测试使用独立低速参数，不影响正式底盘运动参数。 */
 #define CHASSIS_POLARITY_TEST_SPEED_RPM     20U  /* 整车前后极性测试速度。 */
@@ -110,7 +110,7 @@
 /* Route speed profile; verify acceleration and stopping distance on the chassis. */
 #define CHASSIS_DISTANCE_SPEED_MM_S       50.0f
 #define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  200.0f
-#define CHASSIS_ROUTE_AUTO_DWELL_MS       100U
+#define CHASSIS_ROUTE_AUTO_DWELL_MS       0U
 #define CHASSIS_DISTANCE_KP               2.5f
 #define CHASSIS_DISTANCE_RESPONSE_S       0.25f
 #define CHASSIS_DISTANCE_CREEP_MM         20.0f

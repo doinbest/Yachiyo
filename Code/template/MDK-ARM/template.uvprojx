@@ -362,7 +362,7 @@
             </VariousControls>
           </Aads>
           <LDads>
-            <umfTarg>1</umfTarg>
+            <umfTarg>0</umfTarg>
             <Ropi>0</Ropi>
             <Rwpi>0</Rwpi>
             <noStLib>0</noStLib>
@@ -371,7 +371,7 @@
             <TextAddressRange></TextAddressRange>
             <DataAddressRange></DataAddressRange>
             <pXoBase></pXoBase>
-            <ScatterFile></ScatterFile>
+            <ScatterFile>.\uart5-memory.sct</ScatterFile>
             <IncludeLibs></IncludeLibs>
             <IncludeLibsPath></IncludeLibsPath>
             <Misc></Misc>
@@ -2101,6 +2101,11 @@
               <FilePath>..\App\GrabTask.c</FilePath>
             </File>
             <File>
+              <FileName>grab_tracking.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\grab_tracking.c</FilePath>
+            </File>
+            <File>
               <FileName>GrabTask.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\App\GrabTask.h</FilePath>
@@ -2109,6 +2114,16 @@
               <FileName>GrabRoute.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\GrabRoute.c</FilePath>
+            </File>
+            <File>
+              <FileName>contest_mission.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\contest_mission.c</FilePath>
+            </File>
+            <File>
+              <FileName>contest_mission.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\contest_mission.h</FilePath>
             </File>
             <File>
               <FileName>GrabRoute.h</FileName>

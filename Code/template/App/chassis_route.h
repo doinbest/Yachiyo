@@ -39,6 +39,13 @@ bool ChassisRoute_StationResume(void);
 bool ChassisRoute_StationFinish(void);
 /** @brief 组合路线是否仍保留站点任务所有权。 */
 bool ChassisRoute_StationReserved(void);
+#define CHASSIS_TASK_ROUTE 1
+/** @brief 新后向机构任务：NULL为固定路线，否则使用已完成的右下雷达计划；不扫码。 */
+bool ChassisRoute_TaskStart(const RadarPlan_t *plan,float speed);
+/** @brief 工位任务接管局部移动与取放；保留路线与下一工位，不要求重设原点。 */
+bool ChassisRoute_WorkBegin(void);
+/** @brief 局部动作反馈完成后，按当前航向继续下一目标。 */
+bool ChassisRoute_WorkResume(void);
 /** @brief Main-loop only, after motion processing. */
 void ChassisRoute_Process(void);
 void ChassisRoute_StatusGet(ChassisRoute_Status_t *status);

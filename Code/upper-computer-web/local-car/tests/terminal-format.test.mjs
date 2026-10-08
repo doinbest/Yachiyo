@@ -4,6 +4,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {formatTerminalLine,describeReply} from '../protocol.mjs';
 
+test('cache recovery distinguishes zeroing, verification and stopped completion',()=>{
+  const progress=formatTerminalLine('OK bus recovery active=1 success=0 reason=zeroing_chassis addr=2 checked=0xff locked=1');
+  assert.match(progress,/清零四轮同步缓存/);
+  const done=formatTerminalLine('OK bus recover complete arm_ready=1 chassis_ready=1 reason=complete tasks_resumed=0 home_reference=check chassis_cache=cleared wheels_stopped=1');
+  assert.match(done,/同步缓存：已清除/);
+  assert.match(done,/四轮停稳确认：1/);
+  assert.match(done,/不会自动继续/);
+});
+
 test('common device and recovery replies explain actual completion scope',()=>{
   assert.match(formatTerminalLine('ARM STM32F407 USART1=115200 UART5=115200'),/控制台.*115200.*电机总线/);
   assert.match(formatTerminalLine('OK config z rpm=500 acc=120 limit_pulses=unlimited'),/Z.*500.*120.*不限/);
@@ -36,7 +45,8 @@ test('startup follows homing and actual IMU reports, without premature readiness
   assert.match(bootProgress('OK grab state=idle reason=home_complete','正在回零'),/等待.*验证/);
   assert.match(bootProgress('[IMU CAL] state=VERIFYING elapsed_s=2','等待验证'),/正在验证/);
   assert.equal(bootProgress('[IMU CAL] result=PASS state=DONE verified=1 control_ready=1','正在验证'),'已就绪');
-  assert.match(bootProgress('OK grab state=error reason=home_timeout','正在回零'),/失败.*home_timeout/);
+  assert.match(bootProgress('OK grab state=error reason=home_timeout','正在回零'),/失败.*回零超时/);
+  assert.match(bootProgress('OK grab state=homing reason=home_bus_fault stop_requested=1','正在回零'),/失败.*总线.*故障/);
 });
 
 test('disconnect timeout wording follows the actual port state',()=>{
@@ -70,6 +80,16 @@ test('blue grace keeps the recovery meaning while hiding observation and duratio
   assert.match(line,/沿原运动趋势减速，等待连续有效坐标/);
   assert.doesNotMatch(line,/中断\(ms\)|恢复观测|已请求停止|停止已确认/);
   assert.match(formatTerminalLine('OK grab state=align reason=vision_gap_recovered'),/未消耗停车恢复次数/);
+});
+
+test('failed boot homing reports pending reference, not a missing scale setting',()=>{
+  const raw='OK grab state=error mode=fixed reason=home_bus_fault missing=home_pending stop_requested=1 stop_confirmed=0';
+  assert.match(formatTerminalLine(raw),/回零.*总线.*故障/);
+  assert.match(formatTerminalLine(raw),/回零未完成/);
+  assert.doesNotMatch(formatTerminalLine(raw),/缺少参数|x_ppm/);
+  const detail='ERR grab home_request axis=z action=home result=tx_error bus_locked=1 bus_reason=uart_error uart_error=0x00000002 fault_ms=29';
+  assert.match(formatTerminalLine(detail),/回零请求.*Z.*串口通信错误.*噪声/);
+  assert.match(bootProgress(raw,'正在回零'),/失败/);
 });
 
 test('grab summaries retain mode, state, reason and current pixels without normal diagnostics',()=>{

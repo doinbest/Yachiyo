@@ -15,6 +15,7 @@ static unsigned starts,stops;
 static float last_speed;
 static uint32_t last_timeout,tick;
 static bool accept=true,last_turn;
+bool GrabTask_IsBusy(void){return false;}
 static char reply[700];
 uint32_t HAL_GetTick(void){return tick;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *s){*s=loc;}
@@ -156,9 +157,8 @@ int main(void)
   fast[3]="9";assert(ChassisRoute_Command(4,fast));assert(!starts);
   setup();char *automatic[]={"chassis","route","auto","200"};assert(ChassisRoute_Command(4,automatic));
   for(unsigned i=1;i<=15;i++){
-    assert(status().segment==i);finish_leg();assert(!strcmp(status().reason,"auto_dwell"));unsigned count=starts;
-    advance_clock(99);ChassisRoute_Process();assert(starts==count);
-    advance_clock(1);ChassisRoute_Process();assert(i==15?starts==count:starts>count);
+    assert(status().segment==i);finish_leg();assert(!strcmp(status().reason,"auto_continue"));unsigned count=starts;
+    ChassisRoute_Process();assert(i==15?starts==count:starts>count);
   }
   assert(!ChassisRoute_IsBusy() && !strcmp(status().reason,"route_complete"));
   setup();assert(ChassisRoute_StationStart(200));assert(ChassisRoute_StationReserved());finish_leg();

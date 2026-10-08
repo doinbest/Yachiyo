@@ -10,7 +10,7 @@
     "log_dir": ".embeddedskills/build"
   },
   "serial": {
-    "port": "COM11",
+    "port": "COM14",
     "baudrate": 115200,
     "bytesize": 8,
     "parity": "none",
@@ -21,7 +21,7 @@
   },
   "openocd": {
     "board": "",
-    "interface": "",
+    "interface": "interface/cmsis-dap.cfg",
     "target": "target/stm32f4x.cfg",
     "adapter_speed": "4000",
     "transport": "swd",

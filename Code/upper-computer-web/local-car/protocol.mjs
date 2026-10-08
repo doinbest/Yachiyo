@@ -1,5 +1,5 @@
 import {chineseTerminalLine,replyIsFault} from './terminal-format.mjs?v=grab-terminal-20261002';
-import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from './grab-params.mjs?v=grab-preset-20260930';
+import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from './grab-params.mjs?v=car-transfer-speed-20261007';
 export {replyIsFault};
 // Source: Code/template/App/arm_console.c. UI labels never go over the wire.
 /** One relative Z step, using the operator's measured command pulses/mm. */
@@ -35,7 +35,8 @@ export const grabParameters = [
   {key:'ref_u',label:'观察姿态准心 U / px',group:'准心与像素响应',min:0,max:639,step:1},
   {key:'ref_v',label:'观察姿态准心 V / px',group:'准心与像素响应',min:0,max:479,step:1},
   ...[['j00','DX / 底盘前进'],['j01','DX / 底盘左移'],['j02','DX / X 伸出'],['j10','DY / 底盘前进'],['j11','DY / 底盘左移'],['j12','DY / X 伸出']].map(([key,label])=>({key,label:`${label} / px·mm⁻¹`,group:'准心与像素响应',min:-10000,max:10000})),
-  ...[['body_speed','底盘速度上限'],['x_speed','X 速度上限'],['z_speed','Z 速度上限']].map(([key,label])=>({key,label:`${label} / mm·s⁻¹`,group:'控制与运动边界',min:0.0001,max:100})),
+  ...[['body_speed','底盘速度上限'],['x_speed','X 视觉对准速度上限'],['x_transfer_speed','X 正式取放 / 入仓测试速度'],['z_speed','Z 速度上限']].map(([key,label])=>({key,label:`${label} / mm·s⁻¹`,group:'控制与运动边界',min:0.0001,max:key==='body_speed'?300:100})),
+  {key:'z_pick_speed',label:'物料夹取下降速度 / mm·s⁻¹',group:'控制与运动边界',min:1,max:333.333},
   {key:'accel',label:'平移加速度上限 / mm·s⁻²',group:'控制与运动边界',min:0.0001,max:1000},
   {key:'travel_mm',label:'局部底盘行程上限 / mm（0 关闭）',group:'控制与运动边界',min:0,max:10000},
   {key:'lead_mm',label:'X 目标领先反馈上限 / mm',group:'控制与运动边界',min:0.0001,max:10000},
@@ -52,22 +53,36 @@ export const turntableParameters=[
   {key:'feedback_ms',label:'反馈新鲜度 / ms',min:100,max:60000,step:1}
 ];
 export const commands = [
-  ...turntableParameters.map(p=>command(`turntable-get-${p.key}`,'vision',`读取 ${p.label}`,`turntable get ${p.key}`)),
-  ...turntableParameters.filter(p=>!p.readOnly).map(p=>command(`turntable-set-${p.key}`,'vision',p.label,`turntable set ${p.key} {value}`,[number('value',p.label,'',p.min,p.max,p.step??'any')])),
-  ...[['origin','建立转盘参考'],['stop','停止车载转盘'],['status','读取转盘状态'],['inventory','读取三仓库存']].map(([id,label])=>command(`turntable-${id}`,'vision',label,`turntable ${id}`)),
-  command('turntable-empty','vision','确认三仓为空','turntable inventory empty'),
-  command('turntable-index','vision','分度到仓位','turntable index {slot}',[choice('slot','仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']])]),
-  command('turntable-jog','vision','转盘点动','turntable jog {degree}',[number('degree','相对角度 / °','',-360,360,.1)]),
-  command('turntable-inventory-set','vision','校正仓位库存','turntable inventory {slot} {content}',[choice('slot','仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('content','实际库存',[['empty','空仓'],['unknown','待核对'],['1','红色'],['2','黄色'],['3','蓝色'],['4','绿色'],['5','黑色'],['6','浅蓝色']])]),
+  ...turntableParameters.map(p=>command(`turntable-get-${p.key}`,'arm',`读取 ${p.label}`,`turntable get ${p.key}`)),
+  ...turntableParameters.filter(p=>!p.readOnly).map(p=>command(`turntable-set-${p.key}`,'arm',p.label,`turntable set ${p.key} {value}`,[number('value',p.label,'',p.min,p.max,p.step??'any')])),
+  ...[['save_zero','保存机械零点'],['home','就近回零'],['enable','使能转盘'],['disable','失能转盘'],['origin','建立转盘参考'],['stop','停止车载转盘'],['status','读取转盘状态'],['inventory','读取三仓库存']].map(([id,label])=>command(`turntable-${id}`,'arm',label,`turntable ${id}`)),
+  command('turntable-empty','arm','确认三仓为空','turntable inventory empty'),
+  command('turntable-index','arm','分度到仓位','turntable index {slot}',[choice('slot','仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']])]),
+  command('turntable-jog','arm','转盘点动','turntable jog {degree}',[number('degree','相对角度 / °','',-360,360,.1)]),
+  command('turntable-inventory-set','arm','校正仓位库存','turntable inventory {slot} {content}',[choice('slot','仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('content','实际库存',[['empty','空仓'],['unknown','待核对'],['1','红色'],['2','黄色'],['3','蓝色'],['4','绿色'],['5','黑色'],['6','浅蓝色']])]),
+  command('camera-ring','vision','仅识别编号环 · 不运动','camera ring {ring}',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']])],'只请求所选数字同心圆的坐标；不移动底盘或机械臂。'),
+  command('grab-ring-align','vision','底盘 + X 对准所选编号环','grab align ring {ring} {z}',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']]),number('z','对准时Z绝对高度 / mm',-100,-150,0,1)],'Z最高处识别编号，先底盘和X横向接近，再随环心接近准心逐步下降；靠画面边缘时暂缓下降。完成后停止视觉控制、Z抬至最高，再手动装料。DX/DY各≤1像素。'),
+  command('grab-ring-place','vision','下降放置并提起','grab ring place {z}',[number('z','放置Z绝对位置 / mm（可调整）',-150,-150,-0.1,0.1)],'先完成所选环对准，人工放入物料并闭合夹爪。仅Z下降、反馈到位后松爪，再提起至观察高度；不取仓、不改变库存。'),
+  command('grab-ring-align-stay','vision','对准后保持低位','grab align ring {ring} {z} stay',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']]),number('z','对准时Z绝对高度 / mm',-100,-150,0,1)],'按所设高度渐进下降，对准完成后保持低位，仅继续识别编号环供观察。'),
+  command('grab-stack-align','vision','颜色中心对准并补偿','grab stack align {color}',[choice('color','下层物料颜色',grabColorOptions,'3')],'Z保持最高，先对准绿色准心，再执行码垛专用补偿（画面向右39、向下1像素），停稳后等待装料；不修改物料准心。'),
+  command('grab-stack-lower','vision','单独调整码垛高度','grab stack lower {z}',[number('z','Z绝对目标 / mm',-100,-150,0,0.1)],'只调整Z，保持夹持；反馈到位后保持高度。'),
+  command('grab-stack-release','vision','单独松爪','grab stack release',[],'高度到位后松爪，保持当前Z；不自动提起。'),
+  command('grab-stack-lift','vision','提起到最高','grab stack lift',[],'仅Z提起；不重新对准或操作转盘。'),
+  command('grab-place-car','vision','机械臂到车载口放下','grab place car',[],'以已验证的后向回零位置为基准转到车载口，X伸到x_car，Z下降到z_place后自动松爪，并停留在放料姿态。此动作不分度ID8、不修改库存。'),
   command('grab-fixed-slot','vision','指定仓位固定夹取','grab start fixed {slot} {color}',[choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('color','物料颜色',grabColorOptions,'3')]),
   command('grab-pick-slot','vision','指定仓位视觉夹取','grab start pick {color} {slot}',[choice('color','物料颜色',grabColorOptions,'3'),choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']])]),
   command('grab-store-proc','vision','粗加工取回入仓','grab store proc {slot} {color}',[choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('color','物料颜色',grabColorOptions,'3')]),
   command('grab-take','vision','车载取出并释放','grab take {slot} {scene}',[choice('slot','取出仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('scene','释放场景',[['rough','粗加工'],['temp1','暂存第一层'],['temp2','暂存第二层']])]),
   command('grab-return','vision','返回外侧观察姿态','grab return'),
   command('grab-base-pos','vision','手动 Base 转到转盘','pos base {degree}',[number('degree','Base 电机轴相对角度 / °',-180,-360,360,0.1)],'自动取放已包含转向，此处仅用于手动定位。默认相对转动 −180°，每次执行都会再转一次，已在转盘方向时无需重复。若抓取处于 hold，先结束本次抓取并确认停止，再操作 Base。'),
-  ...[['fixed','固定位置抓取'],['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}`,'vision',label,`grab start ${mode}`)),
-  ...[['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}-color`,'vision',label,`grab start ${mode} {color}`,[choice('color','物料颜色',grabColorOptions,'3')])),
-  command('grab-route','vision','扫码位 → 首原料首件','grab route {speed}',[number('speed','路线平移速度 / mm·s⁻¹',200,10,5000)],'从路线起点显式启动；到扫码位模拟扫码，再到首次原料区抓取首件。提起后等待人工验收；先在地图页准备跑图。'),
+  ...[['fixed','固定位置抓取'],['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}`,'vision',label,mode==='align'?'grab align color 3 0':`grab start ${mode}`)),
+  ...[['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}-color`,'vision',label,mode==='align'?'grab align color {color} 0':`grab start ${mode} {color}`,[choice('color','物料颜色',grabColorOptions,'3')])),
+  command('grab-route','vision','启动蓝色首件入仓测试','grab route {speed}',[number('speed','路线平移速度 / mm·s⁻¹',200,10,5000)],'右下起点、机械臂朝后；二维码点直接通过，到原料台抓蓝色入第一仓，再收回朝后结束。不覆盖任务码；第一仓需有参考、已配置且为空，先在地图页准备跑图。'),
+  command('grab-mission','vision','启动后向机械臂两批任务','grab mission {speed}',[number('speed','路线平移速度 / mm·s⁻¹',200,10,5000)],'右下起点，朝后回零；二维码点先通过。按当前任务码三件入仓、加工取回、暂存与同色码垛。无任务码时用明确模拟码156+123+516+231。'),
+  command('grab-mission-continue','vision','补齐参数后继续本件','grab mission continue'),
+  command('grab-pose-rear','vision','收回并朝后','grab pose rear'),
+  command('grab-pose-work','vision','外侧作业姿态','grab pose work'),
+  command('grab-base-status','vision','读取Base到位诊断','grab status base'),
   command('grab-status','vision','刷新抓取状态','grab status'),
   command('grab-stop','vision','停止单件抓取','grab stop',[],'停止自动推进并请求机构停止；保留夹持和 Z 承载。停止确认以新鲜反馈为准。'),
   command('grab-rehome','vision','重新建立三轴参考','grab rehome',[],'先移走夹持物并确认机械臂周围无障碍；按 Z、X、Base 顺序重新回零并读回验证。各轴确认后恢复对应默认参考，三轴完成后才能开始新任务。'),
@@ -152,8 +167,8 @@ export function moduleForWire(text) {
   if (/^@(CHASSIS|RADAR)\b/.test(line) || /^(?:(?:OK|ERR|EVT) )?radar\b|^chassis stream\b/.test(line)) return 'map';
   if (/^(?:qr\b|@QR\b|EVT qr\b)/.test(line)) return 'qr';
   if (/^(?:chassis\b|wheel(?:\s|=)|\[CHASSIS\])/.test(line)) return 'chassis';
-  if (/^(?:camera|material|vision|grab|turntable|VISION)\b/.test(line)) return 'vision';
-  if (/^(?:pos|enable|disable|state|stop|position|home|origin|zero|config|grip)\b/.test(line)) return 'arm';
+  if (/^(?:camera|material|vision|grab|VISION)\b/.test(line)) return 'vision';
+  if (/^(?:pos|enable|disable|state|stop|position|home|origin|zero|config|grip|turntable)\b/.test(line)) return 'arm';
   if (/^(?:bus|system|console|imu|info|help|HWT101)\b/.test(line) || /^(?:\[IMU\b|\[MOTOR BUS\]|ARM STM32|BUILD |Boot:|STM32 mechanical)/.test(line)) return 'system';
   return 'manual';
 }
@@ -226,6 +241,8 @@ export class LineDecoder {
 export function describeReply(line) {
   if (replyIsFault(line)) return '设备故障或请求被拒绝';
   if (/^OK bus recover complete/.test(line)) return '总线恢复完成 · 不自动续跑，请检查回零参考';
+  if (/^OK grab\b.*\bstate=hold\b/.test(line) && /\boperation=ring_place\b/.test(line) && /\bresult=released\b/.test(line)) return '色环放置完成 · 已松爪提起';
+  if (/^OK grab\b.*\bstate=hold\b/.test(line) && /\breason=ring_aligned_low\b/.test(line)) return '色环对准完成 · 保持低位观察';
   if (/^OK grab\b.*\bstate=hold\b/.test(line)) return /\bmode=align\b/.test(line) ? '对准动作完成 · 未执行抓取' : '取放动作完成 · 等待人工验收';
   if (/^OK (?:material|vision)\b.*\bstate=ALIGNED\b/.test(line)) return '对准完成';
   if (/\baccepted\b/.test(line)) return '请求已接受 · 尚未确认到位';
@@ -278,12 +295,19 @@ export function parseGrabRouteStatus(line) {
     result[match[1]]=match[2];
   }
   if (!/^[a-z_]+$/.test(result.state??'')) return null;
-  for (const key of ['segment','elapsed_ms']) {
+  for (const key of ['segment','elapsed_ms','batch','item','station','visit','stored','placed']) {
     if (result[key]===undefined) {result[key]=null;continue;}
     if (!/^\d+$/.test(result[key]) || !Number.isSafeInteger(Number(result[key]))) return null;
     result[key]=Number(result[key]);
   }
   return result;
+}
+
+export function describeGrabRoute(r) {
+  if(r?.mode==='single'){const stage=({preparing_travel:'准备后向姿态',driving:'行驶中',prepare_transfer:'准备抓取',transfer:'抓取入仓',prepare_departure:'准备收回',leaving:'收回朝后',config_wait:`等待补齐 ${describeGrabMissing(r.reason)} 后继续本件`,done:'入仓及收回完成',error:'任务故障',cancelled:'已取消'})[r.state]||r.state;return `蓝色首件 · 第一仓 · ${stage}`;}
+  if(r?.mode!=='mission')return `组合路线：${({idle:'空闲',driving:'行驶中',scan_wait:'扫码等待 1 秒',display_wait:'等待屏幕发送',handoff:'物料台已交接',error:'路线故障',cancelled:'已取消',done:'首件任务完成'})[r?.state]||r?.state||'未报告'}`;
+  const stage=({preparing_travel:'准备后向行驶姿态',driving:'行驶中',ring_clear:'抬升收回',ring_move:'移动到指定环',transfer:'单件取放',leaving:'恢复后向姿态',return_center:'返回工位中心',config_wait:'等待补齐参数',done:'两批任务结束',error:'任务故障',cancelled:'已取消',prepare_ring:'准备换环',prepare_departure:'准备离站',prepare_transfer:'准备下一件取放'})[r.state]||r.state;
+  return `${r.batch===2?'第二批':'第一批'} · 第 ${r.item??'—'} 件 · ${stage}${r.state==='config_wait'?`：补齐 ${describeGrabMissing(r.reason)} 后继续本件`:''}`;
 }
 
 /** Compact display only; callers retain the original line for parsing and export. */

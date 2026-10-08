@@ -31,24 +31,40 @@ class RadarServiceTests(unittest.TestCase):
         result=serve.plan_radar_offline({'cloud_complete':False,'mask':0x50140|(1<<13)})
         self.assertEqual(result['mask'],0x50140|(1<<13))
 
-    def test_corner_centers_and_clockwise_quadrant_share_firmware_defaults(self):
+    def test_corner_centers_and_full_circle_share_firmware_defaults(self):
         lower=serve.plan_radar_offline({'start_mode':'lower'})
         upper=serve.plan_radar_offline({'start_mode':'upper'})
         self.assertEqual(lower['pose'],[2250,150,180])
         self.assertEqual(upper['pose'],[2250,2250,270])
         # Use a central sensor to distinguish the angle filter from field clipping.
-        rejected=serve.plan_radar_offline({'params':{'lidar_x_mm':1200,'lidar_y_mm':1200},
+        accepted=serve.plan_radar_offline({'params':{'lidar_x_mm':1200,'lidar_y_mm':1200},
+                                         'points':[[1800,500,80],[1801,500,80]]})
+        self.assertEqual(sum(accepted['counts']),2)
+        self.assertEqual(accepted['counts'][13],2)
+        rejected=serve.plan_radar_offline({'params':{'lidar_x_mm':1200,'lidar_y_mm':1200,'angle_max_tenths':900},
                                          'points':[[1800,500,80],[1801,500,80]]})
         self.assertEqual(sum(rejected['counts']),0)
 
-    def test_full_recorded_circle_keeps_two_foregrounds_and_removes_external_contour(self):
+    def test_full_recorded_circle_counts_all_filtered_inset_points_without_background_deletion(self):
         fixture=ROOT.parents[2]/'Code/tests/fixtures/radar-field-20261004.json'
         source=json.loads(fixture.read_text(encoding='utf-8'))
         result=serve.plan_radar_offline({'points':source['points'],'start_mode':'lower'})
-        self.assertEqual(result['mask'],0x50140|(1<<13)|(1<<15))
-        self.assertEqual(sum(result['counts']),7)
-        self.assertEqual([result['counts'][i] for i in (8,13,15)],[3,2,2])
-        self.assertTrue(result['valid'])
+        # Independent double-precision projection and literal inset grid edges.
+        expected=[0]*25
+        edges=[150,550,1000,1400,1850,2250]
+        for angle,distance,energy in source['points']:
+            if not 100<=distance<=40000 or not 0<=energy<=255:
+                continue
+            radians=math.radians(180-angle/10)
+            x,y=2250+distance*math.cos(radians),150+distance*math.sin(radians)
+            if not (150<x<=2250 and 150<=y<2250):
+                continue
+            col=next(i for i in range(5) if x<=edges[i+1])
+            row=next(i for i in range(5) if y<edges[i+1])
+            expected[row*5+col]+=1
+        self.assertEqual(result['counts'],expected)
+        mask=0x50140|sum(1<<i for i,n in enumerate(expected) if n and i not in (2,4,10,14,22))
+        self.assertEqual(result['mask'],mask)
 
     def test_field_boundary_uses_projected_endpoint_not_side_length_as_range_limit(self):
         def sample(x,y):
@@ -89,7 +105,7 @@ class RadarServiceTests(unittest.TestCase):
                 result=serve.plan_radar_offline({'start_mode':'auto','points':self.corner_evidence(name)})
                 self.assertEqual(result['start']['selected'],selected)
                 self.assertEqual(result['start']['reason'],'clear_regions')
-                self.assertFalse(result['valid']) # Clutter blocks a different mission station.
+                self.assertTrue(result['valid']) # F1 task-cell protection retains evidence but clears scan occupancy.
                 empty=serve.plan_radar_offline({'start_mode':name})
                 self.assertEqual(empty['points'][0][:2],[2250,y])
                 self.assertEqual(empty['points'][-1][:2],[2250,y])
@@ -120,7 +136,7 @@ class RadarServiceTests(unittest.TestCase):
         selected=serve.plan_radar_offline({'start_mode':'lower','points':points})
         self.assertEqual(selected['start']['conflicts'],[1<<14,1<<22])
         self.assertEqual(selected['start']['qr'],[3,0])
-        self.assertFalse(selected['valid'])
+        self.assertTrue(selected['valid'])
         self.assertEqual(selected['mask'] & ((1<<14)|(1<<22)),0)
         self.assertEqual(selected['counts'][22],3)
         override=serve.plan_radar_offline({'start_mode':'lower','points':points,'mask':1<<14})
@@ -177,13 +193,15 @@ class RadarServiceTests(unittest.TestCase):
         self.assertEqual(fixed['points'][0],[2250,150,1,0])
         self.assertEqual(fixed['points'][-2:],[ [2100,300,0,0], [2250,150,1,8] ])
         self.assertEqual(planned['points'],result['points'])
+        self.assertEqual(planned['points'][:3],[[2250,150,1,0],[2100,300,0,0],[2100,1200,5,1]])
         first=planned['phases'][0]
         self.assertEqual(first,dict(kind='move',phase='move',direction='diagonal',segment=1,
-                                   station=5,visit=1,target=[2100,300,90],speed_mm_s=200))
+                                   station=0,visit=0,target=[2100,300,90],speed_mm_s=200))
         for profile in (fixed,planned):
             self.assertEqual([p['target'] for p in profile['phases'][:2]],[[2100,300,90],[2100,1200,90]])
             self.assertEqual([p['direction'] for p in profile['phases'][:2]],['diagonal','forward'])
-            self.assertTrue(all(p['segment']==1 and p['station']==5 and p['visit']==1 for p in profile['phases'][:2]))
+        self.assertTrue(all(p['segment']==1 and p['station']==5 and p['visit']==1 for p in fixed['phases'][:2]))
+        self.assertEqual([(p['segment'],p['station'],p['visit']) for p in planned['phases'][:2]],[(1,0,0),(2,5,1)])
         docking=[p for p in fixed['phases'] if p['segment']==6]
         self.assertEqual([p['phase'] for p in docking],['turn','dock_approach','arrival_turn','dock'])
         self.assertEqual([p['target'] for p in docking],[[1200,1200,180],[425,1200,180],[425,1200,90],[350,1200,90]])
@@ -192,10 +210,28 @@ class RadarServiceTests(unittest.TestCase):
         self.assertEqual([p['phase'] for p in leaving],['undock','turn','move'])
         self.assertEqual([p['target'] for p in leaving],[[425,1200,90],[425,1200,180],[1200,1200,180]])
         keys={'kind','phase','direction','segment','station','visit','target','speed_mm_s'}
-        for profile in profiles.values():
+        for profile in (fixed,planned):
             for phase in profile['phases']:
                 self.assertEqual(set(phase),keys)
         self.assertEqual(planned['phases'][-1]['target'],[2250,150,90])
+
+    def test_rear_arm_task_profiles_use_shared_work_headings(self):
+        profiles=serve.plan_radar_offline({'mask':0})['route_profiles']
+        task=profiles['task_fixed']
+        raw=[p for p in task['phases'] if p['segment']==3]
+        self.assertEqual([p['phase'] for p in raw],['work_approach','work_turn','work_dock'])
+        self.assertEqual(raw[0]['target'],[1275,2100,90])
+        self.assertEqual(raw[0]['direction'],'lateral')
+        self.assertEqual(raw[0]['arm_pose'],'rear')
+        self.assertEqual(raw[-1]['target'],[1200,2100,0])
+        self.assertEqual(raw[-1]['arm_pose'],'work')
+        for station,yaw in [(4,0),(2,180),(3,90)]:
+            docks=[p for p in task['phases'] if p['station']==station and p['phase']=='work_dock']
+            self.assertEqual(len(docks),2)
+            self.assertTrue(all(p['target'][2]==yaw and p['speed_mm_s']==50 for p in docks))
+        self.assertEqual(task['phases'][-1]['target'],[2250,150,90])
+        self.assertEqual(task['phases'][-1]['arm_pose'],'rear')
+        self.assertTrue(profiles['task_planned']['phases'])
 
     def test_planned_detour_keeps_first_scan_heading_until_qr_visit(self):
         result=serve.plan_radar_offline({'mask':1<<9})
@@ -217,7 +253,7 @@ class RadarServiceTests(unittest.TestCase):
             for profile in result['route_profiles'].values():
                 self.assertEqual(profile['speed_mm_s'],speed)
                 for phase in profile['phases']:
-                    expected=0 if phase['kind']=='turn' else min(speed,50) if phase['phase'] in ('dock','undock') else speed
+                    expected=0 if phase['kind']=='turn' else min(speed,50) if phase['phase'] in ('dock','undock','work_dock') else speed
                     self.assertEqual(phase['speed_mm_s'],expected)
         for speed in (9.99,5000.01,0,-1,True,'200',float('nan'),float('inf')):
             with self.subTest(speed=speed),self.assertRaises(ValueError):

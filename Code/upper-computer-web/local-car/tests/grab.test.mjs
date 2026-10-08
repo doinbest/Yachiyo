@@ -22,9 +22,9 @@ test('fixed Z jog converts measured millimetres to signed motor degrees without 
 });
 
 test('single grasp actions have explicit distinct wires and retain pure route controls',()=>{
-  for(const mode of ['fixed','align','pick']) assert.equal(protocol.buildCommand(`grab-${mode}`),`grab start ${mode}`);
+  for(const mode of ['fixed','align','pick']) assert.equal(protocol.buildCommand(`grab-${mode}`),mode==='align'?'grab align color 3 0':`grab start ${mode}`);
   for(const mode of ['align','pick'])for(let color=1;color<=6;color++)
-    assert.equal(protocol.buildCommand(`grab-${mode}-color`,{color}),`grab start ${mode} ${color}`);
+    assert.equal(protocol.buildCommand(`grab-${mode}-color`,{color}),mode==='align'?`grab align color ${color} 0`:`grab start ${mode} ${color}`);
   for(const invalid of [0,7,'red','1\nstop'])assert.throws(()=>protocol.buildCommand('grab-align-color',{color:invalid}));
   for(const action of ['status','stop','rehome']) assert.equal(protocol.buildCommand(`grab-${action}`),`grab ${action}`);
   assert.equal(protocol.buildCommand('grab-route',{speed:300}),'grab route 300');
@@ -35,7 +35,8 @@ test('single grasp actions have explicit distinct wires and retain pure route co
 
 test('grab inputs distinguish startup defaults from unknown calibration and fit the firmware frame',()=>{
   assert.ok(protocol.grabParameters?.length>20);
-  const defaults={z_speed:55.555556,loss_grace_ms:250,age_ms:1000,accel:60,body_speed:40,lambda:1.2,vision_wait_ms:12000,x_speed:10,travel_mm:0,lead_mm:2,dx_tol:5,dy_tol:5,ref_u:334,ref_v:338,j00:2,j01:0,j02:0,j10:0,j11:2,j12:2,x_ppm:31.746032,x_min:0,x_max:100,x_pre:0,z_observe:0,z_ppm:480,z_min:-80,z_max:0,z_grab:-80,z_place:-60,z_lift:-40,pos_tol:1,stop_speed:2,feedback_ms:2000,close_ms:500};
+  const defaults={z_speed:55.555556,loss_grace_ms:250,age_ms:1000,accel:300,body_speed:160,lambda:2.5,vision_wait_ms:12000,x_speed:60,x_transfer_speed:60,travel_mm:0,lead_mm:12,dx_tol:1,dy_tol:1,ref_u:334,ref_v:338,j00:2,j01:0,j02:0,j10:0,j11:2,j12:2,x_ppm:31.746032,x_min:0,x_max:100,x_pre:0,z_observe:0,z_ppm:480,z_min:-80,z_max:0,z_grab:-80,z_place:-60,z_lift:-40,pos_tol:1,stop_speed:2,feedback_ms:2000,close_ms:500};
+  defaults.z_pick_speed=111.111111;
   for(const parameter of protocol.grabParameters){
     const command=protocol.commands.find(c=>c.id===`grab-set-${parameter.key}`);
     assert.equal(command.fields[0].value,defaults[parameter.key]??'',parameter.key);
@@ -171,4 +172,44 @@ test('recovery counter is diagnostic and the 12-second wait is readable',()=>{
  const s=protocol.parseGrabStatus('OK grab state=vision_pause recovery_used=5 recovery_count=0 recovery_left_ms=12000 stop_confirmed=1');
  assert.equal(s.recovery_used,5);assert.equal(s.recovery_left_ms,12000);
  assert.equal(protocol.buildGrabPresetCommands({vision_wait_ms:12000})[0],'grab set vision_wait_ms 12000');
+});
+
+test('rear-home mission commands and resumable scene configuration have explicit status',()=>{
+  assert.equal(protocol.buildCommand('grab-mission',{speed:200}),'grab mission 200');
+  assert.equal(protocol.buildCommand('grab-mission-continue'),'grab mission continue');
+  assert.equal(protocol.buildCommand('grab-pose-rear'),'grab pose rear');
+  assert.equal(protocol.buildCommand('grab-pose-work'),'grab pose work');
+  const r=protocol.parseGrabRouteStatus('OK grab route state=config_wait mode=mission source=simulated code=156+123+516+231 batch=2 item=1 station=3 visit=7 stored=12 placed=9 elapsed_ms=5000 reason=z_temp_layer2');
+  assert.equal(r.batch,2);assert.equal(r.item,1);assert.equal(r.placed,9);
+  assert.match(protocol.describeGrabRoute(r),/第二批.*第 1 件/);
+  assert.match(protocol.describeGrabRoute(r),/补齐.*z_temp_layer2/);
+  assert.equal(protocol.parseGrabRouteStatus('OK grab route state=transfer mode=mission stored=-1'),null);
+});
+
+test('single blue route reports recovery/configuration and completion without mission batch labels',()=>{
+  const r=protocol.parseGrabRouteStatus('OK grab route state=config_wait mode=single source=test code=none color=3 slot=1 stored=0 reason=z_grab elapsed_ms=10');
+  assert.match(protocol.describeGrabRoute(r),/蓝色/);
+  assert.match(protocol.describeGrabRoute(r),/补齐/);
+  assert.match(protocol.describeGrabRoute({...r,state:'done'}),/完成/);
+});
+
+
+test('black and white ring test has separate align, manual grip and placement commands',()=>{
+  assert.equal(protocol.buildCommand('grab-ring-align',{ring:'1',z:-100}),'grab align ring 1 -100');
+  for(const ring of ['1','2','3']) assert.equal(protocol.buildCommand('camera-ring',{ring}),`camera ring ${ring}`);
+  for(const ring of ['2','3']) assert.equal(protocol.buildCommand('grab-ring-align',{ring,z:-100}),`grab align ring ${ring} -100`);
+  assert.throws(()=>protocol.buildCommand('grab-ring-align',{ring:'4'}));
+  assert.equal(protocol.buildCommand('grab-ring-place',{z:-150}),'grab ring place -150');
+  assert.throws(()=>protocol.buildCommand('grab-ring-place',{z:-151}));
+});
+
+test('ring release completion stays distinct from alignment hold',()=>{
+  assert.equal(protocol.describeReply('OK grab state=hold mode=align operation=ring_place result=released'),'色环放置完成 · 已松爪提起');
+});
+
+test('ring low observation keeps adjustable height and distinct completion',()=>{
+  for(const ring of ['1','2','3']) for(const z of [-30,-60,-100,-150,0])
+    assert.equal(protocol.buildCommand('grab-ring-align-stay',{ring,z}),`grab align ring ${ring} ${z} stay`);
+  for(const z of [-151,1,NaN]) assert.throws(()=>protocol.buildCommand('grab-ring-align-stay',{ring:'1',z}));
+  assert.equal(protocol.describeReply('OK grab state=hold mode=align operation=ring_align reason=ring_aligned_low result=aligned'),'色环对准完成 · 保持低位观察');
 });

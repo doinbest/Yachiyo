@@ -1,4 +1,5 @@
 #include "GrabRoute.h"
+#include "contest_mission.h"
 #include "GrabTask.h"
 #include "chassis_route.h"
 #include "chassis_config.h"
@@ -19,6 +20,7 @@ bool GrabRoute_StartPlanned(const RadarPlan_t *plan,float speed)
 {
   if(GrabRoute_IsBusy() || GrabTask_IsBusy() || !GrabTask_ConfigReady("pick")) return false;
   if(!ChassisRoute_PlanStart(plan,speed,true)) return false;
+  ContestMission_Init();
   StartTick=HAL_GetTick();CodeSequence=0U;State=GR_DRIVING;Reason="to_scan";
   return true;
 }
@@ -39,15 +41,18 @@ static void Report(uint8_t Error)
 void GrabRoute_Init(void)
 {
   State=GR_IDLE;StartTick=WaitTick=CodeSequence=0U;Reason="idle";
+  ContestMission_Init();
 }
 
 bool GrabRoute_IsBusy(void)
 {
-  return State==GR_DRIVING || State==GR_SCAN_WAIT || State==GR_DISPLAY_WAIT || State==GR_HANDOFF;
+  return ContestMission_IsBusy() || State==GR_DRIVING || State==GR_SCAN_WAIT || State==GR_DISPLAY_WAIT || State==GR_HANDOFF;
 }
+bool GrabRoute_CanConfigure(void) { return ContestMission_CanConfigure(); }
 
 void GrabRoute_Stop(void)
 {
+  ContestMission_Stop();
   if(GrabRoute_IsBusy())
   {
     if(State!=GR_HANDOFF) (void)ChassisRoute_Cancel();
@@ -67,6 +72,7 @@ void GrabRoute_Process(void)
 {
   ChassisRoute_Status_t Route;
   QR_SnapshotTypeDef Code;
+  if(ContestMission_IsBusy()) { ContestMission_Process();return; }
   if(!GrabRoute_IsBusy()) return;
   if(State==GR_HANDOFF)
   {
@@ -131,7 +137,27 @@ bool GrabRoute_Command(unsigned Count,char *Tokens[])
   char *End;
   float Speed;
   if(Count<2U || strcmp(Tokens[0],"grab")) return false;
-  if(Count==2U && !strcmp(Tokens[1],"status")) { Report(0U);return false; }
+  if(Count==2U && !strcmp(Tokens[1],"status"))
+  { if(ContestMission_HasRun()) ContestMission_Report();else Report(0U);return false; }
+  if(Count==3U && (!strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"mission")) &&
+     !strcmp(Tokens[2],"status"))
+  { if(ContestMission_HasRun()) ContestMission_Report();else Report(0U);return true; }
+  if(!strcmp(Tokens[1],"mission"))
+  {
+    if(Count==3U && !strcmp(Tokens[2],"continue"))
+    { (void)ContestMission_Continue();ContestMission_Report();return true; }
+    Speed=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
+    if(Count==3U)
+    { Speed=strtof(Tokens[2],&End);if(End==Tokens[2] || *End) Speed=NAN; }
+    if((Count!=2U && Count!=3U) || !ContestMission_Start(NULL,Speed))
+    {
+      char Error[180];
+      int Length=snprintf(Error,sizeof Error,"ERR grab mission reason=%s\r\n",
+        Count!=2U && Count!=3U?"format":ContestMission_Reason());
+      if(Length>0 && Length<(int)sizeof Error) (void)ConsoleTx_Write((const uint8_t*)Error,(uint16_t)Length);
+    }
+    return true;
+  }
   if(strcmp(Tokens[1],"route")) return false;
   if(GrabRoute_IsBusy() || GrabTask_IsBusy() || ChassisRoute_IsBusy())
   { static const char Busy[]="ERR grab route busy\r\n";(void)ConsoleTx_Write((const uint8_t*)Busy,sizeof(Busy)-1U);return true; }
@@ -143,8 +169,13 @@ bool GrabRoute_Command(unsigned Count,char *Tokens[])
     if(End==Tokens[2] || *End || !isfinite(Speed) || Speed<10.0f || Speed>CHASSIS_MOTION_MAX_LINEAR_MM_S)
     { Reason="speed_range";Report(1U);return true; }
   }
-  if(!GrabTask_ConfigReady("pick")) { Reason="grab_config_missing";Report(1U);return true; }
-  if(!ChassisRoute_StationStart(Speed)) { Reason="route_not_ready";Report(1U);return true; }
-  StartTick=HAL_GetTick();CodeSequence=0U;State=GR_DRIVING;Reason="to_scan";Report(0U);
+  if(!ContestMission_StartSingle(Speed))
+  {
+    char error[220];
+    int length;
+    Reason=ContestMission_Reason();
+    length=snprintf(error,sizeof error,"ERR grab route state=error mode=single source=test code=none color=3 slot=1 elapsed_ms=0 reason=%s\r\n",Reason);
+    if(length>0 && length<(int)sizeof error) (void)ConsoleTx_Write((const uint8_t*)error,(uint16_t)length);
+  }
   return true;
 }

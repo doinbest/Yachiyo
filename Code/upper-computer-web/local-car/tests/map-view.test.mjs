@@ -39,12 +39,31 @@ const state=(t,valid=true)=>({v:1,kind:'state',session:42,t_ms:t,target:{body:[0
 const receive=(view,packet)=>view.receive('@CHASSIS '+JSON.stringify(packet));
 function online(view){view.beginPreparedTelemetry(42);receive(view,config);receive(view,state(20));}
 
-test('field displays the actual nonuniform 5 by 5 radar boundaries instead of a 300 mm background grid',()=>{
+test('formal field defaults to the inset nonuniform grid and retains its 2400 mm outer frame',()=>{
   const ui=surface();try{
     mountMap({send:async()=>true});
     const grid=ui.get('field-static').children.filter(node=>node.attributes['data-radar-grid']!==undefined);
     assert.deepEqual(grid.map(node=>node.attributes.d),[150,550,1000,1400,1850,2250].map(mm=>`M ${mm} 150 V 2250 M 150 ${mm} H 2250`));
+    assert.deepEqual(ui.get('field-static').children[0].attributes,{x:'0',y:'0',width:'2400',height:'2400',fill:'#c5c9ce',stroke:'#607486','stroke-width':'8'});
     assert.equal(ui.get('field-static').children.some(node=>node.attributes.d==='M 300 0 V 2400 M 0 300 H 2400'),false);
+  }finally{ui.restore();}
+});
+
+test('field grid and cell labels follow frozen capture geometry without redrawing the field frame',()=>{
+  const ui=surface();try{
+    const view=mountMap({send:async()=>true}),frame=ui.get('field-static').children[0];
+    view.setRadarGrid([0,550,1000,1400,1850,2400]);
+    const grid=ui.get('field-static').children.filter(node=>node.attributes['data-radar-grid']!==undefined);
+    const labels=ui.get('field-static').children.filter(node=>node.attributes.class==='monitor-grid-label');
+    assert.equal(grid[0].attributes.d,'M 0 0 V 2400 M 0 0 H 2400');
+    assert.equal(labels[0].attributes.transform,'translate(275 420) scale(1 -1)');
+    assert.equal(labels[4].attributes.transform,'translate(2125 420) scale(1 -1)');
+    assert.match(ui.get('radar-grid-legend').attributes.title,/0、550、1000、1400、1850、2400/);
+    view.setRadarGrid([150,550,1000,1400,1850,2250]);
+    assert.equal(grid[0].attributes.d,'M 150 150 V 2250 M 150 150 H 2250');
+    assert.equal(labels[0].attributes.transform,'translate(350 420) scale(1 -1)');
+    assert.equal(labels[4].attributes.transform,'translate(2050 420) scale(1 -1)');
+    assert.equal(ui.get('field-static').children[0],frame);
   }finally{ui.restore();}
 });
 

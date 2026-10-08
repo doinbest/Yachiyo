@@ -31,10 +31,17 @@ class UsbCameraTest(unittest.TestCase):
         tree = ast.parse((ROOT / 'orange_pi/vision.py').read_text(encoding='utf-8-sig'))
         classes = [n for n in tree.body if isinstance(n, ast.ClassDef)
                    and n.name in ('USBController', 'UART2Controller')]
+        # Load the production B2 target table along with the controller. The
+        # newer controller accepts color and numbered-ring commands.
+        constants = [n for n in tree.body if isinstance(n, ast.Assign)
+                     and any(isinstance(t, ast.Name) and
+                             (t.id.startswith('CAMERA_') or t.id in
+                              ('VALID_COLOR_IDS', 'DIGIT_RING_COMMAND_TO_DIGIT',
+                               'VALID_COMMAND_IDS', 'COLOR_NAMES', 'COMMAND_NAMES'))
+                             for t in n.targets)]
         ns = dict(serial=types.SimpleNamespace(Serial=Port), struct=struct,
-                  threading=threading, VALID_COLOR_IDS=set(range(1, 7)),
-                  COLOR_NAMES={n: str(n) for n in range(1, 7)})
-        exec(compile(ast.Module(body=classes, type_ignores=[]), '<controller>', 'exec'), ns)
+                  threading=threading)
+        exec(compile(ast.Module(body=constants + classes, type_ignores=[]), '<controller>', 'exec'), ns)
         self.assertTrue('USBController' in ns, 'USB CDC controller has not been migrated')
         self.controller = ns['USBController'](port='/dev/serial/by-id/test-stm32')
 

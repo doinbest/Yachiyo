@@ -97,6 +97,7 @@ export function mountRadarDirectHost({
     ['radar-direct-stop', '停止'],
     ['radar-direct-single', '单次扫描', 'button button-accent'],
     ['radar-direct-continuous', '持续扫描', 'button button-accent'],
+    ['radar-direct-read-status', '读取状态/结果'],
     ['radar-direct-save', '保存本机配置'],
   ]) actions.append(button(...item));
   connection.append(actions, el('p', {id: 'radar-direct-connection-status', cls: 'radar-direct-feedback', text: '设备未连接'}));
@@ -106,7 +107,7 @@ export function mountRadarDirectHost({
   const filterPanel = el('section', {cls: 'radar-direct-panel glass'}); filterPanel.append(panelHeading('POINT FILTER', '点云筛选'));
   const displayButtons = el('div', {cls: 'radar-direct-segments'}); displayButtons.append(button('radar-direct-show-raw', '接收原始'), button('radar-direct-show-filtered', '上位机筛选'));
   const themeButtons = el('div', {cls: 'radar-direct-segments'}); themeButtons.append(button('radar-direct-theme-dark', '黑'), button('radar-direct-theme-light', '白'));
-  filterPanel.append(el('p', {cls: 'radar-direct-subtitle', text: '点云显示 · 同一完整扫描圈'}), displayButtons, themeButtons);
+  filterPanel.append(el('p', {cls: 'radar-direct-subtitle', text: '单次/持续扫描都由 F407 用完整圈判障和规划；120 点仅作预览，完整点云按需诊断。'}), displayButtons, themeButtons);
   const filterFields = el('div', {cls: 'radar-direct-two-fields'});
   field(filterFields, 'radar-direct-min-angle', '最小角度 °', config.filter.minAngleDeg, {min: 0, max: 360, step: 0.1});
   field(filterFields, 'radar-direct-max-angle', '最大角度 °', config.filter.maxAngleDeg, {min: 0, max: 360, step: 0.1});
@@ -253,14 +254,16 @@ export function mountRadarDirectHost({
   }
 
   function planFromDevice(deviceMap, devicePath) {
+    const pending = !deviceMap || deviceMap.path_valid && !sameIdentity(deviceMap, devicePath);
     const points = sameIdentity(deviceMap, devicePath) ? devicePath.points || [] : [];
     const waypoints = points.map(([xmm, ymm, nextDistanceMm, row, column, direction, turn]) =>
       ({xmm, ymm, nextDistanceMm, row, column, direction, turn}));
     return {
       success: !!deviceMap?.path_valid && !!devicePath?.path_valid && waypoints.length > 0,
       waypoints,
+      pending,
       totalDistanceMm: waypoints.reduce((sum, point) => sum + point.nextDistanceMm, 0),
-      failureReason: deviceMap ? `第 ${deviceMap.failed_from_task || '—'} 到 ${deviceMap.failed_to_task || '—'} 个任务点之间不可达` : '等待 F407 地图与路径',
+      failureReason: pending ? (deviceMap ? '地图已收到，路径结果读取中' : '等待 F407 地图与路径') : `第 ${deviceMap.failed_from_task || '—'} 到 ${deviceMap.failed_to_task || '—'} 个任务点之间不可达`,
     };
   }
 
@@ -269,6 +272,7 @@ export function mountRadarDirectHost({
     syncActiveConfig();
     const snapshots = hostClient.model.snapshots;
     const status = hostClient.model.status;
+    const continuous = status?.l === 1 || status?.l === true;
     const deviceConfig = snapshots.config?.source === 'active' ? snapshots.config : null;
     const deviceMap = snapshots.map || null;
     const devicePath = snapshots.path || null;
@@ -293,25 +297,34 @@ export function mountRadarDirectHost({
     mapRenderer.render({fieldSize: grid.fieldSize, activeMin: grid.activeMinimum, activeMax: grid.activeMaximum, xLines: grid.xLines, yLines: grid.yLines, radar: grid.radar, points: displayFieldPoints, cells, path: plan.success ? plan.waypoints.map(point => ({x: point.xmm, y: point.ymm})) : [], missionPoints: missionPoints.map(point => ({number: point.number, row: point.endpoint.row, column: point.endpoint.column, x: point.xmm, y: point.ymm})), start: pointStart, goal: pointGoal, theme: config.theme});
     refs['radar-direct-freeze'].textContent = deviceMap ? `${deviceMap.historical ? '历史 · ' : ''}设备地图已冻结` : '等待扫描';
     refs['radar-direct-freeze'].parentElement.dataset.ready = String(!!deviceMap);
-    refs['radar-direct-point-summary'].textContent = `${displayed.length} 个当前显示点 / F407 原始 ${deviceMap?.raw_points ?? 0} · 筛选 ${deviceMap?.filtered_points ?? 0}`;
-    refs['radar-direct-metric-raw'].textContent = String(deviceMap?.raw_points ?? 0); refs['radar-direct-metric-filtered'].textContent = String(deviceMap?.filtered_points ?? 0);
+    refs['radar-direct-point-summary'].textContent = deviceMap ? `${displayed.length} 个当前显示点 / F407 原始 ${deviceMap.raw_points} · 筛选 ${deviceMap.filtered_points}` : `${displayed.length} 个当前显示点 / ${status?.map ? '地图结果读取中' : '等待完整圈建图'}`;
+    refs['radar-direct-metric-raw'].textContent = String(deviceMap?.raw_points ?? '—'); refs['radar-direct-metric-filtered'].textContent = String(deviceMap?.filtered_points ?? '—');
     refs['radar-direct-metric-blocked'].textContent = String(cells.filter(cell => cell.blocked).length); refs['radar-direct-metric-distance'].textContent = plan.success ? plan.totalDistanceMm.toFixed(0) : '—';
-    refs['radar-direct-counters'].replaceChildren(...[['原始点', deviceMap?.raw_points ?? 0], ['筛选点', deviceMap?.filtered_points ?? 0], ['场外点', deviceMap?.outside_points ?? 0], ['分页校验', hostClient.model.lastError || '正常']].map(([name, value]) => { const row = el('div'); row.append(el('dt', {text: name}), el('dd', {text: String(value)})); return row; }));
+    refs['radar-direct-counters'].replaceChildren(...[['原始点', deviceMap?.raw_points ?? '—'], ['筛选点', deviceMap?.filtered_points ?? '—'], ['网格外点', deviceMap?.outside_points ?? '—'], ['分页校验', hostClient.model.lastError || (deviceMap ? '正常' : '等待结果')]].map(([name, value]) => { const row = el('div'); row.append(el('dt', {text: name}), el('dd', {text: String(value)})); return row; }));
+    if(deviceMap?.outside_points > 0 && deviceMap.filtered_points - deviceMap.outside_points <= 1){
+      const row=el('div');row.append(el('dt',{text:'点位提示'}),el('dd',{text:`${deviceMap.outside_points}/${deviceMap.filtered_points} 点在判障网格外（150～2250 mm），请核对位置与0°方向`}));refs['radar-direct-counters'].append(row);
+    }
     const scanNames = ['空闲', '准备', '等待整圈', '采集中', '完成', '已停止', '错误'];
     const liveNames = ['准备', '等待整圈', '实时更新', '已停止', '错误'];
-    refs['radar-direct-flags'].replaceChildren(...[['扫描状态', status ? scanNames[status.ss] || status.ss : '等待状态'], ['实时状态', status ? liveNames[status.ls] || status.ls : '等待状态'], ['完整点云', matchingCloud ? `${matchingCloud.points.length} 点` : '后台读取中'], ['实时预览', preview ? `${preview.points.length} 点` : '尚无预览']].map(([name, value]) => { const row = el('div'); row.append(el('dt', {text: name}), el('dd', {text: String(value)})); return row; }));
-    const routeSummary = refs['radar-direct-route-summary']; routeSummary.replaceChildren(el('h3', {text: `路径规划 · ${plan.success ? '可通行' : '无可用路径'}`}), el('p', {text: plan.success ? `${plan.waypoints.length} 个坐标点，总距离 ${plan.totalDistanceMm.toFixed(0)} mm` : plan.failureReason}), ...(config.planningMode === 'mission' ? [el('strong', {text: `任务顺序 ${formatMissionRoute(config.missionRoute)}`})] : []));
+    refs['radar-direct-flags'].replaceChildren(...[['扫描状态', status ? scanNames[status.ss] || status.ss : '等待状态'], ['实时状态', status ? liveNames[status.ls] || status.ls : '等待状态'], ['完整点云', matchingCloud ? `${matchingCloud.points.length} 点（按需诊断）` : deviceMap ? (status?.cloud === 0 ? '本圈：未缓存完整点云' : '保留在 F407 · 不自动上传') : '未上传'], ['实时预览', preview ? `${preview.points.length} 点（仅显示）` : '尚无预览']].map(([name, value]) => { const row = el('div'); row.append(el('dt', {text: name}), el('dd', {text: String(value)})); return row; }));
+    const routeSummary = refs['radar-direct-route-summary']; routeSummary.replaceChildren(el('h3', {text: `路径规划 · ${plan.success ? '可通行' : plan.pending ? '待同步' : '无可用路径'}`}), el('p', {text: plan.success ? `${plan.waypoints.length} 个坐标点，总距离 ${plan.totalDistanceMm.toFixed(0)} mm` : plan.failureReason}), ...(config.planningMode === 'mission' ? [el('strong', {text: `任务顺序 ${formatMissionRoute(config.missionRoute)}`})] : []));
     refs['radar-direct-waypoints'].replaceChildren(...plan.waypoints.map((point, index) => { const tr = el('tr'); for (const value of [index + 1, `R${point.row}C${point.column}`, point.xmm, point.ymm, point.nextDistanceMm || '—', directionText(point.direction), turnText(point.turn)]) tr.append(el('td', {text: String(value)})); return tr; }));
     refs['radar-direct-preview-title'].textContent = `${matchingCloud ? (config.displayMode === 'raw' ? '完整原始点' : '完整点云本地显示筛选') : 'F407 实时预览'} · 前 12 条`;
     refs['radar-direct-preview'].replaceChildren(...displayed.slice(0, 12).map(point => { const tr = el('tr'); for (const value of [`${point.angle_deg.toFixed(2)}°`, point.distance_mm, point.energy ?? '—']) tr.append(el('td', {text: String(value)})); return tr; }));
     refs['radar-direct-csv'].disabled = !matchingCloud;
     const connected = connectionState.state === 'connected', compatible = connected && Number(connectionState.baudrate) === 115200;
-    const continuous = status?.l === 1 || status?.l === true;
     port.disabled = connectionState.state !== 'disconnected' || busy; baud.disabled = true; refreshPortsButton.disabled = connectionState.state !== 'disconnected' || busy;
     refs['radar-direct-connect'].disabled = connected || busy || !port.value; refs['radar-direct-disconnect'].disabled = !connected || busy;
-    for (const id of ['radar-direct-start', 'radar-direct-stop', 'radar-direct-single']) refs[id].disabled = !compatible || busy;
+    for (const id of ['radar-direct-start', 'radar-direct-stop', 'radar-direct-single', 'radar-direct-read-status']) refs[id].disabled = !compatible || busy;
+    refs['radar-direct-single'].disabled = !compatible || busy || !!status?.a || !!hostClient.pendingStart;
     refs['radar-direct-continuous'].disabled = !compatible || busy; refs['radar-direct-continuous'].textContent = continuous ? '停止持续扫描' : '持续扫描';
     refs['radar-direct-connection-status'].textContent = busy ? '正在处理…' : continuous ? `F407 实时预览中：最新 ${preview?.points.length ?? 0} 点` : compatible ? `共享串口已连接 ${connectionState.port || port.value} / 115200` : connected ? `共享串口当前为 ${connectionState.baudrate}，雷达页需断开后以 115200 重连` : '设备未连接 · 已保留最后完整设备结果';
+    if(!busy&&compatible){
+      if(hostClient.lastError)refs['radar-direct-connection-status'].textContent=`${hostClient.lastError} · 可点击“读取状态/结果”重试`;
+      else if(status?.ss===6)refs['radar-direct-connection-status'].textContent=`F407 扫描失败：${status.reason || '未知原因'}`;
+      else if(status?.a)refs['radar-direct-connection-status'].textContent=`F407 ${scanNames[status.ss] || '扫描中'} · ${status.reason || ''}`;
+      else if(status?.ss===4)refs['radar-direct-connection-status'].textContent=continuous ? '持续建图 · 每圈完整原始点判障，按无线节奏更新障碍和路线' : '扫描完成 · 正常仅同步障碍格统计和路线，完整点云不自动上传';
+    }
   }
 
   const mapRenderer = mapFactory({canvas, onBoundaryDragged(axis, index, millimetres) {
@@ -344,7 +357,8 @@ export function mountRadarDirectHost({
     busy = true; refs['radar-direct-settings-status'].textContent = '正在写入 F407 RAM 并等待有效配置读回…'; render();
     try {
       await hostClient.applyConfig(values); syncActiveConfig(); render();
-      refs['radar-direct-settings-status'].textContent = successText || 'F407 已应用并读回配置；地图与路径来自设备重算结果。';
+      const status=hostClient.model.status;
+      refs['radar-direct-settings-status'].textContent = status?.l ? 'F407 配置已应用并读回；下一完整圈刷新障碍和路线，不重启雷达。' : status?.cloud===0 ? 'F407 配置已应用并读回；无完整点云缓存时在下次扫描生效，旧图保留。' : successText || 'F407 已应用并读回配置；地图与路径来自设备重算结果。';
     } catch (error) { refs['radar-direct-settings-status'].textContent = error.message; log(`配置未完成：${error.message}`); }
     finally { busy = false; render(); }
   }
@@ -363,6 +377,7 @@ export function mountRadarDirectHost({
   refs['radar-direct-connect'].onclick = () => runConnection('connect');
   refs['radar-direct-disconnect'].onclick = () => runConnection('disconnect'); refs['radar-direct-start'].onclick = () => runHost('start'); refs['radar-direct-stop'].onclick = () => runHost('stop'); refs['radar-direct-single'].onclick = () => runHost('scan');
   refs['radar-direct-continuous'].onclick = () => runHost(hostClient.model.status?.l ? 'live-stop' : 'live-start');
+  refs['radar-direct-read-status'].onclick = () => runHost('status');
   refs['radar-direct-show-raw'].onclick = () => { setLocalConfig({...config, displayMode: 'raw'}); };
   refs['radar-direct-show-filtered'].onclick = () => { setLocalConfig({...config, displayMode: 'filtered'}); };
   refs['radar-direct-theme-dark'].onclick = () => { setLocalConfig({...config, theme: 'dark'}); mapRenderer.setTheme?.('dark'); };

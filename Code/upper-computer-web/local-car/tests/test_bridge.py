@@ -60,14 +60,41 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_grab_route_and_mission_status_are_readable_while_stopped(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        commands = ('grab route status', 'grab mission status')
+        for command in commands:
+            self.assertIsNotNone(READ_COMMAND.fullmatch(command), command)
+            self.bridge.send(command)
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertEqual([data.decode().strip() for _, data in port.writes], list(commands))
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('grab route 200', 'grab mission 200', 'grab mission continue',
+                        'grab route status extra', 'grab mission status extra'):
+            self.assertIsNone(READ_COMMAND.fullmatch(command), command)
+            with self.assertRaises(ValueError):
+                self.bridge.send(command)
+
+    def test_tracking_long_raw_capture_is_not_limited_by_mcu_ring(self):
+        port=self.connect()
+        data=''.join(f'TRACK live id=1 i={i} t={i*50}\r\n' for i in range(300)).encode()
+        port.rx.put(data)
+        path=Path(self.bridge.rx_file.name)
+        wait_for(lambda:path.read_bytes()==data)
+        self.assertEqual(len(path.read_bytes().splitlines()),300)
+        self.assertEqual(port.writes,[])  # Capture alone never requests motion.
+
     def test_f407_host_reads_stops_and_mutations_are_classified_exactly(self):
-        for command in ('radar host status','radar host get active','radar host get draft',
-                        'radar host live status','radar host fetch cloud:4294967295 65535'):
+        for command in ('radar host status fast','radar host bundle 5 all','radar host bundle 5 0,2,4',
+                        'radar host status','radar host get active','radar host get draft',
+                        'radar host live status','radar host fetch cloud:4294967295 65535','radar host ack 4294967295','radar host result 4294967295'):
             self.assertIsNotNone(READ_COMMAND.fullmatch(command),command)
         for command in ('radar host stop','radar host live stop'):
             self.assertIsNotNone(PRIORITY_STOP.fullmatch(command),command)
         for command in ('radar host start','radar host scan','radar host live start',
-                        'radar host draft reset','radar host set threshold 1','radar host apply 1'):
+                        'radar host draft reset','radar host set threshold 1','radar host apply 1','radar host ack 1 extra','radar host ack -1','radar host result -1','radar host result 1 extra'):
             self.assertIsNone(READ_COMMAND.fullmatch(command),command)
         port = self.connect()
         host_line = '@RADAR {"v":1,"profile":"f1_host","k":"host_status","session":1,"config":1,"scan":0,"map":0,"plan":0}'
@@ -102,10 +129,10 @@ class BridgeTests(unittest.TestCase):
         port = self.connect()
         with self.bridge.cv:
             self.bridge.stop_latched = True
-        for command in ('radar debug status', 'radar fetch raw 1 0'):
+        for command in ('radar debug status', 'radar fetch raw 1 0', 'radar fetch evidence 17 23'):
             self.assertIsNotNone(READ_COMMAND.fullmatch(command))
             self.bridge.send(command)
-        wait_for(lambda: len(port.writes) == 2)
+        wait_for(lambda: len(port.writes) == 3)
         self.assertTrue(self.bridge.stop_latched)
         for command in ('radar debug scan lower', 'radar debug scan upper', 'radar debug scan auto', 'radar debug status extra'):
             self.assertIsNone(READ_COMMAND.fullmatch(command))
@@ -156,6 +183,9 @@ class BridgeTests(unittest.TestCase):
 
     def test_diagnostic_queries_are_read_only(self):
         self.assertIsNotNone(READ_COMMAND.fullmatch('grab status'))
+        for axis in ('base', 'x', 'z'):
+            self.assertIsNotNone(READ_COMMAND.fullmatch('grab status ' + axis))
+        self.assertIsNone(READ_COMMAND.fullmatch('grab status all'))
         self.assertIsNotNone(READ_COMMAND.fullmatch('grab get retarget_ok'))
         self.assertIsNone(READ_COMMAND.fullmatch('grab get z_grab extra'))
         self.assertIsNone(READ_COMMAND.fullmatch('grab start fixed'))
