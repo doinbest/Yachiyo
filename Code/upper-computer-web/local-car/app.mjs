@@ -1,22 +1,22 @@
-import {bootProgress,describeStopEvent,visualStateText} from './terminal-format.mjs?v=grab-terminal-20261002';
+import {bootProgress,describeStopEvent,visualStateText} from './terminal-format.mjs?v=chinese-notices-20261009';
 import {visibleTerminalLogs,createLogRenderScheduler} from './terminal-log.mjs?v=vision-pause-20260929';
 import {mountWheelFeedback} from './wheel-feedback.mjs';
-import {mountTracking} from './grab-track.mjs';
+import {mountTracking} from './grab-track.mjs?v=chinese-notices-20261009';
 import {mountStacking} from './stack-panel.mjs?v=stack-20261008';
 let stackingPanel;
 import {createAttemptTracker} from './command-attempt.mjs?v=terminal-3';
-import {mountPreparation} from './route-preparation.mjs?v=route-20260925';
-import {commands,buildCommand,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText} from './protocol.mjs?v=gripper-20261009';
+import {mountPreparation} from './route-preparation.mjs?v=chinese-notices-20261009';
+import {commands,buildCommand,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText,deviceText,reasonText} from './protocol.mjs?v=chinese-notices-20261009';
 import {BridgeLink,readOnlyCommand,scopedStopCommand} from './bridge.mjs?v=calibration-20261009';
-import {mountMap} from './map-view.mjs?v=route-20260925';
+import {mountMap} from './map-view.mjs?v=chinese-notices-20261009';
 import {mountQr} from './qr-panel.mjs?v=bridge-1';
-import {mountParameterPage} from './parameter-page.mjs?v=parameter-page-20261001';
+import {mountParameterPage} from './parameter-page.mjs?v=chinese-notices-20261009';
 import {RadarModel,RadarExchange,parseRadar,radarStateText,radarReasonText} from './radar-model.mjs';
 import {mountRadarWorkspace} from './radar-view.mjs';
 import {MonitorResult,mountMonitorRadar} from './monitor-radar.mjs';
 import {mountRadarDirectHost} from './radar-direct-view.mjs?v=single-scan-transition-20261005';
 import {RadarHostClient} from './radar-host-client.mjs?v=fast-result-20261005';
-import {radarProbeText} from './radar-format.mjs';
+import {radarProbeText} from './radar-format.mjs?v=chinese-notices-20261009';
 import {parsePageRoute,createNavigationMemory} from './page-navigation.mjs?v=vision-ui-20261008';
 import {migrateRoutePreferences,bindRouteSpeed} from './route-settings.mjs';
 const $=id=>document.getElementById(id);
@@ -307,9 +307,9 @@ function renderGrabCalibrationStatus(){
   const view=document.getElementById('grab-calibration-status');if(!view)return;
   const snapshot=grabCalibrationSnapshot,s=snapshot?.data;
   if(!s){view.textContent='尚未读取视觉标定状态。';return;}
-  const phase=({idle:'空闲',prepare:'准备停稳',collect:'采样',chassis_move:'底盘移动',x_ack:'X请求应答',x_arrival:'X到位',x_state:'X反馈',settle:'停稳采样',complete:'标定完成',done:'标定完成',stopping:'正在停止',error:'标定失败'})[s.phase]||s.phase;
+  const phase=({idle:'空闲',prepare:'准备停稳',collect:'采样',chassis_move:'底盘移动',x_ack:'X请求应答',x_arrival:'X到位',x_state:'X反馈',settle:'停稳采样',complete:'标定完成',done:'标定完成',stopping:'正在停止',error:'标定失败'})[s.phase]||deviceText(s.phase);
   const response=s.calibrated===1?`前后 ${s.fdx??'—'} / ${s.fdy??'—'} px/mm；X ${s.xdx??'—'} / ${s.xdy??'—'} px/电机°`:'暂无成功标定记录';
-  view.textContent=`${snapshot.live?'最近读回':'历史读回'} · ${phase} · 观察姿态${s.ref===1?'已确认':'未确认'} · 上次成功响应：${response} · 原因 ${s.reason}`;
+  view.textContent=`${snapshot.live?'最近读回':'历史读回'} · ${phase} · 观察姿态${s.ref===1?'已确认':'未确认'} · 上次成功响应：${response} · 原因 ${reasonText(s.reason)}`;
 }
 function buildGrabCalibrationPanel(body){
   const panel=node('section',undefined,'vision-card');panel.id='grab-calibration';
@@ -344,22 +344,22 @@ function renderGrabStatus(){
   const r=grabRouteSnapshot?.data;
   const s=grabSnapshot?.data,age=grabSnapshot?Math.max(0,Math.floor((Date.now()-grabSnapshot.time)/1000)):null;
   const current=grabSnapshot?.live&&age<=5;
-  const heading=node('h3',s?`${current?'最近快照':'历史快照'} · ${({route_pose:'机构姿态切换',idle:'空闲',prepare:'观察准备',acquire:'获取目标',align:'协同对准',vision_grace:'短暂漏检 · 减速等待',vision_pause:'视觉暂停 · 不会下降夹取',settle:'水平停稳',descend:'Z 下降',close:'夹爪闭合',lift:'带物料提起',turn:'Base 转向放置处',place:'下降至放置高度',release:'松爪放置',retract:'放置后提起',homing:'上电自动回零',hold:s.operation==='ring_place'&&s.result==='released'?'放置完成 · 已松爪提起':s.operation==='ring_align'?(s.reason==='ring_aligned_low'?'色环对准完成 · 保持低位观察':'色环对准完成 · 等待装料'):s.mode==='align'?'对准完成 · 未抓取':'等待人工验收',stopping:'正在停止',error:'故障停止',route:'路线运行',scan:'模拟扫码',calibration:'视觉响应标定',complete:s.operation==='calibration'?'标定完成 · 已更新视觉响应':'单件完成 · 可开始下一件',done:s.operation==='calibration'?'标定完成 · 已更新视觉响应':'单件完成 · 可开始下一件',car_index:'转盘分度',car_x:'X 到车载取放口',car_descend:'车载下降',car_lift:'退出仓位',outside_turn:'返回外侧',return_observe:'恢复观察姿态'})[s.state]||s.state}`:'尚无抓取状态');
+  const heading=node('h3',s?`${current?'最近快照':'历史快照'} · ${({route_pose:'机构姿态切换',idle:'空闲',prepare:'观察准备',acquire:'获取目标',align:'协同对准',vision_grace:'短暂漏检 · 减速等待',vision_pause:'视觉暂停 · 不会下降夹取',settle:'水平停稳',descend:'Z 下降',close:'夹爪闭合',lift:'带物料提起',turn:'Base 转向放置处',place:'下降至放置高度',release:'松爪放置',retract:'放置后提起',homing:'上电自动回零',hold:s.operation==='ring_place'&&s.result==='released'?'放置完成 · 已松爪提起':s.operation==='ring_align'?(s.reason==='ring_aligned_low'?'色环对准完成 · 保持低位观察':'色环对准完成 · 等待装料'):s.mode==='align'?'对准完成 · 未抓取':'等待人工验收',stopping:'正在停止',error:'故障停止',route:'路线运行',scan:'模拟扫码',calibration:'视觉响应标定',complete:s.operation==='calibration'?'标定完成 · 已更新视觉响应':'单件完成 · 可开始下一件',done:s.operation==='calibration'?'标定完成 · 已更新视觉响应':'单件完成 · 可开始下一件',car_index:'转盘分度',car_x:'X 到车载取放口',car_descend:'车载下降',car_lift:'退出仓位',outside_turn:'返回外侧',return_observe:'恢复观察姿态'})[s.state]||deviceText(s.state)}`:'尚无抓取状态');
   const freshness=node('p',s?`收到于 ${new Date(grabSnapshot.time).toLocaleTimeString('zh-CN',{hour12:false})} · ${age} 秒前`:'点击上方“读取任务状态”查看设备反馈。','form-note');
   const list=node('dl',undefined,'grab-readout');
   const value=(key,unit='')=>s?.[key]===null||s?.[key]===undefined?'—':`${s[key]}${unit}`;
-  const rows=[['操作',s?.operation||s?.op||'—'],['场景',s?.scene||'—'],['仓位',value('slot')],['完成结果',s?.result||'—'],['视觉恢复',grabRecoveryText(s)],['本次或最近中断',value('loss_ms',' ms')],['本任务最长中断',value('loss_max_ms',' ms')],['模式',({fixed:'固定位置',align:'仅对准',pick:'视觉抓取'})[s?.mode]||s?.mode||'—'],['视觉目标',[10,11,12].includes(s?.color)?`${s.color-9}号同心圆`:grabColorOptions.find(([id])=>Number(id)===s?.color)?.[1]||value('color')],['视觉协议',s?.protocol||'未报告'],['坐标状态',visualStateText(s?.vision)],['MCU 接收序号',s?.rx_seq===null||s?.rx_seq===undefined?'未报告':String(s.rx_seq)],['响应模型',({initial:'联调初值 · 未实测',custom:'自定义参数 · 不代表已标定',unset:'未设置'})[s?.model]||'—'],['缺少标定',describeGrabMissing(s?.missing)],['参考状态',({boot_pending:'上电待验证',home_verifying:'正在验证三轴',home_verified:'三轴已验证',base_place_turn:'Base 已转向放置处',manual_home_all:'手动全部回零后待验证',manual_home_x:'手动 X 回零后待验证',manual_home_z:'手动 Z 回零后待验证',manual_home_base:'手动 Base 回零后待验证',manual_zero_all:'手动全部清零后待验证',manual_zero_x:'手动 X 清零后待验证',manual_zero_z:'手动 Z 清零后待验证',manual_zero_base:'手动 Base 清零后待验证',manual_base_move:'Base 已手动移动',x_reference_changed:'X 参考失效',z_reference_changed:'Z 参考失效',base_reference_changed:'Base 参考失效',all_reference_changed:'三轴参考失效'})[s?.ref_cause]||s?.ref_cause||'—'],['原因',s?.reason||'—'],['X 实际 / 目标',`${value('x')} / ${value('xt')} mm`],['Base 实际 / 目标',`${value('b')} / ${value('bt')} °`],['Z 实际 / 目标',`${value('z')} / ${value('zt')} mm`],['DX / DY',grabPixelText(s)],['坐标接收间隔',s?.age_source==='rx'?value('age',' ms'):'未报告'],['前向 / 左向速度',`${value('vf')} / ${value('vl')} mm/s`],['任务耗时',value('elapsed',' ms')],['停止请求',s?.stop_requested===1?'已请求':s?.stop_requested===0?'未请求':'—'],['最近停止请求反馈',s?.stop_confirmed===1?'该次已确认（结合当前阶段）':s?.stop_confirmed===0?'尚未确认':'—']];
+  const rows=[['操作',deviceText(s?.operation||s?.op)],['场景',deviceText(s?.scene)],['仓位',value('slot')],['完成结果',deviceText(s?.result)],['视觉恢复',grabRecoveryText(s)],['本次或最近中断',value('loss_ms',' ms')],['本任务最长中断',value('loss_max_ms',' ms')],['模式',({fixed:'固定位置',align:'仅对准',pick:'视觉抓取'})[s?.mode]||s?.mode||'—'],['视觉目标',[10,11,12].includes(s?.color)?`${s.color-9}号同心圆`:grabColorOptions.find(([id])=>Number(id)===s?.color)?.[1]||value('color')],['视觉协议',s?.protocol||'未报告'],['坐标状态',visualStateText(s?.vision)],['MCU 接收序号',s?.rx_seq===null||s?.rx_seq===undefined?'未报告':String(s.rx_seq)],['响应模型',({initial:'联调初值 · 未实测',custom:'自定义参数 · 不代表已标定',unset:'未设置'})[s?.model]||'—'],['缺少标定',describeGrabMissing(s?.missing)],['参考状态',({boot_pending:'上电待验证',home_verifying:'正在验证三轴',home_verified:'三轴已验证',base_place_turn:'Base 已转向放置处',manual_home_all:'手动全部回零后待验证',manual_home_x:'手动 X 回零后待验证',manual_home_z:'手动 Z 回零后待验证',manual_home_base:'手动 Base 回零后待验证',manual_zero_all:'手动全部清零后待验证',manual_zero_x:'手动 X 清零后待验证',manual_zero_z:'手动 Z 清零后待验证',manual_zero_base:'手动 Base 清零后待验证',manual_base_move:'Base 已手动移动',x_reference_changed:'X 参考失效',z_reference_changed:'Z 参考失效',base_reference_changed:'Base 参考失效',all_reference_changed:'三轴参考失效'})[s?.ref_cause]||deviceText(s?.ref_cause)],['原因',reasonText(s?.reason)],['X 实际 / 目标',`${value('x')} / ${value('xt')} mm`],['Base 实际 / 目标',`${value('b')} / ${value('bt')} °`],['Z 实际 / 目标',`${value('z')} / ${value('zt')} mm`],['DX / DY',grabPixelText(s)],['坐标接收间隔',s?.age_source==='rx'?value('age',' ms'):'未报告'],['前向 / 左向速度',`${value('vf')} / ${value('vl')} mm/s`],['任务耗时',value('elapsed',' ms')],['停止请求',s?.stop_requested===1?'已请求':s?.stop_requested===0?'未请求':'—'],['最近停止请求反馈',s?.stop_confirmed===1?'该次已确认（结合当前阶段）':s?.stop_confirmed===0?'尚未确认':'—']];
   const details=node('details',undefined,'grab-status-details'),diagnostics=node('dl',undefined,'grab-readout');
   details.open=diagnosticsOpen;details.append(node('summary','完整反馈与诊断'));
   const primaryLabels=new Set(['完成结果','视觉目标','X 实际 / 目标','Z 实际 / 目标','Base 实际 / 目标','DX / DY']);
   for(const [label,text] of rows){const target=primaryLabels.has(label)?list:diagnostics;target.append(node('dt',label),node('dd',text));}
   const reply=node('p',grabReply?`${grabReply.live?'':'历史 · '}${displayReply(grabReply.line)}`:'设备回复将在此显示。','grab-reply');reply.classList.toggle('error',!!grabReply&&replyIsFault(grabReply.line));
   const routeReply=node('div',undefined,'grab-route-status');
-  if(r){const old=!grabRouteSnapshot.live||Date.now()-grabRouteSnapshot.time>5000;const progress=(r.mode==='mission'||r.mode==='single')?`工位 ${r.station??'—'} · 入仓 ${r.stored??'—'} / 放出 ${r.placed??'—'}`:`第 ${r.segment??'—'} 段`;routeReply.append(node('h3',`${old?'历史 · ':''}${describeGrabRoute(r)}`),node('p',`${progress} · 来源 ${r.source==='test'?'固定蓝色测试':r.source==='simulated'?'模拟任务码':r.source||'—'} · ${r.code||'—'} · ${r.elapsed_ms??'—'} ms`, 'form-note'),node('p',`路线原因：${r.reason||'—'}`,r.state==='error'?'grab-reply error':'grab-reply'));}
+  if(r){const old=!grabRouteSnapshot.live||Date.now()-grabRouteSnapshot.time>5000;const progress=(r.mode==='mission'||r.mode==='single')?`工位 ${r.station??'—'} · 入仓 ${r.stored??'—'} / 放出 ${r.placed??'—'}`:`第 ${r.segment??'—'} 段`;routeReply.append(node('h3',`${old?'历史 · ':''}${describeGrabRoute(r)}`),node('p',`${progress} · 来源 ${r.source==='test'?'固定蓝色测试':r.source==='simulated'?'模拟任务码':r.source||'—'} · ${r.code||'—'} · ${r.elapsed_ms??'—'} ms`, 'form-note'),node('p',`路线原因：${r.state==='config_wait'?describeGrabMissing(r.reason):reasonText(r.reason)}`,r.state==='error'?'grab-reply error':'grab-reply'));}
   details.append(diagnostics,reply);
   grabPanel.replaceChildren(routeReply,heading,freshness);
   if(s){
-    const reason=node('p',`原因：${s.reason||'—'}`,'grab-reason');reason.classList.toggle('error',s.state==='error');grabPanel.append(list,reason);
+    const reason=node('p',`原因：${reasonText(s.reason)}`,'grab-reason');reason.classList.toggle('error',s.state==='error');grabPanel.append(list,reason);
     if(s.missing&&s.missing!=='none')grabPanel.append(node('p','缺少参数：'+describeGrabMissing(s.missing),'grab-reason error'));
   }
   if(grabReply&&replyIsFault(grabReply.line))grabPanel.append(node('p',displayReply(grabReply.line),'grab-reason error'));

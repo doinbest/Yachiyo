@@ -29,7 +29,7 @@ function consoleFixture(){
   const ctx=vm.createContext({...protocol,node,$,bridge,readOnlyCommand,scopedStopCommand,
     document:{getElementById:id=>elements.find(e=>e.id===id)||null,querySelectorAll:()=>elements.filter(e=>e.dataset.send),createElement:node},
     window:{confirm:()=>false},toast:t=>messages.push(t),appendLog:(d,t)=>logs.push({d,t}),
-    renderStatus:empty,displayReply:t=>t,visualStateText:t=>t??'—',bootProgress:(_l,s)=>s,
+    renderStatus:empty,displayReply:protocol.formatTerminalLine,visualStateText:t=>t??'—',bootProgress:(_l,s)=>s,
     parseRadar:()=>null,radarModel:{snapshots:{},params:{}},localStorage:{setItem:empty},
     radarExchange:{busy:false,cancel:empty},radarHostClient:null,radarDirectView:null,
     paramsView:{receive:empty,cancel:empty,update:empty},trackingPanel:null,stackingPanel:null,
@@ -232,5 +232,19 @@ test('real calibration completion uses the firmware complete state',()=>{
   const f=consoleFixture();f.sim.mountGrabStatus();
   f.sim.receive('OK grab state=complete mode=align operation=calibration result=calibrated reason=calibrated missing=none');
   assert.match(f.$('grab-task-status').children.find(e=>e.tag==='h3').textContent,/标定完成/);
+  assert.deepEqual(f.wires,[]);
+});
+
+test('actual task and calibration status cards translate causes without changing snapshots or sending',()=>{
+  const f=consoleFixture();f.sim.mountGrabStatus();f.sim.buildGrabCalibrationPanel(f.$('system-body'));
+  f.sim.receive('OK grab state=error mode=align operation=stack_align reason=matrix_rank ref_cause=transfer_off_pose missing=none');
+  const text=e=>[e.textContent,...e.children.map(text)].join(' ');
+  assert.match(text(f.$('grab-task-status')),/视觉响应矩阵.*无效/);
+  assert.match(text(f.$('grab-task-status')),/Base.*观察姿态/);
+  assert.doesNotMatch(text(f.$('grab-task-status')),/matrix_rank|transfer_off_pose/);
+  assert.equal(f.sim.grabSnapshot.data.reason,'matrix_rank');
+  f.sim.receive('OK grab calib phase=error ref=1 calibrated=1 reason=response_invalid fdx=2 fdy=0 xdx=0 xdy=3');
+  assert.match(f.$('grab-calibration-status').textContent,/标定响应.*无效/);
+  assert.equal(f.sim.calibrationSnapshot.data.reason,'response_invalid');
   assert.deepEqual(f.wires,[]);
 });

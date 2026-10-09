@@ -1,5 +1,6 @@
+import {deviceText,reasonText} from './device-text.mjs';
 import {RouteRunner,defaultSegment,defaultRoute,bodyCorners,turntableGap,routeResultText} from './route-model.mjs?v=two-batch-1';
-import {DEFAULT_GEOMETRY,SIM_MAX_RPM,FIELD,inverse,forward,quantize,rotate,midpoint,wheelCenters,FixedStepper,Telemetry,motionDisplay} from './map-model.mjs?v=route-20260925';
+import {DEFAULT_GEOMETRY,SIM_MAX_RPM,FIELD,inverse,forward,quantize,rotate,midpoint,wheelCenters,FixedStepper,Telemetry,motionDisplay} from './map-model.mjs?v=chinese-notices-20261009';
 import {RouteProfileRunner,profilePhaseText,profileResultText,PROFILE_MAX_RPM} from './route-profile.mjs';
 import {monitorGrid} from './monitor-radar.mjs';
 
@@ -209,7 +210,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
       routeTarget.append(svg('text',{transform:`translate(${x+65} ${y+65}) scale(1 -1)`,'font-size':42,fill:'#c74333'},motion.label));
     }
     const r=telemetry.state;
-    $('online-details').textContent=r?`最近一帧 MCU ${r.t_ms} ms · 会话 ${r.session} · 周期 ${telemetry.periodMs/1000} s\n任务 ${r.task?.state==='done'&&r.task?.reason==='timed_complete'?'时间任务结束（未表示到达地图目标） · ':''}${r.task?.state??'—'} · ${r.task?.reason??'—'} · ID ${r.task?.id??'—'}\n发送 ${r.tx?.stage??'—'} · 错误 ${r.tx?.error??'—'} · 丢帧 ${r.dropped??'—'}\n航向 ${r.yaw?.valid?fmt(r.yaw.rad,3)+' rad':'不可用'}\n位置反馈单位/圈：${telemetry.config?.position_units_per_rev||'待用户确认（手册65536）'}。不等同坐标。\n反馈符号：${telemetry.config?.feedback_sign??'未标注'}；右侧电机原始正负不等于逻辑前后。`:`等待本会话配置及状态帧，等待上限 ${telemetry.timeoutMs/1000} 秒；无线分段发送会有延迟。`;
+    $('online-details').textContent=r?`最近一帧 MCU ${r.t_ms} ms · 会话 ${r.session} · 周期 ${telemetry.periodMs/1000} s\n任务 ${r.task?.state==='done'&&r.task?.reason==='timed_complete'?'时间任务结束（未表示到达地图目标） · ':''}${deviceText(r.task?.state)} · ${reasonText(r.task?.reason)} · ID ${r.task?.id??'—'}\n发送 ${r.tx?.stage??'—'} · 错误 ${r.tx?.error??'—'} · 丢帧 ${r.dropped??'—'}\n航向 ${r.yaw?.valid?fmt(r.yaw.rad,3)+' rad':'不可用'}\n位置反馈单位/圈：${telemetry.config?.position_units_per_rev||'待用户确认（手册65536）'}。不等同坐标。\n反馈符号：${telemetry.config?.feedback_sign??'未标注'}；右侧电机原始正负不等于逻辑前后。`:`等待本会话配置及状态帧，等待上限 ${telemetry.timeoutMs/1000} 秒；无线分段发送会有延迟。`;
     const target=offline?inverse(body,g,currentProfile?PROFILE_MAX_RPM:SIM_MAX_RPM):r?.target.rpm;
     const approx=offline?quantize(target):null;
     $('wheel-body').replaceChildren(...names.map((name,i)=>{const tr=document.createElement('tr');const fresh=!!r?.feedback.speed_valid[i]&&((r.t_ms-r.feedback.speed_ms[i])>>>0)<=600;const posFresh=!!r?.feedback.position_valid[i]&&((r.t_ms-r.feedback.position_ms[i])>>>0)<=600;for(const value of [name,fmt(target?.[i],2),offline?fmt(approx[i],0):fresh?fmt(r.feedback.rpm[i],2):'不可用',offline?'—':posFresh?fmt(r.feedback.pos[i],0):'不可用']){const td=document.createElement('td');td.textContent=value;tr.append(td);}return tr;}));

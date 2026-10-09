@@ -1,3 +1,4 @@
+import {reasonText} from './device-text.mjs';
 // Units: mm, seconds, radians. Wheel order: FL, RL, RR, FR.
 export const DEFAULT_GEOMETRY = Object.freeze({wheelbase_mm:210,track_mm:240,wheel_diameter_mm:80,gear_ratio:1});
 export const FIELD = Object.freeze({size:2400,blocks:[{x:550,y:550},{x:1400,y:550},{x:550,y:1400},{x:1400,y:1400}],blockSize:450});
@@ -65,7 +66,7 @@ function expandCompact(r){
 function motionDetails(motion){
   const [x,y,heading]=motion.target;
   const error=motion.feedback_valid?`误差 ΔX ${motion.error[0].toFixed(1)} · ΔY ${motion.error[1].toFixed(1)} mm · 航向 ${motion.error[2].toFixed(1)}°`:'反馈无效 · 误差不可用';
-  const reason=({position_correcting:'低速修正位置',position_not_reached:'已停稳，但位置或航向未到位',stop_unconfirmed:'停车反馈未在规定时间内确认'})[motion.reason]??motion.reason;
+  const reason=({position_correcting:'低速修正位置',position_not_reached:'已停稳，但位置或航向未到位',stop_unconfirmed:'停车反馈未在规定时间内确认'})[motion.reason]??reasonText(motion.reason);
   return `目标 X ${x.toFixed(1)} · Y ${y.toFixed(1)} mm · θ ${heading.toFixed(1)}°\n${error}\n${motion.stop_confirmed?'已确认停止':'未确认停止'} · 原因 ${reason} · 编码器反馈估计，非视觉精对准`;
 }
 export function routeStatusText(route,feedbackYaw=null){

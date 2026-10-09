@@ -1,4 +1,6 @@
-import {chineseTerminalLine,replyIsFault} from './terminal-format.mjs?v=grab-terminal-20261002';
+import {chineseTerminalLine,replyIsFault} from './terminal-format.mjs?v=chinese-notices-20261009';
+import {deviceText,reasonText} from './device-text.mjs';
+export {deviceText,reasonText};
 import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from './grab-params.mjs?v=car-transfer-speed-20261007';
 import {GRAB_PARAMETER_METADATA} from './grab-parameter-metadata.mjs';
 export {replyIsFault};
@@ -300,7 +302,7 @@ export function describeGrabMissing(value) {
   if(value==='none')return '无';
   return value.split(',').map(key=>{
     const parameter=grabParameters.find(p=>p.key===key);
-    return parameter?`${parameter.label}（${key}）`:key;
+    return parameter?`${parameter.label}（${key}）`:deviceText(key);
   }).join('；');
 }
 

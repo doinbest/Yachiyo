@@ -4,6 +4,15 @@ import assert from 'node:assert/strict';
 import {parseTrack,TRACK_PRESET,trackText,TrackingPanelModel,mountTracking,trackCrc} from '../grab-track.mjs';
 import {readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
 
+test('tracking faults use Chinese reasons while tracking protocol remains English',()=>{
+  const raw='ERR grab track state=error reason=feedback_stale';
+  const status=parseTrack(raw);
+  assert.match(trackText(status.reason),/反馈.*过期/);
+  assert.match(trackText('bus_unavailable'),/总线.*不可用/);
+  assert.match(trackText('reference_missing'),/参考.*未建立/);
+  assert.equal(status.reason,'feedback_stale');assert.equal(status.raw,raw);
+});
+
 test('live diagnostics are passive and do not fill the frozen trace array',()=>{
   for(const wire of ['grab track log start','grab track log start 100','grab track log stop','grab track log status'])assert.equal(readOnlyCommand(wire),true);
   const model=new TrackingPanelModel();

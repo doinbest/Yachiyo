@@ -1,5 +1,6 @@
 import {radarReasonText,radarProbeText} from './radar-format.mjs';
 import {parseTrack,trackText} from './grab-track.mjs';
+import {deviceText,reasonText,rejectionText} from './device-text.mjs';
 export const visualStateText=state=>({Idle:'无活动视觉请求',Off:'USB 未枚举',Wait:'等待首个回复',Lost:'已收到报文，当前无有效坐标',Ok:'有效坐标',Stale:'坐标已过期'})[state]??'未报告';
 // Presentation only. Never feed translated text back into a protocol parser.
 const names={vision_grace:'短暂漏检，减速等待',vision_gap_decelerating:'沿原运动趋势减速，等待连续有效坐标',vision_gap_recovered:'短暂漏检已恢复，未消耗停车恢复次数',vision_pause:'视觉暂停，不会下降夹取',vision_pause_stopping:'漏检，正在停车',vision_recover_wait:'已停稳，等待目标恢复',vision_reacquire_wait:'已重发目标颜色识别，等待新坐标',vision_recovered:'已恢复对准',vision_acquire_timeout:'等待目标颜色超时',vision_recover_timeout:'恢复窗口超时',vision_recover_limit:'恢复次数耗尽',vision_usb_off:'视觉 USB 断开',vision_request_lost:'视觉请求失效',vision_stale:'有效坐标接收超时',vision_lost:'视觉坐标失效',feedback_stale:'机械反馈过期',chassis_tx:'底盘通信故障',base:'Base 底座',x:'X 伸缩轴',z:'Z 升降轴',all:'全部轴',fixed:'固定取放',align:'仅协同对准',pick:'视觉取放',idle:'空闲',prepare:'准备中',acquire:'等待视觉',homing:'正在回零',descend:'下降夹取',close:'夹紧等待',lift:'提起',turn:'Base 转向',place:'下降放置',release:'松爪等待',retract:'提起复位',hold:'动作完成，等待验收',stopping:'正在停止',error:'故障',running:'运行中',waiting:'等待中',station:'站点等待',done:'已完成',complete:'已完成',failed:'失败',none:'无',cancelled:'已取消',pending_tx:'等待停车发送',monitoring:'等待四轮停稳',stopped:'四轮已确认停稳',missing_feedback:'缺少新鲜反馈',timeout:'超时',tx_failed:'发送失败',new_motion:'出现新动作，原停车确认失效',reply_timeout:'驱动回复超时',uart_error:'串口通信错误',motor_request:'电机请求失败',motor_feedback:'电机反馈异常',config_missing:'缺少参数',home_z:'Z 碰撞回零',home_x:'X 碰撞回零',home_base:'Base 就近回零',home_complete:'三轴回零完成',home_stop_unconfirmed:'回零停止未确认',aligned_wait_check:'对准完成，等待验收',placed_wait_check:'取放完成，等待验收',VERIFYING:'静止验证中',DONE:'完成',PASS:'通过',FAIL:'失败',Idle:'空闲',Wait:'等待相机回复',ALIGNED:'对准完成',ERROR:'故障',unlimited:'不限',initial:'初始模型',custom:'自定义模型'};
@@ -9,7 +10,7 @@ Object.assign(names,{manual_z:'人工调整Z高度',color_align:'颜色中心静
 const colors={1:'red',2:'yellow',3:'blue',4:'green',5:'black',6:'light_blue'};
 Object.assign(names,{stack_align:'码垛静态对准与补偿',stack_center_align:'正在对准绿色准心',stack_compensating:'准心已对准，正在执行码垛补偿',stack_aligned_ready:'码垛补偿到位，等待人工装料'});
 const referenceNames={boot_pending:'上电待验证',home_verifying:'三轴正在验证',home_verified:'三轴已验证',base_place_turn:'Base 已转向放置处',manual_home_all:'手动全部回零后待验证',manual_home_x:'手动 X 回零后待验证',manual_home_z:'手动 Z 回零后待验证',manual_home_base:'手动 Base 回零后待验证',manual_zero_all:'手动全部清零后待验证',manual_zero_x:'手动 X 清零后待验证',manual_zero_z:'手动 Z 清零后待验证',manual_zero_base:'手动 Base 清零后待验证',manual_base_move:'Base 已手动移动',x_reference_changed:'X 参考失效',z_reference_changed:'Z 参考失效',base_reference_changed:'Base 参考失效',all_reference_changed:'全部参考失效'};
-const value=v=>referenceNames[v]??names[v]??v;
+const value=v=>referenceNames[v]??names[v]??deviceText(v);
 export function replyIsFault(line){
   return /^\s*(?:arm>\s*)?ERR\b/.test(line)||/\b(?:locked|bus_locked)=1\b/.test(line)||/\bstate=(?:error|ERROR|FAULT|FAILED)\b/.test(line)||/\bresult=FAIL\b/.test(line)||/\breason=(?:motor_\w+|home_\w*(?:fail|timeout|unconfirmed)\w*|\w*(?:timeout|failed|fault)|uart_error|config_missing|bus_unavailable|vision_recover_limit|vision_usb_off|vision_request_lost|vision_stale|vision_lost|feedback_stale|chassis_tx)\b/.test(line)||/^OK bus recover complete\b.*\b(?:arm_ready|chassis_ready)=0\b/.test(line);
 }
@@ -23,14 +24,19 @@ Object.assign(names,{home_bus_fault:'回零电机总线故障',home_request_fail
 Object.assign(fields,{action:'动作',result:'结果',bus_reason:'总线原因'});
 Object.assign(names,{zeroing_chassis:'清零四轮同步缓存',syncing_zero:'执行四轮零速同步',verifying_zero:'验证同步后四轮停稳',zero_ack_failed:'零速缓存写入被驱动拒绝',sync_ack_failed:'零速同步被驱动拒绝',cleared:'已清除'});
 Object.assign(fields,{chassis_cache:'同步缓存'});
-function translateToken(token){
+Object.assign(fields,{phase:'标定阶段',ref:'参考已确认',calibrated:'已有成功标定',action:'动作',
+  moving:'仍在运动',fresh:'反馈新鲜',angle_deg:'实际角度(°)',target_deg:'目标角度(°)',speed_rpm:'速度(RPM)',
+  operation:'操作',scene:'场景',slot:'仓位',batch:'批次',item:'本批第几件',stored:'已入仓数量',placed:'已放出数量'});
+function translateToken(token,context=''){
   const pair=token.match(/^([a-z_]+)=(.*)$/i);
   if(!pair)return value(token);
   const [,key,v]=pair;
+  if(context==='turntable'&&fields[key])return `${fields[key]}：${deviceText(v)}`;
   if(key==='missing' && v==='home_pending')return '回零未完成，参考尚未验证';
   if(key==='uart_error')return `串口错误：${uartErrors(v)}`;
   if(key==='vision')return `坐标状态：${visualStateText(v)}`;
   if(key==='age_source' && v==='rx')return '时间来源：MCU 接收';
+  if(key==='reason'||key==='bus_reason')return `${fields[key]}：${names[v]??reasonText(v)}`;
   if(!fields[key])return token; // New firmware fields stay visible verbatim.
   return `${fields[key]}：${key==='color'?(colors[v]??v):value(v)}`;
 }
@@ -90,6 +96,7 @@ export function chineseTerminalLine(original){
   }catch{}
   const radar=line.match(/^(OK|ERR) radar ([a-z_]+)$/);if(radar)return `雷达${radar[1]==='ERR'?'未受理':'设备回复'}：${radarReasonText(radar[2])}`;
   if(line.startsWith('ERR grab home_request '))return '故障 · 回零请求失败：'+line.slice(22).split(/\s+/).map(translateToken).join('；');
+  if(/^ERR\b/.test(line)&&!/^ERR grab (?:state=|route state=)/.test(line))return '设备提示：'+rejectionText(line);
   if(/^(?:OK|ERR|EVT) grab state=/.test(line)){
     const summary=grabStatusSummary(line);
     if(summary)return summary;
@@ -123,11 +130,11 @@ export function chineseTerminalLine(original){
   if(/^OK (?:pos|home) /.test(line)&&/\baccepted\b/.test(line))return `${line.startsWith('OK home')?'回零':'运动'}请求已受理，尚未确认到位；`+line.split(/\s+/).slice(2).filter(t=>t!=='accepted').map(translateToken).join('；');
   if(/^OK chassis request accepted/.test(line))return '底盘请求已受理，尚未确认驱动应答或运动完成';
   if(/^OK config /.test(line))return '运动配置：'+line.slice(10).split(/\s+/).map(translateToken).join('；');
-  const group=line.match(/^(OK|ERR|EVT) (bus|console|state|position|enable|disable|zero|origin|grip|camera|vision|material|grab|chassis|imu|qr|system)\b\s*(.*)$/);
+  const group=line.match(/^(OK|ERR|EVT) (bus|console|state|position|enable|disable|zero|origin|grip|camera|vision|material|grab|chassis|imu|qr|system|turntable)\b\s*(.*)$/);
   if(group){
-    const labels={bus:'总线',console:'控制台诊断',state:'轴状态',position:'轴位置',enable:'使能',disable:'关闭使能',zero:'位置清零',origin:'回零点',grip:'夹爪',camera:'相机',vision:'Base/X 对准',material:'物料任务',grab:'抓取任务',chassis:'底盘',imu:'IMU',qr:'二维码',system:'系统'};
+    const labels={bus:'总线',console:'控制台诊断',state:'轴状态',position:'轴位置',enable:'使能',disable:'关闭使能',zero:'位置清零',origin:'回零点',grip:'夹爪',camera:'相机',vision:'Base/X 对准',material:'物料任务',grab:'抓取任务',chassis:'底盘',imu:'IMU',qr:'二维码',system:'系统',turntable:'转盘'};
     const words={status:'状态',route:'路线',recover:'恢复',rehome:'重新建立三轴参考',get:'参数读取',set:'参数设置',accepted:'请求已受理，未确认到位',sent:'已发送，未确认动作完成',stop:'停止请求已处理',start:'启动',rejected:'请求被拒绝',stats:'统计',last:'最近数据',saved:'已保存',stream:'连续输出',on:'开启',off:'关闭',pending:'等待执行',partial:'部分完成'};
-    return `${replyIsFault(line)?'故障 · ':''}${labels[group[2]]}：`+group[3].split(/\s+/).map(t=>words[t]??translateToken(t)).join('；');
+    return `${replyIsFault(line)?'故障 · ':''}${labels[group[2]]}：`+group[3].split(/\s+/).map(t=>words[t]??translateToken(t,group[2])).join('；');
   }
   if(/^\[IMU (?:CAL|SAVE|VERIFY)\]/.test(line))return line.replace(/^\[IMU (CAL|SAVE|VERIFY)\]/,(_,k)=>({CAL:'IMU 标定/验证',SAVE:'IMU 保存状态',VERIFY:'IMU 验证数据'})[k]).split(/\s+/).map(translateToken).join('；');
   return original;

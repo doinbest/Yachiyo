@@ -73,7 +73,8 @@ test('rejected align keeps its mode and displays every missing calibration with 
   assert.equal(s.mode,'align');assert.equal(s.x,null);
   assert.equal(protocol.describeGrabMissing(s.missing),'X 命令脉冲 / mm（x_ppm）；X 最小位置 / mm（x_min）；X 最大位置 / mm（x_max）；DY / X 伸出 / px·mm⁻¹（j12）');
   assert.equal(protocol.describeGrabMissing('none'),'无');
-  assert.equal(protocol.describeGrabMissing('matrix_rank'),'matrix_rank');
+  assert.match(protocol.describeGrabMissing('matrix_rank'),/视觉响应矩阵.*无效/);
+  assert.equal(protocol.describeGrabMissing('future_condition'),'future_condition');
   const initial=protocol.parseGrabStatus('OK grab state=align mode=align reason=running missing=none model=initial');
   assert.equal(initial.model,'initial');
 });

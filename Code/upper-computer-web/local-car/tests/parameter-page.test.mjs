@@ -128,7 +128,7 @@ test('rejected apply retains draft, reports the reason and never reports readbac
     page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);queueMicrotask(()=>page.receive('ERR grab busy'));return true;}});
     page.selectTab('motion');ui.input('grab','close_ms').value='700';ui.input('grab','close_ms').oninput();await page.apply();
     assert.deepEqual(wires,['grab set close_ms 700']);assert.equal(ui.input('grab','close_ms').value,'700');
-    assert.ok(ui.all().some(e=>e.textContent.includes('任务忙')&&e.textContent.includes('grab busy')));assert.equal(ui.all().some(e=>e.textContent==='读回一致'),false);
+    assert.ok(ui.all().some(e=>e.textContent.includes('任务忙')&&e.textContent.includes('抓取任务')));assert.equal(ui.all().some(e=>e.textContent==='读回一致'),false);
     const row=ui.all().find(e=>e.id==='parameter-row-grab-close_ms');
     assert.ok(row.children.some(e=>e.className==='parameter-field-state'&&!e.hidden&&e.dataset.state==='failed'));
   }finally{ui.restore();}
@@ -153,7 +153,7 @@ test('successful paired descent read does not discard a lift draft when the lift
     },radarExchange:{async get(){return parameterFields.filter(p=>p.kind==='radar').map(p=>({key:p.key,value:5}));},cancel(){}}});
     await page.readAll();assert.equal(ui.input('grab','z_lift').value,'30');
     const lift=ui.input('grab','z_lift');lift.value='55';lift.oninput();page.cancel('断线',true);secondRead=true;await page.readAll();
-    assert.equal(lift.value,'55');assert.ok(ui.all().some(e=>e.textContent.includes('任务忙')&&e.textContent.includes('grab busy')));
+    assert.equal(lift.value,'55');assert.ok(ui.all().some(e=>e.textContent.includes('任务忙')&&e.textContent.includes('抓取任务')));
     const row=ui.all().find(e=>e.id==='parameter-row-grab-z_lift');
     assert.ok(String(lift.title??'').includes('历史设备值'));
     assert.ok(row.children.some(e=>e.className==='parameter-field-state'&&!e.hidden&&e.dataset.state==='failed'));

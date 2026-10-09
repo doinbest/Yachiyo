@@ -1,8 +1,9 @@
 import {GRAB_FORM_DEFAULTS,GRAB_PARAMETER_METADATA} from './grab-parameter-metadata.mjs';
+import {deviceText,rejectionText} from './device-text.mjs';
 export const TRACK_PRESET=Object.freeze({body_speed:160,x_speed:60,accel:300,lambda:2.5,x_weight:2.333333,lead_mm:12,tol_px:5,control_ms:20,batch_ms:0,latency_ms:50,fit_ms:240,horizon_ms:120,grace_ms:250});
 const labels={body_speed:'底盘合速度 / mm/s',x_speed:'伸缩速度 / mm/s',accel:'联合加速度 / mm/s²',lambda:'残余误差增益 / s⁻¹',x_weight:'伸缩分配权重',lead_mm:'最大领先 / mm',tol_px:'位置窗口 / px',control_ms:'定时预测间隔（新视觉包即时修正）/ ms',batch_ms:'额外批次限频（0为应答驱动）/ ms',latency_ms:'延迟联调初值 / ms',fit_ms:'拟合窗口 / ms',horizon_ms:'X前瞻 / ms',grace_ms:'短漏检预测 / ms'};
 const text={track_observe:'仅观察 · 不运动',track_match:'正在匹配速度',track_follow:'稳定跟随',track_pause:'保持姿态',idle:'空闲',stopping:'停车中',error:'故障停止',settle:'确认停稳',descend:'快速下降夹取',close:'闭爪',lift:'提起物料',complete:'动作完成',track_pick_stopping:'对准后停车确认',track_pick_descend:'目标仍在窗口内 · 下降',track_pick_reacquire:'停车时目标移动 · 继续追踪',track_pick_complete:'已夹取并提起 · 等待下一步',track_observing:'正在观察和估计',track_matching:'位置与速度匹配',track_following:'像素到点后仍持续跟随',track_visual_wait:'视觉暂停 · 新观测恢复后继续',track_window_end:'行程暂不足 · 保持观察，目标返回可追范围后继续',track_window_recovered:'目标已返回可追范围 · 自动续追',track_recovered:'视觉已恢复',cancelled:'人工停止',stop_unconfirmed:'停车尚未取得反馈确认'};
-export const trackText=value=>text[value]??value??'—';
+export const trackText=value=>text[value]??deviceText(value);
 export function trackCrc(line){
   let crc=0xffffffff;
   for(const c of line){crc^=c.charCodeAt(0);for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}
@@ -153,12 +154,12 @@ export function mountTracking({root,send,canSend=()=>false}){
     const raw=line.trim().replace(/^(?:arm>\s*)+/,'');
     if(/^OK grab\b/.test(raw)&&/\boperation=pose\b/.test(raw)){
       const reason=raw.match(/\breason=(\S+)/)?.[1],state=raw.match(/\bstate=(\S+)/)?.[1];
-      poseBusy=state==='route_pose';poseReply=reason==='work_ready'?'抓取姿态已到位 · 可以启动追踪':reason==='preparing_work'?'准备抓取姿态 · 等待 Z/X/Base 到位':`姿态准备：${reason??raw}`;
+      poseBusy=state==='route_pose';poseReply=reason==='work_ready'?'抓取姿态已到位 · 可以启动追踪':reason==='preparing_work'?'准备抓取姿态 · 等待 Z/X/Base 到位':`姿态准备：${deviceText(reason)}`;
       render();return true;
     }
-    if(/^ERR grab(?:_busy| pose\b)/.test(raw)){message.textContent=raw;render();return true;}
+    if(/^ERR grab(?:_busy| pose\b)/.test(raw)){message.textContent=rejectionText(raw);render();return true;}
     const p=model.receive(line);if(!p)return false;
     if(p.state){poseReply='';poseBusy=false;}
-    if(p.error){cancelTrace();message.textContent=p.raw;if(pending)cancel(p.raw);}if(p.type==='config'&&pending?.key===p.key){const request=pending;pending=null;clearTimeout(request.timer);request.resolve(p.value);}if(p.type==='row'&&tracePending?.index===p.i){const request=tracePending;tracePending=null;clearTimeout(request.timer);request.resolve(true);}if(p.type==='trace_end'&&exportRequested)finishTrace();render();return true;
+    if(p.error){cancelTrace();message.textContent=rejectionText(p.raw);if(pending)cancel(rejectionText(p.raw));}if(p.type==='config'&&pending?.key===p.key){const request=pending;pending=null;clearTimeout(request.timer);request.resolve(p.value);}if(p.type==='row'&&tracePending?.index===p.i){const request=tracePending;tracePending=null;clearTimeout(request.timer);request.resolve(true);}if(p.type==='trace_end'&&exportRequested)finishTrace();render();return true;
   },connection(value){connected=value;model.current=false;poseReply='';poseBusy=false;cancelTrace();if(!value)cancel('连接已变化，参数操作取消；不会自动恢复追踪');render();}};
 }

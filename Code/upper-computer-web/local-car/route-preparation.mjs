@@ -1,3 +1,4 @@
+import {rejectionText} from './device-text.mjs';
 const accepted='OK chassis request accepted (not motion/ACK confirmation)';
 const fields=line=>Object.fromEntries([...line.matchAll(/\b([a-z_]+)=([^\s]+)/g)].map(m=>[m[1],m[2]]));
 const idleRoute=s=>['idle','done','error','cancelled'].includes(s);
@@ -55,7 +56,7 @@ export class RoutePreparation {
     if(line===p.wire){p.echo=true;return;}
     // The current firmware echoes commands; no echo means no reliable association.
     if(!p.echo)return;
-    if(line.startsWith('ERR ')){this.fail(`设备拒绝：${line}`);return;}
+    if(line.startsWith('ERR ')){this.fail(`设备拒绝：${rejectionText(line)}`);return;}
     p.lines.push(line);
     const f=fields(line);
     switch(this.phase){

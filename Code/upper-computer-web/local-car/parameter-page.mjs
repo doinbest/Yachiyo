@@ -1,3 +1,4 @@
+import {reasonText} from './device-text.mjs';
 import {buildCommand} from './protocol.mjs';
 import {createParameterExchange,sameNumber} from './parameter-console.mjs';
 import {parameterTabs,parameterFields,materialScenarios,displayValue,fieldWrites,deviceRequests} from './parameter-schema.mjs';
@@ -244,7 +245,7 @@ export function mountParameterPage({root,send,canSend,onBusy=()=>{},routeSpeed=2
       const status=Object.fromEntries(line.split(/\s+/).filter(token=>token.includes('=')).map(token=>token.split('=')));
       const text=match?[1,2,3].map(slot=>{const item=inventory.get(String(slot));return slot+'仓：'+(item?({empty:'空仓',unknown:'待核对',occupied:'占用 · '+({1:'红色',2:'黄色',3:'蓝色',4:'绿色',5:'黑色',6:'浅蓝色'})[item.color]})[item.state]:'未读取');}).join('　'):
         (status.ref==='1'?'参考已建立':'参考未建立')+' · '+({idle:'空闲',reading:'正在读取反馈',moving:'正在分度',stopping:'正在停车',arrived:'实际到位'})[status.state]+' · 当前 '+status.angle_deg+'° / 目标 '+status.target_deg+'°';
-      if(readout)readout.textContent=text;resultLine.textContent=text;detailLine.textContent=match?'库存已读回；以实际物料核对为准':'设备原因：'+status.reason;
+      if(readout)readout.textContent=text;resultLine.textContent=text;detailLine.textContent=match?'库存已读回；以实际物料核对为准':'设备原因：'+reasonText(status.reason);
     }
     if(/^OK turntable accepted\b/.test(line)){resultLine.textContent='转盘请求已受理 · 等待反馈确认';detailLine.textContent='点击读取状态查看参考建立或实际到位结果';}
     if(/^ERR turntable\b/.test(line)){resultLine.textContent='设备拒绝：'+line.slice(4);detailLine.textContent='请按设备原因处理后再操作';}

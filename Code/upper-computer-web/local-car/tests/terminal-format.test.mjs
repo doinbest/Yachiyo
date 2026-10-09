@@ -139,5 +139,33 @@ test('reference-invalid status remains explicit even with no missing parameter l
 
 test('grab parameter reads and route reports retain their existing detail display',()=>{
   assert.match(formatTerminalLine('OK grab get x_ppm=80'),/参数读取.*x_ppm=80/);
-  assert.match(formatTerminalLine('ERR grab route state=error segment=2 reason=display_failed elapsed_ms=1400'),/路线.*路段：2.*display_failed.*耗时\(ms\)：1400/);
+  assert.match(formatTerminalLine('ERR grab route state=error segment=2 reason=display_failed elapsed_ms=1400'),/路线.*路段：2.*屏幕.*失败.*耗时\(ms\)：1400/);
+});
+
+test('fault reasons are Chinese across modules while raw replies and numbers stay intact',()=>{
+  for(const [raw,want]of [
+    ['OK grab state=error reason=matrix_rank missing=none',/视觉响应矩阵.*无效/],
+    ['OK grab state=stopping reason=axis_disabled_or_stall missing=none',/机械臂.*失能.*堵转/],
+    ['OK grab state=stopping reason=motor_ack_timeout missing=none',/电机.*应答超时/],
+    ['ERR turntable reference_required action=index',/转盘.*参考.*分度/],
+    ['OK chassis status reason=anchor_invalid',/底盘.*地图起点参考.*无效/],
+    ['OK imu status reason=drift_or_noise',/IMU.*漂移.*噪声/],
+    ['OK bus status reason=rx_restart_failed addr=7',/总线.*接收.*失败.*7/],
+    ['ERR manual axis_busy_or_fault addr=6 command_not_sent',/手动操作.*运动.*故障.*6.*未发送/],
+    ['ERR grab track pickup height/speed; inspect z_grab z_lift z_pick_speed',/夹取高度.*下降速度.*检查.*提起高度/],
+    ['OK turntable status state=idle reason=home_complete',/转盘.*回零完成/],
+  ]){
+    const translated=formatTerminalLine(raw);assert.match(translated,want);
+    const reason=raw.match(/reason=(\w+)/)?.[1];if(reason)assert.ok(!translated.includes(reason));
+    assert.equal(visibleTerminalLogs([{direction:'RX',text:raw}],false,false)[0].text,raw);
+  }
+});
+
+test('rejection instructions explain status queries in Chinese without inventing a cause',()=>{
+  const text=formatTerminalLine('ERR grab stack rejected; inspect grab status');
+  assert.match(text,/码垛.*请求被拒绝.*读取.*抓取任务状态/);
+  assert.doesNotMatch(text,/rejected|inspect|\bbusy\b|回零|总线故障/);
+  assert.match(formatTerminalLine('ERR grab_busy use grab status or grab stop'),/抓取任务.*忙.*读取.*停止/);
+  assert.match(formatTerminalLine('ERR camera usb_unconfigured'),/相机.*USB.*未枚举/);
+  assert.doesNotMatch(formatTerminalLine('OK turntable status state=idle reason=home_complete'),/三轴|四轮/);
 });

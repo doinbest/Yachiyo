@@ -78,7 +78,7 @@ test('arm configuration reads back all fields after set',async()=>{
 test('device rejection ends write without querying or reporting success',async()=>{
   const wires=[];let exchange;
   exchange=createParameterExchange({send:async wire=>{wires.push(wire);queueMicrotask(()=>exchange.receive('ERR grab busy task_running'));return true;},timeoutMs:25});
-  await assert.rejects(exchange.setGrab('body_speed',20),/busy task_running/);
+  await assert.rejects(exchange.setGrab('body_speed',20),/任务忙.*抓取任务.*任务正在运行/);
   assert.deepEqual(wires,['grab set body_speed 20']);
 });
 
