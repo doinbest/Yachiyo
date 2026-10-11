@@ -42,7 +42,7 @@ test('approved direct-host defaults are reproduced exactly and cloned', () => {
     missionRoute: [1, 5, 4, 2, 3, 4, 2, 3, 1],
     start: {row: 1, column: 1, anchor: 'radar'},
     goal: {row: 1, column: 5, anchor: 'goal-zone-one'},
-    displayMode: 'filtered',
+    displayMode: 'stable',
     theme: 'dark',
     radarPort: '',
     radarBaudrate: 500000,

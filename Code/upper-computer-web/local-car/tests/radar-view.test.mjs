@@ -3,6 +3,89 @@ import assert from 'node:assert/strict';
 import {RadarModel,RadarExchange} from '../radar-model.mjs';
 import {mountRadarWorkspace,mountRadarParameters} from '../radar-view.mjs';
 import {rawFrames,rawLine} from './radar-raw-fixture.mjs';
+import {MonitorResult} from '../monitor-radar.mjs';
+
+test('a previous raw cloud keeps its own frozen geometry while a new upper result awaits stable XY',()=>{
+  const ui=surface(),model=new RadarModel();model.connection(true);
+  const lower={v:1,session:1,origin:1,scan:1,map:1,plan:1},upper={...lower,scan:2,map:2,plan:2};
+  const geometry=[65809,680,-407,66623,149407997,20569846,1800];
+  try{
+    ui.get('radar-show-points').checked=true;
+    const workspace=mountRadarWorkspace({model,exchange:new RadarExchange({send:()=>true}),send:()=>true,canSend:()=>false,mapView:{setSource(){}},api:()=>assert.fail('no planning')});
+    const emit=frame=>workspace.receive('@RADAR '+JSON.stringify(frame));
+    emit({...lower,k:'map',page:0,pages:1,g:4,mask:0,pose:[2280,314,180],geometry,offset:0,counts:Array(25).fill(0)});
+    emit({...lower,k:'path',page:0,pages:1,start:2,valid:true,offset:0,points:[[2250,150,1,0],[2100,1200,5,1]]});
+    emit({...lower,plan:0,k:'cloud',page:0,pages:1,pose:[2280,314,180],offset:0,total:1,truncated:false,points:[[0,1000,40]]});
+    emit({...upper,k:'map',page:0,pages:1,g:4,mask:0,pose:[2050,2250,270],geometry:[65536,0,0,65536,134348800,147456000,2700],offset:0,counts:Array(25).fill(0)});
+    emit({...upper,k:'path',page:0,pages:1,start:1,valid:true,offset:0,points:[[2250,2250,1,0],[2100,1200,5,1]]});
+    const point=ui.get('radar-cloud').children[0].attributes;
+    assert.equal(Number(point.cx),1275.6194610595703);
+    assert.equal(Number(point.cy),320.081268310547);
+    assert.deepEqual(model.snapshots.cloud.geometry,geometry);
+    assert.equal(model.snapshots.cloud.scan,1);
+    assert.equal(ui.get('radar-cloud').style.opacity,'.3');
+  }finally{ui.restore();}
+});
+
+test('legacy raw clouds use their own pose when the current map belongs to another scan',()=>{
+  const ui=surface(),model=new RadarModel();
+  const old={session:1,origin:1,scan:1,map:1,plan:0,receivedAt:1,pose:[2280,314,180]};
+  const current={session:1,origin:1,scan:2,map:2,plan:2,receivedAt:2};
+  model.snapshots={cloud:{...old,k:'cloud',points:[[0,1000,40]],complete:true},map:{...current,g:4,mask:0,counts:Array(25).fill(0),pose:[2050,2250,270],geometry:[65536,0,0,65536,134348800,147456000,2700]},path:{...current,start:1,valid:true,points:[[2250,2250,1,0],[2100,1200,5,1]]}};
+  try{
+    ui.get('radar-show-points').checked=true;
+    mountRadarWorkspace({model,exchange:new RadarExchange({send:()=>true}),send:()=>true,canSend:()=>false,mapView:{setSource(){}},api:()=>assert.fail('no planning')});
+    const point=ui.get('radar-cloud').children[0].attributes;
+    assert.equal(Number(point.cx),1280);assert.equal(Number(point.cy),314);
+  }finally{ui.restore();}
+});
+
+test('clearing local radar history removes cloud, scanned obstacles and route after reload, preserving coordinates and offline copy',()=>{
+  const ui=surface(),model=new RadarModel(),store=new MonitorResult(),wires=[],storage=new Map();
+  const coordinates=JSON.stringify({upper:{lidar_x_mm:2050,lidar_y_mm:2250}});
+  storage.set('local-car-radar-start-coordinates-v3',coordinates);
+  const base={session:1,origin:1,scan:2,map:3,plan:4,receivedAt:100,historical:true};
+  model.params={lidar_x_mm:2280,lidar_y_mm:314,zero_deg:180};
+  model.snapshots={params:{session:1},map:{...base,g:4,mask:1,counts:Array(25).fill(1),pose:[2280,314,180]},path:{...base,start:2,valid:true,points:[[2250,150,1,0],[2100,1200,5,1]]},cloud:{...base,points:[[900,200,50]]},points:{...base,points:[[900,200,50]]},stable:{...base,points:[[1800,900,600,600,4,1]]},start:{...base,selected:2}};
+  try{
+    ui.get('radar-show-points').checked=true;ui.get('radar-show-counts').checked=true;
+    const options={model,monitorResult:store,exchange:new RadarExchange({send:wire=>wires.push(wire)}),send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource(){}},api:()=>assert.fail('no planning'),onResultsCleared:()=>storage.set('local-car-radar-snapshots',JSON.stringify({snapshots:model.snapshots,params:model.params}))};
+    const workspace=mountRadarWorkspace(options);
+    assert.ok(store.pair);assert.equal(ui.get('radar-obstacles').children.length,1);
+    assert.ok(ui.get('radar-cloud').children.length);assert.ok(ui.get('radar-device-path').attributes.d);
+    assert.equal(workspace.clearResults(),true);
+    assert.equal(store.pair,null);assert.deepEqual(Object.keys(model.snapshots),['params']);
+    for(const id of ['radar-cloud','radar-obstacles','radar-counts','radar-stations','route-annotations'])assert.equal(ui.get(id).children.length,0,id);
+    assert.equal(ui.get('radar-device-path').attributes.d,'');assert.deepEqual(wires,[]);
+    assert.equal(storage.get('local-car-radar-start-coordinates-v3'),coordinates);
+    const reloaded=new RadarModel();Object.assign(reloaded,JSON.parse(storage.get('local-car-radar-snapshots')));
+    mountRadarWorkspace({...options,model:reloaded,monitorResult:new MonitorResult()});
+    assert.equal(ui.get('radar-cloud').children.length,0);assert.equal(ui.get('radar-obstacles').children.length,0);
+    assert.equal(ui.get('radar-device-path').attributes.d,'');assert.equal(reloaded.params.lidar_x_mm,2280);
+    workspace.selectTab('offline');assert.ok(ui.get('radar-obstacles').children.length,'independent offline field remains available');
+  }finally{ui.restore();}
+});
+
+test('monitor only selects its start, keeps feedback pose and never calculates or plays a local plan',async()=>{
+  const ui=surface(),wires=[],requests=[],previews=[],sources=[];
+  try{
+    ui.get('monitor-capture').value='current';
+    const feedback={x_mm:1200,y_mm:1200};
+    const workspace=mountRadarWorkspace({model:new RadarModel(),exchange:new RadarExchange({send:async wire=>wires.push(wire)}),send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource:source=>sources.push(source),snapshot:()=>({feedback}),startProfile:profile=>previews.push(profile)},api:async(path,body)=>{requests.push(body);return {};}});
+    assert.equal(ui.get('route-plan-panel').hidden,true);
+    ui.get('monitor-capture').value='upper';ui.get('monitor-capture').onchange();
+    assert.equal(ui.get('monitor-start-marker').children[0].attributes.cy,'2250');
+    assert.deepEqual(feedback,{x_mm:1200,y_mm:1200});
+    await ui.get('route-profile-plan').onclick();ui.get('route-profile-start').onclick();
+    workspace.selectTab('offline');assert.equal(ui.get('route-plan-panel').hidden,false);
+    assert.equal(ui.get('monitor-start-marker').children.length,0);
+    workspace.selectTab('monitor');assert.equal(ui.get('monitor-capture').value,'upper');
+    ui.get('monitor-capture').value='current';ui.get('monitor-capture').onchange();
+    assert.equal(ui.get('monitor-start-marker').children[0].attributes.cy,'150');
+    assert.deepEqual(requests,[]);assert.deepEqual(previews,[]);assert.deepEqual(wires,[]);
+    assert.deepEqual(sources,['feedback','offline','feedback']);
+  }finally{ui.restore();}
+});
 
 function surface(){
   class Element{
@@ -30,6 +113,23 @@ function surface(){
   return {get,Element,restore(){Object.assign(globalThis,saved);}};
 }
 
+test('offline speed and route selection are independent of real startup and changing input keeps old results',async()=>{
+  const ui=surface(),requests=[],wires=[];
+  try{
+    ui.get('radar-nav-speed').value='200';ui.get('route-preview-speed').value='350';
+    const fixed={points:[[2100,300],[2100,1200]],phases:[{kind:'move',phase:'move',direction:'forward',segment:1,station:5,visit:1,target:[2100,1200,90],speed_mm_s:350}],speed_mm_s:350,turn_speed_deg_s:100};
+    const workspace=mountRadarWorkspace({model:new RadarModel(),exchange:new RadarExchange({send:async wire=>wires.push(wire)}),send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource(){}},api:async(path,body)=>{requests.push(body);return {valid:true,mask:0,route_profiles:{fixed}};}});
+    workspace.selectTab('offline');await ui.get('route-profile-plan').onclick();
+    assert.equal(requests[0].speed_mm_s,350);assert.equal(ui.get('radar-nav-speed').value,'200');
+    ui.get('route-preview-speed').value='400';ui.get('route-preview-speed').events.change();
+    assert.equal(ui.get('route-profile-start').disabled,true);assert.match(ui.get('route-profile-status').textContent,/计划终点/);
+    assert.match(ui.get('radar-offline-status').textContent,/保留上次结果/);
+    workspace.selectTab('monitor');assert.equal(ui.get('route-plan-panel').hidden,true);
+    workspace.selectTab('offline');assert.equal(ui.get('route-profile-choice').value,'fixed');assert.equal(ui.get('route-preview-speed').value,'400');
+    assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+
 test('radar workspace fits the full field without intercepting zoom or drag, keeps viewport through tabs/data and sends no motion',async()=>{
   const ui=surface(),wires=[],sources=[],requests=[],tabs=[],model=new RadarModel(),exchange=new RadarExchange({send:async wire=>{wires.push(wire);return true;}});
   try{
@@ -51,14 +151,14 @@ test('radar workspace fits the full field without intercepting zoom or drag, kee
     for(let page=1;page<6;page++)workspace.receive('@RADAR '+JSON.stringify({...base,k:'map',page,pages:6,offset:(page-1)*5,counts:[1,2,3,4,5]}));
     ui.get('radar-show-counts').checked=true;workspace.render();assert.equal(ui.get('radar-counts').children.length,25);
     workspace.receive('@RADAR '+JSON.stringify({...base,k:'status',page:0,pages:1,applicable:false,state:'ready'}));
-    assert.match(ui.get('radar-execution-reason').textContent,/请重新扫描/);
+    assert.match(ui.get('radar-execution-reason').textContent,/雷达标定或扫描参数已变化.*重新采集或重算地图/);
     workspace.receive('@RADAR '+JSON.stringify({...base,k:'status',page:0,pages:1,applicable:true,state:'ready'}));
     workspace.receive('@RADAR '+JSON.stringify({...base,k:'path',page:0,pages:1,offset:0,valid:false,failed_leg:2,points:[]}));
     assert.match(ui.get('radar-execution-reason').textContent,/第 2 路段不可达/);
     workspace.receive('@RADAR '+JSON.stringify({...base,k:'nav',page:0,pages:1,state:'stopping',reason:'cancelled',index:1,total:8,station:5,visit:1,stopped:true}));
     assert.match(ui.get('radar-nav-status').textContent,/停车已确认/);
     await ui.get('radar-offline-plan').onclick();assert.equal(requests[0].path,'radar/plan');assert.equal(requests[0].body.points.length,0);assert.deepEqual(wires,[]);
-    assert.deepEqual(['lidar_x_mm','lidar_y_mm','zero_deg','angle_max_tenths','threshold'].map(key=>requests[0].body.params[key]),[2250,150,180,3600,1]);
+    assert.deepEqual(['lidar_x_mm','lidar_y_mm','zero_deg','angle_max_tenths','threshold'].map(key=>requests[0].body.params[key]),[2280,314,180,3600,1]);
     assert.equal(ui.get('radar-offline-path').attributes.d,'M2250,150');
     await ui.get('radar-offline-plan').onclick();assert.match(ui.get('radar-offline-status').textContent,/第 2 路段/);
     workspace.connection(false);workspace.connection(true);workspace.selectTab('radar');
@@ -115,6 +215,58 @@ function liveWorkspace(ui,{respond=true,canSend=()=>true}={}){
 
 const headingChoices=ui=>ui.get('radar-heading-options').children.filter(child=>child.dataset.worldAngle!==undefined);
 const chooseHeading=(ui,angle)=>headingChoices(ui).find(child=>Number(child.dataset.worldAngle)===angle).onclick();
+
+test('continuous start rejected by device clears the pending request and releases scanning controls',async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{respond:false});
+  try{
+    assert.equal(await h.workspace.startContinuous('lower'),true);assert.equal(h.workspace.continuous(),true);
+    h.workspace.receive('ERR radar stationary_capture_required');
+    assert.equal(h.workspace.continuous(),false);assert.equal(h.workspace.busy(),false);
+    assert.match(h.workspace.message(),/未受理/);assert.equal(ui.get('radar scan').disabled,false);
+    assert.deepEqual(h.wires,['radar live map start lower']);
+  }finally{await h.close();}
+});
+
+test('a busy interface cannot request continuous capture and disconnect preserves frozen history without restarting',async()=>{
+  let allowed=false;const ui=surface(),h=liveWorkspace(ui,{respond:false,canSend:()=>allowed});
+  try{
+    assert.equal(await h.workspace.startContinuous('lower'),false);assert.equal(h.workspace.continuous(),false);assert.deepEqual(h.wires,[]);
+    allowed=true;h.workspace.receive(frame({k:'map',offset:0,pose:[2280,314,180],counts:Array(25).fill(0)}));const frozen=h.model.snapshots.map;
+    await h.workspace.startContinuous('lower');h.workspace.receive(frame({k:'progress',live_active:true,mapping:true,c:[1,15],window:[1,1,1]}));assert.equal(h.workspace.continuous(),true);
+    h.workspace.connection(false);assert.equal(h.workspace.continuous(),false);assert.equal(h.model.snapshots.map,frozen);assert.equal(frozen.historical,true);
+    h.workspace.connection(true);h.workspace.selectTab('monitor');h.workspace.selectTab('radar');assert.deepEqual(h.wires,['radar live map start lower']);
+  }finally{await h.close();}
+});
+
+test('continuous execution waits for confirmed stop and complete stable XY before the navigation entry',async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{respond:false});let completed=false;
+  const bytes=Buffer.alloc(10);[1800,900,1300,320].forEach((v,i)=>bytes.writeUInt16LE(v,i*2));bytes[8]=4;
+  let crc=0xffffffff;for(const b of bytes){crc^=b;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}const crc32=((crc^0xffffffff)>>>0).toString(16).padStart(8,'0').toUpperCase();
+  try{
+    h.workspace.receive(frame({k:'status',state:'collecting',live_active:true,mapping:true}));
+    h.exchange.send=async wire=>{h.wires.push(wire);queueMicrotask(()=>{
+      if(wire==='radar status'){h.workspace.receive(frame({k:'status',state:'ready',applicable:true,points_valid:true}));h.workspace.receive(frame({k:'progress',live_active:false,mapping:true,c:[15,15],window:[1,15,15]}));}
+      if(wire==='radar result 8'){h.workspace.receive(frame({k:'map',g:4,algorithm:1,offset:0,counts:Array(25).fill(0),pose:[2280,314,180]}));h.workspace.receive(frame({k:'path',valid:true,offset:0,points:[[2250,150,1,0],[2100,1200,5,1]]}));}
+    });return true;};
+    const execution=(async()=>{await h.workspace.stopContinuousAndRead();await h.workspace.requestWire('radar nav start 200');completed=true;})();execution.catch(()=>{});
+    await flush();await flush();assert.equal(completed,false);assert.deepEqual(h.wires,['radar stop','radar status','radar status','radar result 8']);
+    h.workspace.receive(frame({k:'stable',id:3,offset:0,total:1,data:bytes.toString('base64'),crc32}));await execution;
+    assert.deepEqual(h.wires,['radar stop','radar status','radar status','radar result 8','radar ack 8','radar nav start 200']);assert.equal(h.model.snapshots.stable.points.length,1);
+  }finally{await h.close();}
+});
+
+test('stopping the first completed window waits for its processing result to become ready',async()=>{
+  const ui=surface(),h=liveWorkspace(ui,{respond:false});let statuses=0;
+  try{
+    h.workspace.receive(frame({k:'status',state:'collecting',reason:'processing',live_active:true,mapping:true}));
+    h.exchange.send=async wire=>{h.wires.push(wire);queueMicrotask(()=>{
+      if(wire==='radar status'){statuses++;h.workspace.receive(frame({k:'status',state:statuses===1?'collecting':'ready',reason:statuses===1?'processing':'complete',applicable:true}));h.workspace.receive(frame({k:'progress',live_active:false,mapping:true,c:[15,15],window:[1,15,15]}));}
+      else if(wire==='radar result 8')for(const line of h.reply(wire))h.workspace.receive(line);
+    });return true;};
+    await h.workspace.stopContinuousAndRead();assert.ok(statuses>=2);assert.equal(h.model.snapshots.map.scan,3);assert.equal(h.model.snapshots.path.plan,8);
+    assert.equal(h.wires.includes('radar nav start 200'),false);
+  }finally{await h.close();}
+});
 
 const liveState=(extra={})=>'@RADAR '+JSON.stringify({v:1,k:'live_state',s:9,id:2,q:0,active:true,state:'waiting',reason:'none',pose:[2170,230,180],age_ms:0,points:0,...extra});
 const livePart=(q,o)=>{
@@ -267,9 +419,9 @@ for(const rawState of ['stopped','ready'])test(`${rawState} partial diagnostic r
 function headingReplies(h,{value=180,reject=false,mismatchKey=null}={}){
   let key='zero_deg',written=value;h.model.params.threshold=7;
   h.exchange.send=async wire=>{h.wires.push(wire);if(wire.startsWith('radar set ')){[, ,key,written]=wire.split(' ');written=Number(written);}
-    queueMicrotask(()=>h.workspace.receive(wire.startsWith('radar set ')?(reject?'ERR radar scan_busy_or_parameters':'OK radar parameter_updated_ram'):frame({k:'params',rev:3,key,value:key==='zero_deg'?value:key===mismatchKey?written-1:written})));return true;};
+    queueMicrotask(()=>h.workspace.receive(wire.startsWith('radar set ')?(reject?'ERR radar scan_busy_or_parameters':'OK radar parameter_updated_ram'):frame({k:'params',rev:3,key,value:key===mismatchKey?written-1:key==='zero_deg'?value:written})));return true;};
 }
-const geometryWrites=value=>[['lidar_x_mm',2250],['lidar_y_mm',150],['angle_min_tenths',0],['angle_max_tenths',3600],['zero_deg',value]].flatMap(([key,value])=>[`radar set ${key} ${value}`,'radar get']);
+const geometryWrites=value=>[`radar set zero_deg ${value}`,'radar get'];
 
 test('map start selection is local before a first scan and offers only inward zero-degree arrows',async()=>{
   const ui=surface(),h=liveWorkspace(ui,{canSend:()=>false});
@@ -277,20 +429,21 @@ test('map start selection is local before a first scan and offers only inward ze
     h.workspace.connection(false);h.workspace.selectTab('radar');
     assert.equal(typeof ui.get('radar-select-lower').onclick,'function');ui.get('radar-select-lower').onclick();
     assert.deepEqual(headingChoices(ui).map(child=>Number(child.dataset.worldAngle)),[90,180]);
-    assert.match(headingChoices(ui)[0].attributes.transform,/translate\(2250 150\)/);
+    assert.match(headingChoices(ui)[0].attributes.transform,/translate\(2280 314\)/);
     assert.ok(headingChoices(ui).every(child=>child.attributes['aria-pressed']==='false'));
     chooseHeading(ui,90);assert.match(ui.get('radar-heading-status').textContent,/90°.*待应用/);
-    ui.get('radar-select-upper').onclick();assert.deepEqual(headingChoices(ui).map(child=>Number(child.dataset.worldAngle)),[270,180]);
+    ui.get('radar-select-upper').onclick();assert.deepEqual(headingChoices(ui).map(child=>Number(child.dataset.worldAngle)),[270]);
     assert.match(headingChoices(ui)[0].attributes.transform,/translate\(2250 2250\)/);
-    const left=headingChoices(ui)[1],event={key:'Enter',preventDefault(){}};left.events.keydown(event);
-    assert.match(ui.get('radar-heading-status').textContent,/180°.*待应用/);assert.deepEqual(h.wires,[]);
+    const fixed=headingChoices(ui)[0],event={key:'Enter',preventDefault(){}};fixed.events.keydown(event);
+    assert.equal(fixed.attributes['aria-disabled'],'true');assert.equal(ui.get('radar-heading-apply').disabled,true);
+    assert.match(ui.get('radar-heading-status').textContent,/固定安装.*270°/);assert.deepEqual(h.wires,[]);
     h.workspace.selectTab('monitor');h.workspace.connection(true);h.workspace.receive(frame({k:'status',session:10,state:'idle'}));h.workspace.selectTab('radar');
-    assert.match(ui.get('radar-heading-status').textContent,/180°.*待应用/);assert.deepEqual(h.wires,[]);
+    assert.match(ui.get('radar-heading-status').textContent,/固定安装.*270°/);assert.deepEqual(h.wires,[]);
     ui.get('radar-select-lower').onclick();assert.match(ui.get('radar-heading-status').textContent,/90°.*待应用/);
   }finally{await h.close();}
 });
 
-for(const [corner,world,value]of [['upper',270,180],['upper',180,90],['lower',180,180]])test(`explicit ${corner} ${world} heading writes lower reference ${value} and confirms readback`,async()=>{
+for(const [corner,world,value]of [['lower',90,90],['lower',180,180]])test(`explicit ${corner} ${world} heading preserves case2 translation and confirms readback`,async()=>{
   const ui=surface(),h=liveWorkspace(ui);headingReplies(h,{value});
   try{
     assert.equal(typeof ui.get(`radar-select-${corner}`).onclick,'function');ui.get(`radar-select-${corner}`).onclick();chooseHeading(ui,world);
@@ -306,11 +459,11 @@ test('heading rejection and readback mismatch preserve the draft and completed m
   const ui=surface(),h=liveWorkspace(ui);headingReplies(h,{reject:true});
   try{
     h.workspace.receive(frame({k:'map',mask:4,pose:[2170,230,180],offset:0,counts:Array(25).fill(0)}));const map=h.model.snapshots.map;
-    assert.equal(typeof ui.get('radar-select-upper').onclick,'function');ui.get('radar-select-upper').onclick();chooseHeading(ui,270);ui.get('radar-heading-apply').onclick();await flush();
+    assert.equal(typeof ui.get('radar-select-lower').onclick,'function');ui.get('radar-select-lower').onclick();chooseHeading(ui,180);ui.get('radar-heading-apply').onclick();await flush();
     assert.equal(h.model.snapshots.map,map);assert.equal(map.historical,false);assert.match(ui.get('radar-heading-status').textContent,/未确认.*草稿.*新扫描/);assert.equal(ui.get('radar-scan-selected').disabled,true);
-    headingReplies(h,{value:180,mismatchKey:'lidar_x_mm'});ui.get('radar-heading-apply').onclick();await flush();
+    headingReplies(h,{value:180,mismatchKey:'zero_deg'});ui.get('radar-heading-apply').onclick();await flush();
     assert.equal(h.model.snapshots.map,map);assert.match(ui.get('radar-heading-status').textContent,/不一致.*草稿/);assert.equal(ui.get('radar-scan-selected').disabled,true);
-    assert.equal(headingChoices(ui).find(child=>child.dataset.worldAngle==='270').attributes['aria-pressed'],'true');
+    assert.equal(headingChoices(ui).find(child=>child.dataset.worldAngle==='180').attributes['aria-pressed'],'true');
     h.workspace.connection(false);h.workspace.connection(true);assert.match(ui.get('radar-heading-status').textContent,/历史.*重新应用/);
   }finally{await h.close();}
 });
@@ -319,10 +472,10 @@ test('stop cancels heading readback and retains the selected draft while releasi
   const ui=surface(),h=liveWorkspace(ui,{respond:false});
   try{
     assert.equal(typeof ui.get('radar-select-lower').onclick,'function');ui.get('radar-select-lower').onclick();chooseHeading(ui,90);ui.get('radar-heading-apply').onclick();await flush();
-    assert.deepEqual(h.wires,['radar set lidar_x_mm 2250']);assert.deepEqual(h.busy,[true]);assert.equal(ui.get('radar-scan-selected').disabled,true);
+    assert.deepEqual(h.wires,['radar set zero_deg 90']);assert.deepEqual(h.busy,[true]);assert.equal(ui.get('radar-scan-selected').disabled,true);
     assert.ok(headingChoices(ui).every(child=>child.attributes['aria-disabled']==='true'));
     ui.get('radar stop').onclick();h.workspace.receive('OK radar parameter_updated_ram');await flush();
-    assert.deepEqual(h.wires,['radar set lidar_x_mm 2250','radar stop']);assert.deepEqual(h.busy,[true,false]);assert.match(ui.get('radar-heading-status').textContent,/未确认.*草稿/);
+    assert.deepEqual(h.wires,['radar set zero_deg 90','radar stop']);assert.deepEqual(h.busy,[true,false]);assert.match(ui.get('radar-heading-status').textContent,/未确认.*草稿/);
     assert.equal(ui.get('radar-select-upper').disabled,false);
   }finally{await h.close();}
 });
@@ -336,20 +489,20 @@ test('accepted heading invalidates old results even when stop cancels the follow
     for(const k of ['points','cloud'])h.workspace.receive(frame({k,offset:0,total:1,points:[[900,200,50]]}));
     const old={...h.model.snapshots};ui.get('radar-select-lower').onclick();chooseHeading(ui,90);ui.get('radar-heading-apply').onclick();await flush();
     assert.ok(['map','path','points','cloud'].every(k=>old[k].historical===false));
-    h.workspace.receive('OK radar parameter_updated_ram');await flush();assert.deepEqual(h.wires,['radar set lidar_x_mm 2250','radar get']);
+    h.workspace.receive('OK radar parameter_updated_ram');await flush();assert.deepEqual(h.wires,['radar set zero_deg 90','radar get']);
     for(const k of ['map','path','points','cloud']){assert.equal(h.model.snapshots[k],old[k]);assert.equal(old[k].historical,true);}
     assert.match(ui.get('radar-map-age').textContent,/历史.*建图参数已应用.*新扫描/);
     ui.get('radar stop').onclick();await flush();
-    assert.deepEqual(h.wires,['radar set lidar_x_mm 2250','radar get','radar stop']);assert.deepEqual(h.busy,[true,false]);
+    assert.deepEqual(h.wires,['radar set zero_deg 90','radar get','radar stop']);assert.deepEqual(h.busy,[true,false]);
     assert.match(ui.get('radar-heading-status').textContent,/未确认.*草稿保留/);assert.match(ui.get('radar-map-age').textContent,/历史.*新扫描/);
     assert.ok(['map','path','points','cloud'].every(k=>h.model.snapshots[k]===old[k]&&old[k].historical===true));
   }finally{await h.close();}
 });
 
-test('selected-start scanning without a heading draft uses the new single-circle entry and keeps unknown direction explicit',async()=>{
+test('selected-start scanning uses the fixed upper installation without writing lower parameters',async()=>{
   const ui=surface(),h=liveWorkspace(ui,{respond:false});
   try{
-    assert.equal(typeof ui.get('radar-select-upper').onclick,'function');ui.get('radar-select-upper').onclick();assert.match(ui.get('radar-heading-status').textContent,/未读取|未知/);
+    assert.equal(typeof ui.get('radar-select-upper').onclick,'function');ui.get('radar-select-upper').onclick();assert.match(ui.get('radar-heading-status').textContent,/固定安装.*270°/);
     ui.get('radar-scan-selected').onclick();await flush();assert.deepEqual(h.wires,['radar scan upper']);
     h.workspace.receive('ERR radar scan_busy_or_parameters');ui.get('radar-select-lower').onclick();ui.get('radar-scan-selected').onclick();await flush();
     assert.deepEqual(h.wires,['radar scan upper','radar scan lower']);
@@ -378,9 +531,9 @@ test('map arrow targets survive periodic status rendering for keyboard selection
 test('a parameter readback uses the selected map frame and a controller restart makes it historical without discarding the draft',async()=>{
   const ui=surface(),h=liveWorkspace(ui);
   try{
-    ui.get('radar-select-upper').onclick();chooseHeading(ui,270);
-    for(const [key,value]of [['lidar_x_mm',2250],['lidar_y_mm',150],['angle_min_tenths',0],['angle_max_tenths',3600],['zero_deg',180]])h.workspace.receive(frame({k:'params',key,value,rev:1}));
-    assert.match(ui.get('radar-heading-status').textContent,/设备参数读回：地图 270°.*读回一致/);assert.equal(ui.get('radar-scan-selected').disabled,false);
+    ui.get('radar-select-lower').onclick();chooseHeading(ui,180);
+    for(const [key,value]of [['lidar_x_mm',2280],['lidar_y_mm',314],['angle_min_tenths',0],['angle_max_tenths',3600],['zero_deg',180]])h.workspace.receive(frame({k:'params',key,value,rev:1}));
+    assert.match(ui.get('radar-heading-status').textContent,/设备参数读回：地图 180°.*读回一致/);assert.equal(ui.get('radar-scan-selected').disabled,false);
     h.workspace.receive(frame({k:'status',session:10,state:'idle'}));assert.match(ui.get('radar-heading-status').textContent,/历史参数读回.*待应用/);assert.equal(ui.get('radar-scan-selected').disabled,true);assert.deepEqual(h.wires,[]);
   }finally{await h.close();}
 });
@@ -769,7 +922,7 @@ test('offline current preview renders only C-supplied phases, separates grid and
     assert.match(ui.get('route-profile-status').textContent,/外框检查通过/);assert.equal(ui.get('radar-offline-path').attributes.d,'M2100,300 L2100,1200');
     ui.get('route-profile-start').onclick();assert.equal(previews[1].profile,planned);assert.deepEqual(wires,[]);
     const obstacle=ui.get('radar-mask-cells').querySelectorAll('input')[0];obstacle.checked=true;obstacle.onchange();
-    assert.equal(ui.get('route-profile-start').disabled,true);assert.equal(ui.get('radar-offline-path').attributes.d,'');assert.deepEqual(wires,[]);
+    assert.equal(ui.get('route-profile-start').disabled,true);assert.equal(ui.get('radar-offline-path').attributes.d,'M2100,300 L2100,1200');assert.match(ui.get('radar-offline-status').textContent,/保留上次结果/);assert.deepEqual(wires,[]);
   }finally{ui.restore();}
 });
 
@@ -779,14 +932,14 @@ test('corner arrows preview the clockwise 90deg wedge and warn about outward sec
     h.workspace.selectTab('radar');ui.get('radar-select-lower').onclick();chooseHeading(ui,180);
     let sector=ui.get('radar-heading-options').children.find(child=>child.attributes['data-scan-sector']);
     assert.ok(sector);assert.equal(sector.attributes['data-zero-deg'],'180');assert.equal(sector.attributes['data-end-deg'],'90');assert.equal(sector.attributes['data-inward'],'true');
-    assert.match(sector.attributes.d,/M2250 150 L1350 150 A900 900 0 0 0 2250 1050 Z/);
+    assert.match(sector.attributes.d,/M2280 314 L1380 314 A900 900 0 0 0 2280 1214 Z/);
     assert.match(ui.get('radar-heading-status').textContent,/0°～360°.*阴影.*不是筛选/);
     chooseHeading(ui,90);assert.match(ui.get('radar-heading-status').textContent,/0°～360°/);assert.equal(ui.get('radar-heading-apply').disabled,false);
     ui.get('radar-select-upper').onclick();chooseHeading(ui,270);
     sector=ui.get('radar-heading-options').children.find(child=>child.attributes['data-scan-sector']);
     assert.equal(sector.attributes['data-zero-deg'],'270');assert.equal(sector.attributes['data-end-deg'],'180');assert.equal(sector.attributes['data-inward'],'true');
     assert.match(sector.attributes.d,/M2250 2250 L2250 1350 A900 900 0 0 0 1350 2250 Z/);
-    chooseHeading(ui,180);assert.match(ui.get('radar-heading-status').textContent,/0°～360°.*不是筛选/);assert.deepEqual(h.wires,[]);
+    chooseHeading(ui,270);assert.match(ui.get('radar-heading-status').textContent,/固定安装.*270°/);assert.equal(ui.get('radar-heading-apply').disabled,true);assert.deepEqual(h.wires,[]);
   }finally{await h.close();}
 });
 
@@ -799,7 +952,7 @@ test('matching full cloud wins over newer display points for both viewing and co
     ui.get('radar-show-points').checked=true;workspace.render();assert.equal(ui.get('radar-cloud').children.length,2);
     ui.get('radar-use-device').onclick();ui.get('radar-offline-input').value='cloud';await ui.get('radar-offline-plan').onclick();
     assert.deepEqual(requests[0].points,[[90,800,30],[100,800,30]]);assert.equal(requests[0].cloud_complete,true);assert.deepEqual(wires,[]);
-    model.snapshots.points={...model.snapshots.points,scan:4,map:8,receivedAt:300};workspace.render();assert.equal(ui.get('radar-cloud').children.length,1);
+    model.snapshots.points={...model.snapshots.points,scan:4,map:8,receivedAt:300,pose:[2100,400,180]};workspace.render();assert.equal(ui.get('radar-cloud').children.length,1);
   }finally{ui.restore();}
 });
 

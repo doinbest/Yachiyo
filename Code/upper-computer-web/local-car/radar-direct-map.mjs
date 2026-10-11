@@ -343,6 +343,12 @@ function drawRadar(ctx, radar, colors, transform, dpr) {
   ctx.font = `${11 * dpr}px system-ui, sans-serif`;
   ctx.textAlign = 'left';
   ctx.fillText(`雷达 ${Math.round(radar.x)}, ${Math.round(radar.y)}`, x + 14 * dpr, y + 18 * dpr);
+  if(Number.isFinite(radar.zero_deg)){
+    const angle=radar.zero_deg*Math.PI/180,dx=Math.cos(angle),dy=-Math.sin(angle),length=55*dpr;
+    ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+dx*length,y+dy*length);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(x+dx*length,y+dy*length);ctx.lineTo(x+dx*(length-12*dpr)-dy*6*dpr,y+dy*(length-12*dpr)+dx*6*dpr);ctx.lineTo(x+dx*(length-12*dpr)+dy*6*dpr,y+dy*(length-12*dpr)-dx*6*dpr);ctx.closePath();ctx.fill();
+    ctx.fillText('0°',x+dx*(length+10*dpr),y+dy*(length+10*dpr));
+  }
   ctx.restore();
 }
 

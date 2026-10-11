@@ -10,6 +10,31 @@ spec.loader.exec_module(report)
 
 
 class TrackingReportTest(unittest.TestCase):
+    def test_per_frame_pixels_include_invalid_and_keep_coalesced_frames(self):
+        lines=['OK camera log_begin id=1 next=0 mode=per_frame']
+        for i in range(180):
+            core=f'PIX id=1 i={i} t={1000+i*17} c=3 v={int(i!=40)} m=1 x={334+i%7} y=338'
+            lines.append(f'{core} crc={zlib.crc32(core.encode()):08X}')
+        lines.append('OK camera log_end id=1 count=180 queued=180 dropped=0')
+        result=report.summarize_pixels('\n'.join(lines))
+        self.assertTrue(result['trace_complete'])
+        self.assertEqual(result['records'],180)
+        self.assertEqual(result['valid_frames'],179)
+        self.assertEqual(result['invalid_frames'],1)
+        self.assertAlmostEqual(result['receive_hz'],1000/17)
+        repeated = lines[:50] + ['OK camera log_begin id=1 next=49 mode=per_frame'] + lines[50:]
+        self.assertTrue(report.summarize_pixels('\n'.join(repeated))['trace_complete'])
+        reconnected = ['OK camera log_begin id=1 next=1 mode=per_frame'] + lines[2:]
+        self.assertFalse(report.summarize_pixels('\n'.join(reconnected))['trace_complete'])
+        lines[21]=lines[21].replace('x=340','x=339')
+        lines.append('')
+        # Explicitly corrupt a checksum-covered coordinate, and remove a tail row.
+        lines[2]=lines[2].replace('y=338','y=339')
+        del lines[-3]
+        result=report.summarize_pixels('\n'.join(lines))
+        self.assertFalse(result['trace_complete'])
+        self.assertGreaterEqual(result['missing_count'],2)
+        self.assertGreaterEqual(result['corrupt_rows'],1)
     def test_sparse_summary_uses_full_device_timing(self):
         result=report.summarize('OK grab track log_begin id=1 period_ms=300 next=0\n'
             'OK grab track timing visual=30 rx_samples=30 timer=70 updates=99 control_p50=20 control_p95=20 control_max=27 '

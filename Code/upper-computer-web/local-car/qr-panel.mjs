@@ -1,3 +1,7 @@
+export function parseQrTestLine(line){
+  const m=/^(OK|ERR) grab qr state=(idle|preparing|driving|scan|stopping|done|cancelled|error) code=(none|\d{3}\+\d{3}\+\d{3}\+\d{3}) reason=([a-z_]+) elapsed_ms=(\d+)$/.exec(String(line).trim());
+  return m?{state:m[2],code:m[3],reason:m[4],elapsedMs:Number(m[5])}:null;
+}
 const UINT32_MAX=0xffffffff;
 const CODE=/^\d{3}\+\d{3}\+\d{3}\+\d{3}$/;
 const uint32=value=>/^\d+$/.test(value??'')&&Number(value)<=UINT32_MAX?Number(value):null;
@@ -22,8 +26,9 @@ export function parseQrLine(line){
   if((kind==='read'||kind==='event')&&(valid?!CODE.test(fields.code??''):fields.code!=='NA'))return null;
   if(fields.stream!==undefined&&!/^(on|off)$/.test(fields.stream))return null;
   const stats={};
+  if(fields.source!==undefined&&!['uart','simulated','none'].includes(fields.source))return null;
   for(const [key,value] of Object.entries(fields)){
-    if(['seq','age_ms','valid','code','stream'].includes(key))continue;
+    if(['seq','age_ms','valid','code','stream','source'].includes(key))continue;
     const n=uint32(value);if(n===null)return null;stats[key]=n;
   }
   return {kind,seq,valid,ageMs:age(fields.age_ms),code:fields.code==='NA'?null:fields.code??null,stream:fields.stream===undefined?undefined:fields.stream==='on',stats};
@@ -102,7 +107,8 @@ export function mountQr({root,send,notify=()=>{},canSend=()=>true}){
   const code=make('output','—','qr-code');const parts=make('div',undefined,'qr-groups');
   const metadata=make('p',undefined,'muted');const copy=make('button','复制任务码');copy.type='button';
   const details=make('details');details.append(make('summary','接收统计'));const stats=make('dl',undefined,'qr-stats');details.append(stats);
-  panel.append(status,code,parts,metadata,copy,details);root.replaceChildren(panel);
+  panel.append(status,code,parts,metadata,copy,details);
+  const testStatus=make('p','扫码控制测试尚未运行。');testStatus.setAttribute('role','status');panel.append(testStatus);root.replaceChildren(panel);
   function render(){
     status.textContent=state.message;
     for(const [command,button] of buttons){button.disabled=!canSend(command)||!state.connected||Boolean(state.pending)||(command!=='qr status'&&state.support!=='supported');}
@@ -124,6 +130,10 @@ export function mountQr({root,send,notify=()=>{},canSend=()=>true}){
     catch{if(state.pending===request){state.failed();clearTimeout(timer);render();notify(state.message);}}
   });
   copy.addEventListener('click',async()=>{if(!state.code)return;try{await globalThis.navigator.clipboard.writeText(state.code);notify('任务码已复制。');}catch{notify('无法访问剪贴板，请选中任务码手动复制。');}});
-  const api={refreshControls:render,receive(line){if(state.receive(line)){if(!state.pending)clearTimeout(timer);render();}},connection(connected){clearTimeout(timer);state.connection(connected);render();}};
+  const api={refreshControls:render,receive(line){const test=parseQrTestLine(line);if(test){
+    const phases={idle:'待机',preparing:'准备定位反馈',driving:'底盘行驶与转向',scan:'正在扫码',stopping:'正在停车',done:'扫码完成并已停稳',cancelled:'已取消',error:'测试失败'};
+    const reasons={feedback_wait:'正在自动读取四轮速度和位置',origin_required:'请先设置所选起点并完成IMU验证',to_scan:'行驶中',qr_scan_turn:'到二维码处原地转180°',qr_wait:'等待扫码',qr_descending:'缓慢降低Z轴',qr_lower_wait:'下降到位，等待扫码',qr_ascending:'未扫码，缓慢返回原高度',qr_not_found:'未扫码，保持当前高度等待',qr_scanned:'已收到本轮真实二维码',operator_stop:'人工停止',stop_unconfirmed:'停车未确认'};
+    testStatus.textContent=`${phases[test.state]} · ${reasons[test.reason]??test.reason}${test.code==='none'?'':` · ${test.code}`}`;return;
+  }if(state.receive(line)){if(!state.pending)clearTimeout(timer);render();}},connection(connected){testStatus.textContent=connected?"请读取扫码测试状态。":"连接已断开；测试状态需重新读取。";clearTimeout(timer);state.connection(connected);render();}};
   mounted.set(root,api);render();return api;
 }

@@ -22,6 +22,7 @@ typedef struct {
   uint32_t raw_points,filtered_points,circle_restarts,unit_changes,unit_overflows;
   uint16_t cloud_points,preview_points;
   bool active,live_active,map_valid,path_valid,cloud_valid,historical;
+  RadarStableStatus stability;
 } RadarHost_Status_t;
 
 void RadarHost_Init(void);
@@ -51,6 +52,7 @@ const RadarHostMap_Result_t *RadarHost_Path(uint32_t *plan_id,uint32_t *scan_id)
  */
 const RadarLive_Point_t *RadarHost_Preview(uint16_t *count,uint32_t *preview_id);
 const RadarSample_t *RadarHost_Cloud(uint16_t *count,uint32_t *scan_id);
+const RadarStablePoint *RadarHost_Stable(uint16_t *count,uint32_t *scan_id);
 
 #ifdef __cplusplus
 }

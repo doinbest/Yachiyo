@@ -3,6 +3,7 @@
 #include "GrabTask.h"
 #include "chassis_route.h"
 #include "chassis_config.h"
+#include "chassis_localization.h"
 #include "contest_screen.h"
 #include "QR.h"
 #include "console_tx.h"
@@ -15,12 +16,35 @@ typedef enum { GR_IDLE, GR_DRIVING, GR_SCAN_WAIT, GR_DISPLAY_WAIT, GR_HANDOFF, G
 static GrabRoute_State State;
 static uint32_t StartTick, WaitTick, CodeSequence;
 static const char *Reason;
+static bool QrTest,QrLowerStart;
+static unsigned QrPhase,QrFinalPhase;
+static uint32_t QrSequence;
+static char QrCode[QR_TASK_CODE_BUFFER_SIZE];
+static const char *QrReason;
+static float QrDriveSpeed,QrScanY;
+static bool QrFeedbackStarted;
+static bool QrOriginReady(const ChassisLocalization_Status_t *p)
+{
+  float angle=p->origin.yaw_rad-(QrLowerStart?CHASSIS_MODEL_PI:-CHASSIS_MODEL_PI/2);
+  return p->origin_valid && fabsf(p->origin.x_mm-2250)<0.1f &&
+    fabsf(p->origin.y_mm-(QrLowerStart?150:2250))<0.1f &&
+    fabsf(atan2f(sinf(angle),cosf(angle)))<0.001f;
+}
+static void QrReport(void)
+{
+  static const char *names[]={"idle","driving","scan","stopping","done","cancelled","error","preparing"};
+  char text[220];int n=snprintf(text,sizeof text,
+    "%s grab qr state=%s code=%s reason=%s elapsed_ms=%lu\r\n",
+    QrPhase==6?"ERR":"OK",names[QrPhase],QrCode[0]?QrCode:"none",QrReason,
+    (unsigned long)(HAL_GetTick()-StartTick));
+  if(n>0 && n<(int)sizeof text)(void)ConsoleTx_Write((const uint8_t*)text,(uint16_t)n);
+}
 static const char TestCode[] = "156+123+516+231";
 bool GrabRoute_StartPlanned(const RadarPlan_t *plan,float speed)
 {
   if(GrabRoute_IsBusy() || GrabTask_IsBusy() || !GrabTask_ConfigReady("pick")) return false;
   if(!ChassisRoute_PlanStart(plan,speed,true)) return false;
-  ContestMission_Init();
+  ContestMission_Init();QrTest=false;
   StartTick=HAL_GetTick();CodeSequence=0U;State=GR_DRIVING;Reason="to_scan";
   return true;
 }
@@ -40,18 +64,24 @@ static void Report(uint8_t Error)
 
 void GrabRoute_Init(void)
 {
+  QrTest=false;QrPhase=0;QrReason="idle";QrCode[0]=0;
   State=GR_IDLE;StartTick=WaitTick=CodeSequence=0U;Reason="idle";
   ContestMission_Init();
 }
 
 bool GrabRoute_IsBusy(void)
 {
-  return ContestMission_IsBusy() || State==GR_DRIVING || State==GR_SCAN_WAIT || State==GR_DISPLAY_WAIT || State==GR_HANDOFF;
+  return (QrTest && ((QrPhase>=1 && QrPhase<=3) || QrPhase==7)) || ContestMission_IsBusy() || State==GR_DRIVING || State==GR_SCAN_WAIT || State==GR_DISPLAY_WAIT || State==GR_HANDOFF;
 }
 bool GrabRoute_CanConfigure(void) { return ContestMission_CanConfigure(); }
 
 void GrabRoute_Stop(void)
 {
+  if(QrTest && ((QrPhase>=1 && QrPhase<=3) || QrPhase==7))
+  {
+    (void)ChassisRoute_Cancel();GrabTask_Stop();
+    QrFinalPhase=5;QrPhase=3;QrReason="operator_stop";QrReport();return;
+  }
   ContestMission_Stop();
   if(GrabRoute_IsBusy())
   {
@@ -72,6 +102,56 @@ void GrabRoute_Process(void)
 {
   ChassisRoute_Status_t Route;
   QR_SnapshotTypeDef Code;
+  if(QrTest)
+  {
+    if(QrPhase==7)
+    {
+      ChassisLocalization_Status_t p;ChassisLocalization_Get(&p);
+      if(!QrOriginReady(&p)) { QrPhase=6;QrReason="origin_required";QrReport();return; }
+      if(!QrFeedbackStarted)
+      {
+        if(!Mecanum_Feedback_Select(0))return;
+        Mecanum_Feedback_Enable(true);QrFeedbackStarted=true;
+      }
+      if(!p.feedback_valid || !p.speed_valid || HAL_GetTick()-p.feedback_tick>600U)return;
+      if(!ChassisRoute_QrTestStart(QrDriveSpeed,QrScanY))
+      { ChassisRoute_StatusGet(&Route);QrPhase=6;QrReason=Route.reason; }
+      else { QrPhase=1;QrReason="to_scan"; }
+      QrReport();return;
+    }
+    GrabTask_Status_t grab;GrabTask_StatusGet(&grab);ChassisRoute_StatusGet(&Route);
+    if(QrPhase==3)
+    {
+      if(!ChassisRoute_IsBusy() && !GrabTask_IsBusy()) { QrPhase=QrFinalPhase;QrReport(); }
+      return;
+    }
+    if(QrPhase!=1 && QrPhase!=2)return;
+    QR_SnapshotGet(&Code);
+    if(Code.Valid && Code.Source==QR_SOURCE_UART && Code.Sequence!=QrSequence)
+      memcpy(QrCode,Code.Code,sizeof QrCode);
+    if(!strcmp(Route.state,"error") || !strcmp(Route.state,"cancelled") || grab.state==GRAB_ERROR)
+    {
+      QrReason=grab.state==GRAB_ERROR?grab.reason:Route.reason;
+      (void)ChassisRoute_Cancel();GrabTask_Stop();QrFinalPhase=6;QrPhase=3;QrReport();return;
+    }
+    if(QrPhase==1 && !strcmp(Route.state,"done") && Route.stop_confirmed)
+    {
+      if(!GrabTask_QrScanStart(QrSequence))return; /* Outstanding reads drain before admission. */
+      QrPhase=2;QrReason="qr_wait";QrReport();return;
+    }
+    if(QrPhase==1 && !strcmp(Route.reason,"qr_scan_turn") && strcmp(QrReason,"qr_scan_turn"))
+    { QrReason="qr_scan_turn";QrReport(); }
+    if(QrPhase==2)
+    {
+      if(!GrabTask_IsBusy())
+      {
+        QrPhase=grab.stop_confirmed && !strcmp(grab.result,"qr_scanned")?4:6;
+        QrReason=grab.reason;QrReport();return;
+      }
+      if(strcmp(QrReason,grab.reason)) { QrReason=grab.reason;QrReport(); }
+    }
+    return;
+  }
   if(ContestMission_IsBusy()) { ContestMission_Process();return; }
   if(!GrabRoute_IsBusy()) return;
   if(State==GR_HANDOFF)
@@ -137,8 +217,44 @@ bool GrabRoute_Command(unsigned Count,char *Tokens[])
   char *End;
   float Speed;
   if(Count<2U || strcmp(Tokens[0],"grab")) return false;
+  if(!strcmp(Tokens[1],"qr"))
+  {
+    if(Count==3 && !strcmp(Tokens[2],"status")) { QrReport();return true; }
+    if(Count==3 && !strcmp(Tokens[2],"stop")) { GrabRoute_Stop();return true; }
+    if(Count>=3 && Count<=5 && !strcmp(Tokens[2],"begin"))
+    {
+      float y;QR_SnapshotTypeDef qr;Speed=50;
+      bool lower=false;unsigned speed_index=3U;
+      if(Count>3 && (!strcmp(Tokens[3],"lower") || !strcmp(Tokens[3],"upper")))
+      { lower=!strcmp(Tokens[3],"lower");speed_index=4U; }
+      if(Count>speed_index+1U)goto qr_format;
+      if(Count>speed_index)
+      { Speed=strtof(Tokens[speed_index],&End);if(End==Tokens[speed_index] || *End)Speed=NAN; }
+      if(GrabRoute_IsBusy() || GrabTask_IsBusy() || ChassisRoute_IsBusy())
+      { static const char busy[]="ERR grab qr reason=busy\r\n";(void)ConsoleTx_Write((const uint8_t*)busy,sizeof busy-1);return true; }
+      QrTest=true;QrLowerStart=lower;QrPhase=6;QrCode[0]=0;StartTick=HAL_GetTick();
+      if(!GrabTask_QrReady(&y))QrReason="home_or_scan_config_required";
+      else if(!isfinite(Speed) || Speed<10 || Speed>200)QrReason="speed_range";
+      else
+      {
+        ChassisLocalization_Status_t p;ChassisLocalization_Get(&p);
+        if(!QrOriginReady(&p))QrReason="origin_required";
+        else
+        {
+          QR_SnapshotGet(&qr);QrSequence=qr.Sequence;ContestMission_Init();
+          QrDriveSpeed=Speed;QrScanY=y;QrFeedbackStarted=false;
+          QrPhase=7;QrReason="feedback_wait";
+        }
+      }
+      QrReport();return true;
+    }
+qr_format:
+    ;
+    static const char format[]="ERR grab qr format: begin [upper|lower] [10..200 mm/s] | status | stop\r\n";
+    (void)ConsoleTx_Write((const uint8_t*)format,sizeof format-1);return true;
+  }
   if(Count==2U && !strcmp(Tokens[1],"status"))
-  { if(ContestMission_HasRun()) ContestMission_Report();else Report(0U);return false; }
+  { if(QrTest)QrReport();else if(ContestMission_HasRun()) ContestMission_Report();else Report(0U);return false; }
   if(Count==3U && (!strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"mission")) &&
      !strcmp(Tokens[2],"status"))
   { if(ContestMission_HasRun()) ContestMission_Report();else Report(0U);return true; }
@@ -149,6 +265,7 @@ bool GrabRoute_Command(unsigned Count,char *Tokens[])
     Speed=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
     if(Count==3U)
     { Speed=strtof(Tokens[2],&End);if(End==Tokens[2] || *End) Speed=NAN; }
+    QrTest=false;
     if((Count!=2U && Count!=3U) || !ContestMission_Start(NULL,Speed))
     {
       char Error[180];
@@ -169,6 +286,7 @@ bool GrabRoute_Command(unsigned Count,char *Tokens[])
     if(End==Tokens[2] || *End || !isfinite(Speed) || Speed<10.0f || Speed>CHASSIS_MOTION_MAX_LINEAR_MM_S)
     { Reason="speed_range";Report(1U);return true; }
   }
+  QrTest=false;
   if(!ContestMission_StartSingle(Speed))
   {
     char error[220];

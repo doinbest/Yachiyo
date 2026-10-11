@@ -42,7 +42,7 @@ test('construction, connection and visibility-equivalent changes send nothing',(
 
 test('explicit hardware actions map to exact bounded host commands',async()=>{
   const f=fixture();
-  for(const [action,wire] of [['start','radar host start'],['stop','radar host stop'],['scan','radar host scan'],['live-start','radar host live start'],['live-stop','radar host live stop'],['status','radar host status']]){
+  for(const [action,wire] of [['start','radar host start'],['stop','radar host stop'],['scan','radar host scan 15'],['live-start','radar host live start'],['live-stop','radar host live stop'],['status','radar host status']]){
     await f.client.command(action);assert.equal(f.wires.at(-1),wire);frameCommand(wire);
   }
 });
@@ -156,7 +156,7 @@ test('single scan ignores a late ready status for the previous circle while its 
   f.client.send=wire=>{f.wires.push(wire);return new Promise(resolve=>{finishWrite=resolve;});};
   const scan=f.client.command('scan');await flush();
   f.client.receive(line({k:'host_status',a:0,l:0,ss:4,ls:3,reason:'complete'}));
-  await flush();assert.deepEqual(f.wires,['radar host scan']);
+  await flush();assert.deepEqual(f.wires,['radar host scan 15']);
   finishWrite({});await scan;f.client.cancelTransfer();
 });
 
@@ -194,7 +194,7 @@ test('new single scan waits for the current radar write and cannot acknowledge c
   const scan=client.command('scan');await flush();
   assert.deepEqual(wires,['radar host result 4']);
   finishResult({});await scan;for(let i=0;i<5;i++)await flush();
-  assert.deepEqual(wires,['radar host result 4','radar host scan']);assert.deepEqual(errors,[]);
+  assert.deepEqual(wires,['radar host result 4','radar host scan 15']);assert.deepEqual(errors,[]);
   client.cancelTransfer();
 });
 
@@ -208,7 +208,7 @@ test('a cancelled old write failing later cannot replace the new scan with an ob
   client.connection(true);client.receive(line({k:'host_status',a:0,l:0,ss:4,ls:3,reason:'complete'}));await flush();
   const scan=client.command('scan');failOld(new Error('old queued read cancelled'));
   await scan;await flush();
-  assert.deepEqual(wires,['radar host result 4','radar host scan']);
+  assert.deepEqual(wires,['radar host result 4','radar host scan 15']);
   assert.deepEqual(errors,[]);assert.equal(client.lastError,null);client.cancelTransfer();
 });
 

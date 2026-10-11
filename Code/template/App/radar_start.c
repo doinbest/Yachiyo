@@ -19,7 +19,16 @@ bool RadarStart_ParamsForStart(const RadarMap_Params_t *lower,RadarStart_Id_t id
 {
   if(lower==NULL || out==NULL || start_index(id)<0)return false;
   *out=*lower;
+  out->start_id=(uint8_t)id;
   if(id==RADAR_START_UPPER) {
+    if(lower->grid_version>=4U){
+      /* Upper installation is an independent physical calibration. */
+      out->lidar_x_mm=lower->upper_lidar_x_mm;out->lidar_y_mm=lower->upper_lidar_y_mm;out->zero_deg=270.0f;
+      RadarGeometry_Default(&out->geometry,1U);out->geometry.zero_tenths=2700U;
+      out->geometry.origin_q16[0]=(int32_t)roundf(out->lidar_x_mm*65536.0f);
+      out->geometry.origin_q16[1]=(int32_t)roundf(out->lidar_y_mm*65536.0f);
+      out->situation=1U;return true;
+    }
     /* Static corner contract; this is independent of the vehicle's yaw change. */
     out->lidar_x_mm=4500.0f-out->lidar_x_mm;
     out->lidar_y_mm=2400.0f-out->lidar_y_mm;

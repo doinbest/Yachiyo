@@ -27,6 +27,8 @@ typedef struct {
   uint32_t circle_restarts, unit_changes, unit_overflows;
   uint16_t points;
   bool active;
+  bool mapping;
+  RadarStableStatus stability;
 } RadarScan_LiveStatus_t;
 /** @brief Start continuous nominal-corner point clouds without building maps.
  * Covers all raw angles; applies frozen distance/energy filters, nearest per bin.
@@ -60,6 +62,7 @@ typedef struct {
   RadarScan_LiveState_t live_state;
   RadarScan_Unit_t live_unit;
   const char *live_reason;
+  RadarStableStatus stability;
 } RadarScan_HostStatus_t;
 typedef struct {
   RadarScan_State_t state;
@@ -74,6 +77,7 @@ typedef struct {
   RadarScan_Unit_t unit;
   uint8_t circles_done, circles_target; /**< Complete circles in the active capture. */
   uint8_t map_circles; /**< Number of circles merged into the retained complete map. */
+  RadarStableStatus stability;
 } RadarScan_Status_t;
 typedef struct {
   uint32_t scan_id; /**< Last completed circle; survives stop/error/new capture. */
@@ -147,10 +151,9 @@ bool RadarScan_StartAuto(const RadarMap_Params_t *lower_reference, uint32_t orig
  */
 bool RadarScan_StartAt(const RadarMap_Params_t *lower_reference, uint32_t origin_generation,
                       RadarStart_Id_t start_id);
-/** @brief One stationary run of 1 or 3 complete circles, using a frozen corner reference.
- * Classify each circle independently, then OR its effective obstacles; publish
- * and plan once after all circles. Diagnostics sum counts; cloud is last circle.
- * @param circles 1 retains ordinary scan behavior; 3 improves sparse returns.
+/** @brief Fifteen valid full circles using frozen installation and filters.
+ * Stable XY representatives count distinct circles; raw cloud is the last circle.
+ * @param circles 15 explicit; legacy 1/3 requests are normalized to 15.
  * @return Accepted only; no chassis/arm movement or per-circle motor restart. */
 bool RadarScan_StartAtCycles(const RadarMap_Params_t *lower_reference, uint32_t origin_generation,
                             RadarStart_Id_t start_id, uint8_t circles);
@@ -170,14 +173,25 @@ const char *RadarScan_UnitName(RadarScan_Unit_t unit);
 /** @brief Complete cloud only. Recapture reuses its single buffer, so returns NULL
  * until completion; points_map_id identifies the associated published map. */
 const RadarSample_t *RadarScan_Points(uint16_t *count);
-/** @brief 使用页面提供的冻结参数采集完整一圈；不发布实车地图或起点结果。 */
+/** @brief 使用页面冻结参数采集15个有效圈；不发布实车地图或起点结果。 */
 bool RadarScan_HostStart(const RadarMap_Params_t *params);
 /** @brief 停止页面单圈或持续预览；保留最后完整主机结果。 */
 void RadarScan_HostStop(void);
 void RadarScan_HostStatusGet(RadarScan_HostStatus_t *status);
 /** @return 仅当唯一点云缓存当前属于完整、未截断的主机圈时返回。 */
 const RadarSample_t *RadarScan_HostPoints(uint16_t *count);
-/** @brief 页面持续采集：所有原始点逐圈建图，120分区只作预览；不改实车状态。
+const RadarStablePoint *RadarScan_StablePoints(uint16_t *count,uint32_t *scan_id);
+const RadarStablePoint *RadarScan_HostStablePoints(uint16_t *count,uint32_t *scan_id);
+const RadarStablePoint *RadarScan_VehicleStablePoints(uint16_t *count,uint32_t *scan_id);
+void RadarScan_StableStatusGet(RadarStableStatus *out);
+bool RadarScan_LiveMapStart(const RadarMap_Params_t *params,uint32_t origin_generation,RadarStart_Id_t start_id);
+bool RadarScan_IsLiveMap(void);
+void RadarScan_StableConfigurationChanged(void);
+void RadarScan_HostConfigureMap(const RadarHostMap_Config_t *config);
+const RadarHostMap_Result_t *RadarScan_HostMap(uint32_t *scan_id);
+bool RadarScan_RebuildStableMap(const RadarMap_Params_t *params);
+bool RadarScan_HostRebuildStableMap(const RadarHostMap_Config_t *config);
+/** @brief 页面持续采集：最近15个有效圈输出稳定地图，120分区仅作预览。
  * @param params 冻结的雷达采集参数，距离mm，角度0.1度。
  * @param config 合法F1筛选/网格/规划配置，内部复制到RAM。
  * @return 已受理启动；完整结果由Process发布，不代表雷达已物理转动。
@@ -196,5 +210,6 @@ void RadarScan_HostLiveStop(void);
 bool RadarScan_HostLiveCopy(RadarLive_Point_t points[RADAR_LIVE_BINS]);
 /** @brief Update the next capture's RAM parameters; never starts or clears a map. */
 bool RadarScan_SetParam(const char *key, float value);
+bool RadarScan_SetCalibrationParam(const char *key,int32_t value);
 const RadarMap_Params_t *RadarScan_Params(void);
 #endif

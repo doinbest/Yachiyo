@@ -1,8 +1,10 @@
 import {deviceText,reasonText} from './device-text.mjs';
 import {RouteRunner,defaultSegment,defaultRoute,bodyCorners,turntableGap,routeResultText} from './route-model.mjs?v=two-batch-1';
-import {DEFAULT_GEOMETRY,SIM_MAX_RPM,FIELD,inverse,forward,quantize,rotate,midpoint,wheelCenters,FixedStepper,Telemetry,motionDisplay} from './map-model.mjs?v=chinese-notices-20261009';
+import {DEFAULT_GEOMETRY,SIM_MAX_RPM,FIELD,inverse,forward,quantize,rotate,midpoint,wheelCenters,FixedStepper,Telemetry,motionDisplay,routePhaseText} from './map-model.mjs?v=chinese-notices-20261009';
 import {RouteProfileRunner,profilePhaseText,profileResultText,PROFILE_MAX_RPM} from './route-profile.mjs';
 import {monitorGrid} from './monitor-radar.mjs';
+import {RouteStopHistory} from './route-monitor.mjs';
+import {appendArmMarker} from './vehicle-marker.mjs';
 
 const $=id=>document.getElementById(id);
 const fmt=(v,n=1)=>Number.isFinite(v)?v.toFixed(n):'—';
@@ -59,7 +61,10 @@ function observeFieldLabels(){
   new ResizeObserver(fit).observe(map);fit();
 }
 export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
+  const stopHistory=new RouteStopHistory();
+  let profileOptions={},previewDirty=false;
   const telemetry=new Telemetry();let connected=false,running=false,mode='feedback',runner=null,activeRows=[],wholeRoute=true,previewSource=null;
+  let streamBusy=false;
   let pose={x_mm:2250,y_mm:150,yaw_rad:Math.PI/2},path=[pose];let body=[0,0,0],geometry={...DEFAULT_GEOMETRY};
   const layerPaths={command:'command-path',feedback:'feedback-path',device:'radar-device-path',offline:'radar-offline-path',sim:'sim-path'};
   const layerVisible=Object.fromEntries(Object.keys(layerPaths).map(key=>[key,true]));
@@ -123,6 +128,9 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
     running=false;stepper.reset();$('sim-status').textContent=message;render();
   }
   $('sim-pause').addEventListener('click',()=>pauseSimulation('模拟已暂停 · 可继续'));
+  $('profile-pause').addEventListener('click',()=>pauseSimulation('方案播放已暂停 · 可继续'));
+  $('profile-resume').addEventListener('click',()=>{if(!(runner instanceof RouteProfileRunner)||runner.state!=='running'||mode!=='offline'||previewDirty)return;running=true;stepper.reset();last=performance.now();render();});
+  $('profile-reset').addEventListener('click',()=>{if(previewSource)startProfile(previewSource,profileOptions);});
   $('sim-reset').addEventListener('click',reset);
   $('sim-fields').addEventListener('input',()=>invalidate('参数已编辑 · 整条路线将使用新初始位姿；单段使用当前位姿'));
   $('sim-model').addEventListener('change',()=>invalidate('模型已切换 · 请重新运行路线'));
@@ -139,17 +147,19 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   function startProfile(profile,options={}){
     if(!readInputs())return;
     try{
-      runner=new RouteProfileRunner(profile,{...options,geometry,integer:$('sim-model').value==='integer'});
+      profileOptions={...options};previewSource=profile;
+      runner=new RouteProfileRunner(profile,{...options,gridPolicy:'warn',geometry,integer:$('sim-model').value==='integer'});
       showSimulation();wholeRoute=true;activeRows=[];pose=runner.pose;path=runner.path;body=[0,0,0];running=runner.state==='running';stepper.reset();last=performance.now();$('sim-status').textContent=profileResultText(runner);render();
     }catch(error){$('sim-status').textContent=error.message;}
   }
-  function setPreviewSource(profile){previewSource=profile;render();}
+  function setPreviewSource(profile,options={}){if((profile!==previewSource||options.dirty)&&runner instanceof RouteProfileRunner){pauseSimulation('方案或输入已修改 · 请重新计算后播放');if(profile!==previewSource){runner=null;body=[0,0,0];path=[];}}if(profile!==previewSource&&profile){pose={x_mm:profile.points[0][0],y_mm:profile.points[0][1],yaw_rad:Math.PI};path=[{...pose}];}previewSource=profile;profileOptions={mask:options.mask??0};previewDirty=!!options.dirty;render();}
   function renderLayers(){
     const offline=mode==='offline';
     for(const [key,id]of Object.entries(layerPaths)){
       const available=key==='device'||(['offline','sim'].includes(key)?offline:!offline);
       $(id).style.display=available&&layerVisible[key]?'':'none';
     }
+    $('route-annotations').style.display=(offline?layerVisible.offline:layerVisible.device)?'':'none';
     $('radar-stations').style.display=$('radar-device-path').style.display;
     $('route-stops').style.display=$('sim-path').style.display;
     for(const button of legendButtons){
@@ -157,23 +167,41 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
       button.setAttribute('aria-pressed',String(layerVisible[button.dataset.mapLayer]));
     }
   }
-  $('stream-on').addEventListener('click',async()=>{
-    if(isPreparing())return;
-    let nonce=0;while(!nonce)nonce=crypto.getRandomValues(new Uint32Array(1))[0];
-    telemetry.begin(nonce,performance.now());render();
-    if(!await send(`chassis stream on ${nonce}`))telemetry.stop('开启未发送 · 请重试');render();
+  $('monitor-toggle').addEventListener('click',async()=>{
+    if(!connected||isPreparing()||streamBusy)return;
+    const updating=telemetry.session!==null;streamBusy=true;
+    try{
+      if(updating){
+        render();
+        if(await send('chassis stream off'))telemetry.stop('更新已暂停');
+        else telemetry.status='暂停更新未发送 · 请重试';
+      }else{
+        let nonce=0;while(!nonce)nonce=crypto.getRandomValues(new Uint32Array(1))[0];
+        telemetry.begin(nonce,performance.now());render();
+        if(!await send(`chassis stream on ${nonce}`))telemetry.stop('开启未发送 · 请重试');
+      }
+    }finally{streamBusy=false;render();}
   });
-  $('stream-off').addEventListener('click',async()=>{if(await send('chassis stream off'))telemetry.stop();render();});
   function drawPath(id,points){let d='',pen=false;for(const p of points){if(!p){pen=false;continue;}d+=`${pen?'L':'M'}${p.x_mm.toFixed(2)},${p.y_mm.toFixed(2)} `;pen=true;}$(id).setAttribute('d',d);}
   function drawCar(p,g,offline){const car=$('map-car');car.replaceChildren();if(!p||!g)return;if(offline)car.append(svg('polygon',{points:bodyCorners(p).map(v=>v.join(',')).join(' '),fill:'#1286b512',stroke:'#0a6b90','stroke-width':5}));const corners=wheelCenters(g).map(v=>{const [x,y]=rotate(v,p.yaw_rad);return [p.x_mm+x,p.y_mm+y];});car.append(svg('polygon',{points:corners.map(v=>v.join(',')).join(' '),fill:'#1286b52e',stroke:'#08658b','stroke-width':7,'stroke-dasharray':'16 10'}));for(let i=0;i<4;i++){const [x,y]=corners[i];car.append(svg('circle',{cx:x,cy:y,r:18,fill:i===0?'#08658b':'#fff',stroke:'#08658b','stroke-width':6}));}
-    const [dx,dy]=rotate([g.wheelbase_mm*.7,0],p.yaw_rad);car.append(svg('path',{d:`M ${p.x_mm} ${p.y_mm} l ${dx} ${dy}`,stroke:'#064e70','stroke-width':12,'marker-end':'url(#heading-arrow)'}));}
+    const [dx,dy]=rotate([g.wheelbase_mm*.7,0],p.yaw_rad);car.append(svg('path',{d:`M ${p.x_mm} ${p.y_mm} l ${dx} ${dy}`,stroke:'#064e70','stroke-width':12,'marker-end':'url(#heading-arrow)'}));appendArmMarker(car,p,{length_mm:300,width_mm:300},offline?runner?.armPose:'rear');}
   function render(){
-    const offline=mode==='offline';$('stream-on').disabled=!connected||isPreparing();$('stream-off').disabled=!connected||isPreparing();
-    $('telemetry-status').textContent=telemetry.status;onStatus(telemetry.status);
+    const offline=mode==='offline',updating=telemetry.session!==null;
+    $('monitor-toggle').disabled=!connected||isPreparing()||streamBusy;
+    $('monitor-toggle').textContent=updating?'暂停更新':'开始监控';
+    $('monitor-toggle').setAttribute('aria-pressed',String(updating));
+    $('telemetry-status').textContent=!connected?'未连接设备':telemetry.status.includes('未发送')||telemetry.status==='配置不兼容'?telemetry.status:updating?(telemetry.stale?'状态更新中断 · 等待恢复':telemetry.state?'监控中':'等待设备状态'):telemetry.status==='更新已暂停'?'更新已暂停':'已连接 · 点击开始监控';
+    $('monitor-live-data').hidden=!connected||!telemetry.state;
+    $('map-route-status').hidden=!telemetry.state;
+    onStatus(telemetry.status);
     const g=offline?geometry:telemetry.config?.geometry;
     const displayPose=offline?pose:(telemetry.feedback??(telemetry.stale?telemetry.lastFeedback:null));
     $('map-pose').textContent=poseText(displayPose)+(!offline&&telemetry.stale?' · 最后位置（已过期）':'');$('map-car').style.opacity=!offline&&telemetry.stale?'0.35':'1';
     const currentProfile=runner instanceof RouteProfileRunner;
+    $('profile-pause').disabled=!offline||!running||!currentProfile;
+    $('profile-resume').disabled=!offline||running||!currentProfile||runner.state!=='running'||previewDirty;
+    $('profile-reset').disabled=!offline||!previewSource||previewDirty;
+    $('profile-play-status').textContent=currentProfile?(running?profileResultText(runner):runner.state==='running'?'方案播放已暂停':profileResultText(runner)):'点击计算，再播放当前方案';
     $('map-source-label').textContent=offline?(currentProfile?'当前固件 C 阶段 · 理想反馈模型':!runner&&previewSource?'当前固件 C 阶段 · 未播放':'历史16段时间示意 · 手工编辑'):'车辆位置 · 反馈估计';
     $('sim-start').disabled=running;
     $('sim-resume').disabled=running||runner?.state!=='running';
@@ -182,6 +210,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
     $('route-progress').textContent=runner?(currentProfile?`${profilePhaseText(runner.rows[runner.index])} · 理想角度/距离完成 · 累计 ${fmt(runner.elapsed,2)} s / ${fmt(runner.distance)} mm`:`第 ${activeRows[runner.index]+1} 段 · ${runner.rows[runner.index].name} · ${phaseNames[runner.phase]} · 累计 ${fmt(runner.elapsed,2)} s / ${fmt(runner.distance)} mm`):'';
     $('route-live').textContent=$('sim-status').textContent+(runner?' · '+$('route-progress').textContent:'');
     $('route-results').replaceChildren(...(runner?.stops??[]).map(stop=>{const li=document.createElement('li');li.textContent=`${currentProfile?stop.index+1:activeRows[stop.index]+1}. ${stop.name} · ${fmt(stop.time,2)} s · ${poseText(stop.pose)} · 距转盘 ${fmt(turntableGap(stop.pose))} mm`;return li;}));
+    $('profile-stop-results').replaceChildren(...(currentProfile?runner.stops:[]).map(stop=>{const li=document.createElement('li');li.textContent=`目标 ${runner.rows[stop.index].segment} · ${poseText(stop.pose)} · ${fmt(stop.time,2)} s`;return li;}));
     const stopMarks=$('route-stops');stopMarks.replaceChildren();
     if(offline){
       // Group nearby labels only; each recorded footprint and exact stop pose stays unchanged.
@@ -193,7 +222,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
         if(group){if(!group.numbers.includes(number))group.numbers.push(number);}
         else labels.push({pose:stop.pose,numbers:[number]});
       }
-      for(const {pose:p,numbers} of labels){
+      if(!currentProfile)for(const {pose:p,numbers} of labels){
         stopMarks.append(svg('circle',{cx:p.x_mm,cy:p.y_mm,r:26,fill:'#fff',stroke:'#097da6','stroke-width':6}));
         stopMarks.append(svg('text',{transform:`translate(${p.x_mm+40} ${p.y_mm+35}) scale(1 -1)`,'font-size':42,fill:'#065775'},numbers.join('/')));
       }
@@ -202,6 +231,29 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
     $('map-geometry').textContent=g?`L ${g.wheelbase_mm} · W ${g.track_mm} · D ${g.wheel_diameter_mm} mm · G ${g.gear_ratio}${offline?' · 轴距/轮距估计，轮径/减速比假设':` · ${telemetry.config.rev} · 固件配置 · 轴距:${statusName(telemetry.config.geometry_status?.wheelbase)} / 轮距:${statusName(telemetry.config.geometry_status?.track)} / 轮径:${statusName(telemetry.config.geometry_status?.diameter)} / 比:${statusName(telemetry.config.geometry_status?.gear_ratio)}`}`:'在线几何未收到 · 不使用离线参数';
     const motion=motionDisplay(telemetry.route,telemetry.distance,telemetry.feedback?telemetry.feedback.yaw_rad*180/Math.PI:null);
     $('real-route-status').textContent=motion.text;$('map-route-status').textContent=motion.text;
+    const activeMotion=telemetry.route?.segment>0?telemetry.route:telemetry.distance??telemetry.route;
+    $('monitor-stop-state').textContent=activeMotion?.stop_confirmed?'停车已确认':activeMotion?.state==='stopping'?'正在停车':activeMotion?.state==='running'?'运行中':activeMotion?`${deviceText(activeMotion.state)} · 停车未确认`:'停车待确认';
+    $('monitor-current-target').textContent=activeMotion?.segment>0?`目标 ${activeMotion.segment}${activeMotion.total?` / ${activeMotion.total}`:''}${activeMotion.phase?` · ${routePhaseText(activeMotion.phase)}`:''}`:telemetry.distance?'单段移动':'—';
+    const motionReason=activeMotion?.reason;
+    $('monitor-live-reason').hidden=!motionReason||['none','complete','reached','auto_continue','auto_dwell','station_handoff'].includes(motionReason);
+    $('monitor-live-reason').textContent=motionReason?reasonText(motionReason):'';
+    $('monitor-service-stop').textContent=$('stop-status').textContent;
+    const command=telemetry.state?.target.body;
+    $('monitor-command-speed').textContent=command?`${fmt(Math.hypot(command[0],command[1]))} mm/s${Math.abs(command[2])>1e-7?` · ${fmt(command[2]*180/Math.PI)}°/s`:''}`:'—';
+    $('monitor-command-speed').title=command?`vx ${fmt(command[0])} · vy ${fmt(command[1])} mm/s · ω ${fmt(command[2]*180/Math.PI)}°/s`:'';
+    $('monitor-plan-speed').textContent=activeMotion?.phase?.includes('turn')?'转向阶段':Number.isFinite(activeMotion?.phase_speed_mm_s)?`${fmt(activeMotion.phase_speed_mm_s,0)} mm/s`:'—';
+    $('monitor-plan-speed').title=activeMotion?`本次启动 ${fmt(activeMotion.speed_mm_s,0)} mm/s；显示当前阶段限速`:'';
+    const latest=stopHistory.stops.at(-1);
+    $('monitor-last-stop').hidden=$('monitor-stop-history').hidden=!latest;
+    $('monitor-last-stop-title').textContent=latest?`最近停车 · ${latest.segment?`目标 ${latest.segment}`:'单段移动'}（记录）`:'最近停车';
+    $('monitor-final-stop').textContent=latest?poseText(latest.pose):'';
+    $('monitor-stop-delta').textContent=latest?`计划 (${latest.target.join(', ')}) · ΔX ${fmt(latest.pose.x_mm-latest.target[0])} / ΔY ${fmt(latest.pose.y_mm-latest.target[1])} mm`:'';
+    $('monitor-history-count').textContent=latest?` · ${stopHistory.stops.length} 次停靠`:'';
+    $('monitor-stop-results').replaceChildren(...stopHistory.stops.map((stop,i)=>{
+      const li=document.createElement('li');
+      li.textContent=`${i+1}. ${stop.segment?`目标 ${stop.segment}`:'单段位移'} · ${deviceText(stop.state)} · ${reasonText(stop.reason)} · 启动 ${fmt(stop.speed,0)} / 限速 ${fmt(stop.limit,0)} mm/s · 计划 (${stop.target.join(', ')}) · 停车 ${poseText(stop.pose)} · MCU ${stop.time} ms · 原点版本 ${stop.generation??'—'}`;
+      return li;
+    }));
     const routeTarget=$('real-route-target');routeTarget.replaceChildren();
     if(!offline&&motion.target){
       const [x,y,heading]=motion.target,angle=heading*Math.PI/180;
@@ -210,7 +262,7 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
       routeTarget.append(svg('text',{transform:`translate(${x+65} ${y+65}) scale(1 -1)`,'font-size':42,fill:'#c74333'},motion.label));
     }
     const r=telemetry.state;
-    $('online-details').textContent=r?`最近一帧 MCU ${r.t_ms} ms · 会话 ${r.session} · 周期 ${telemetry.periodMs/1000} s\n任务 ${r.task?.state==='done'&&r.task?.reason==='timed_complete'?'时间任务结束（未表示到达地图目标） · ':''}${deviceText(r.task?.state)} · ${reasonText(r.task?.reason)} · ID ${r.task?.id??'—'}\n发送 ${r.tx?.stage??'—'} · 错误 ${r.tx?.error??'—'} · 丢帧 ${r.dropped??'—'}\n航向 ${r.yaw?.valid?fmt(r.yaw.rad,3)+' rad':'不可用'}\n位置反馈单位/圈：${telemetry.config?.position_units_per_rev||'待用户确认（手册65536）'}。不等同坐标。\n反馈符号：${telemetry.config?.feedback_sign??'未标注'}；右侧电机原始正负不等于逻辑前后。`:`等待本会话配置及状态帧，等待上限 ${telemetry.timeoutMs/1000} 秒；无线分段发送会有延迟。`;
+    $('online-details').textContent=r?`最近一帧 MCU ${r.t_ms} ms · 会话 ${r.session} · 周期 ${telemetry.periodMs/1000} s\n任务 ${r.task?.state==='done'&&r.task?.reason==='timed_complete'?'时间任务结束（未表示到达地图目标） · ':''}${deviceText(r.task?.state)} · ${reasonText(r.task?.reason)} · ID ${r.task?.id??'—'}\n发送 ${r.tx?.stage??'—'} · 错误 ${r.tx?.error??'—'} · 丢帧 ${r.dropped??'—'}\n航向 ${r.yaw?.valid?fmt(r.yaw.rad,3)+' rad':'不可用'}\n位置反馈单位/圈：${telemetry.config?.position_units_per_rev||'待用户确认（手册65536）'}。不等同坐标。\n反馈符号：${telemetry.config?.feedback_sign??'未标注'}；右侧电机原始正负不等于逻辑前后。`:`尚未收到设备遥测。开启后显示配置、状态与更新时间。`;
     const target=offline?inverse(body,g,currentProfile?PROFILE_MAX_RPM:SIM_MAX_RPM):r?.target.rpm;
     const approx=offline?quantize(target):null;
     $('wheel-body').replaceChildren(...names.map((name,i)=>{const tr=document.createElement('tr');const fresh=!!r?.feedback.speed_valid[i]&&((r.t_ms-r.feedback.speed_ms[i])>>>0)<=600;const posFresh=!!r?.feedback.position_valid[i]&&((r.t_ms-r.feedback.position_ms[i])>>>0)<=600;for(const value of [name,fmt(target?.[i],2),offline?fmt(approx[i],0):fresh?fmt(r.feedback.rpm[i],2):'不可用',offline?'—':posFresh?fmt(r.feedback.pos[i],0):'不可用']){const td=document.createElement('td');td.textContent=value;tr.append(td);}return tr;}));
@@ -229,5 +281,5 @@ export function mountMap({send,onStatus=()=>{},isPreparing=()=>false}){
   }
   document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseSimulation('页面已隐藏 · 模拟暂停，可继续');});
   render();requestAnimationFrame(frame);
-  return {setSource,setPreviewSource,startProfile,setRadarGrid,beginPreparedTelemetry(nonce){pauseSimulation('准备实车跑图 · 离线模拟暂停');mode='feedback';$('sim-controls').hidden=true;$('route-editor').hidden=true;$('simulation-actions').hidden=true;$('online-controls').hidden=false;telemetry.begin(nonce,performance.now());render();},snapshot(){telemetry.tick(performance.now());return telemetry;},receive(line){telemetry.accept(line,performance.now());},connection(value){connected=value;telemetry.stop(value?'已连接 · 遥测需手动开启':'串口未连接');render();}};
+  return {setSource,setPreviewSource,startProfile,setRadarGrid,beginPreparedTelemetry(nonce){pauseSimulation('准备实车跑图 · 离线模拟暂停');mode='feedback';$('sim-controls').hidden=true;$('route-editor').hidden=true;$('simulation-actions').hidden=true;$('online-controls').hidden=false;telemetry.begin(nonce,performance.now());render();},snapshot(){telemetry.tick(performance.now());return telemetry;},receive(line){telemetry.accept(line,performance.now());stopHistory.observe(telemetry);},connection(value){connected=value;telemetry.stop(value?'已连接 · 遥测需手动开启':'串口未连接');render();}};
 }

@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import * as protocol from '../protocol.mjs';
 import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from '../grab-params.mjs';
 
+test('Base home acceptance is explicit and degraded feedback is a validated boolean',()=>{
+  assert.equal(protocol.buildCommand('grab-home-accept'),'grab home accept');
+  const line='OK grab state=complete mode=fixed reason=work_ready base_home_degraded=';
+  assert.equal(protocol.parseGrabStatus(line+'1').base_home_degraded,1);
+  assert.equal(protocol.parseGrabStatus(line+'0').base_home_degraded,0);
+  assert.equal(protocol.parseGrabStatus(line+'2'),null);
+  assert.equal(protocol.parseGrabStatus('OK grab state=idle').base_home_degraded,null);
+});
+
 test('centralized grasp preset builds explicit RAM commands and validates edits',()=>{
   assert.equal(GRAB_FORM_DEFAULTS.travel_mm,0);
   assert.deepEqual(protocol.buildGrabPresetCommands(),Object.entries(GRAB_TEST_PRESET).map(([key,value])=>`grab set ${key} ${value}`));

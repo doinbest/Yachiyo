@@ -8,8 +8,13 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.equal(GRAB_FORM_DEFAULTS.z_min,-150);
   assert.equal(GRAB_FORM_DEFAULTS.z_grab,-80);
   assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,undefined);
-  assert.equal(grabParameters.length,49);
-  assert.equal(new Set(grabParameters.map(p=>p.key)).size,49);
+  assert.equal(grabParameters.length,54);
+  assert.equal(new Set(grabParameters.map(p=>p.key)).size,54);
+  assert.equal(GRAB_FORM_DEFAULTS.base_home_degrade,1);
+  assert.equal(parameterFields.find(p=>p.key==='base_home_degrade').tab,'motion');
+  assert.equal(buildCommand('grab-set-base_home_degrade',{value:0}),'grab set base_home_degrade 0');
+  assert.throws(()=>buildCommand('grab-set-base_home_degrade',{value:2}));
+  assert.throws(()=>buildCommand('grab-set-base_home_degrade',{value:0.5}));
   for(const key of ['z_speed','z_pick_speed']) {
     const field=parameterFields.find(p=>p.key===key);
     assert.equal(field.max,333.333);

@@ -5,7 +5,7 @@
 
 颜色命令沿用原程序的 HSV 粗定位与色环精定位流程；数字命令使用
 Hough 多重同心圆检测，并识别圆心内的数字 1、2、3。两种模式共用
-物料可配置准心（默认 334,338）、编号环独立准心（默认 378,333）及 B2 通信协议。
+物料可配置准心（默认 372,345）、编号环独立准心（默认 378,333）及 B2 通信协议。
 
 摄像头固定请求 V4L2 + MJPG，默认 640x480、120 FPS。
 采集线程持续覆盖最新帧，主线程不会处理摄像头积压的旧帧。
@@ -1122,8 +1122,8 @@ class ColorCircleDetector:
 
     def __init__(
         self,
-        center_x=334,
-        center_y=338,
+        center_x=372,
+        center_y=345,
         min_contour_area=2000,
         min_color_area=150,
         switch_tolerance=50,
@@ -1567,14 +1567,14 @@ def parse_arguments():
     parser.add_argument(
         "--center-x",
         type=int,
-        default=334,
-        help="物料颜色准心 X，默认 334",
+        default=372,
+        help="物料颜色准心 X，默认 372",
     )
     parser.add_argument(
         "--center-y",
         type=int,
-        default=338,
-        help="物料颜色准心 Y，默认 338",
+        default=345,
+        help="物料颜色准心 Y，默认 345",
     )
     parser.add_argument("--ring-center-x", type=int, default=378,
                         help="编号色环独立准心 X，默认 378")

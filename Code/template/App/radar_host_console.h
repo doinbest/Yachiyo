@@ -6,6 +6,8 @@
 #define RADAR_HOST_CONSOLE_H
 
 #include <stdbool.h>
+#include <stdint.h>
+#include "radar_stability.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,6 +18,10 @@ void RadarHostConsole_Init(void);
 void RadarHostConsole_Process(void);
 /** @return 仅当命令属于精确的`radar host`命名空间时为true。 */
 bool RadarHostConsole_Command(unsigned count,char *tokens[]);
+/** Shared CPU-only CCM freeze: owner 1 formal, owner 2 host. */
+bool RadarStableTx_Freeze(uint8_t owner,uint32_t scan_id,const RadarStablePoint *points,uint16_t count);
+const RadarStablePoint *RadarStableTx_Points(uint8_t owner,uint32_t scan_id,uint16_t *count);
+void RadarStableTx_Release(uint8_t owner);
 
 #ifdef __cplusplus
 }

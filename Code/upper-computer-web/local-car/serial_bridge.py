@@ -17,17 +17,17 @@ STOP_REPLY = re.compile(
     r'OK chassis stop id=(\d+) token=(\d+) requested_ms=(\d+) '
     r'tx_complete=([01]) wheels_stopped=([01]) reason=([A-Za-z0-9_]+)')
 READ_COMMAND = re.compile(
-    r'(?:info|help|bus status|console status|(?:state|position|config) (?:base|z|x|all)|'
-    r'(?:camera|imu|qr|grab) status|qr read|grab (?:route|mission|calib) status|grab status (?:base|x|z)|grab get [a-z][a-z0-9_]*|grab track (?:status|trace(?: \d+)?|get [a-z][a-z0-9_]*|log(?: (?:status|stop|start(?: \d+)?))?)|'
+    r'(?:info|help|bus status|bus read [1-8] (?:current|voltage|error|home|driver)|bus test (?:status|stop|[1-8](?: (?:[1-9]\d?|100))?)|console status|(?:state|position|config) (?:base|z|x|all)|'
+    r'(?:camera|imu|qr|grab) status|camera log (?:start|stop|status)|qr read|grab (?:route|mission|calib|qr) status|grab status (?:base|x|z)|grab get [a-z][a-z0-9_]*|grab track (?:status|trace(?: \d+)?|get [a-z][a-z0-9_]*(?: (?:predict|visual|feedback))?|log(?: (?:status|stop|start(?: \d+)?))?)|'
     r'turntable (?:status|inventory|get [a-z][a-z0-9_]*)|'
     r'chassis (?:task|status|snapshot|feedback|stop-status|route status)|'
-    r'radar host (?:status(?: fast)?|bundle \d+ (?:all|\d+(?:,\d+)*)|(?:ack|result) \d+|get (?:active|draft)|live status|fetch (?:config|map|path|preview|cloud):\d+ \d+)|'
-    r'radar (?:status|get|result \d+|probe(?: status)?|nav status|start status|debug status|live status|fetch (?:map|path|points|cloud|params|raw|evidence) \d+ \d+)|map status)')
+    r'radar host (?:status(?: fast)?|bundle \d+ (?:all|\d+(?:,\d+)*)|(?:ack|result) \d+|get (?:active|draft)|live status|fetch (?:config|map|path|preview|cloud|stable):\d+ \d+)|'
+    r'radar (?:status|get|(?:result|ack) \d+|probe(?: status)?|nav status|start status|debug status|live status|fetch (?:map|path|points|cloud|stable|params|raw|evidence) \d+ \d+)|map status)')
 PREPARATION_COMMAND = re.compile(
     r'(?:chassis (?:units 65536|feedback (?:0|on)|'
-    r'origin 2250 150 90|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')
-CANCEL_COMMAND = re.compile(r'(?:bus recover|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab track stop|(?:camera|grab) stop)')
-PRIORITY_STOP = re.compile(r'(?:radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab track stop|(?:camera|grab) stop)')
+    r'origin 2250 150 180|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')
+CANCEL_COMMAND = re.compile(r'(?:bus recover|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab (?:track|qr) stop|(?:camera|grab) stop)')
+PRIORITY_STOP = re.compile(r'(?:radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab (?:track|qr) stop|(?:camera|grab) stop)')
 TERMINAL_STOP = {'confirmed', 'timeout', 'disconnected'}
 
 
@@ -55,6 +55,7 @@ class SerialBridge:
         self.events = deque(maxlen=event_limit)
         self.last_event_id = 0
         self.request_id = 0
+        self.command_epoch = 0
         self.commands = deque()
         self.priority_commands = deque()
         self.controls = deque()
@@ -138,7 +139,7 @@ class SerialBridge:
         with self.cv:
             return {'token':self.auth_token, 'connected':self.connected,
                     'port':self.port, 'baudrate':self.baudrate, 'disconnecting':self.disconnecting,
-                    'stop_latched':self.stop_latched, 'stop':dict(self.stop),
+                    'stop_latched':self.stop_latched, 'stop':dict(self.stop), 'command_epoch':self.command_epoch,
                     'preparation':dict(self.preparation_state),
                     'config':dict(self.config), 'last_event_id':self.last_event_id}
 
@@ -183,7 +184,7 @@ class SerialBridge:
             raise ValueError(result['error'])
         return self.status()
 
-    def send(self, command, owner=None):
+    def send(self, command, owner=None, *, command_epoch=None, require_epoch=False):
         if not isinstance(command, str) or not command or len(command) > 63 or any(ord(c) < 32 or ord(c) > 126 for c in command):
             raise ValueError('Use one ASCII command, 1-63 printable characters, without CR/LF')
         command = command.strip()
@@ -196,6 +197,15 @@ class SerialBridge:
         with self.cv:
             if not self.connected or self.disconnecting:
                 raise ValueError('Serial is disconnected or closing; connect explicitly first')
+            readonly = bool(READ_COMMAND.fullmatch(command))
+            priority = bool(PRIORITY_STOP.fullmatch(command))
+            # HTTP work can arrive after a later stop. Trusted synchronous CMD
+            # calls may omit the epoch; browser mutations must carry it.
+            if not readonly and not priority and (require_epoch or command_epoch is not None):
+                if type(command_epoch) is not int:
+                    raise ValueError('Motion command requires current command epoch; refresh console')
+                if command_epoch != self.command_epoch:
+                    raise ValueError('Command superseded by stop; issue a new command after reading status')
             if self.stop_latched and not READ_COMMAND.fullmatch(command) and not PRIORITY_STOP.fullmatch(command) and command != 'bus recover':
                 raise ValueError('Stop is latched; use resume explicitly before ordinary commands')
             if owner is not None and (not self.preparation_state['active'] or
@@ -209,6 +219,7 @@ class SerialBridge:
                 if owner != self.preparation_state['owner'] or not PREPARATION_COMMAND.fullmatch(command):
                     raise ValueError('Preparation is active; motion and unrelated mutations are blocked')
             if PRIORITY_STOP.fullmatch(command):
+                self._advance_command_epoch('Scoped stop cancelled earlier actions')
                 self._cancel_commands('cancelled by '+command, include_priority=False)
             if len(self.commands) + len(self.priority_commands) >= 100:
                 raise ValueError('Command queue is full')
@@ -218,7 +229,11 @@ class SerialBridge:
             else:
                 self.commands.append((self.request_id, command))
             self.cv.notify_all()
-            return {'queued':True, 'request_id':self.request_id}
+            return {'queued':True, 'request_id':self.request_id, 'command_epoch':self.command_epoch}
+
+    def _advance_command_epoch(self, reason):
+        self.command_epoch += 1
+        self._event('command_epoch', reason, command_epoch=self.command_epoch)
 
     def _cancel_commands(self, reason, include_priority=True):
         queues = (self.commands, self.priority_commands) if include_priority else (self.commands,)
@@ -243,14 +258,16 @@ class SerialBridge:
             text = 'STOP: '+phase+'; wheel stop not confirmed'
         fields = dict(self.stop)
         fields['stop_id'] = fields.pop('id', 0)
+        fields['command_epoch'] = self.command_epoch
         self._event('stop', text, latched=self.stop_latched, **fields)
 
     def request_stop(self):
         with self.cv:
+            self._advance_command_epoch('Global stop cancelled earlier actions')
             self._clear_preparation('Preparation cancelled by stop')
             self._cancel_commands('cancelled by stop')
             if self.stop_latched and self.stop['status'] not in TERMINAL_STOP | {'idle'}:
-                return dict(self.stop)
+                return dict(self.stop, command_epoch=self.command_epoch)
             self.stop_latched = True
             self.stop = {'status':'requested' if self.connected else 'disconnected',
                          'token':secrets.randbelow(0xFFFFFFFF)+1,
@@ -261,18 +278,22 @@ class SerialBridge:
             self.stop_next_at = self.stop_started_at
             self._stop_event()
             self.cv.notify_all()
-            return dict(self.stop)
+            return dict(self.stop, command_epoch=self.command_epoch)
 
-    def resume(self):
+    def resume(self, *, stop_token=None, require_token=False):
         with self.cv:
             if self.disconnecting:
                 raise ValueError('Disconnect is in progress')
+            if require_token or stop_token is not None:
+                if type(stop_token) is not int or stop_token != self.stop['token']:
+                    raise ValueError('Stop token has changed; only the current stop can be resumed')
             if self.stop_latched and self.stop['status'] not in TERMINAL_STOP:
                 raise ValueError('Stop request is still pending; wait for its result')
             self.stop_latched = False
             self.stop_reply_active = False
             fields = dict(self.stop)
             fields['stop_id'] = fields.pop('id', 0)
+            fields['command_epoch'] = self.command_epoch
             self._event('stop', 'Normal command entry resumed; no motion sent', latched=False, **fields)
             return self.status()
 
@@ -280,6 +301,7 @@ class SerialBridge:
         done = threading.Event()
         with self.cv:
             if not self.disconnecting:
+                self._advance_command_epoch('Disconnect cancelled earlier actions')
                 self.disconnecting = True
                 self._event('connection', '正在停车并断开', connected=self.connected, disconnecting=True)
             self._clear_preparation('Preparation cancelled by disconnect')

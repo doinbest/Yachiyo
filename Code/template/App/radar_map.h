@@ -7,6 +7,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "radar_geometry.h"
+#include "radar_stability.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,10 +47,13 @@ typedef struct {
 typedef struct {
   float lidar_x_mm, lidar_y_mm; /**< 雷达中心的当前地图坐标，mm。 */
   float zero_deg;              /**< 雷达局部角0从地图+X逆时针计的角度，deg。 */
+  float upper_lidar_x_mm, upper_lidar_y_mm; /**< 右上起点独立雷达中心，mm；零角固定270°。 */
   uint16_t distance_min_mm, distance_max_mm;
   uint16_t angle_min_tenths, angle_max_tenths; /**< 包含端点；min>max时跨0°。 */
   uint16_t threshold;          /**< 筛选后每格判障最少点数；完整云与流式Add一致，至少1。 */
   uint8_t energy_min, energy_max;
+  RadarGeometry geometry; /**< 冻结Q16标定；situation=0保留历史浮点投影。 */
+  uint8_t situation,grid_version,start_id;
 } RadarMap_Params_t;
 
 /** @brief One contiguous return on a known physical field edge. */
@@ -70,6 +75,7 @@ typedef struct {
   RadarMap_BoundaryRun_t boundary_first, boundary_pending;
   uint16_t boundary_counts[RADAR_MAP_CELL_COUNT]; /**< 已确认连续场边命中，不改原始counts。 */
   bool boundary_pending_is_first; /**< 首尾连续回波在完整圈结束时合并。 */
+  uint8_t grid_version;
 } RadarMap_t;
 
 typedef struct {
@@ -98,7 +104,7 @@ bool RadarGrid_CellCenter(const RadarGrid_t *grid,uint8_t cell,int16_t *x_mm,int
 bool RadarGrid_Path(const RadarGrid_t *grid,uint32_t blocked_mask,uint8_t start,uint8_t goal,
                     uint8_t path[RADAR_MAP_CELL_COUNT],uint8_t *count);
 
-/** @brief 载入下起点区域中心(2250,150,180°)、0..360°和每格1点判障阈值。 */
+/** @brief 下方情况二(2280,314,180°)、精确Q16标定、g4和稳定代表阈值1。 */
 void RadarMap_Defaults(RadarMap_Params_t *params);
 /** @return 数值有限、筛选范围合法且阈值至少1时为true。 */
 bool RadarMap_ParamsValid(const RadarMap_Params_t *params);
@@ -109,8 +115,12 @@ void RadarMap_Reset(RadarMap_t *map);
  */
 bool RadarMap_Project(const RadarMap_Params_t *params, const RadarSample_t *sample,
                       float *x_mm, float *y_mm);
+void RadarMap_FreezeParams(const RadarMap_Params_t *params,RadarMap_Params_t *frozen);
+bool RadarMap_SampleAllowed(const RadarMap_Params_t *params,const RadarSample_t *sample);
+void RadarMap_BuildStable(RadarMap_t *map,const RadarMap_Params_t *params,
+                          const RadarStablePoint *points,uint16_t count);
 /** @return 通过筛选并计入正式150..2250格点数时为true。
- * @note 参考半开边界经T旋转：150<X<=2250、150<=Y<2250；内部X边界归左格。
+ * @note g4两轴[150,2250)；历史g3保留旋转半开边界。
  */
 bool RadarMap_Add(RadarMap_t *map, const RadarMap_Params_t *params,
                   const RadarSample_t *sample);

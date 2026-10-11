@@ -28,6 +28,7 @@ static uint32_t Camera_DataSequence;
 static uint32_t Camera_LastFrameTick;
 static volatile uint32_t Camera_RxByteCount;
 static uint32_t Camera_ChecksumErrorCount;
+static Camera_FrameObserver_t Camera_FrameObserver;
 static volatile uint32_t Camera_OverflowCount;
 
 /**
@@ -142,6 +143,7 @@ static void Camera_DataPublish(const uint8_t *Frame, uint32_t ReceivedTick)
   */
 HAL_StatusTypeDef Camera_Init(void)
 {
+  Camera_FrameObserver = NULL;
   Camera_InputLength = 0U;
   Camera_InputOverflow = 0U;
   Camera_StreamLength = 0U;
@@ -159,6 +161,11 @@ HAL_StatusTypeDef Camera_Init(void)
   Camera_OverflowCount = 0U;
   (void)memset(&Camera_LatestData, 0, sizeof(Camera_LatestData));
   return HAL_OK;
+}
+
+void Camera_FrameObserverSet(Camera_FrameObserver_t Observer)
+{
+  Camera_FrameObserver = Observer;
 }
 
 /**
@@ -283,6 +290,12 @@ void Camera_Process(void)
       Camera_ChecksumErrorCount++;
       Camera_StreamRemove(1U);
       continue;
+    }
+    if (Camera_FrameObserver && Camera_StreamBuffer[3] <= 0x01U)
+    {
+      uint8_t Matched = (Camera_RequestActive && Camera_StreamBuffer[1] == Camera_RequestFunction &&
+                         Camera_StreamBuffer[2] == Camera_RequestTarget) ? 1U : 0U;
+      Camera_FrameObserver(Camera_StreamBuffer, Camera_StreamTimes[FrameLength - 1U], Matched);
     }
     if ((Camera_StreamBuffer[1] == Camera_RequestFunction) &&
         (Camera_StreamBuffer[2] == Camera_RequestTarget) &&

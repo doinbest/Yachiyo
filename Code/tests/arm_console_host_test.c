@@ -6,6 +6,9 @@
 #include "../template/App/arm_console.c"
 #include "../template/Hardware/QR.c"
 static char output[16000];
+static Camera_FrameObserver_t pixel_observer;
+void Camera_FrameObserverSet(Camera_FrameObserver_t observer){pixel_observer=observer;}
+static uint16_t pixel_backlog;
 void Mecanum_StatusGet(Mecanum_Status_t *s) { memset(s,0,sizeof(*s)); }
 bool MotorBus_FeedbackAllowed(void) { return true; }
 static uint32_t tick = 100;
@@ -14,7 +17,7 @@ static bool urgent_idle=true;
 static uint32_t urgent_losses;
 void NVIC_SystemReset(void) { reset_calls++; }
 bool ConsoleTx_UrgentIdle(void) { return urgent_idle; }
-static unsigned camera_calls, motor_calls, stop_calls, notice_clears;
+static unsigned camera_calls, motor_calls, stop_calls, notice_clears, manual_arm_stops;
 static uint8_t motor_busy;
 static bool calib_ref;
 static bool grab_busy, grab_route_busy;
@@ -40,7 +43,7 @@ bool GrabRoute_CanConfigure(void){return false;}
 void GrabTask_Stop(void){grab_stops++;grab_busy=false;}
 void GrabRoute_Stop(void){grab_route_busy=false;if(grab_busy)GrabTask_Stop();}
 bool GrabRoute_Command(unsigned n,char *t[]){if(n==3&&!strcmp(t[0],"grab")&&
- (!strcmp(t[1],"route")||!strcmp(t[1],"mission"))&&!strcmp(t[2],"status"))
+ (!strcmp(t[1],"route")||!strcmp(t[1],"mission")||!strcmp(t[1],"qr"))&&!strcmp(t[2],"status"))
  {ArmConsole_Write("OK grab route query\r\n");return true;}return false;}
 void GrabTask_StatusGet(GrabTask_Status_t *s){memset(s,0,sizeof(*s));}
 bool GrabTask_Command(unsigned n,char *t[]){if(n==3&&!strcmp(t[0],"grab")&&!strcmp(t[1],"calib")){
@@ -51,9 +54,16 @@ if(n>=3&&!strcmp(t[0],"grab")&&!strcmp(t[1],"stack")){const char*s="OK grab stac
 static bool motion_busy;
 static bool continuous_velocity;
 static bool bus_locked;
-static MotorBus_Recovery_t recovery_fake={false,false,0,0,"idle"};
+static MotorBus_Recovery_t recovery_fake={.reason="idle"};
 static MotorBus_Event_t guard_event;
 static bool guard_ready, guard_moving;
+static bool probe_active,probe_event_ready;
+static uint8_t probe_id;
+static MotorBus_Event_t probe_event;
+bool MotorBus_ProbeStart(uint8_t address){if(probe_active)return false;probe_active=true;probe_id=address;return true;}
+bool MotorBus_ProbeReady(void){return probe_active;}
+bool MotorBus_ProbeActive(void){return probe_active;}
+void MotorBus_ProbeStop(void){probe_active=false;probe_event_ready=false;}
 bool MotorBus_RecoveryStart(void) { recovery_fake.active=true;return true; }
 void MotorBus_RecoveryCancel(void) { recovery_fake.active=false; }
 void MotorBus_RecoveryGet(MotorBus_Recovery_t *s) { *s=recovery_fake; }
@@ -63,6 +73,24 @@ void MotorBus_Cancel(MotorBus_Owner_t owner) { (void)owner;guard_ready=false; }
 bool MotorBus_OwnerBusy(MotorBus_Owner_t owner) { (void)owner;return guard_ready; }
 bool MotorBus_Submit(MotorBus_Owner_t owner,const uint8_t *p,uint8_t n,uint8_t reply,uint32_t token,bool priority)
 {
+  if(owner==MOTOR_BUS_PROBE) {
+    assert(probe_active && p[0]==probe_id && n==(p[1]==0x42?4:3) && !priority);
+    memset(&probe_event,0,sizeof probe_event);probe_event.result=MOTOR_BUS_REPLY;
+    probe_event.length=reply;probe_event.data[0]=p[0];probe_event.data[1]=p[1];
+    probe_event.data[reply-1]=0x6b;probe_event.data[2]=p[1]==0x3a?3:0;
+    if(p[1]==0x42) { probe_event.data[2]=33;probe_event.data[3]=21; }
+    if(p[1]==0x27) { probe_event.data[2]=0x09;probe_event.data[3]=0xc4; }
+    if(p[1]==0x24) { probe_event.data[2]=0x5d;probe_event.data[3]=0xc0; }
+    if(p[1]==0x37) { probe_event.data[2]=1;probe_event.data[4]=1; }
+    if(p[1]==0x22) {
+      probe_event.data[5]=30;probe_event.data[8]=0x27;probe_event.data[9]=0x10;
+    }
+    if(p[1]==0x42) {
+      probe_event.data[14]=0x0b;probe_event.data[15]=0xb8;probe_event.data[31]=8;
+    }
+    probe_event.token=token;probe_event.tx_completed=true;probe_event.tx_ms=tick;probe_event.tick_ms=tick+2;
+    probe_event_ready=true;return true;
+  }
   (void)n;(void)reply;(void)token;(void)priority;assert(owner==MOTOR_BUS_GUARD);
   memset(&guard_event,0,sizeof(guard_event));guard_event.result=MOTOR_BUS_REPLY;
   guard_event.data[0]=p[0];guard_event.data[1]=p[1];
@@ -71,7 +99,11 @@ bool MotorBus_Submit(MotorBus_Owner_t owner,const uint8_t *p,uint8_t n,uint8_t r
   guard_ready=true;return true;
 }
 bool MotorBus_EventGet(MotorBus_Owner_t owner,MotorBus_Event_t *e)
-{ (void)owner;if(!guard_ready)return false;*e=guard_event;guard_ready=false;return true; }
+{
+  if(owner==MOTOR_BUS_PROBE){if(!probe_event_ready)return false;*e=probe_event;probe_event_ready=false;return true;}
+  if(!guard_ready)return false;
+  *e=guard_event;guard_ready=false;return true;
+}
 bool MotorBus_IsQuarantined(void) { return bus_locked; }
 void MotorBus_TimingGet(MotorBus_Timing_t *out) { memset(out,0,sizeof *out); }
 void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out)
@@ -97,7 +129,7 @@ bool ConsoleTx_Urgent(const char *data,uint16_t length){return ConsoleTx_Write((
 bool ConsoleTx_Debug(unsigned source,const char *data,uint16_t length){(void)source;return ConsoleTx_Write((const uint8_t *)data,length);}
 void ConsoleTx_BackgroundPause(bool paused){(void)paused;}
 void ConsoleTx_DebugCancel(unsigned source){(void)source;}
-void ConsoleTx_GetStats(ConsoleTx_Stats_t *out){memset(out,0,sizeof(*out));out->urgent_dropped=urgent_losses;}
+void ConsoleTx_GetStats(ConsoleTx_Stats_t *out){memset(out,0,sizeof(*out));out->urgent_dropped=urgent_losses;out->reply_pending=pixel_backlog;}
 void ConsoleRx_GetStats(ConsoleRx_Stats_t *out){memset(out,0,sizeof(*out));}
 uint32_t ConsoleTx_Dropped(void){return 0;}
 bool ConsoleTx_Event(const char *data,uint16_t length)
@@ -202,7 +234,7 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionRead(MechanicalArm_AxisTypeDef
 MechanicalArm_ResultTypeDef MechanicalArm_StateRead(MechanicalArm_AxisTypeDef axis) { return MechanicalArm_Enable(axis); }
 MechanicalArm_ResultTypeDef MechanicalArm_OriginSet(MechanicalArm_AxisTypeDef axis) { return MechanicalArm_Enable(axis); }
 MechanicalArm_ResultTypeDef MechanicalArm_Zero(MechanicalArm_AxisTypeDef axis) { return MechanicalArm_Enable(axis); }
-MechanicalArm_ResultTypeDef MechanicalArm_Stop(MechanicalArm_AxisTypeDef axis) { (void)axis;stop_calls++;return motor_result; }
+MechanicalArm_ResultTypeDef MechanicalArm_Stop(MechanicalArm_AxisTypeDef axis) { (void)axis;manual_arm_stops++;stop_calls++;return motor_result; }
 MechanicalArm_ResultTypeDef MechanicalArm_Home(MechanicalArm_AxisTypeDef axis,uint8_t mode) { (void)mode;return MechanicalArm_Enable(axis); }
 MechanicalArm_ResultTypeDef MechanicalArm_Position(MechanicalArm_AxisTypeDef axis,int32_t pulses) { motor_pulses=pulses;return MechanicalArm_Enable(axis); }
 uint8_t MechanicalArm_ConfigGet(MechanicalArm_AxisTypeDef axis,MechanicalArm_ConfigTypeDef *out) { (void)axis;*out=config;return 1; }
@@ -265,6 +297,18 @@ int main(void)
 {
   UART_HandleTypeDef uart={0};MechanicalArm_EventTypeDef event={0};unsigned before;
   uart.Instance=USART1;ArmConsole_Init(&uart);snapshot.UsbConfigured=1;snapshot.RequestActive=1;
+  {
+    const uint8_t frame[]={0xFF,0xB2,3,1,1,0x4E,1,0x52,0xFF,0xDA,0,7,0,0xFE};
+    unsigned cameras=camera_calls,motors=motor_calls;
+    command("camera log start\r");assert(pixel_observer && strstr(output,"log_begin id=1 next=0"));
+    pixel_observer(frame,123,1);pixel_observer(frame,124,0);
+    assert(strstr(output,"PIX id=1 i=0 t=123 c=3 v=1 m=1 x=334 y=338 dx=-38 dy=7 crc="));
+    assert(strstr(output,"PIX id=1 i=1 t=124 c=3 v=1 m=0 x=334 y=338 dx=-38 dy=7 crc="));
+    command("camera log start\r");assert(strstr(output,"id=1 next=2"));
+    pixel_backlog=4097;pixel_observer(frame,125,1);pixel_backlog=0;
+    command("camera log stop\r");assert(!pixel_observer && strstr(output,"count=3 queued=2 dropped=1"));
+    assert(camera_calls==cameras && motor_calls==motors);
+  }
   QR_Init();test_qr();
   {
     const char *retired[]={"vision ref\r","vision status\r","vision material 1\r","vision calib material 1\r","vision stop\r","material ref\r","material auto 3\r","material calib 3\r","material status\r","material stop\r"};
@@ -418,6 +462,9 @@ int main(void)
   command("imu cal start\r");assert(strstr(output,"chassis_task_busy"));
   command("wheel stop\r");assert(!route_reserved);
   /* Raw Ctrl+C discards a partial line, even a full ring, and cancels all producers. */
+  grab_busy=grab_route_busy=false;
+  before=manual_arm_stops;command("chassis stop 39\r");
+  assert(manual_arm_stops==before+1); /* Manual motion survives task ACK: stop still targets arm. */
   before=motor_calls;command("chassis velocity 10");
   route_reserved=motion_busy=true;grab_busy=1;
   output[0]=0;ArmConsole_ReceiveData(0x03);ArmConsole_StopProcess();
@@ -443,6 +490,13 @@ int main(void)
   command("chassis stop 42\r");
   assert(!route_reserved && !motion_busy && !grab_busy && strstr(output,"token=42"));
   cal_status.busy=false;
+  output[0]=0;memset(&event,0,sizeof(event));
+  event.Action=MECHANICAL_ARM_ACTION_STOP;event.Result=MECHANICAL_ARM_RESULT_OK;
+  event.Axis=MECHANICAL_ARM_AXIS_ALL;event.StopIdMask=0x60U;
+  ArmConsole_MotorEventHandle(&event);
+  assert(strstr(output,"OK stop z sent") && strstr(output,"OK stop x sent") && !strstr(output,"OK stop all sent"));
+  output[0]=0;event.StopIdMask=0xffU;ArmConsole_MotorEventHandle(&event);
+  assert(strstr(output,"OK stop all sent"));
   bus_locked=true;motor_result=MECHANICAL_ARM_RESULT_TX_ERROR;
   command("enable base\r");assert(strstr(output,"ERR motor tx bus_locked=1"));
   assert(strstr(output,"[MOTOR BUS] locked=1 reason=uart_error fault_ms=12345"));
@@ -568,5 +622,58 @@ int main(void)
   before=turntable_stops;command("stop all\r");assert(!turntable_busy && turntable_stops>before);
   turntable_busy=true;before=turntable_stops;
   ArmConsole_ReceiveData(3);ArmConsole_StopProcess();assert(!turntable_busy && turntable_stops>before);
+  grab_busy=grab_route_busy=true;motor_busy=true;motion_busy=true;
+  command("grab qr status\r");assert(strstr(output,"OK grab route query"));
+  command("grab qr stop\r");assert(!grab_busy && !grab_route_busy && strstr(output,"stop requested"));
+  motor_busy=false;motion_busy=false;
+  command("bus read 5 current\r");assert(BusTest.active && strstr(output,"read_only=1"));
+  for(unsigned i=0;i<10 && BusTest.active;i++){tick+=25;ArmConsole_Process();}
+  assert(!BusTest.active && BusTest.received==1 && strstr(output,"phase_ma=2500"));
+  command("bus read 5 voltage\r");
+  for(unsigned i=0;i<10 && BusTest.active;i++){tick+=25;ArmConsole_Process();}
+  assert(strstr(output,"voltage_mv=24000"));
+  command("bus read 5 error\r");
+  for(unsigned i=0;i<10 && BusTest.active;i++){tick+=25;ArmConsole_Process();}
+  assert(strstr(output,"error_raw=-65536 error_deg=-360.000"));
+  command("bus read 5 home\r");
+  for(unsigned i=0;i<10 && BusTest.active;i++){tick+=25;ArmConsole_Process();}
+  assert(strstr(output,"home_rpm=30 timeout_ms=10000"));
+  command("bus read 5 driver\r");
+  for(unsigned i=0;i<10 && BusTest.active;i++){tick+=25;ArmConsole_Process();}
+  assert(strstr(output,"current_limit_ma=3000") && strstr(output,"reach_deg=0.8"));
+  command("bus read 5 current\r");
+  probe_event.result=MOTOR_BUS_REPLY;probe_event.length=4;
+  probe_event.data[2]=0xe2;probe_event.data[3]=0x6b;
+  output[0]=0;tick+=25;ArmConsole_Process();
+  assert(!BusTest.active && BusTest.rejected==1 && !strstr(output,"phase_ma="));
+  command("bus read 5 driver\r");
+  ArmConsole_ReceiveData(3);ArmConsole_StopProcess();assert(!BusTest.active && !probe_active);
+  command("bus read 5 bogus\r");assert(!BusTest.active && strstr(output,"ERR format"));
+  command("bus test 1 1\r");assert(strstr(output,"OK bus test start id=1 rounds=1"));
+  before=motor_calls;command("wheel fl 10\r");assert(motor_calls==before && strstr(output,"bus test active"));
+  command("state x\r");assert(motor_calls==before && strstr(output,"bus test active"));
+  for(unsigned i=0;i<10 && BusTest.active;i++){tick+=25;ArmConsole_Process();}
+  assert(!BusTest.active && BusTest.received==3 && BusTest.sent==3 && BusTest.reply_max==2);
+  bus_locked=true;command("bus test 4 1\r");assert(BusTest.active && strstr(output,"locked=1"));
+  command("bus test status\r");assert(strstr(output,"id=4 rounds=1 active=1"));
+  command("bus test stop\r");assert(!BusTest.active && bus_locked && strstr(output,"reason=stopped"));
+  command("bus test 4 1\r");
+  assert(BusTest.pending);
+  probe_event.result=MOTOR_BUS_TIMEOUT;probe_event.tx_completed=false;
+  output[0]=0;ArmConsole_Process();assert(strstr(output,"reason=tx_timeout"));
+  tick+=25;ArmConsole_Process();assert(BusTest.pending);
+  probe_event.result=MOTOR_BUS_IO_ERROR;probe_event.uart_error=4;
+  output[0]=0;ArmConsole_Process();assert(strstr(output,"reason=uart_error uart_error=0x00000004"));
+  tick+=25;ArmConsole_Process();assert(BusTest.pending);
+  probe_event.result=MOTOR_BUS_IO_ERROR;probe_event.uart_error=0;
+  output[0]=0;ArmConsole_Process();assert(strstr(output,"reason=transport_error"));
+  assert(!BusTest.active && BusTest.timeouts==1 && BusTest.uart_errors==2 && BusTest.last_uart_error==0 && bus_locked);
+  command("bus test 0\r");assert(!BusTest.active && strstr(output,"ERR format"));
+  command("bus test 9\r");assert(!BusTest.active && strstr(output,"ERR format"));
+  command("bus test 4 101\r");assert(!BusTest.active && strstr(output,"ERR format"));
+  motion_busy=true;command("bus test 4\r");assert(!BusTest.active && strstr(output,"tasks_busy"));motion_busy=false;
+  command("bus test 8\r");assert(BusTest.active && BusTest.rounds==10);
+  ArmConsole_ReceiveData(3);ArmConsole_StopProcess();assert(!BusTest.active && !probe_active);
+  bus_locked=false;
   puts("arm_console_host_test: commands, units, busy, status, CRLF and async prompts OK");return 0;
 }

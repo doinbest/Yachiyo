@@ -17,6 +17,7 @@ static uint32_t last_observe;
 void ChassisLocalization_Init(void)
 {
   memset(&status, 0, sizeof(status));
+  status.units_per_rev = CHASSIS_EMM_POSITION_UNITS_PER_REV;
   last_observe = HAL_GetTick() - 20U;
   ChassisObserver_Init(&status.observer, 0, 0, 0);
 }

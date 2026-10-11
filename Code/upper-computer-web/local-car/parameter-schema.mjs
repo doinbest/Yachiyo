@@ -6,7 +6,7 @@ const pairs={z_grab:'z_lift',z_proc_grab:'z_proc_lift',z_place:'z_car_lift'};
 const liftToDown=Object.fromEntries(Object.entries(pairs).map(([down,lift])=>[lift,down]));
 const positions={z_grab:'原料夹取下降距离',z_lift:'原料夹取后抬升距离',z_proc_grab:'粗加工夹取下降距离',z_proc_lift:'粗加工夹取后抬升距离',z_place:'车载仓位取放下降距离',z_car_lift:'车载取出后抬升距离',z_proc_place:'粗加工释放下降距离',z_temp_place:'暂存第一层释放下降距离',z_stack_place:'暂存第二层释放下降距离'};
 const materialKeys=new Set([...Object.keys(positions),'x_car','base_car_offset','x_speed','z_speed','z_pick_speed']);
-const motionKeys=new Set(['x_ppm','z_ppm','x_min','x_max','x_pre','z_min','z_max','z_observe','pos_tol','stop_speed','feedback_ms','close_ms']);
+const motionKeys=new Set(['x_ppm','z_ppm','x_min','x_max','x_pre','z_min','z_max','z_observe','pos_tol','stop_speed','feedback_ms','close_ms','base_home_degrade']);
 export const materialScenarios=[
   ['原料夹取','z_grab','z_lift'],['粗加工夹取','z_proc_grab','z_proc_lift'],['车载取放','z_place','z_car_lift'],
   ['粗加工释放','z_proc_place'],['暂存第一层','z_temp_place'],['暂存第二层','z_stack_place']

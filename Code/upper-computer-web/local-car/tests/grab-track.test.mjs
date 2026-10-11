@@ -1,7 +1,7 @@
 import {GRAB_FORM_DEFAULTS} from '../grab-params.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseTrack,TRACK_PRESET,trackText,TrackingPanelModel,mountTracking,trackCrc} from '../grab-track.mjs';
+import {parsePixel,parseTrack,TRACK_PRESET,trackText,TrackingPanelModel,mountTracking,trackCrc} from '../grab-track.mjs';
 import {readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
 
 test('tracking faults use Chinese reasons while tracking protocol remains English',()=>{
@@ -77,6 +77,134 @@ function surface(){
   const root=new Element('div'),all=()=>{const walk=e=>[e,...e.children.flatMap(walk)];return walk(root);};
   return{root,all,downloads:()=>downloads,restore(){globalThis.document=saved;}};
 }
+test('pose rejection points to an explicit task status query without sending or retrying automatically',async()=>{
+  const ui=surface(),wires=[];
+  try{
+    const panel=mountTracking({root:ui.root,send:wire=>{wires.push(wire);return true;},canSend:()=>true});
+    panel.connection(true);
+    const query=ui.all().find(e=>e.tag==='button'&&e.textContent==='读取抓取任务状态');
+    assert.ok(query,'preparation needs a clearly named task status button');
+    assert.equal(query.title,'grab status');
+    assert.deepEqual(wires,[]);
+    const raw='ERR grab pose rejected; inspect grab status';
+    assert.equal(panel.receive(raw),true);
+    assert.deepEqual(wires,[],'receiving a rejection must stay passive');
+    assert.ok(ui.all().some(e=>e.textContent.includes('视觉任务')&&e.textContent.includes('点击“读取抓取任务状态”')));
+    const feedback=ui.all().find(e=>e.tag==='a'&&e.textContent==='查看抓取任务状态反馈 →');
+    assert.equal(feedback?.href,'#vision/track/status');
+    await query.onclick();
+    assert.deepEqual(wires,['grab status']);
+    panel.connection(false);panel.connection(true);
+    assert.deepEqual(wires,['grab status']);
+  }finally{ui.restore();}
+});
+test('comparison presets reduce correction and lookahead while predict defaults remain independent',async()=>{
+  const ui=surface(),wires=[];
+  try{
+    const panel=mountTracking({root:ui.root,send:wire=>{wires.push(wire);return true;},canSend:()=>true});
+    panel.connection(true);
+    const profile=ui.all().find(e=>e.tag==='select'&&e.children.some(c=>c.value==='feedback'));
+    const input=key=>ui.all().find(e=>e.dataset?.trackKey===key);
+    const preset=ui.all().find(e=>e.tag==='button'&&e.textContent==='填入追踪预设');
+    for(const mode of ['visual','feedback']){
+      profile.value=mode;profile.onchange();
+      for(const [key,value]of Object.entries({body_speed:80,x_speed:30,lambda:1,horizon_ms:60,accel:300,body_accel:300,x_accel:120,tol_px:5,lead_mm:12,control_ms:20,batch_ms:0,grace_ms:250}))assert.equal(Number(input(key).value),value);
+      input('lambda').value=9;await preset.onclick();assert.equal(Number(input('lambda').value),1);
+    }
+    profile.value='predict';profile.onchange();
+    assert.equal(Number(input('body_speed').value),160);assert.equal(Number(input('x_speed').value),60);
+    assert.equal(Number(input('lambda').value),2.5);assert.equal(Number(input('horizon_ms').value),120);
+    assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+test('comparison buttons explicitly start separate visual profiles and reconnect stays passive',async()=>{
+  const ui=surface(),wires=[];
+  try{
+    const panel=mountTracking({root:ui.root,send:wire=>{wires.push(wire);return true;},canSend:()=>true});
+    panel.connection(true);
+    const visual=ui.all().find(e=>e.title==='grab track visual');
+    const feedback=ui.all().find(e=>e.title==='grab track feedback');
+    assert.ok(visual && feedback);
+    assert.deepEqual(wires,[]);
+    await visual.onclick();assert.equal(wires.at(-1),'grab track visual 3 50');
+    await feedback.onclick();assert.equal(wires.at(-1),'grab track feedback 3 50');
+    panel.receive('OK grab track state=track_match reason=track_matching mode=feedback');
+    assert.ok(ui.all().some(e=>e.textContent.includes('纯视觉＋反馈减速')));
+    const count=wires.length;panel.connection(false);panel.connection(true);assert.equal(wires.length,count);
+  }finally{ui.restore();}
+});
+test('profile readbacks and edits stay separate, including under the stop latch',async()=>{
+  for(const wire of ['grab track get x_speed visual','grab track get x_accel feedback'])assert.equal(readOnlyCommand(wire),true);
+  for(const wire of ['grab track visual 3 50','grab track feedback 3 50','grab track get x_accel unknown'])assert.equal(readOnlyCommand(wire),false);
+  const model=new TrackingPanelModel();
+  model.receive('OK grab track config key=x_speed value=60 profile=predict');
+  model.receive('OK grab track config key=x_speed value=25 profile=visual');
+  assert.equal(model.config.get('x_speed'),60);assert.equal(model.config.get('visual.x_speed'),25);
+  const ui=surface(),wires=[];let panel;
+  try{
+    panel=mountTracking({root:ui.root,send:wire=>{
+      wires.push(wire);const m=wire.match(/^grab track (get|set) (\w+)(?: ([\d.]+))? feedback$/);
+      if(m)queueMicrotask(()=>panel.receive(`OK grab track config key=${m[2]} value=${m[3]??(m[2]==='x_accel'?120:TRACK_PRESET[m[2]]??300)} profile=feedback`));return true;
+    },canSend:()=>true});panel.connection(true);
+    const select=ui.all().find(e=>e.tag==='select'&&e.children.some(o=>o.value==='feedback'));
+    select.value='feedback';select.onchange();assert.deepEqual(wires,[]);
+    await ui.all().find(e=>e.textContent==='读取全部').onclick();
+    assert.ok(wires.includes('grab track get x_accel feedback'));
+    assert.ok(wires.every(w=>w.endsWith(' feedback')));
+    assert.ok(!wires.some(w=>/fit_ms|latency_ms/.test(w)));
+  }finally{panel?.connection(false);ui.restore();}
+});
+test('record start saves actual parameters before subscribing; reconnect stays passive',async()=>{
+  const ui=surface(),wires=[];let panel;
+  try{
+    panel=mountTracking({root:ui.root,send:wire=>{
+      wires.push(wire);
+      const key=wire.match(/^grab track get (\w+)$/)?.[1];
+      if(key)queueMicrotask(()=>panel.receive(`OK grab track config key=${key} value=${TRACK_PRESET[key]}`));
+      return true;
+    },canSend:()=>true});
+    panel.connection(true);
+    await ui.all().find(e=>e.textContent==='开启实时记录').onclick();
+    assert.equal(wires.filter(w=>w.startsWith('grab track get ')).length,13);
+    assert.equal(wires.at(-1),'grab track log start 200');
+    assert.equal(wires.at(-2),'camera log start');
+    assert.equal(wires.some(w=>/^grab track (begin|start|pick)/.test(w)),false);
+    const count=wires.length;panel.connection(false);panel.connection(true);
+    assert.equal(wires.length,count);
+  }finally{ui.restore();}
+});
+
+test('a missing parameter reply does not prevent recording useful diagnostics',async()=>{
+  const ui=surface(),wires=[];
+  try{
+    const panel=mountTracking({root:ui.root,send:wire=>{wires.push(wire);return !wire.startsWith('grab track get ');},canSend:()=>true});
+    panel.connection(true);
+    await ui.all().find(e=>e.textContent==='开启实时记录').onclick();
+    assert.equal(wires.at(-1),'grab track log start 200');
+    assert.ok(ui.all().some(e=>e.textContent.includes('参数读回不完整')));
+  }finally{ui.restore();}
+});
+
+test('pixel logs keep signed camera errors independent of the reference coordinates',()=>{
+  const body='PIX id=1 i=0 t=1 c=3 v=1 m=1 x=334 y=338 dx=-38 dy=7';
+  const pixel=parsePixel(`${body} crc=${trackCrc(body)}`);
+  assert.equal(pixel.dx,-38);assert.equal(pixel.dy,7);
+  for(const suffix of ['dx=1','dx=-32769 dy=0','dx=0 dy=32768']){
+    const line=`PIX id=1 i=1 t=2 c=3 v=1 m=1 x=372 y=345 ${suffix}`;
+    assert.equal(parsePixel(`${line} crc=${trackCrc(line)}`),null);
+  }
+});
+
+test('tracking keeps Base approximate-reference warning visible',()=>{
+  const ui=surface();
+  try{
+    const panel=mountTracking({root:ui.root,send:()=>true,canSend:()=>true});
+    panel.receive('OK grab track state=track_follow reason=track_following mode=visual base_home_degraded=1');
+    assert.ok(ui.all().some(e=>e.textContent.includes('Base 使用降级参考')));
+    assert.equal(parseTrack('OK grab track state=track_follow base_home_degraded=2'),null);
+  }finally{ui.restore();}
+});
+
 test('mount/reconnect are passive; one-click entry and preparation are explicit',async()=>{
   const ui=surface(),wires=[];
   try{
@@ -101,6 +229,31 @@ test('mount/reconnect are passive; one-click entry and preparation are explicit'
     assert.equal(wires.at(-1),'grab track stop');
   }finally{ui.restore();}
 });
+test('pose reference verification and cancellation keep status and stop on the pose workflow',async()=>{
+  const ui=surface(),wires=[];
+  try{
+    const panel=mountTracking({root:ui.root,send:wire=>{wires.push(wire);return true;},canSend:()=>true});
+    panel.connection(true);
+    await ui.all().find(e=>e.title==='grab pose work').onclick();
+    panel.receive('OK grab state=homing operation=pose reason=base_reference_verifying home_scope=base');
+    assert.ok(ui.all().some(e=>e.textContent==='准备抓取姿态 · 确认 Base 回零与停稳反馈'));
+    assert.ok(ui.all().some(e=>e.textContent==='停止准备'));
+    await ui.all().find(e=>e.title==='grab track status').onclick();
+    await ui.all().find(e=>e.title==='grab track stop').onclick();
+    /* Boot verification drains/aborts while its actual state remains homing. */
+    panel.receive('OK grab state=homing operation=pose reason=home_cancelled stop_requested=1 stop_confirmed=0');
+    assert.ok(ui.all().some(e=>e.textContent==='姿态准备停止中 · 回零已取消 · 等待回零退出确认'));
+    panel.receive('OK grab state=stopping operation=pose reason=cancelled stop_confirmed=0');
+    await ui.all().find(e=>e.title==='grab track status').onclick();
+    assert.deepEqual(wires,['grab pose work','grab status','grab stop','grab status']);
+    panel.receive('OK grab state=idle operation=pose reason=cancelled stop_confirmed=1');
+    await ui.all().find(e=>e.title==='grab pose work').onclick();
+    assert.equal(wires.at(-1),'grab pose work');
+    panel.receive('OK grab state=complete operation=pose reason=work_ready');
+    assert.ok(ui.all().some(e=>e.textContent==='抓取姿态已到位 · 可以启动追踪'));
+  }finally{ui.restore();}
+});
+
 test('rejected or disconnected trace request cannot trigger an unrelated later download',async()=>{
   const ui=surface();
   try{
@@ -131,4 +284,33 @@ test('frozen export repairs a missing row before downloading, without motion com
     assert.deepEqual(wires,['grab track trace','grab track trace 1']);
     assert.equal(panel.model.complete,true);assert.equal(ui.downloads(),1);
   }finally{panel?.connection(false);ui.restore();}
+});
+
+test('per-frame pixels retain missed detections, validate CRC and report gaps without duplicates',()=>{
+  const model=new TrackingPanelModel();
+  model.receive('OK camera log_begin id=1 next=0 mode=per_frame');
+  for(const [i,v,m] of [[0,1,1],[1,0,1],[3,1,0]]){
+    const body=`PIX id=1 i=${i} t=${17*i} c=3 v=${v} m=${m} x=334 y=338`;
+    const line=`${body} crc=${trackCrc(body)}`;
+    assert.equal(parsePixel(line).v,v);model.receive(line);model.receive(line);
+    assert.equal(parsePixel(line.replace('x=334','x=335')),null);
+  }
+  model.receive('OK camera log_end id=1 count=5 queued=4 dropped=1');
+  assert.equal(model.pixels.received,3);assert.equal(model.pixels.gaps,2);
+  assert.equal(model.pixels.enabled,false);
+  for(const command of ['camera log start','camera log stop','camera log status'])assert.equal(readOnlyCommand(command),true);
+});
+
+test('pixel-only recording and closing recording never start or stop motion',async()=>{
+  const ui=surface(),wires=[];
+  try{
+    const panel=mountTracking({root:ui.root,send:wire=>{wires.push(wire);return !wire.startsWith('grab track get ');},canSend:()=>true});
+    panel.connection(true);
+    ui.all().find(e=>e.type==='checkbox').checked=false;
+    await ui.all().find(e=>e.textContent==='开启实时记录').onclick();
+    assert.deepEqual(wires.slice(-2),['camera log start','grab track log stop']);
+    await ui.all().find(e=>e.textContent==='关闭实时记录').onclick();
+    assert.deepEqual(wires.slice(-2),['grab track log stop','camera log stop']);
+    assert.equal(wires.includes('grab stop'),false);
+  }finally{ui.restore();}
 });

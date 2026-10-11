@@ -81,9 +81,19 @@ int main(void)
    assert(strstr(reply,"error_mm=") && strstr(reply,"stop_confirmed="));motion_fixture.distance_mode=false;}
   {char *task[]={"chassis","task"};motion_fixture.requested.mode=CHASSIS_MOTION_HOLD_CURRENT;
    motion_fixture.requested.heading_deg=12.5f;assert(ChassisTelemetry_Command(2,task));
-   assert(strstr(reply,"mode=2 target_deg=12.50") && strstr(reply,"yaw_valid="));}
+   assert(strstr(reply,"mode=2 target_deg=12.50") && strstr(reply,"yaw_valid="));
+   assert(strstr(reply,"origin_valid=") && strstr(reply,"origin_mm=") &&
+          strstr(reply,"feedback_valid=") && strstr(reply,"feedback_age_ms=") && strstr(reply,"\r\n"));
+   }
   assert(!ChassisTelemetry_ConfirmPositionUnits(16384));
   assert(ChassisTelemetry_ConfirmPositionUnits(65536));
+  {char *task[]={"chassis","task"};ChassisLocalization_Status_t before,after;
+   assert(ChassisTelemetry_Origin(2250,150,3.14159265358979323846f/2));
+   ChassisLocalization_Get(&before);
+   assert(ChassisTelemetry_Command(2,task));ChassisLocalization_Get(&after);
+   assert(strstr(reply,"origin_valid=1 origin_mm=2250.000,150.000 origin_deg=90.000"));
+   assert(strstr(reply,"feedback_valid=0") && strlen(reply)<640 && strstr(reply,"\r\n"));
+   assert(after.generation==before.generation && after.origin_valid && turns==1);}
   assert(ChassisTelemetry_Stream(false,0));frame[0]=0;tick=1000;ChassisTelemetry_Process();assert(!frame[0]);
   assert(telemetry_cancels>=2);
   route_busy=true;

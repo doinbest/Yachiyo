@@ -1,5 +1,5 @@
-const kinds=new Set(['host_status','host_result_end','host_bundle','host_bundle_end','host_config','host_map','host_path','host_preview','host_cloud']);
-const transferKinds=new Set(['host_bundle','host_config','host_map','host_path','host_preview','host_cloud']);
+const kinds=new Set(['host_status','host_result_end','host_bundle','host_bundle_end','host_config','host_map','host_path','host_preview','host_cloud','host_stable']);
+const transferKinds=new Set(['host_bundle','host_config','host_map','host_path','host_preview','host_cloud','host_stable']);
 const u32=value=>Number.isInteger(value)&&value>=0&&value<=0xffffffff;
 const identityFields=['session','config','scan','map','plan'];
 
@@ -21,11 +21,12 @@ export function parseRadarHost(line){
   try{
     const frame=JSON.parse(line.slice(7));
     if(frame?.v===2&&['r','e'].includes(frame.k)&&Array.isArray(frame.i)&&frame.i.length===5&&frame.i.every(u32)){
-      return {v:1,profile:'f1_host',k:frame.k==='r'?'host_bundle':'host_bundle_end',
+      if(frame.profile!==undefined&&!['f1_host','competition'].includes(frame.profile))return null;
+      return {v:1,profile:frame.profile??'f1_host',k:frame.k==='r'?'host_bundle':'host_bundle_end',
         ...Object.fromEntries(identityFields.map((key,index)=>[key,frame.i[index]])),
-        page:frame.p,pages:frame.n,offset:frame.p*84,total:frame.t,data:frame.d,live:frame.l,wire:frame};
+        page:frame.p,pages:frame.n,offset:frame.p*(frame.profile?72:84),chunkSize:frame.profile?72:84,total:frame.t,data:frame.d,live:frame.l,wire:frame};
     }
-    if(frame?.v!==1||frame.profile!=='f1_host'||!kinds.has(frame.k)||!identityFields.every(key=>u32(frame[key])))return null;
+    if(frame?.v!==1||!['f1_host','competition'].includes(frame.profile)||!kinds.has(frame.k)||!identityFields.every(key=>u32(frame[key])))return null;
     if(frame.k==='host_preview'&&(!u32(frame.live_id)||!frame.live_id))return null;
     return frame;
   }catch{return null;}
@@ -54,7 +55,7 @@ const mask=text=>{
 };
 
 function commonSnapshot(frame,now){
-  return {k:frame.k,...Object.fromEntries(identityFields.map(key=>[key,frame[key]])),
+  return {k:frame.k,profile:frame.profile,...Object.fromEntries(identityFields.map(key=>[key,frame[key]])),
     ...(frame.k==='host_preview'?{live_id:frame.live_id}:{}),source:'device',receivedAt:now,complete:true,historical:false};
 }
 
@@ -63,8 +64,9 @@ function decodeConfig(ordered,frame,now){
   for(const page of ordered){
     if(page.offset!==seen++||typeof page.data!=='string')throw new Error('config_offset');
     const fields=page.data.split(','),key=fields.shift();
-    if(key==='source'){if(!['active','draft'].includes(fields[0]))throw new Error('config_source');result.source=fields[0];}
-    else if(['width','height','x1','x2','x3','x4','y1','y2','y3','y4','radar_x','radar_y','angle_min','angle_max','distance_min','distance_max','energy_min','energy_max','threshold'].includes(key))result[key]=number(fields[0],key);
+    if(key==='source'){if(!['active','draft','capture'].includes(fields[0]))throw new Error('config_source');result.source=fields[0];}
+    else if(['width','height','x1','x2','x3','x4','y1','y2','y3','y4','radar_x','radar_y','angle_min','angle_max','distance_min','distance_max','energy_min','energy_max','threshold','situation','grid_version','zero_tenths'].includes(key))result[key]=number(fields[0],key);
+    else if(['m00_q16','m01_q16','m10_q16','m11_q16','tx_q16','ty_q16'].includes(key))result[key]=number(fields[0],key,-2147483648,2147483647);
     else if(key==='fixed')result.fixed_mask=mask(fields[0]);
     else if(key==='manual')result.manual_mask=mask(fields[0]);
     else if(key==='protected')result.protected_mask=mask(fields[0]);
@@ -91,7 +93,8 @@ function decodeMap(ordered,frame,now){
   for(const page of unpackRecords(ordered,'map_offset')){
     if(page.offset!==seen++||typeof page.data!=='string')throw new Error('map_offset');
     const fields=page.data.split(','),type=fields.shift();
-    if(type==='s'){result.raw_points=number(fields[0],'raw',0,65535);result.filtered_points=number(fields[1],'filtered',0,65535);result.outside_points=number(fields[2],'outside',0,65535);stats=true;}
+    if(type==='s'){result.raw_points=number(fields[0],'raw');result.filtered_points=number(fields[1],'filtered');result.outside_points=number(fields[2],'outside');stats=true;}
+    else if(['r','f','o'].includes(type)){result[{r:'raw_points',f:'filtered_points',o:'outside_points'}[type]]=number(fields[0],type);stats=['raw_points','filtered_points','outside_points'].every(k=>result[k]!==undefined);}
     else if(type==='m'){result.scanned_mask=mask(fields[0]);result.manual_mask=mask(fields[1]);result.effective_mask=mask(fields[2]);result.mask=result.effective_mask;masks=true;}
     else if(type==='p'){result.path_valid=number(fields[0],'path_valid',0,1)===1;result.failed_from_task=number(fields[1],'failed_from',0,255);result.failed_to_task=number(fields[2],'failed_to',0,255);path=true;}
     else if(type==='c'){const index=number(fields[0],'cell',0,24);if(counts[index]!==undefined)throw new Error('duplicate_cell');counts[index]=number(fields[1],'count',0,65535);}
@@ -156,9 +159,9 @@ function decodePacked(ordered,frame,now,bytesPerPoint){
   const result=commonSnapshot(frame,now),points=[];
   for(let offset=0;offset<bytes.length;offset+=bytesPerPoint){
     const angle=bytes[offset]|bytes[offset+1]<<8,distance=bytes[offset+2]|bytes[offset+3]<<8;
-    points.push(bytesPerPoint===5?{angle_deg:angle/10,distance_mm:distance,energy:bytes[offset+4]}:{angle_deg:angle/10,distance_mm:distance});
+    points.push(bytesPerPoint===10?{angle_deg:angle/10,distance_mm:distance,x_mm:bytes[offset+4]|bytes[offset+5]<<8,y_mm:bytes[offset+6]|bytes[offset+7]<<8,votes:bytes[offset+8],flags:bytes[offset+9]}:bytesPerPoint===5?{angle_deg:angle/10,distance_mm:distance,energy:bytes[offset+4]}:{angle_deg:angle/10,distance_mm:distance});
   }
-  result.crc32=expectedCrc;result.points=points;return result;
+  result.crc32=expectedCrc;result.points=points;if(frame.k==='host_stable')result.stable_id=frame.stable_id??frame.scan;return result;
 }
 
 function decodeTransfer(ordered,frame,now){
@@ -166,7 +169,7 @@ function decodeTransfer(ordered,frame,now){
   if(frame.k==='host_config')return decodeConfig(ordered,frame,now);
   if(frame.k==='host_map')return decodeMap(ordered,frame,now);
   if(frame.k==='host_path')return decodePath(ordered,frame,now);
-  return decodePacked(ordered,frame,now,frame.k==='host_cloud'?5:4);
+  return decodePacked(ordered,frame,now,frame.k==='host_stable'?10:frame.k==='host_cloud'?5:4);
 }
 
 function validateBundle(frame){
@@ -174,16 +177,28 @@ function validateBundle(frame){
   if(typeof c!=='string'||!/^[0-9A-Fa-f]{8}$/.test(c)||crc32(new TextEncoder().encode(JSON.stringify(protectedFrame)))!==parseInt(c,16))throw new Error('bundle_page_crc');
   if(frame.live!==undefined&&frame.live!==0&&frame.live!==1)throw new Error('bundle_mode');
   if(frame.k==='host_bundle_end'){
-    if(!Number.isInteger(frame.pages)||frame.pages<1||frame.pages>24)throw new Error('bundle_pages');
+    if(!Number.isInteger(frame.pages)||frame.pages<1||frame.pages>30)throw new Error('bundle_pages');
     return;
   }
   const bytes=decodeBase64(frame.data);
-  if(!u32(frame.total)||frame.total<74||frame.total>2004||frame.pages!==Math.ceil(frame.total/84)||!Number.isInteger(frame.page)||frame.page<0||frame.page>=frame.pages||bytes.length!==Math.min(84,frame.total-frame.offset))throw new Error('bundle_shape');
+  const chunkSize=frame.chunkSize??84;
+  if(!u32(frame.total)||frame.total<74||frame.total>2078||frame.pages!==Math.ceil(frame.total/chunkSize)||!Number.isInteger(frame.page)||frame.page<0||frame.page>=frame.pages||bytes.length!==Math.min(chunkSize,frame.total-frame.offset))throw new Error('bundle_shape');
 }
 function decodeBundle(ordered,frame,now){
   const bytes=new Uint8Array(frame.total);
   for(const page of ordered)bytes.set(decodeBase64(page.data),page.offset);
   const view=new DataView(bytes.buffer),u16=at=>view.getUint16(at,true),u32=at=>view.getUint32(at,true);
+  if(bytes[0]===2){
+    const s32=at=>view.getInt32(at,true),s16=at=>view.getInt16(at,true);
+    if(bytes.length<158||bytes[25]>1||158+10*u16(28)!==bytes.length)throw new Error('bundle_length');
+    const map={...commonSnapshot({...frame,k:'host_map'},now),layout:2,raw_points:u32(1),filtered_points:u32(5),outside_points:u32(9),
+      scanned_mask:u32(13),manual_mask:u32(17),effective_mask:u32(21),mask:u32(21),path_valid:!!bytes[25],failed_from_task:bytes[26],failed_to_task:bytes[27],
+      counts:Array.from({length:25},(_,i)=>u16(30+2*i)),stable_points:u16(80),window_count:bytes[82],situation:bytes[83],grid_version:bytes[84],algorithm:bytes[85],candidate_count:u16(86),candidate_replacements:u32(88),candidate_dropped:u32(92),window_first:u32(96),window_last:u32(100),
+      geometry:{matrix_q16:Array.from({length:4},(_,i)=>s32(104+4*i)),origin_q16:[s32(120),s32(124)],zero_tenths:u16(128)},
+      grid:{x:Array.from({length:6},(_,i)=>s16(130+2*i)),y:Array.from({length:6},(_,i)=>s16(142+2*i))},pose:[u16(154),u16(156),u16(128)/10]};
+    const points=[];for(let at=158;at<bytes.length;at+=10){if(bytes[at+6]<1||bytes[at+6]>5||bytes[at+7]<1||bytes[at+7]>5)throw new Error('bundle_waypoint');points.push([u16(at),u16(at+2),u16(at+4),...bytes.slice(at+6,at+10)]);}
+    return {map,path:{...commonSnapshot({...frame,k:'host_path'},now),path_valid:map.path_valid,failed_from_task:map.failed_from_task,failed_to_task:map.failed_to_task,points}};
+  }
   if(bytes[0]!==1||bytes[19]>1||74+10*u16(22)!==bytes.length)throw new Error('bundle_length');
   const map={...commonSnapshot({...frame,k:'host_map'},now),raw_points:u16(1),filtered_points:u16(3),outside_points:u16(5),
     scanned_mask:u32(7),manual_mask:u32(11),effective_mask:u32(15),mask:u32(15),path_valid:!!bytes[19],failed_from_task:bytes[20],failed_to_task:bytes[21],counts:Array.from({length:25},(_,i)=>u16(24+2*i))};
@@ -274,7 +289,10 @@ export class RadarHostModel{
         this.snapshots.map=snapshot.map;this.snapshots.path=snapshot.path;this.pending.delete(frame.k);
         this.lastEvent={accepted:true,frame,snapshot,key:'result'};return true;
       }
-      const key=frame.k.slice(5);this.snapshots[key]=snapshot;this.pending.delete(frame.k);
+      const key=frame.k.slice(5);this.snapshots[key]=snapshot;
+      if(key==='config'&&snapshot.source==='active')this.snapshots.active_config=snapshot;
+      if(key==='config'&&snapshot.source==='capture')this.snapshots.capture_config=snapshot;
+      this.pending.delete(frame.k);
       this.lastEvent={accepted:true,frame,snapshot,key};
     }catch(error){this.lastError=error.message;this.pending.delete(frame.k);this.lastEvent={accepted:true,frame,error:this.lastError};}
     return true;

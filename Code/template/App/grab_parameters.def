@@ -6,6 +6,8 @@
  * Z 55.55555556 / 111.11111111 mm/s correspond to 500 / 1000 RPM at 480 ppm.
  * Keep row order: task readiness checks use the existing contiguous key groups.
  */
+#define GRAB_BASE_WORK_OFFSET_DEG 128.0f
+#define GRAB_BASE_HOME_STABLE_TOL_DEG 5.0f
 /* User measurement: 100 motor degrees -> 28 mm; 3200 command pulses/rev. */
 PARAM(C_X_PPM, "x_ppm", 31.746031746, 0, 100000, 2, 2)
 PARAM(C_Z_PPM, "z_ppm", 480, 0, 100000, 2, 4)
@@ -53,7 +55,49 @@ PARAM(C_Z_TEMP_PLACE, "z_temp_place", NAN, -10000, 10000, 0, 0)
 PARAM(C_Z_STACK_PLACE, "z_stack_place", NAN, -10000, 10000, 0, 0)
 /* User-specified 10 cm car loading mouth; restore after verified X home. */
 PARAM(C_X_CAR, "x_car", 100, -10000, 10000, 0, 3)
-PARAM(C_BASE_CAR_OFFSET, "base_car_offset", -180, -360, 360, 0, 1)
+/* Base home faces the car mouth: work +128 degrees returns home by -128.
+ * ID8 slot offsets (0/-90/-180) are independent of this Base parameter. */
+PARAM(C_BASE_CAR_OFFSET, "base_car_offset", -128, -360, 360, 0, 1)
 PARAM(C_VISION_WAIT_MS, "vision_wait_ms", 12000, 1500, 120000, 1, 1)
 PARAM(C_X_TRANSFER_SPEED, "x_transfer_speed", 60, 0, 100, 2, 1)
 PARAM(C_Z_PICK_SPEED, "z_pick_speed", 111.11111111, 0, 333.333, 2, 1)
+
+/* QR control test: official right-side scan region and conservative Z search. */
+PARAM(C_QR_SCAN_Y, "qr_scan_y", 1200, 1100, 1300, 0, 1)
+PARAM(C_QR_Z_MIN, "qr_z_min", -50, -150, 0, 0, 1)
+PARAM(C_QR_Z_SPEED, "qr_z_speed", 5, 0, 20, 2, 1)
+PARAM(C_QR_WAIT_MS, "qr_wait_ms", 1000, 0, 10000, 1, 1)
+
+/* Competition continuity: Base HOME bit3 may use a freshly verified quiet anchor.
+ * Zero selects strict HOME success; neither mode bypasses real driver faults. */
+PARAM(C_BASE_HOME_DEGRADE, "base_home_degrade", 1, 0, 1, 1, 1)
+
+/* Independent tracking profiles. Predict defaults/ranges are preserved.
+ * body_accel/x_accel are feedback-profile software tuning values, not measured
+ * mechanism capabilities or driver grades; X120 starts below grade20's ideal142. */
+#ifdef TRACK_PARAM
+TRACK_PARAM(body_speed_mm_s, "body_speed", 160, 1, 300, 0)
+TRACK_PARAM(x_speed_mm_s, "x_speed", 60, 1, 100, 0)
+TRACK_PARAM(accel_mm_s2, "accel", 300, 1, 1000, 0)
+TRACK_PARAM(lambda_s, "lambda", 2.5, .01, 10, 0)
+TRACK_PARAM(x_weight, "x_weight", 2.333333, .01, 100, 0)
+TRACK_PARAM(lead_mm, "lead_mm", 12, .1, 12, 0)
+TRACK_PARAM(tolerance_px, "tol_px", 5, 1, 20, 0)
+TRACK_PARAM(control_ms, "control_ms", 20, 20, 100, 1)
+TRACK_PARAM(batch_ms, "batch_ms", 0, 0, 200, 1)
+TRACK_PARAM(latency_ms, "latency_ms", 50, 0, 200, 1)
+TRACK_PARAM(fit_ms, "fit_ms", 240, 100, 500, 1)
+TRACK_PARAM(horizon_ms, "horizon_ms", 120, 50, 200, 1)
+TRACK_PARAM(grace_ms, "grace_ms", 250, 0, 250, 1)
+TRACK_PARAM(body_accel_mm_s2, "body_accel", 300, 1, 1000, 0)
+TRACK_PARAM(x_accel_mm_s2, "x_accel", 120, 1, 1000, 0)
+#endif
+
+/* Visual/feedback tuning approved 2026-10-12. Other fields inherit predict
+ * defaults; these overrides affect startup values, not readback or saved RAM. */
+#ifdef TRACK_COMPARISON_DEFAULT
+TRACK_COMPARISON_DEFAULT(body_speed_mm_s, "body_speed", 80)
+TRACK_COMPARISON_DEFAULT(x_speed_mm_s, "x_speed", 30)
+TRACK_COMPARISON_DEFAULT(lambda_s, "lambda", 1.0)
+TRACK_COMPARISON_DEFAULT(horizon_ms, "horizon_ms", 60)
+#endif

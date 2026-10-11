@@ -258,6 +258,32 @@ export const GRAB_PARAMETER_METADATA = Object.freeze({
     "max": 333.333,
     "step": "any",
     "exclusiveMin": true
+  },
+  "qr_scan_y": {
+    "min": 1100.0,
+    "max": 1300.0,
+    "step": "any"
+  },
+  "qr_z_min": {
+    "min": -150.0,
+    "max": 0.0,
+    "step": "any"
+  },
+  "qr_z_speed": {
+    "min": 0.0,
+    "max": 20.0,
+    "step": "any",
+    "exclusiveMin": true
+  },
+  "qr_wait_ms": {
+    "min": 0.0,
+    "max": 10000.0,
+    "step": 1
+  },
+  "base_home_degrade": {
+    "min": 0.0,
+    "max": 1.0,
+    "step": 1
   }
 });
 export const GRAB_FORM_DEFAULTS = Object.freeze({
@@ -301,8 +327,113 @@ export const GRAB_FORM_DEFAULTS = Object.freeze({
   "loss_grace_ms": 250.0,
   "z_car_lift": 0.0,
   "x_car": 100.0,
-  "base_car_offset": -180.0,
+  "base_car_offset": -128.0,
   "vision_wait_ms": 12000.0,
   "x_transfer_speed": 60.0,
-  "z_pick_speed": 111.11111111
+  "z_pick_speed": 111.11111111,
+  "qr_scan_y": 1200.0,
+  "qr_z_min": -50.0,
+  "qr_z_speed": 5.0,
+  "qr_wait_ms": 1000.0,
+  "base_home_degrade": 1.0
+});
+export const TRACK_PARAMETER_DEFAULTS = Object.freeze({
+  "body_speed": 160.0,
+  "x_speed": 60.0,
+  "accel": 300.0,
+  "lambda": 2.5,
+  "x_weight": 2.333333,
+  "lead_mm": 12.0,
+  "tol_px": 5.0,
+  "control_ms": 20.0,
+  "batch_ms": 0.0,
+  "latency_ms": 50.0,
+  "fit_ms": 240.0,
+  "horizon_ms": 120.0,
+  "grace_ms": 250.0,
+  "body_accel": 300.0,
+  "x_accel": 120.0
+});
+export const TRACK_COMPARISON_DEFAULTS = Object.freeze({...TRACK_PARAMETER_DEFAULTS, ...{
+  "body_speed": 80.0,
+  "x_speed": 30.0,
+  "lambda": 1.0,
+  "horizon_ms": 60.0
+}});
+export const TRACK_PARAMETER_METADATA = Object.freeze({
+  "body_speed": {
+    "min": 1.0,
+    "max": 300.0,
+    "step": "any"
+  },
+  "x_speed": {
+    "min": 1.0,
+    "max": 100.0,
+    "step": "any"
+  },
+  "accel": {
+    "min": 1.0,
+    "max": 1000.0,
+    "step": "any"
+  },
+  "lambda": {
+    "min": 0.01,
+    "max": 10.0,
+    "step": "any"
+  },
+  "x_weight": {
+    "min": 0.01,
+    "max": 100.0,
+    "step": "any"
+  },
+  "lead_mm": {
+    "min": 0.1,
+    "max": 12.0,
+    "step": "any"
+  },
+  "tol_px": {
+    "min": 1.0,
+    "max": 20.0,
+    "step": "any"
+  },
+  "control_ms": {
+    "min": 20.0,
+    "max": 100.0,
+    "step": 1
+  },
+  "batch_ms": {
+    "min": 0.0,
+    "max": 200.0,
+    "step": 1
+  },
+  "latency_ms": {
+    "min": 0.0,
+    "max": 200.0,
+    "step": 1
+  },
+  "fit_ms": {
+    "min": 100.0,
+    "max": 500.0,
+    "step": 1
+  },
+  "horizon_ms": {
+    "min": 50.0,
+    "max": 200.0,
+    "step": 1
+  },
+  "grace_ms": {
+    "min": 0.0,
+    "max": 250.0,
+    "step": 1
+  },
+  "body_accel": {
+    "min": 1.0,
+    "max": 1000.0,
+    "step": "any"
+  },
+  "x_accel": {
+    "min": 1.0,
+    "max": 1000.0,
+    "step": "any"
+  }
 });

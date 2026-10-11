@@ -5,6 +5,7 @@
 #include "GrabTask.h"
 #include "chassis_route.h"
 #include "chassis_config.h"
+#include "chassis_localization.h"
 #include "contest_screen.h"
 #include "QR.h"
 #include "console_tx.h"
@@ -15,6 +16,15 @@ static int ready=1,screen_done,screen_error,task_busy;
 static GrabTask_Status_t grab_status;
 static char reply[600];
 static float route_speed;
+static ChassisLocalization_Status_t localization;
+static bool feedback_enabled;
+static unsigned feedback_selections;
+void ChassisLocalization_Get(ChassisLocalization_Status_t *s){*s=localization;}
+bool Mecanum_Feedback_Select(uint8_t address){assert(address==0);feedback_selections++;feedback_enabled=false;return true;}
+void Mecanum_Feedback_Enable(bool on){feedback_enabled=on;}
+bool GrabTask_QrReady(float *y){*y=1200;return ready;}
+bool GrabTask_QrScanStart(uint32_t seq){(void)seq;task_busy=1;grab_status.state=GRAB_QR_SCAN;grab_status.reason="qr_wait";return true;}
+bool ChassisRoute_QrTestStart(float speed,float y){assert(y==1200);route_speed=speed;route.state="running";starts++;return true;}
 static unsigned single_starts;
 static bool single_accept=true;
 bool ContestMission_StartSingle(float speed){single_starts++;route_speed=speed;return single_accept;}
@@ -49,6 +59,43 @@ uint8_t ContestScreen_HasError(void){return screen_error;}
 static void setup(void){memset(&route,0,sizeof(route));memset(&grab_status,0,sizeof(grab_status));route.state="idle";route.reason="none";grab_status.reason="idle";grab_status.result="none";tick=0;starts=resumes=finishes=picks=cancels=single_starts=0;ready=1;screen_done=screen_error=task_busy=0;QR_Init();GrabRoute_Init();}
 int main(void)
 {
+  setup();char *qrstart[]={"grab","qr","begin"};
+  localization.origin_valid=true;localization.origin.x_mm=2250;localization.origin.y_mm=2250;
+  localization.origin.yaw_rad=-CHASSIS_MODEL_PI/2;
+  assert(GrabRoute_Command(3,qrstart));assert(!starts && GrabRoute_IsBusy());
+  assert(strstr(reply,"state=preparing"));
+  GrabRoute_Process();assert(feedback_enabled && feedback_selections==1 && !starts);
+  for(unsigned i=0;i<20;i++){tick+=100;GrabRoute_Process();}
+  assert(!starts && !task_busy); /* Never move on missing position/speed feedback. */
+  localization.feedback_valid=localization.speed_valid=true;localization.feedback_tick=tick;
+  GrabRoute_Process();assert(starts==1 && route_speed==50);
+  GrabRoute_Process();assert(!task_busy);
+  route.state="done";route.stop_confirmed=false;GrabRoute_Process();assert(!task_busy);
+  route.stop_confirmed=true;GrabRoute_Process();assert(task_busy && GrabRoute_IsBusy());
+  char *qrquery[]={"grab","qr","status"};assert(GrabRoute_Command(3,qrquery));assert(strstr(reply,"state=scan"));
+  task_busy=0;grab_status.state=GRAB_IDLE;grab_status.stop_confirmed=true;grab_status.result="qr_scanned";
+  GrabRoute_Process();assert(!GrabRoute_IsBusy());assert(strstr(reply,"state=done"));
+  setup();assert(GrabRoute_Command(3,qrstart));GrabRoute_Stop();GrabRoute_Process();
+  assert(!GrabRoute_IsBusy() && strstr(reply,"state=cancelled") && !picks && !single_starts);
+  setup();localization.origin_valid=false;assert(GrabRoute_Command(3,qrstart));
+  assert(!GrabRoute_IsBusy() && !starts && strstr(reply,"origin_required"));
+  setup();char *lowerstart[]={"grab","qr","begin","lower","60"};
+  localization.origin_valid=true;localization.origin.x_mm=2250;localization.origin.y_mm=150;
+  localization.origin.yaw_rad=CHASSIS_MODEL_PI;
+  localization.feedback_valid=localization.speed_valid=true;localization.feedback_tick=tick;
+  assert(GrabRoute_Command(5,lowerstart));
+  assert(strstr(reply,"state=preparing") && !starts);
+  GrabRoute_Process();assert(starts==1 && route_speed==60);
+  route.reason="qr_scan_turn";route.phase="qr_scan_turn";
+  GrabRoute_Process();assert(!task_busy && strstr(reply,"reason=qr_scan_turn"));
+  for(unsigned i=0;i<10;i++)GrabRoute_Process();
+  assert(!task_busy && starts==1); /* Z waits for the chassis half-turn and stop. */
+  route.state="done";route.stop_confirmed=false;GrabRoute_Process();assert(!task_busy);
+  route.stop_confirmed=true;GrabRoute_Process();assert(task_busy);
+  GrabRoute_Stop();GrabRoute_Process();assert(!GrabRoute_IsBusy());
+  setup();localization.origin.y_mm=2250;localization.origin.yaw_rad=-CHASSIS_MODEL_PI/2;
+  assert(GrabRoute_Command(5,lowerstart));
+  assert(!starts && !GrabRoute_IsBusy() && strstr(reply,"origin_required"));
   setup();task_busy=1;route.state="running";
   char *query[]={"grab","route","status"};
   assert(GrabRoute_Command(3,query));assert(strstr(reply,"OK grab route state=idle"));

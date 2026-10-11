@@ -37,8 +37,11 @@ static void step(void)
     } else if(sent[1]==0x3a) { r[2]=moving?1:3;if(disabled || power_disabled)r[2]&=(uint8_t)~1U;r[3]=0x6b; }
     else if(sent[1]==0xfd) {
       last_pulses=((unsigned)sent[6]<<24)|((unsigned)sent[7]<<16)|((unsigned)sent[8]<<8)|sent[9];
-      last_direction=sent[2];assert(sent[10]==2 && !sent[11]);position_commands++;
-      if(!hold_position && !reject) position_raw+=(int32_t)lround((double)last_pulses*65536/3200)*(last_direction?-1:1);
+      last_direction=sent[2];assert(!sent[11]);position_commands++;
+      /* This car's mode 2 behaves as an absolute target in repeated moves,
+       * as observed on Base and now ID8. Do not model it as a working delta. */
+      assert(sent[10]==1 || sent[10]==2);
+      if(!hold_position && !reject) position_raw=(int32_t)lround((double)last_pulses*65536/3200)*(last_direction?-1:1);
       r[2]=reject?0xee:2;r[3]=0x6b;if(missing_motion_ack)length=0;
     } else if(sent[1]==0xfe) { moving=0;speed_rpm=0;r[2]=2;r[3]=0x6b;stop_commands++; }
     else if(sent[1]==0xf3) { assert(sent[2]==0xab && sent[3]<=1);power_disabled=!sent[3];r[2]=2;r[3]=0x6b; }
@@ -98,7 +101,7 @@ int main(void)
   assert(!Turntable_Index(2));command(4,set);assert(strstr(console,"OK turntable set"));
   assert(Turntable_Index(2));run();Turntable_StatusGet(&s);
   assert(s.arrived && s.slot==2 && fabsf(s.angle_deg-270)<1);
-  assert(last_direction==1 && last_pulses==800); /* -90, not +270. */
+  assert(last_direction==0 && last_pulses==2400); /* 360 -> 270: shortest -90. */
   command(3,empty);assert(Turntable_FindEmpty()==1);
   assert(Turntable_InventorySet(1,TURNTABLE_OCCUPIED,2));assert(Turntable_FindEmpty()==2);
   assert(!Turntable_InventorySet(1,TURNTABLE_OCCUPIED,0));
@@ -107,8 +110,18 @@ int main(void)
     assert(Turntable_InventoryGet(1).color==color);
   }
   assert(!Turntable_InventorySet(1,TURNTABLE_OCCUPIED,7));
-  assert(Turntable_Index(1));run();assert(last_direction==0 && last_pulses==800);
-  assert(Turntable_Jog(-45));run();assert(last_direction==1 && last_pulses==400);
+  assert(Turntable_Index(1));run();assert(last_direction==0 && last_pulses==3200);
+  assert(Turntable_Jog(-45));run();assert(last_direction==0 && last_pulses==2800);
+  assert(strstr(console,"OK turntable arrived"));
+  {
+    int32_t initial=position_raw;
+    console[0]=0;
+    assert(Turntable_Jog(-90));run();Turntable_StatusGet(&s);
+    assert(s.arrived && abs(position_raw-(initial-16384))<=12);
+    assert(Turntable_Jog(-90));run();Turntable_StatusGet(&s);
+    assert(s.arrived && abs(position_raw-(initial-32768))<=12);
+    assert(Turntable_Jog(180));run();assert(abs(position_raw-initial)<=12);
+  }
   Turntable_Stop();Turntable_StatusGet(&s);assert(!s.feedback_valid);
   Turntable_Stop();run();Turntable_StatusGet(&s);
   assert(s.feedback_valid && !s.moving && !strcmp(s.reason,"stopped"));
@@ -130,6 +143,11 @@ int main(void)
   assert(!MotorBus_IsQuarantined());
   assert(Turntable_ReferenceValid());
   /* Release ID8 for hand alignment; saving mechanical zero persists in the driver. */
+  position_raw=-16384;assert(Turntable_Origin());run();
+  assert(Turntable_Jog(-90));run();Turntable_StatusGet(&s);
+  assert(s.arrived && position_raw==-32768 && last_direction==1 && last_pulses==1600);
+  assert(Turntable_Jog(180));run();Turntable_StatusGet(&s);
+  assert(s.arrived && position_raw==0 && last_pulses==0);
   assert(Turntable_Enable(false));run();assert(power_disabled);
   position_raw=12345; /* operator aligned the first slot */
   assert(Turntable_Enable(true));run();assert(!power_disabled);
@@ -144,7 +162,23 @@ int main(void)
   assert(position_raw==saved_zero+65536 && zero_commands==0);
   assert(Turntable_InventoryGet(1).state==TURNTABLE_OCCUPIED);
   assert(Turntable_Home());step();Turntable_Stop();run();assert(aborts==1);
+  {
+    unsigned before=position_commands;
+    console[0]=0;assert(Turntable_Jog(-90));
+    for(unsigned i=0;i<500;i++) {
+      step();
+      if(position_commands>before && sends!=handled && sent[1]==0x3a)break;
+      assert(i<499);
+    }
+    uart.ErrorCode=HAL_UART_ERROR_FE;MotorBus_ErrorCallback(&uart);
+    MotorBus_Process();Turntable_Process();run();
+    assert(strstr(console,"ERR turntable fault reason=transport_error"));
+    assert(strstr(console,"bus_reason=uart_error addr=8 func=0x3A uart_error=0x00000004"));
+    assert(MotorBus_IsQuarantined() && Turntable_ReferenceValid());
+    assert(MotorBus_RecoverAfterReset());console[0]=0;
+  }
   missing=1;assert(Turntable_Index(2));run();Turntable_StatusGet(&s);
+  assert(strstr(console,"ERR turntable fault reason=feedback_timeout"));
   assert(MotorBus_IsQuarantined() && !s.arrived && !s.feedback_valid);
   Turntable_Stop();run();Turntable_StatusGet(&s);
   assert(!strcmp(s.reason,"stopped_unverified") && Turntable_ReferenceValid());
@@ -154,7 +188,7 @@ int main(void)
     unsigned before_stop=stop_commands;
     /* The motor executes, but its ACK is missing: still send priority Stop. */
     int32_t old_position=position_raw;
-    missing_motion_ack=1;assert(Turntable_Index(2));run();Turntable_StatusGet(&s);
+    missing_motion_ack=1;assert(Turntable_Index(1));run();Turntable_StatusGet(&s);
     assert(position_raw!=old_position);
     assert(stop_commands==before_stop+1 && !s.arrived && !s.feedback_valid);
     assert(MotorBus_IsQuarantined());missing_motion_ack=0;

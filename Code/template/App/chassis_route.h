@@ -20,6 +20,10 @@ typedef struct {
 } ChassisRoute_Status_t;
 /** @brief Initialize RAM before commands are accepted; never stops motors. */
 void ChassisRoute_Init(void);
+/** QR route from the explicit map origin: upper (2250,2250,-90), or lower
+ * (2250,150,180) diagonal -> clockwise90 -> forward; both turn180 at the
+ * scan point and confirm stopping before reporting route completion. */
+bool ChassisRoute_QrTestStart(float speed,float scan_y);
 /** @brief Includes manual waiting and stopping; excludes terminal results. */
 bool ChassisRoute_IsBusy(void);
 /** @brief Internal admission token for the route's own distance submission. */

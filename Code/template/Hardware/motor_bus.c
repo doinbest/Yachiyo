@@ -26,9 +26,14 @@ static MotorBus_Diagnostic_t first_fault;
 static volatile uint32_t tx_done_ms;
 static volatile bool wire_tx_completed;
 static volatile uint32_t wire_tx_ms;
-static uint8_t dma_rx[64], rx_ring[256], parse[32];
+static uint8_t dma_rx[64], rx_ring[256], parse[MOTOR_BUS_FRAME_MAX];
 static uint32_t rx_time[256];
 static volatile uint16_t rx_write, rx_read;
+static volatile uint32_t rx_total;
+static volatile uint8_t rx_recent[16];
+static uint32_t request_rx_start, process_last_ms, process_gap_ms;
+static uint16_t process_rx_pending;
+static bool process_seen;
 /* HAL circular RX callback Size is a buffer position (1..64), not a new length. */
 static uint16_t dma_rx_position;
 static uint8_t parse_length;
@@ -74,10 +79,14 @@ static bool diagnostic_reads;
 static MotorBus_Owner_t drain_owner;
 static uint8_t drain_address, drain_function, drain_length;
 static uint32_t drain_started_ms;
-static MotorBus_Recovery_t recovery = {false, false, 0, 0, "idle"};
+static MotorBus_Recovery_t recovery = {.reason="idle"};
 static uint8_t recovery_step, recovery_round, recovery_kind;
 static uint32_t recovery_started, recovery_wait;
+static bool recovery_motion_wait;
 static volatile uint32_t last_rx_ms;
+static bool probe_active, probe_ready;
+static uint8_t probe_address;
+static uint32_t probe_since;
 static void RecoveryProcess(void);
 static void RecoveryFail(const char *reason);
 
@@ -99,6 +108,18 @@ static void Quarantine(const char *reason, uint32_t tick_ms, uint32_t uart_error
     first_fault.function = active.length ? active.data[1] : 0U;
     first_fault.active = running;
     first_fault.waiting_reply = waiting_reply;
+    uint32_t mask=__get_PRIMASK();
+    __disable_irq();
+    uint32_t total=rx_total;
+    first_fault.rx_bytes=total-request_rx_start;
+    first_fault.last_rx_ms=last_rx_ms;
+    first_fault.rx_sample_length=(uint8_t)(first_fault.rx_bytes<16U?first_fault.rx_bytes:16U);
+    for(unsigned j=0;j<first_fault.rx_sample_length;j++)
+      first_fault.rx_sample[j]=rx_recent[(total-first_fault.rx_sample_length+j)&15U];
+    __set_PRIMASK(mask);
+    first_fault.rx_pending=process_rx_pending;
+    first_fault.parse_bytes=parse_length;
+    first_fault.process_gap_ms=process_gap_ms;
   }
   quarantined = true;
   recovery.success = false;
@@ -111,10 +132,44 @@ static bool FeedbackRead(MotorBus_Owner_t owner, const uint8_t *data,
   bool address_valid=(owner==MOTOR_BUS_FEEDBACK && data[0]>=1U && data[0]<=4U) ||
     (owner==MOTOR_BUS_ARM && data[0]>=5U && data[0]<=7U) ||
     (owner==MOTOR_BUS_TURNTABLE && data[0]==8U) ||
-    (owner==MOTOR_BUS_GUARD && data[0]>=1U && data[0]<=8U);
+    ((owner==MOTOR_BUS_GUARD || owner==MOTOR_BUS_PROBE) && data[0]>=1U && data[0]<=8U);
   return address_valid && ((data[1]==0x35 && reply_length==6U) ||
     (data[1]==0x36 && reply_length==8U) ||
     ((data[1]==0x3a || data[1]==0x3b) && reply_length==4U));
+}
+
+static bool ProbeRead(MotorBus_Owner_t owner, const uint8_t *data,
+                      uint8_t length, uint8_t reply_length)
+{
+  if(!probe_active || !probe_ready || owner!=MOTOR_BUS_PROBE || !data ||
+     data[0]!=probe_address)return false;
+  if(FeedbackRead(owner,data,length,reply_length))return true;
+  if(length==4U && data[1]==0x42 && data[2]==0x6c && data[3]==0x6b)
+    return reply_length==33U; /* Current car uses Emm configuration layout. */
+  return length==3U && data[2]==0x6b &&
+    (((data[1]==0x24 || data[1]==0x27) && reply_length==5U) ||
+     (data[1]==0x37 && reply_length==8U) || (data[1]==0x22 && reply_length==18U));
+}
+bool MotorBus_ProbeStart(uint8_t address)
+{
+  if (!bus_uart || address<1U || address>8U || probe_active || recovery.active ||
+      reserved_owner!=MOTOR_BUS_OWNER_COUNT || MotorBus_OwnerBusy(MOTOR_BUS_PROBE)) return false;
+  /* Drain an already active read; never reserve around an active motion/stop. */
+  if (running && !FeedbackRead(active_owner,active.data,active.length,active.reply_length)) return false;
+  for(unsigned i=0;i<MOTOR_BUS_OWNER_COUNT;i++)
+    if(slots[i].queued && !FeedbackRead((MotorBus_Owner_t)i,slots[i].data,
+                                      slots[i].length,slots[i].reply_length)) return false;
+  reserved_owner=MOTOR_BUS_PROBE;
+  probe_address=address;probe_active=true;probe_ready=false;probe_since=HAL_GetTick();
+  return true;
+}
+bool MotorBus_ProbeReady(void) { return probe_active && probe_ready; }
+bool MotorBus_ProbeActive(void) { return probe_active; }
+void MotorBus_ProbeStop(void)
+{
+  MotorBus_Cancel(MOTOR_BUS_PROBE);
+  MotorBus_Release(MOTOR_BUS_PROBE);
+  probe_active=probe_ready=false;
 }
 
 static HAL_StatusTypeDef ReceiveStart(void)
@@ -137,11 +192,15 @@ static void Complete(MotorBus_Result_t result, const uint8_t *data, uint8_t leng
   s->event.length = length;
   s->event.tx_completed = active_tx_completed;
   s->event.tx_ms = active_tx_completed ? tx_done_ms : 0U;
+  s->event.uart_error = 0U;
   if (length)
     memcpy(s->event.data, data, length);
   s->event_ready = true;
   running = false;
   waiting_reply = false;
+  if (active_owner==MOTOR_BUS_PROBE && result!=MOTOR_BUS_REPLY) {
+    probe_ready=false;probe_since=HAL_GetTick();
+  }
 }
 HAL_StatusTypeDef MotorBus_Init(UART_HandleTypeDef *uart)
 {
@@ -173,7 +232,12 @@ bool MotorBus_SubmitReplyTo(MotorBus_Owner_t owner,const uint8_t *data,uint8_t l
   if (!bus_uart || owner >= MOTOR_BUS_OWNER_COUNT || !data || length < 3 ||
       length > MOTOR_BUS_FRAME_MAX || reply_length > MOTOR_BUS_FRAME_MAX ||
       (recovery.active && owner != MOTOR_BUS_RECOVERY) ||
+      (owner==MOTOR_BUS_PROBE && (priority || reply_address!=probe_address ||
+                                 !ProbeRead(owner,data,length,reply_length))) ||
+      (probe_active && !Urgent(data,length,priority) &&
+       !ProbeRead(owner,data,length,reply_length)) ||
       (quarantined && (!priority || reply_length) && !RecoveryRequest(owner) &&
+       !ProbeRead(owner,data,length,reply_length) &&
        !(diagnostic_reads && FeedbackRead(owner, data, length, reply_length))))
     return false;
   s = &slots[owner];
@@ -254,6 +318,7 @@ void MotorBus_Cancel(MotorBus_Owner_t owner)
     s->event.tick_ms = HAL_GetTick();
     s->event.length = 0;
     s->event.tx_completed = false;
+    s->event.uart_error = 0U;
   }
   if (running && owner == active_owner)
   {
@@ -261,7 +326,7 @@ void MotorBus_Cancel(MotorBus_Owner_t owner)
     if (active.reply_length)
     {
       if (((owner == MOTOR_BUS_FEEDBACK || owner == MOTOR_BUS_ARM || owner == MOTOR_BUS_GUARD ||
-           owner == MOTOR_BUS_TURNTABLE) &&
+           owner == MOTOR_BUS_TURNTABLE || owner == MOTOR_BUS_PROBE) &&
           active.length == 3U && (active.data[1] == 0x35 || active.data[1] == 0x36 ||
                                  active.data[1] == 0x3a || active.data[1] == 0x3b)) ||
           (owner == MOTOR_BUS_CHASSIS && active.length == 8U && active.data[1] == 0xf6 &&
@@ -315,6 +380,7 @@ void MotorBus_RxBytes(const uint8_t *data, uint16_t length)
       }
       break;
     }
+    rx_recent[rx_total&15U]=data[i];rx_total++;
     rx_ring[rx_write] = data[i];
     rx_time[rx_write] = HAL_GetTick();
     rx_write = next;
@@ -322,6 +388,10 @@ void MotorBus_RxBytes(const uint8_t *data, uint16_t length)
 }
 static uint8_t ReplyLength(uint8_t function)
 {
+  if(function==0x24 || function==0x27)return 5;
+  if(function==0x37)return 8;
+  if(function==0x22)return 18;
+  if(function==0x42)return 33;
   if (function == 0x35)
     return 6;
   if (function == 0x36)
@@ -368,11 +438,14 @@ static void ParseByte(uint8_t value, uint32_t arrival_ms)
       MotorBus_IdTiming_t *t=&timing.id[parse[0]-1U];t->reply_ms=arrival_ms;
       if(parse[2]==0xe2 || parse[2]==0xee)t->rejected++;else if(parse[2]==2)t->success++;
     }
-    else if (drain_pending && parse[0] == drain_address && parse[1] == drain_function &&
+    else if (drain_pending && (int32_t)(arrival_ms-drain_started_ms)<(int32_t)MOTOR_BUS_TIMEOUT_MS &&
+        parse[0] == drain_address && parse[1] == drain_function &&
         (length == drain_length || (length==4 && (parse[2]==0xe2 || parse[2]==0xee))))
     { drain_pending = false; timing.drained++; }
     else if (running && waiting_reply &&
-        (!quarantined || RecoveryRequest(active_owner) || (diagnostic_reads &&
+        (int32_t)(arrival_ms-started_ms)<(int32_t)MOTOR_BUS_TIMEOUT_MS &&
+        (!quarantined || RecoveryRequest(active_owner) ||
+         ProbeRead(active_owner,active.data,active.length,active.reply_length) || (diagnostic_reads &&
          FeedbackRead(active_owner, active.data, active.length, active.reply_length))) &&
         parse[0] == active.reply_address &&
         parse[1] == active.data[1] && (length == active.reply_length ||
@@ -401,6 +474,9 @@ void MotorBus_Process(void)
   HAL_StatusTypeDef result;
   if (!bus_uart)
     return;
+  process_gap_ms=process_seen?now-process_last_ms:0U;
+  process_last_ms=now;process_seen=true;
+  process_rx_pending=(uint16_t)((rx_write-rx_read)&255U);
   if (io_error)
   {
     uint32_t error_tick, error_code;
@@ -410,6 +486,7 @@ void MotorBus_Process(void)
     error_tick = io_tick_ms; error_code = io_uart_error; overflow = io_overflow;
     io_error = false;
     __set_PRIMASK(primask);
+    if(probe_active) { probe_ready=false;probe_since=now; }
     startup_fe = !tx_attempted && !running && !quarantined && !recovery.active &&
                  !overflow && error_code == HAL_UART_ERROR_FE;
     if (recovery.active) RecoveryFail("uart_error");
@@ -430,8 +507,10 @@ void MotorBus_Process(void)
       else Quarantine("rx_restart_failed", error_tick, error_code);
     }
     else (void)ReceiveStart();
-    if (running)
+    if (running) {
       Complete(MOTOR_BUS_IO_ERROR, NULL, 0);
+      slots[active_owner].event.uart_error=error_code;
+    }
     tx_done = false;
   }
   if (running && tx_done)
@@ -461,7 +540,16 @@ void MotorBus_Process(void)
     if (!running)
       slots[active_owner].event.tick_ms = tx_done_ms;
   }
-  /* Expire before parsing: data processed beyond the deadline cannot rescue it. */
+  /* A fast driver may reply before foreground observes TX complete. Keep those bytes. */
+  if (!running || waiting_reply)
+    while (rx_read != rx_write)
+    {
+      uint8_t b = rx_ring[rx_read];
+      uint32_t arrival_ms = rx_time[rx_read];
+      rx_read = (uint16_t)((rx_read + 1U) & 255U);
+      ParseByte(b, arrival_ms);
+    }
+  /* Only frames completed before the deadline can clear the wait above. */
   if (drain_pending && (uint32_t)(now - drain_started_ms) >= MOTOR_BUS_TIMEOUT_MS)
   {
     drain_pending = false;
@@ -485,15 +573,6 @@ void MotorBus_Process(void)
     }
     Complete(MOTOR_BUS_TIMEOUT, NULL, 0);
   }
-  /* A fast driver may reply before foreground observes TX complete. Keep those bytes. */
-  if (!running || waiting_reply)
-    while (rx_read != rx_write)
-    {
-      uint8_t b = rx_ring[rx_read];
-      uint32_t arrival_ms = rx_time[rx_read];
-      rx_read = (uint16_t)((rx_read + 1U) & 255U);
-      ParseByte(b, arrival_ms);
-    }
   RecoveryProcess();
   for(unsigned id=0;id<8;id++)for(unsigned k=0;k<2;k++)
     if(urgent_drain[id][k] && now-urgent_started[id][k]>=MOTOR_BUS_TIMEOUT_MS) {
@@ -502,6 +581,11 @@ void MotorBus_Process(void)
       /* Recovery has its own 500ms quiet/drain phase and stopped checks. */
       if(!recovery.active)Quarantine("stop_drain_timeout",now,0);
     }
+  if(probe_active && !probe_ready && !running && !drain_pending && !UrgentPending() &&
+     (uint32_t)(now-probe_since)>=MOTOR_BUS_TIMEOUT_MS &&
+     (uint32_t)(now-last_rx_ms)>=MOTOR_BUS_TIMEOUT_MS) {
+    parse_length=0;rx_read=rx_write;probe_ready=true;
+  }
   if (running)
     return;
   for (pass = 0; pass < 2; pass++)
@@ -511,6 +595,8 @@ void MotorBus_Process(void)
       Slot *s = &slots[candidate];
       if (!s->queued || s->priority != (pass == 0))
         continue;
+      if(probe_active && !Urgent(s->data,s->length,s->priority) &&
+         !ProbeRead((MotorBus_Owner_t)candidate,s->data,s->length,s->reply_length)) continue;
       /* Complete response is necessary, but the shared line must also hand over.
        * Do not add a TX-based gap or delay urgent stopping behind normal ACKs. */
       if(!Urgent(s->data,s->length,s->priority) && reply_complete_valid &&
@@ -538,6 +624,7 @@ void MotorBus_Process(void)
         t->queue_last_ms=now-s->queued_ms;
         if(t->queue_last_ms>t->queue_max_ms)t->queue_max_ms=t->queue_last_ms;
       }
+      request_rx_start=rx_total;
       active = *s;
       s->queued = false;
       active_owner = (MotorBus_Owner_t)candidate;
@@ -554,6 +641,7 @@ void MotorBus_Process(void)
         rx_read = rx_write;
       }
       if (quarantined && (!active.priority || active.reply_length) && !RecoveryRequest(active_owner) &&
+          !ProbeRead(active_owner,active.data,active.length,active.reply_length) &&
           !(diagnostic_reads && FeedbackRead(active_owner, active.data,
                                             active.length, active.reply_length)))
       {
@@ -630,7 +718,7 @@ bool MotorBus_FeedbackAllowed(void)
 bool MotorBus_RecoverAfterReset(void)
 {
   unsigned i;
-  if (running || recovery.active)
+  if (running || recovery.active || probe_active)
     return false;
   for (i = 0; i < MOTOR_BUS_OWNER_COUNT; i++)
     if (slots[i].queued || slots[i].event_ready)
@@ -673,6 +761,8 @@ bool MotorBus_RecoveryStart(void)
     if (slots[i].queued || slots[i].event_ready) return false;
   recovery.active=true;recovery.success=false;recovery.address=1;
   recovery.checked_mask=0;recovery.reason="draining";
+  recovery.speed_address=0;recovery.speed_rpm=0;recovery.speed_ms=0;
+  recovery_motion_wait=false;
   recovery_step=0;recovery_round=0;recovery_kind=0;
   recovery_started=recovery_wait=HAL_GetTick();
   quarantined=true;diagnostic_reads=false;drain_pending=false;memset(urgent_drain,0,sizeof urgent_drain);
@@ -690,7 +780,9 @@ static void RecoveryProcess(void)
     (void)MotorBus_EventGet(MOTOR_BUS_RECOVERY,&e);
     return;
   }
-  if ((uint32_t)(now-recovery_started)>8000U) { RecoveryFail("recovery_timeout");return; }
+  if ((uint32_t)(now-recovery_started)>8000U) {
+    RecoveryFail(recovery_motion_wait?"motor_moving":"recovery_timeout");return;
+  }
   if (recovery_step==0 || recovery_step==3) {
     if ((uint32_t)(now-recovery_wait)<500U || (uint32_t)(now-last_rx_ms)<500U) return;
     if (recovery_step==0) {
@@ -713,8 +805,25 @@ static void RecoveryProcess(void)
       RecoveryFail(recovery_step==5?"zero_ack_failed":"sync_ack_failed");return;
     }
     if (recovery_step==4 || recovery_step==7) {
-      if (recovery_kind==0 && (((unsigned)e.data[3]<<8)|e.data[4])>1U) {
-        RecoveryFail("motor_moving");return;
+      if (recovery_kind==0) {
+        unsigned speed=((unsigned)e.data[3]<<8)|e.data[4];
+        recovery.speed_address=recovery.address;
+        recovery.speed_rpm=e.data[2]?-(int32_t)speed:(int32_t)speed;
+        recovery.speed_ms=e.tick_ms;
+        if (speed>1U) {
+          /* FE/9C TX is not stopped proof. Let fresh feedback settle within
+           * the existing recovery deadline, without sending new motion. */
+          recovery_motion_wait=true;recovery.reason="waiting_stopped";
+          recovery_round=0;
+          recovery.checked_mask&=recovery_step==7?0xf0U:0U;
+          return;
+        }
+        if (recovery_motion_wait) {
+          recovery_motion_wait=false;
+          recovery.reason=recovery_step==7?"verifying_zero":"checking";
+          recovery.address=1;recovery_kind=0;
+          goto submit; /* Repeat the entire stopped check after motion. */
+        }
       }
       if (recovery_kind==1 && (e.data[2]&0x0cU)) { RecoveryFail("motor_fault");return; }
       if (recovery_kind==2 && ((e.data[2]&0x34U) || (e.data[2]&3U)!=3U)) {
@@ -747,6 +856,7 @@ static void RecoveryProcess(void)
   }
 submit:
   if (MotorBus_OwnerBusy(MOTOR_BUS_RECOVERY)) return;
+  if (recovery_motion_wait && (uint32_t)(now-recovery.speed_ms)<100U) return;
   cmd[0]=recovery.address;
   if (recovery_step==1) { cmd[1]=0xfe;cmd[2]=0x98;cmd[3]=0;cmd[4]=0x6b;length=5;reply=0; }
   else if (recovery_step==2) { cmd[1]=0x9c;cmd[2]=0x48;cmd[3]=0x6b;length=4;reply=0; }

@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+
+static void legacy_defaults(RadarMap_Params_t *p) { RadarMap_Defaults(p); p->situation=0; p->grid_version=3; p->lidar_x_mm=2250; p->lidar_y_mm=150; p->zero_deg=180; }
+
+static void legacy_reset(RadarMap_t *m) { RadarMap_Reset(m); m->grid_version=3; }
 static unsigned checks, failures;
 #define CHECK(c) do { ++checks; if (!(c)) { ++failures; \
   printf("FAIL line %d: %s\n", __LINE__, #c); } } while (0)
@@ -44,7 +48,7 @@ static void test_direction_and_history(void)
   RadarSample_t s = {0,1000,80};
   float x=0,y=0;
   const float expected[4][2]={{1250,150},{2250,1150},{3250,150},{2250,-850}};
-  RadarMap_Defaults(&p);
+  legacy_defaults(&p);
   CHECK(p.angle_min_tenths==0 && p.angle_max_tenths==3600 && p.threshold==1);
   for(unsigned i=0;i<4;i++) {
     s.angle_tenths=(uint16_t)(i*900);
@@ -70,9 +74,9 @@ static void test_rotated_world_obstacles(void)
   const int yaw[]={0,90,180,270,450,-90};
   const uint16_t world_angles[]={0,900,1800,2700};
   RadarMap_Params_t p;RadarMap_t m,reference;RadarSample_t s={0,700,80};
-  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;p.threshold=1;p.angle_max_tenths=3600;
+  legacy_defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;p.threshold=1;p.angle_max_tenths=3600;
   for(unsigned rotation=0;rotation<sizeof(yaw)/sizeof(yaw[0]);rotation++) {
-    p.zero_deg=(float)yaw[rotation];RadarMap_Reset(&m);
+    p.zero_deg=(float)yaw[rotation];legacy_reset(&m);
     for(unsigned obstacle=0;obstacle<4;obstacle++) {
       int local=(yaw[rotation]*10-(int)world_angles[obstacle])%3600;
       if(local<0)local+=3600;
@@ -90,8 +94,8 @@ static void test_rotated_world_obstacles(void)
 static void test_scanned_start_corner_protection(void)
 {
   RadarMap_Params_t p;RadarMap_t m;RadarPlan_t plan;
-  RadarMap_Defaults(&p);p.lidar_x_mm=2170;p.lidar_y_mm=230;
-  RadarMap_Reset(&m);m.counts[4]=200;m.counts[5]=1;m.counts[20]=1;
+  legacy_defaults(&p);p.lidar_x_mm=2170;p.lidar_y_mm=230;
+  legacy_reset(&m);m.counts[4]=200;m.counts[5]=1;m.counts[20]=1;
   RadarMap_FinishRaw(&m,&p);CHECK(m.mask&(1UL<<4));
   RadarMap_Finish(&m,&p);
   CHECK(m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<5)|(1UL<<20)));
@@ -101,12 +105,12 @@ static void test_scanned_start_corner_protection(void)
   RadarMap_Finish(&m,&p);CHECK(!(m.mask&(1UL<<4)) && (m.mask&(1UL<<5)));
 
   p.lidar_x_mm=2250;p.lidar_y_mm=150;
-  RadarMap_Reset(&m);m.counts[4]=200;m.counts[24]=1;
+  legacy_reset(&m);m.counts[4]=200;m.counts[24]=1;
   RadarMap_Finish(&m,&p);
   CHECK(!(m.mask&(1UL<<4)) && (m.mask&(1UL<<24)));
 
   p.lidar_x_mm=2250;p.lidar_y_mm=2250;
-  RadarMap_Reset(&m);m.counts[24]=6;m.counts[4]=2;m.counts[2]=3;
+  legacy_reset(&m);m.counts[24]=6;m.counts[4]=2;m.counts[2]=3;
   RadarMap_Finish(&m,&p);
   CHECK(!(m.mask&(1UL<<24)) && (m.mask&(1UL<<4)) && !(m.mask&(1UL<<2)));
   CHECK(m.counts[24]==6 && m.counts[4]==2 && m.counts[2]==3);
@@ -121,8 +125,8 @@ static void test_map_filters_and_station_obstacle(void)
   RadarMap_Params_t p;
   RadarMap_t m;
   RadarSample_t s={0,500,80};
-  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=350;p.zero_deg=0;p.threshold=3;
-  RadarMap_Reset(&m);
+  legacy_defaults(&p);p.lidar_x_mm=p.lidar_y_mm=350;p.zero_deg=0;p.threshold=3;
+  legacy_reset(&m);
   CHECK(RadarMap_ParamsValid(&p));
   CHECK(RadarMap_Add(&m,&p,&s));CHECK(RadarMap_Add(&m,&p,&s));
   RadarMap_Finish(&m,&p);CHECK(m.mask==0x50140U && m.counts[1]==2);
@@ -138,7 +142,7 @@ static void test_map_filters_and_station_obstacle(void)
   s.angle_tenths=900;CHECK(!RadarMap_Add(&m,&p,&s));
   p.angle_min_tenths=0;p.angle_max_tenths=3600;s.angle_tenths=0;
   p.lidar_x_mm=1200;p.lidar_y_mm=350;s.distance_mm=100;
-  RadarMap_Reset(&m);
+  legacy_reset(&m);
   for(unsigned i=0;i<3;i++)CHECK(RadarMap_Add(&m,&p,&s));
   RadarMap_Finish(&m,&p);CHECK(m.mask==0x50140U && m.counts[2]==3 && (m.evidence_mask&(1UL<<2)));
   RadarPlan_t plan;CHECK(RadarPlan_Build(&m,&plan));
@@ -178,10 +182,10 @@ static void test_default_keeps_single_return_obstacle(void)
 {
   RadarMap_Params_t p;RadarMap_t m;
   const RadarSample_t one[]={{400,1500,30}};
-  RadarMap_Defaults(&p);
+  legacy_defaults(&p);
   build_cloud(&m,&p,one,1);
   CHECK(m.counts[12]==1 && m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<12)));
-  RadarMap_Reset(&m);
+  legacy_reset(&m);
   CHECK(RadarMap_Add(&m,&p,&one[0]));RadarMap_Finish(&m,&p);
   CHECK(m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<12)));
 }
@@ -190,7 +194,7 @@ static void test_default_keeps_single_return_obstacle(void)
 static void test_cloud_exterior_contour_and_occlusions(void)
 {
   RadarMap_Params_t p;RadarMap_t m;RadarSample_t samples[326];unsigned n=0;
-  RadarMap_Defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=150;p.threshold=2;
+  legacy_defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=150;p.threshold=2;
   for(unsigned angle=250;angle<=900;angle+=2) {
     uint16_t distance=(uint16_t)lroundf(1600.0f/sinf((float)angle*0.001745329252f));
     if(angle>=370 && angle<=376)distance=2180;
@@ -199,7 +203,7 @@ static void test_cloud_exterior_contour_and_occlusions(void)
     n++;
   }
   build_cloud(&m,&p,samples,n);
-  RadarMap_t streamed;RadarMap_Reset(&streamed);
+  RadarMap_t streamed;legacy_reset(&streamed);
   for(unsigned i=0;i<n;i++)RadarMap_Add(&streamed,&p,&samples[i]);
   RadarMap_FinishRaw(&streamed,&p);
   CHECK(m.mask==streamed.mask && !memcmp(m.counts,streamed.counts,sizeof m.counts));
@@ -219,7 +223,7 @@ static void test_cloud_exterior_contour_and_occlusions(void)
 static void test_cloud_interior_objects_and_real_distance(void)
 {
   RadarMap_Params_t p;RadarMap_t m;RadarSample_t line[27];
-  RadarMap_Defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=150;p.threshold=2;
+  legacy_defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=150;p.threshold=2;
   for(unsigned i=0;i<27;i++)line[i]=world_sample(600.0f+25.0f*(float)i,1100,&p);
   build_cloud(&m,&p,line,27);
   CHECK(m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<11)|(1UL<<12)));
@@ -237,7 +241,7 @@ static void test_cloud_interior_objects_and_real_distance(void)
 static void test_cloud_object_threshold_and_filters(void)
 {
   RadarMap_Params_t p;RadarMap_t m;
-  RadarMap_Defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=150;p.threshold=3;
+  legacy_defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=150;p.threshold=3;
   const RadarSample_t cross[]={{543,1041,25},{545,1048,27},{548,1039,25},{550,1050,18},{552,1023,8}};
   build_cloud(&m,&p,cross,5);
   CHECK(m.counts[8]==3 && m.counts[13]==2);
@@ -264,7 +268,7 @@ static void test_cloud_cyclic_start_and_sector_boundaries(void)
 {
   static RadarSample_t ordered[360],rotated[360];
   RadarMap_Params_t p;RadarMap_t reference,m;
-  RadarMap_Defaults(&p);
+  legacy_defaults(&p);
   p.threshold=2;p.angle_max_tenths=900; /* Explicit selected-sector endpoint test. */
   for(unsigned i=0;i<360;i++) {
     unsigned angle=i*10;
@@ -331,7 +335,7 @@ static void test_mission_and_detour(void)
   const int expected[9][3]={{2250,150,1},{2100,1200,5},{1200,2100,4},
     {1200,350,2},{350,1200,3},{1200,2100,4},{1200,350,2},{350,1200,3},{2250,150,1}};
   RadarMap_t m;RadarPlan_t p,q;
-  RadarMap_Reset(&m);CHECK(RadarPlan_Build(&m,&p));CHECK(p.valid && p.count<193);
+  legacy_reset(&m);CHECK(RadarPlan_Build(&m,&p));CHECK(p.valid && p.count<193);
   unsigned visit=0;
   for(unsigned i=0;i<p.count;i++)if(p.points[i].station) {
     CHECK(visit<9);
@@ -346,7 +350,7 @@ static void test_mission_and_detour(void)
   CHECK(p.count!=q.count || memcmp(p.points,q.points,p.count*sizeof(p.points[0])));
   m.mask=0x50140U|(1U<<14);CHECK(!RadarPlan_Build(&m,&q));CHECK(q.failed_leg==1 && !q.valid && !q.count);
   m.mask=0x50140U|0x3E0U;CHECK(!RadarPlan_Build(&m,&q));CHECK(q.failed_leg==1);
-  RadarMap_Reset(&m);
+  legacy_reset(&m);
   CHECK(RadarPlan_BuildLeg(&m,2250,150,2100,1200,&q));check_clear_path(&q,m.mask,false);
   if(q.count)CHECK(q.points[0].x_mm==2250 && q.points[0].y_mm==150 && q.points[q.count-1].x_mm==2100 && q.points[q.count-1].y_mm==1200);
   CHECK(!RadarPlan_BuildLeg(&m,100,100,2100,1200,&q));
@@ -357,7 +361,7 @@ static void test_mission_and_detour(void)
 static void test_station_connectors_without_jogs(void)
 {
   RadarMap_t m;RadarPlan_t p;
-  RadarMap_Reset(&m);m.mask|=(1UL<<5)|(1UL<<20);
+  legacy_reset(&m);m.mask|=(1UL<<5)|(1UL<<20);
   CHECK(RadarPlan_BuildLeg(&m,2100,1200,1200,2100,&p));
   CHECK(p.count==3);
   if(p.count==3)CHECK(p.points[1].x_mm==1200 && p.points[1].y_mm==1200);
@@ -371,14 +375,14 @@ static void test_station_connectors_without_jogs(void)
   CHECK(RadarPlan_BuildLeg(&m,2010,2010,2100,2100,&p) && p.count==3);
   check_clear_path(&p,m.mask,false);
   /* Block both one-bend alternatives: the original grid detour must survive. */
-  RadarMap_Reset(&m);m.mask|=(1UL<<3)|(1UL<<15);
+  legacy_reset(&m);m.mask|=(1UL<<3)|(1UL<<15);
   CHECK(RadarPlan_BuildLeg(&m,350,350,2050,2050,&p));
   CHECK(p.count>3);check_clear_path(&p,m.mask,false);
   /* A shortcut grazing a blocked cell's edge is not a clear shortcut. */
-  RadarMap_Reset(&m);
+  legacy_reset(&m);
   CHECK(RadarPlan_BuildLeg(&m,550,350,550,1200,&p));
   CHECK(p.count>2);check_clear_path(&p,m.mask,false);
-  RadarMap_Reset(&m);m.mask|=(1UL<<5)|(1UL<<20);
+  legacy_reset(&m);m.mask|=(1UL<<5)|(1UL<<20);
   CHECK(RadarPlan_Build(&m,&p) && p.count<193);
   check_clear_path(&p,m.mask,true);
 }
@@ -387,7 +391,7 @@ static void test_station_connectors_without_jogs(void)
 static void test_first_shortcut_and_final_staging(void)
 {
   RadarMap_t m;RadarPlan_t p,q;
-  RadarMap_Reset(&m);CHECK(RadarPlan_Build(&m,&p));
+  legacy_reset(&m);CHECK(RadarPlan_Build(&m,&p));
   CHECK(p.points[1].x_mm==2100 && p.points[1].y_mm==300 &&
         p.points[1].station==0 && p.points[1].visit==0);
   CHECK(p.points[2].x_mm==2100 && p.points[2].y_mm==1200 &&
@@ -399,9 +403,9 @@ static void test_first_shortcut_and_final_staging(void)
   m.mask|=1U<<9;CHECK(RadarPlan_Build(&m,&q));
   CHECK(q.points[1].x_mm!=2100 || q.points[1].y_mm!=300);
   check_clear_path(&q,m.mask,true);
-  RadarMap_Reset(&m);m.mask|=1U<<4;
+  legacy_reset(&m);m.mask|=1U<<4;
   CHECK(!RadarPlan_Build(&m,&q) && q.failed_leg==1 && !q.valid && q.count==0);
-  RadarMap_Reset(&m);m.mask|=1U<<14;
+  legacy_reset(&m);m.mask|=1U<<14;
   CHECK(!RadarPlan_Build(&m,&q) && q.failed_leg==1 && !q.valid && q.count==0);
 }
 
@@ -411,16 +415,16 @@ static void test_scanned_required_clear_cells(void)
   RadarMap_Params_t params;
   RadarMap_t map;
   RadarPlan_t plan;
-  RadarMap_Defaults(&params);RadarMap_Reset(&map);
+  legacy_defaults(&params);legacy_reset(&map);
   map.counts[14]=3;map.counts[22]=3;map.counts[2]=3;map.counts[10]=3;
   RadarMap_Finish(&map,&params);
   CHECK(map.mask==RADAR_MAP_FIXED_MASK);
   CHECK(map.counts[14]==3 && map.counts[22]==3);
   CHECK(RadarPlan_Build(&map,&plan));
   map.mask|=1UL<<2;CHECK(!RadarPlan_Build(&map,&plan) && plan.failed_leg==3);
-  RadarMap_Reset(&map);map.mask|=1UL<<14;
+  legacy_reset(&map);map.mask|=1UL<<14;
   CHECK(!RadarPlan_Build(&map,&plan) && plan.failed_leg==1);
-  RadarMap_Reset(&map);map.counts[14]=3;map.counts[22]=3;
+  legacy_reset(&map);map.counts[14]=3;map.counts[22]=3;
   RadarMap_FinishRaw(&map,&params);
   CHECK(map.mask==(RADAR_MAP_FIXED_MASK|(1UL<<14)|(1UL<<22)));
   RadarMap_Finish(&map,&params);
@@ -437,7 +441,7 @@ static void test_dual_start_missions(void)
     int start_y=id==RADAR_START_UPPER?2250:150;
     int staging_y=id==RADAR_START_UPPER?2100:300;
     for(unsigned mask=0;mask<sizeof(obstacles)/sizeof(obstacles[0]);mask++) {
-      RadarMap_Reset(&map);map.mask|=obstacles[mask];
+      legacy_reset(&map);map.mask|=obstacles[mask];
       CHECK(RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)id,&plan));
       CHECK(plan.valid && plan.start_id==id && plan.count>2 && plan.count<193);
       if(plan.count<3)continue;
@@ -458,15 +462,15 @@ static void test_dual_start_missions(void)
           plan.points[2].x_mm==2100 && plan.points[2].y_mm==1200);
       }
     }
-    RadarMap_Reset(&map);map.mask|=1UL<<14;
+    legacy_reset(&map);map.mask|=1UL<<14;
     CHECK(!RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)id,&plan));
     CHECK(!plan.valid && plan.count==0 && plan.failed_leg==1 && plan.start_id==id);
-    RadarMap_Reset(&map);map.mask|=1UL<<22;
+    legacy_reset(&map);map.mask|=1UL<<22;
     CHECK(!RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)id,&plan) && plan.failed_leg==2);
-    RadarMap_Reset(&map);map.mask|=1UL<<(id==RADAR_START_UPPER?24:4);
+    legacy_reset(&map);map.mask|=1UL<<(id==RADAR_START_UPPER?24:4);
     CHECK(!RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)id,&plan) && plan.failed_leg==1);
   }
-  RadarMap_Reset(&map);
+  legacy_reset(&map);
   CHECK(!RadarPlan_BuildFromStart(&map,RADAR_START_UNKNOWN,&plan) && !plan.valid && !plan.count);
   CHECK(!RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)99,&plan));
   CHECK(RadarPlan_Build(&map,&legacy));

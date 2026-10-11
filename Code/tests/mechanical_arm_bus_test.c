@@ -210,6 +210,18 @@ int main(void)
   { const uint8_t ack_home[]={6,0x9c,2,0x6b}; MotorBus_RxBytes(ack_home,4); }
   MotorBus_Process(); MechanicalArm_Process();
   assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_OK);
+  /* Read actual signed speed through the normal ARM bus owner (0x35). */
+  for(unsigned sample=0;sample<3;sample++) {
+    int32_t expected=sample==0?0:sample==1?30:-30;
+    assert(MechanicalArm_SpeedRead(MECHANICAL_ARM_AXIS_BASE)==MECHANICAL_ARM_RESULT_NONE);
+    tick+=10;MotorBus_Process();assert(frame[0]==5 && frame[1]==0x35);
+    MotorBus_TxCpltCallback(&uart);
+    const uint8_t speed[]={5,0x35,sample==2?1:0,0,sample==0?0:30,0x6b};
+    MotorBus_RxBytes(speed,sizeof speed);MotorBus_Process();MechanicalArm_Process();
+    assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_OK);
+    assert(e.Action==MECHANICAL_ARM_ACTION_SPEED_READ && e.CurrentSpeedRpm==expected);
+  }
+  assert(MechanicalArm_SpeedRead(MECHANICAL_ARM_AXIS_ALL)==MECHANICAL_ARM_RESULT_PARAM_ERROR);
   assert(MechanicalArm_Enable(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);
   tick += 10;
   MotorBus_Process();

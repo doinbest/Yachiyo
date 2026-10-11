@@ -24,14 +24,16 @@ def run(args):
 
 def build_test(name, *sources):
     exe = OUT / (name + ".exe")
+    if any(source in sources for source in ("template/App/radar_map.c", "template/App/radar_scan.c")):
+        sources = (*sources, "template/App/radar_geometry.c", "template/App/radar_stability.c")
     flags = [BASE[0], "-Itests/radar_stubs", *BASE[1:]] if name in ("test_radar_scan", "test_radar_probe", "test_radar_host", "radar_host_console_test") else BASE
-    if name in ("grab_pose_test", "grab_task_test", "grab_calibration_task_test", "grab_transfer_test", "grab_grace_test", "grab_command_sim_test", "grab_tuning_sim_test", "grab_track_task_test", "grab_track_pick_test", "grab_stack_test"):
+    if name in ("qr_control_test", "grab_pose_test", "grab_task_test", "grab_calibration_task_test", "grab_transfer_test", "grab_grace_test", "grab_command_sim_test", "grab_tuning_sim_test", "grab_track_task_test", "grab_track_pick_test", "grab_stack_test"):
         sources = (*sources, "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     if "template/App/mecanum_chassis.c" in sources and "template/App/chassis_model.c" not in sources:
         sources = (*sources, "template/App/chassis_model.c")
     # Existing virtual UART fixtures freeze time at ACK; the dedicated settle
     # test exercises the production 2 ms handover and emergency bypass.
-    if name != "motor_bus_reply_settle_test":
+    if name not in ("motor_bus_reply_settle_test", "motor_bus_probe_test"):
         flags = [*flags, "-DMOTOR_BUS_REPLY_SETTLE_MS=0"]
     run(flags + ["tests/" + name + ".c", *sources, "-lm", "-o", exe])
     run([exe])
@@ -66,7 +68,9 @@ if __name__ == "__main__":
     build_test("contest_mission_test", "template/App/contest_mission.c", "template/Hardware/QR.c")
     build_test("grab_pose_test")
     build_test("test_radar_parser", "template/Hardware/lds_parser.c")
+    build_test("test_radar_stability", "template/App/radar_geometry.c", "template/App/radar_stability.c")
     build_test("test_radar_map", "template/App/radar_map.c")
+    build_test("test_radar_g4", "template/App/radar_map.c", "template/App/radar_start.c")
     build_test("test_radar_point_map", "template/App/radar_map.c", "template/App/radar_host_map.c")
     build_test("test_radar_host_map", "template/App/radar_host_map.c", "template/App/radar_map.c")
     build_test("test_radar_host", "template/App/radar_host.c", "template/App/radar_host_map.c", "template/App/radar_map.c")
@@ -76,6 +80,7 @@ if __name__ == "__main__":
                "template/App/radar_scan.c", "template/App/radar_map.c", "template/App/radar_start.c", "template/App/radar_host_map.c")
     build_test("test_radar_probe", "template/Hardware/lds_parser.c", "template/Hardware/radar_uart.c")
     build_test("radar_console_test", "template/App/radar_console.c", "template/App/radar_map.c")
+    build_test("qr_control_test")
     build_test("grab_task_test")
     build_test("grab_calibration_task_test", "template/App/grab_calibration.c")
     build_test("grab_stack_test")
@@ -95,6 +100,7 @@ if __name__ == "__main__":
     build_test("motor_bus_reply_settle_test")
     build_test("motor_bus_ack_fairness_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_test", "template/Hardware/motor_bus.c")
+    build_test("motor_bus_probe_test", "template/Hardware/motor_bus.c")
     build_test("turntable_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
     build_test("turntable_bus_fairness_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
     build_test("motor_recovery_test", "template/Hardware/motor_bus.c")
@@ -110,6 +116,8 @@ if __name__ == "__main__":
     build_test("mechanical_arm_bus_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
     build_test("mechanical_arm_emergency_chain_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
     run([OUT / "mechanical_arm_emergency_chain_test.exe", "first_tx_error"])
+    for axis in range(3):
+        run([OUT / "mechanical_arm_emergency_chain_test.exe", f"single_{axis}"])
     build_test("motor_cancel_readback_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_circular_rx_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
     build_test("mecanum_heading_test", "-Itemplate/System", "template/App/chassis_motion.c", "template/App/chassis_model.c")

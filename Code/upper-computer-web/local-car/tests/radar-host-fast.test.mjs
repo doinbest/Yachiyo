@@ -45,10 +45,10 @@ test('compact unreachable plan still publishes map and exact failure endpoints',
 test('fast single command accepts pushed results without a result request',async()=>{
   const commands=[],events=[],f=frames();let client;
   client=new RadarHostClient({fastResults:true,send:async wire=>{commands.push(wire);return {};},onSnapshot:(kind)=>events.push(kind)});
-  await client.command('scan');assert.equal(commands[0],'radar host scan fast');
+  await client.command('scan');assert.equal(commands[0],'radar host scan 15 fast');
   for(const line of f.pages)client.receive(line);client.receive(f.end);
   for(let i=0;i<8;i++)await tick();
-  assert.deepEqual(commands,['radar host scan fast','radar host ack 5']);
+  assert.deepEqual(commands,['radar host scan 15 fast','radar host ack 5']);
   assert.deepEqual(events,['result']);client.cancelTransfer();
 });
 test('missing compact pages are repaired in one request and no half-result is published',async()=>{
@@ -56,7 +56,7 @@ test('missing compact pages are repaired in one request and no half-result is pu
   client=new RadarHostClient({fastResults:true,send:async wire=>{commands.push(wire);if(wire==='radar host bundle 5 0')queueMicrotask(()=>client.receive(f.pages[0]));return {};}});
   await client.command('scan');client.receive(f.pages[1]);client.receive(f.end);
   for(let i=0;i<12;i++)await tick();
-  assert.deepEqual(commands,['radar host scan fast','radar host bundle 5 0','radar host ack 5']);
+  assert.deepEqual(commands,['radar host scan 15 fast','radar host bundle 5 0','radar host ack 5']);
   assert.equal(client.model.snapshots.map.receivedAt,client.model.snapshots.path.receivedAt);client.cancelTransfer();
 });
 test('repair waits for the actual wireless response instead of repeating every second',async()=>{
@@ -68,7 +68,7 @@ test('repair waits for the actual wireless response instead of repeating every s
   }});
   await client.command('scan');client.receive(f.pages[1]);client.receive(f.end);
   await new Promise(resolve=>setTimeout(resolve,1300));
-  assert.deepEqual(commands,['radar host scan fast','radar host bundle 5 0','radar host ack 5']);
+  assert.deepEqual(commands,['radar host scan 15 fast','radar host bundle 5 0','radar host ack 5']);
   client.cancelTransfer();
 });
 test('live-to-single uses the requested mode when the completion status is lost',async()=>{

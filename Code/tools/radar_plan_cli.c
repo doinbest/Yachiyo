@@ -36,6 +36,11 @@
 
 /* Host-only storage, matching the MCU's existing full-cloud capacity. */
 static RadarSample_t samples[4096];
+static union { RadarStableContext rolling; RadarStableBatchContext automatic[2]; } stable;
+static const RadarStablePoint *stable_points;
+static uint16_t stable_count;
+static RadarStableStatus stable_status;
+static bool stable_input;
 
 static int read_word(char word[96])
 {
@@ -58,6 +63,14 @@ static int read_float(float *value)
   if(!read_word(word)) return 0;
   errno=0;*value=strtof(word,&end);
   return !errno && end!=word && !*end;
+}
+static int read_int32(int32_t *value)
+{
+  char word[96],*end;long long number;
+  if(!read_word(word))return 0;
+  errno=0;number=strtoll(word,&end,10);
+  if(errno || end==word || *end || number<INT32_MIN || number>INT32_MAX)return 0;
+  *value=(int32_t)number;return 1;
 }
 
 static int input_error(const char *error)
@@ -93,10 +106,10 @@ static void print_points(const RadarPlan_Point_t *points,unsigned count)
 static void print_profile(const RadarPlan_Point_t *points,unsigned count,float speed,bool task)
 {
   unsigned segment,index,emitted=0U;
-  float yaw=90.0f;
+  float yaw=180.0f;
   bool first_scan_leg=true;
   ChassisRoute_Profile_t profile;
-  printf("{\"points\":");print_points(points,count);printf(",\"phases\":[");
+  printf("{\"points\":");print_points(points,count);printf(",\"initial_yaw_deg\":180,\"phases\":[");
   for(segment=1U;segment<count;segment++) {
     const RadarPlan_Point_t *to=&points[segment];
     if(!(task?ChassisRouteProfile_BuildTask(&points[segment-1U],to,yaw,speed,first_scan_leg,&profile):
@@ -124,7 +137,8 @@ static void print_result(const RadarMap_t *map,const RadarPlan_t *plan,float spe
 {
   unsigned i;
   RadarPlan_Point_t fixed[CHASSIS_ROUTE_TARGET_COUNT+1U];
-  printf("{\"algorithm\":\"radar_map_c_v1\",\"valid\":%s,\"failed_leg\":%u,\"mask\":%" PRIu32 ",\"counts\":[",
+  printf("{\"algorithm\":\"%s\",\"grid_version\":%u,\"valid\":%s,\"failed_leg\":%u,\"mask\":%" PRIu32 ",\"counts\":[",
+         stable_input?"radar_stable_c_v2":"radar_map_c_v1",(unsigned)map->grid_version,
          plan->valid?"true":"false",(unsigned)plan->failed_leg,map->mask);
   for(i=0U;i<RADAR_MAP_CELL_COUNT;i++) printf("%s%u",i?",":"",(unsigned)map->counts[i]);
   printf("],\"accepted_points\":%u,\"outside_points\":%u,\"evidence_mask\":%" PRIu32 ",\"points\":",
@@ -140,6 +154,19 @@ static void print_result(const RadarMap_t *map,const RadarPlan_t *plan,float spe
   if(params) printf("[%.6g,%.6g,%.6g]",(double)params->lidar_x_mm,
                     (double)params->lidar_y_mm,(double)params->zero_deg);
   else printf("null");
+  if(stable_input){
+    printf(",\"window\":{\"first\":%" PRIu32 ",\"last\":%" PRIu32 ",\"circles\":%u},"
+      "\"raw_points\":%" PRIu32 ",\"filtered_points\":%" PRIu32 ",\"stable_points\":[",
+      stable_status.first_circle,stable_status.last_circle,(unsigned)stable_status.window_circles,
+      stable_status.raw_points,stable_status.filtered_points);
+    for(i=0;i<stable_count;i++)printf("%s[%u,%u,%u,%u,%u]",i?",":"",stable_points[i].x_mm,
+      stable_points[i].y_mm,stable_points[i].votes,stable_points[i].angle_tenths,stable_points[i].distance_mm);
+    printf("],\"geometry\":{\"matrix_q16\":[%" PRId32 ",%" PRId32 ",%" PRId32 ",%" PRId32 "],"
+      "\"origin_q16\":[%" PRId32 ",%" PRId32 "],\"zero_tenths\":%u}",
+      params->geometry.matrix_q16[0],params->geometry.matrix_q16[1],params->geometry.matrix_q16[2],
+      params->geometry.matrix_q16[3],params->geometry.origin_q16[0],params->geometry.origin_q16[1],
+      params->geometry.zero_tenths);
+  }
   for(i=0U;i<=CHASSIS_ROUTE_TARGET_COUNT;i++) (void)ChassisRouteProfile_FixedPoint(i,&fixed[i]);
   printf(",\"route_profiles\":{\"fixed\":");
   print_profile(fixed,CHASSIS_ROUTE_TARGET_COUNT+1U,speed,false);
@@ -155,7 +182,7 @@ int main(int argc,char *argv[])
 {
   char word[96];
   float speed=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
-  uint32_t manual_mask,sample_count,i,angle,distance,energy;
+  uint32_t manual_mask,sample_count,i,angle,distance,energy,circle_count=0U,situation;
   RadarMap_Params_t params;
   RadarMap_t map;
   RadarPlan_t plan;
@@ -179,13 +206,87 @@ int main(int argc,char *argv[])
         return input_error("start_option");
     } else return input_error("unknown_option");
   }
-  if(!read_word(word) || strcmp(word,"RADAR1") ||
+  RadarMap_Defaults(&params);
+  if(!read_word(word) || (strcmp(word,"RADAR1") && strcmp(word,"RADAR2")))return input_error("input_format");
+  stable_input=!strcmp(word,"RADAR2");
+  if(!stable_input){params.situation=0U;params.grid_version=3U;}
+  if(
      !read_uint(RADAR_MAP_ALL_CELLS,&manual_mask) || !read_uint(4096U,&sample_count) ||
      !read_params(&params)) return input_error("input_format");
+  if(stable_input){
+    circle_count=sample_count;if(circle_count<15U || circle_count>256U)return input_error("circle_count");
+    if(!read_uint(2U,&situation) || !situation)return input_error("geometry");
+    params.situation=(uint8_t)situation;
+    for(i=0U;i<4U;i++)if(!read_int32(&params.geometry.matrix_q16[i]))return input_error("geometry");
+    for(i=0U;i<2U;i++)if(!read_int32(&params.geometry.origin_q16[i]))return input_error("geometry");
+    if(!read_uint(3599U,&situation))return input_error("geometry");
+    params.geometry.zero_tenths=(uint16_t)situation;
+  }
   if(!RadarMap_ParamsValid(&params)) return input_error("invalid_params");
+  if(stable_input)RadarMap_FreezeParams(&params,&params);
   RadarMap_Reset(&map);
   automatic=strcmp(mode,"manual")!=0;
   if(automatic) RadarStart_Begin(&candidates,&params);
+  if(stable_input){
+    if(automatic && !strcmp(mode,"auto")){
+      if(circle_count!=15U)return input_error("auto_requires_15");
+      for(i=0U;i<2U;i++)RadarStableBatch_Init(&stable.automatic[i]);
+    }else{
+      if(automatic){
+        start.start_id=!strcmp(mode,"upper")?RADAR_START_UPPER:RADAR_START_LOWER;
+        params=*RadarStart_Params(&candidates,(RadarStart_Id_t)start.start_id);
+      }
+      RadarStable_Init(&stable.rolling,circle_count>15U?1U:0U);
+    }
+    for(uint32_t circle=1U;circle<=circle_count;circle++){
+      if(!read_uint(65535U,&sample_count))return input_error("input_format");
+      bool dual=automatic && !strcmp(mode,"auto");
+      if(dual)for(i=0U;i<2U;i++)(void)RadarStableBatch_BeginCircle(&stable.automatic[i],circle);
+      else (void)RadarStable_BeginCircle(&stable.rolling,circle);
+      for(uint32_t point=0U;point<sample_count;point++){
+        RadarSample_t sample;
+        if(!read_uint(3599U,&angle) || !read_uint(65535U,&distance) || !read_uint(255U,&energy))return input_error("input_format");
+        sample.angle_tenths=(uint16_t)angle;sample.distance_mm=(uint16_t)distance;sample.energy=(uint8_t)energy;
+        for(i=0U;i<(dual?2U:1U);i++){
+          float x=0.0f,y=0.0f;const RadarMap_Params_t *p=dual?&candidates.params[i]:&params;
+          bool allowed=RadarMap_SampleAllowed(p,&sample);
+          bool inside=allowed && RadarMap_Project(p,&sample,&x,&y) && x>=0 && y>=0 && x<2400 && y<2400;
+          if(dual){
+            RadarStableBatch_RecordStats(&stable.automatic[i],1U,allowed?1U:0U,allowed && !inside?1U:0U);
+            if(inside)RadarStableBatch_Add(&stable.automatic[i],sample.angle_tenths,sample.distance_mm,(uint16_t)x,(uint16_t)y);
+          }else{
+            RadarStable_RecordStats(&stable.rolling,1U,allowed?1U:0U,allowed && !inside?1U:0U);
+            if(inside)RadarStable_Add(&stable.rolling,sample.angle_tenths,sample.distance_mm,(uint16_t)x,(uint16_t)y);
+          }
+        }
+      }
+      if(dual)for(i=0U;i<2U;i++)(void)RadarStableBatch_CommitCircle(&stable.automatic[i]);
+      else (void)RadarStable_CommitCircle(&stable.rolling);
+    }
+    if(read_word(word))return input_error("input_format");
+    if(automatic && !strcmp(mode,"auto")){
+      for(i=0U;i<2U;i++){
+        (void)RadarStableBatch_FinalizeBegin(&stable.automatic[i]);
+        while(!RadarStableBatch_FinalizeStep(&stable.automatic[i],2048U)){}
+        stable_points=RadarStableBatch_Points(&stable.automatic[i],&stable_count);
+        RadarMap_BuildStable(&candidates.maps[i],&candidates.params[i],stable_points,stable_count);
+      }
+      RadarStart_Finish(&candidates,&start);selected_params=RadarStart_Params(&candidates,(RadarStart_Id_t)start.start_id);
+      if(selected_params){
+        i=start.start_id==RADAR_START_UPPER?0U:1U;map=candidates.maps[i];
+        stable_points=RadarStableBatch_Points(&stable.automatic[i],&stable_count);
+        stable_status=*RadarStableBatch_GetStatus(&stable.automatic[i]);
+      }else {stable_count=0U;stable_status=*RadarStableBatch_GetStatus(&stable.automatic[0]);}
+    }else{
+      (void)RadarStable_FinalizeBegin(&stable.rolling);while(!RadarStable_FinalizeStep(&stable.rolling,2048U)){}
+      stable_points=RadarStable_Points(&stable.rolling,&stable_count);stable_status=*RadarStable_GetStatus(&stable.rolling);
+      RadarMap_BuildStable(&map,&params,stable_points,stable_count);RadarMap_Finish(&map,&params);
+      if(!automatic)start.start_id=RADAR_START_LOWER;
+      start.reason="stable_reference";
+    }
+    map.mask|=manual_mask;(void)RadarPlan_BuildFromStart(&map,(RadarStart_Id_t)start.start_id,&plan);
+    print_result(&map,&plan,speed,automatic,&start,selected_params?selected_params:&params);return 0;
+  }
   for(i=0U;i<sample_count;i++) {
     if(!read_uint(UINT16_MAX,&angle) || !read_uint(UINT16_MAX,&distance) || !read_uint(UINT8_MAX,&energy))
       return input_error("input_format");

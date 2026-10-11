@@ -2,7 +2,7 @@ import {frameCommand} from './protocol.mjs';
 import {parseRadarHost,RadarHostModel} from './radar-host-model.mjs?v=fast-result-20261005';
 
 const commandFor=action=>({
-  status:'radar host status',start:'radar host start',stop:'radar host stop',scan:'radar host scan',
+  status:'radar host status',start:'radar host start',stop:'radar host stop',scan:'radar host scan 15',
   'live-start':'radar host live start','live-stop':'radar host live stop','live-status':'radar host live status',
 })[action];
 const kindName=kind=>`host_${kind}`;
@@ -104,7 +104,7 @@ export class RadarHostClient{
     this.onTransfer({kind:'cancel',active:false});
   }
   async fetch(kind,id){
-    if(!['config','map','path','preview','cloud'].includes(kind)||!Number.isInteger(id)||id<0||id>0xffffffff)throw new RangeError('无可读取的雷达结果编号');
+    if(!['config','map','path','preview','cloud','stable'].includes(kind)||!Number.isInteger(id)||id<0||id>0xffffffff)throw new RangeError('无可读取的雷达结果编号');
     const revision=++this.transferRevision;for(const waiter of [...this.waiters])this.#rejectWaiter(waiter,cancelled());
     this.syncing=null;this.queuedStatus=null;this.model.resultIdentity=null;
     return this.#fetch(kind,id,revision);
@@ -230,13 +230,18 @@ export class RadarHostClient{
     const key=`${status.session}:${status.config}:${status.scan}:${status.map}:${status.plan}`;
     if(key===this.syncKey&&!readConfig)return;this.syncKey=key;
     const haveResults=this.#haveResults(status);
-    if(!readConfig&&haveResults){if(status.fast)void this.#write(`radar host ack ${status.plan}`).catch(error=>this.onError(error));return;}
+    const needsStable=this.model.snapshots.map?.layout===2&&(!matchesResult(this.model.snapshots.stable,status)||!matchesResult(this.model.snapshots.capture_config,status));
+    if(!readConfig&&haveResults&&!needsStable){if(status.fast)void this.#write(`radar host ack ${status.plan}`).catch(error=>this.onError(error));return;}
     const revision=++this.transferRevision;for(const waiter of [...this.waiters])this.#rejectWaiter(waiter,cancelled());
     this.syncing={revision,status};this.model.resultIdentity=ready?{...status}:null;
     void (async()=>{
       try{
         if(readConfig)await this.#fetch('config',status.config,revision);
         if(ready&&!haveResults){if(status.fast)await this.#fetchBundle(status,revision);else await this.#fetchResult(status,revision);}
+        if(ready&&this.model.snapshots.map?.layout===2){
+          if(!matchesResult(this.model.snapshots.capture_config,status))await this.#fetch('config',status.config,revision);
+          if(!matchesResult(this.model.snapshots.stable,status))await this.#fetch('stable',status.scan,revision);
+        }
         if(ready)await this.#write(`radar host ack ${status.plan}`,revision);
         this.lastError=null;this.pageErrorKind=null;
       }catch(error){if(revision===this.transferRevision&&error?.name!=='RadarTransferCancelled'){this.syncKey='';this.lastError=error.message;this.pageErrorKind=null;this.onError(error);}}

@@ -383,16 +383,87 @@ static void stationary_then_moving_keeps_following(void)
   puts("tracking: stationary 4s -> moving target remains active PASS");
 }
 
-static void travel_edge_waits_and_resumes_on_return(void)
+/* X42 0x3A: bit2 is instantaneous stall, bit3 is timed stall protection. */
+static void motor_state_distinguishes_stall_from_protection(void)
+{
+  const uint8_t healthy[]={3,5,7,0x83,0x85,0x87};
+  const uint8_t faulty[]={0,2,4,8,9,0x0D};
+  MechanicalArm_EventTypeDef event={0};
+  event.Action=MECHANICAL_ARM_ACTION_STATE;event.Axis=MECHANICAL_ARM_AXIS_X;
+  event.Result=MECHANICAL_ARM_RESULT_OK;
+  for(unsigned n=0;n<sizeof healthy+sizeof faulty;n++)
+  {
+    bool bad=n>=sizeof healthy;
+    uint8_t flags=bad?faulty[n-sizeof healthy]:healthy[n];
+    reset();configure(true);clock_ms=5000;TrackReady=true;
+    Status.mode="track";Status.state=GRAB_TRACK_MATCH;
+    event.StateFlags[event.Axis]=flags;PendingAction=event.Action;PendingAxis=event.Axis;
+    assert(GrabTask_MotorEventHandle(&event));
+    assert((Status.state==GRAB_STOPPING)==bad);
+    assert((TrackMotorFault.address!=0)==bad);
+    reset();configure(true);clock_ms=6000;TrackReady=true;
+    Status.mode="track";Status.state=GRAB_TRACK_MATCH;
+    for(unsigned a=0;a<3;a++)
+    { Axes[a].position_valid=Axes[a].state_valid=true;Axes[a].position_tick=Axes[a].state_tick=clock_ms; }
+    wheel_state_flags[2]=flags;(void)track_feedback(clock_ms);
+    assert((Status.state==GRAB_STOPPING)==bad);
+    assert((TrackMotorFault.address!=0)==bad);
+    reset();configure(true);clock_ms=7000;TrackReady=true;
+    Status.mode="track";Status.state=GRAB_TRACK_MATCH;
+    wheel_state_flags[2]=flags;(void)wheels(clock_ms);
+    assert((Status.state==GRAB_STOPPING)==bad);
+    assert((TrackMotorFault.address!=0)==bad);
+  }
+  puts("motor state: transient stall continues; protection/disabled stops PASS");
+}
+
+static void motor_fault_keeps_first_axis_state(void)
+{
+  reset(); configure(true); clock_ms=5000; TrackReady=true;
+  Status.mode="track";Status.state=GRAB_TRACK_MATCH;
+  MechanicalArm_EventTypeDef event={0};event.Action=MECHANICAL_ARM_ACTION_STATE;
+  event.Axis=MECHANICAL_ARM_AXIS_X;event.Result=MECHANICAL_ARM_RESULT_OK;
+  event.StateFlags[event.Axis]=0x0D;PendingAction=event.Action;PendingAxis=event.Axis;
+  assert(GrabTask_MotorEventHandle(&event));
+  clock_ms=5100;event.StateFlags[event.Axis]=3;PendingAction=event.Action;PendingAxis=event.Axis;
+  assert(GrabTask_MotorEventHandle(&event));
+  tracking_motor_fault_log[0]=0;track_status_write(false);
+  assert(strstr(tracking_motor_fault_log,"motor_fault id=7 kind=axis flags=0x0D"));
+  assert(strstr(tracking_motor_fault_log,"received_ms=5000 detected_ms=5000"));
+  reset(); configure(true);clock_ms=6000;TrackReady=true;Status.mode="track";
+  Status.state=GRAB_TRACK_MATCH;
+  for(unsigned a=0;a<3;a++)
+  { Axes[a].position_valid=Axes[a].state_valid=true;Axes[a].position_tick=Axes[a].state_tick=clock_ms; }
+  wheel_state_flags[2]=0x0D;(void)track_feedback(clock_ms);
+  wheel_state_flags[2]=3;clock_ms=6100;(void)track_feedback(clock_ms);
+  tracking_motor_fault_log[0]=0;track_status_write(false);
+  assert(strstr(tracking_motor_fault_log,"motor_fault id=3 kind=wheel flags=0x0D"));
+  assert(strstr(tracking_motor_fault_log,"received_ms=6000 detected_ms=6000"));
+  reset();tracking_motor_fault_log[0]=0;track_status_write(false);
+  assert(!tracking_motor_fault_log[0]);
+}
+
+static void travel_edge_waits_and_resumes_on_return(GrabTracking_Mode_t mode)
 {
   char *observe[]={"grab","track","observe"};
   char *reference[]={"grab","track","reference","0"};
   char *start[]={"grab","track","start"};
   char *stop[]={"grab","track","stop"};
   reset();configure(true);setting("x_min","0");setting("x_max","100");
-  physical[0]=100;command(3,observe);
-  for(unsigned i=0;i<45;i++)step(true,0,0,-20);
-  command(4,reference);command(3,start);
+  physical[0]=100;
+  if(mode==GRAB_TRACK_PREDICT)
+  {
+    command(3,observe);
+    for(unsigned i=0;i<45;i++)step(true,0,0,-20);
+    command(4,reference);command(3,start);
+  }
+  else
+  {
+    char *begin[]={"grab","track",mode==GRAB_TRACK_VISUAL?"visual":"feedback","3","0"};
+    command(5,begin);
+    for(unsigned i=0;i<65 && !TrackMoving;i++)step(true,0,0,0);
+    assert(TrackMoving);
+  }
   float anchor=Tracking.reference_left_mm;
   for(unsigned i=0;i<80 && status().state!=GRAB_TRACK_PAUSE;i++)step(true,0,0,-20);
   assert(status().state==GRAB_TRACK_PAUSE && !TrackVisualPause);
@@ -443,15 +514,24 @@ static void travel_edge_waits_and_resumes_on_return(void)
   puts("tracking: edge wait, fresh return, retained zero budget, manual stop PASS");
 }
 
-static void visual_pause_still_recovers(void)
+static void visual_pause_still_recovers(GrabTracking_Mode_t mode)
 {
   char *observe[]={"grab","track","observe"};
   char *reference[]={"grab","track","reference"};
   char *start[]={"grab","track","start"};
   reset();configure(true);setting("x_min","0");setting("x_max","100");
-  physical[0]=50;command(3,observe);
-  for(unsigned i=0;i<45;i++)step(true,0,0,0);
-  command(3,reference);command(3,start);
+  physical[0]=50;
+  if(mode==GRAB_TRACK_PREDICT)
+  {
+    command(3,observe);
+    for(unsigned i=0;i<45;i++)step(true,0,0,0);
+    command(3,reference);command(3,start);
+  }
+  else
+  {
+    char *begin[]={"grab","track",mode==GRAB_TRACK_VISUAL?"visual":"feedback","3","50"};
+    command(5,begin);
+  }
   for(unsigned i=0;i<30;i++)step(true,0,0,0);
   float anchor=Tracking.reference_left_mm;
   camera_valid=false;
@@ -460,11 +540,68 @@ static void visual_pause_still_recovers(void)
   camera_valid=true;step(true,0,0,0);
   assert(TrackMoving && status().state==GRAB_TRACK_MATCH);
   assert(Tracking.reference_left_mm==anchor);
+  assert(!closures && !openings && !base_moves);
   puts("tracking: existing visual pause and fresh observation recovery PASS");
 }
 
 int main(void)
 {
+  reset();
+  assert(TrackConfig.body_speed_mm_s==160 && TrackConfig.x_speed_mm_s==60);
+  assert(TrackConfig.lambda_s==2.5f && TrackConfig.horizon_ms==120);
+  for(unsigned i=0;i<2;i++)
+  {
+    assert(TrackComparison[i].body_speed_mm_s==80 && TrackComparison[i].x_speed_mm_s==30);
+    assert(TrackComparison[i].lambda_s==1 && TrackComparison[i].horizon_ms==60);
+    assert(TrackComparison[i].accel_mm_s2==300 && TrackComparison[i].body_accel_mm_s2==300);
+    assert(TrackComparison[i].x_accel_mm_s2==120 && TrackComparison[i].tolerance_px==5);
+    assert(TrackComparison[i].lead_mm==12 && TrackComparison[i].grace_ms==250);
+    assert(TrackComparison[i].control_ms==20 && TrackComparison[i].batch_ms==0);
+  }
+  for(unsigned mode=GRAB_TRACK_PREDICT;mode<=GRAB_TRACK_FEEDBACK;mode++) {
+    reset();configure(true);setting("x_max","100");
+    char *observe[]={"grab","track","observe","3"};command(4,observe);
+    TrackMode=(GrabTracking_Mode_t)mode;
+    pixel_center_override=true;pixel_center_x=334;pixel_center_y=338;
+    for(unsigned i=0;i<40;i++)step(true,0,17,-9);
+    assert(TrackReady && TrackInput.error_px[0]==17 && TrackInput.error_px[1]==-9);
+    assert(status().dx==17 && status().dy==-9 && !velocity_requests);
+    Config[C_REF_U]=123;Config[C_REF_V]=234;
+    pixel_center_x=372;pixel_center_y=345;
+    step(true,0,0,0);
+    assert(TrackInput.error_px[0]==0 && TrackInput.error_px[1]==0);
+    assert(status().dx==0 && status().dy==0);
+    pixel_center_x=430;pixel_center_y=300;step(true,0,-25,12);
+    assert(TrackInput.error_px[0]==-25 && TrackInput.error_px[1]==12);
+  }
+  reset(); configure(true);
+  char *set_visual[]={"grab","track","set","x_speed","25","visual"};
+  command(6,set_visual);assert(TrackComparison[0].x_speed_mm_s==25 && TrackConfig.x_speed_mm_s==60);
+  char *set_feedback[]={"grab","track","set","x_accel","110","feedback"};
+  command(6,set_feedback);assert(TrackComparison[1].x_accel_mm_s2==110 && TrackComparison[0].x_accel_mm_s2==120);
+  char *visual[]={"grab","track","visual","3","30"};
+  command(5,visual);
+  assert(TrackAutoStart && Status.state==GRAB_TRACK_OBSERVE);
+  assert(!TrackPickArmed);
+  for(unsigned i=0;i<65;i++)step(true,0,0,0);
+  assert(TrackMode==GRAB_TRACK_VISUAL && TrackMoving && Tracking.reference_valid);
+  assert(openings==0 && closures==0 && base_moves==0);
+  float original_reference=Tracking.reference_left_mm;
+  char *feedback[]={"grab","track","feedback","3","50"};
+  output[0]=0;assert(GrabTask_Command(5,feedback));
+  assert(strstr(output,"ERR") && TrackMode==GRAB_TRACK_VISUAL);
+  char *comparison_stop[]={"grab","track","stop"};command(3,comparison_stop);
+  for(unsigned i=0;i<90 && status().state!=GRAB_IDLE;i++)step(true,0,0,0);
+  assert(Status.stop_confirmed);
+  command(5,feedback);assert(TrackMode==GRAB_TRACK_FEEDBACK && !TrackPickArmed);
+  assert(!Tracking.have_sample && Tracking.samples==0 && Tracking.motions==0);
+  assert(Tracking.reference_valid && Tracking.reference_left_mm==original_reference);
+  for(unsigned i=0;i<65;i++)step(true,0,0,0);
+  assert(TrackMoving && Tracking.reference_left_mm==original_reference);
+  assert(TrackComparison[0].x_speed_mm_s==25 && TrackConfig.x_speed_mm_s==60);
+  const GrabTracking_Record_t *comparison_row=GrabTracking_Record(&Tracking,Tracking.record_count-1);
+  char formatted[640];assert(track_record_format(formatted,sizeof formatted,comparison_row,NULL,false,0));
+  assert(strstr(formatted,"mode=feedback") && strstr(formatted," crc="));
   reset(); configure(true); configured_x_acc=47;
   TrackControlSequence=1; TrackXControlSequence=0; TrackIoSlot=0;
   TrackOutput.velocity_mm_s[2]=20; TrackOutput.x_target_mm=1;
@@ -503,6 +640,9 @@ int main(void)
   assert(strstr(output,"TRACK row i=0") && strstr(output," data=") && strstr(output," crc="));
   assert(!strstr(output," io="));
   output[0]=0; track_status_write(false);
+  Status.base_home_degraded=true;track_status_write(true);
+  assert(strstr(progress_log,"OK grab track state=") && strstr(progress_log,"base_home_degraded=1"));
+  Status.base_home_degraded=false;
   assert(strstr(tracking_estimate_log,"OK grab track estimate fit=") && strstr(tracking_estimate_log," comp=") && strstr(tracking_estimate_log," confidence="));
   float x_zero=TrackXZero,table_anchor=Tracking.reference_left_mm;
   clock_ms+=10000; /* No polling while idle. This is not an active drive failure. */
@@ -533,13 +673,18 @@ int main(void)
   stationary_closed_loop(true,160,20); stationary_closed_loop(true,160,75);
   tracking_io_keeps_quiet_axis_feedback();
   feedback_fault_keeps_trigger_evidence();
+  motor_state_distinguishes_stall_from_protection();
+  motor_fault_keeps_first_axis_state();
   batch_timing_excludes_idle_and_previous_motion();
   restart_waits_for_current_feedback();
   static_alignment_then_tracking();
   dispatch_snapshot_is_not_requested_velocity();
   hybrid_visual_timer_schedule();
   stationary_then_moving_keeps_following();
-  travel_edge_waits_and_resumes_on_return();
-  visual_pause_still_recovers();
+  for(unsigned mode=GRAB_TRACK_PREDICT;mode<=GRAB_TRACK_FEEDBACK;mode++)
+  {
+    travel_edge_waits_and_resumes_on_return((GrabTracking_Mode_t)mode);
+    visual_pause_still_recovers((GrabTracking_Mode_t)mode);
+  }
   puts("tracking task: observe is read-only, no retract/Z/Base/claw, stop feedback PASS");
 }

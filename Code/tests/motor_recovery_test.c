@@ -7,6 +7,9 @@ static UART_HandleTypeDef uart;
 static uint8_t sent[32];
 static unsigned sends, handled;
 static int moving, missing, rx_fail, zero_nack, sync_missing, post_moving;
+static unsigned transient_moving, speed_reads;
+static unsigned post_transient;
+static uint8_t speed_sign, stopped_speed;
 static uint8_t state_flags=3, home_flags=3, stop_mask, abort_mask;
 /* Driver boundary fixture: latent wheel commands must be replaced before any
  * sync, and recovery must not trigger the arm/turntable caches. */
@@ -24,7 +27,11 @@ static void step(void)
   if(sends!=handled) {
     handled=sends;MotorBus_TxCpltCallback(&uart);
     if(sent[1]==0x35) {
-      r[4]=(moving || (post_moving && sync_mask==15))?20:0;
+      r[2]=speed_sign;
+      r[4]=(moving || (post_moving && sync_mask==15))?20:stopped_speed;
+      if(sent[0]==5 && transient_moving) { r[4]=20;transient_moving--; }
+      if(sent[0]==3 && sync_mask==15 && post_transient) { r[4]=20;post_transient--; }
+      speed_reads++;
       if(sync_mask==15 && sent[0]<=4)post_mask|=1U<<(sent[0]-1);
       if(!missing)MotorBus_RxBytes(r,6);
     }
@@ -79,6 +86,17 @@ int main(void)
   assert(zero_mask==15 && sync_mask==15 && post_mask==15);
   for(unsigned i=0;i<4;i++)assert(cached[i]==0);
   for(unsigned i=4;i<8;i++)assert(cached[i]==(int)(i+2)*10);
+  /* Base can report residual speed after FE/abort; fresh stopped reads must
+   * allow the same recovery request to finish without a second click. */
+  transient_moving=2;speed_reads=0;
+  assert(MotorBus_RecoveryStart());s=run();
+  assert(s.success && !MotorBus_IsQuarantined() && transient_moving==0);
+  assert(speed_reads>=34 && s.checked_mask==0xff);
+  post_transient=2;assert(MotorBus_RecoveryStart());s=run();
+  assert(s.success && post_transient==0 && s.checked_mask==0xff && post_mask==15);
+  stopped_speed=1;speed_sign=1;assert(MotorBus_RecoveryStart());s=run();
+  assert(s.success && s.speed_rpm==-1 && s.speed_address==4 && s.speed_ms<=tick);
+  stopped_speed=0;speed_sign=0;
   zero_nack=1;sync_mask=0;assert(MotorBus_RecoveryStart());s=run();
   assert(!s.success && MotorBus_IsQuarantined() && sync_mask==0);
   assert(!strcmp(s.reason,"zero_ack_failed"));
@@ -97,8 +115,23 @@ int main(void)
   MotorBus_RecoveryCancel();step();MotorBus_RecoveryGet(&s);
   assert(!s.active && !s.success && MotorBus_IsQuarantined() && sync_mask==0);
   assert(MotorBus_RecoveryStart());s=run();assert(s.success);
-  moving=1;assert(MotorBus_RecoveryStart());s=run();
+  moving=1;speed_sign=1;
+  unsigned started=tick;
+  assert(MotorBus_RecoveryStart());s=run();
   assert(!s.success && MotorBus_IsQuarantined());assert(!strcmp(s.reason,"motor_moving"));
+  assert(tick-started>8000 && s.speed_rpm==-20 && s.speed_address==1);
+  assert(tick-s.speed_ms<150 && zero_mask==0 && sync_mask==0);
+  /* Cancelling during speed rechecks must not proceed to zero/sync. */
+  assert(MotorBus_RecoveryStart());zero_mask=sync_mask=0;
+  for(unsigned i=0;i<800;i++) {
+    step();MotorBus_RecoveryGet(&s);
+    if(!strcmp(s.reason,"waiting_stopped"))break;
+    assert(i<799);
+  }
+  MotorBus_RecoveryCancel();step();MotorBus_RecoveryGet(&s);
+  assert(!s.active && !s.success && !strcmp(s.reason,"cancelled") &&
+         MotorBus_IsQuarantined() && zero_mask==0 && sync_mask==0);
+  speed_sign=0;
   moving=0;missing=1;assert(MotorBus_RecoveryStart());s=run();
   assert(!s.success && MotorBus_IsQuarantined());assert(s.address==1);
   missing=0;rx_fail=1;assert(MotorBus_RecoveryStart());s=run();

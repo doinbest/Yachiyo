@@ -35,11 +35,12 @@ export const grabParameters = [
   ...[['close_ms','夹爪闭合 / 松开等待 / ms'],['stable_ms','精定位稳定时间 / ms']].map(([key,label])=>({key,label,group:'反馈与抓取条件'})),
   ...[['feedback_ms','反馈最大年龄 / ms'],['age_ms','有效坐标接收超时 / ms']].map(([key,label])=>({key,label,group:'反馈与抓取条件'})),
   {key:'vision_wait_ms',label:'目标颜色等待窗口 / ms',group:'反馈与抓取条件'},
+  {key:'base_home_degrade',label:'Base 回零降级继续（1 开启 / 0 严格）',group:'回零策略'},
   {key:'loss_grace_ms',label:'视觉对准短暂漏检容忍 / ms（0 关闭）',group:'反馈与抓取条件'},
   {key:'frames',label:'稳定坐标观测次数',group:'反馈与抓取条件'},
   {key:'retries',label:'重新对准次数上限',group:'反馈与抓取条件'},
-  {key:'ref_u',label:'观察姿态准心 U / px',group:'准心与像素响应'},
-  {key:'ref_v',label:'观察姿态准心 V / px',group:'准心与像素响应'},
+  {key:'ref_u',label:'静态颜色对准准心 U / px',group:'准心与像素响应'},
+  {key:'ref_v',label:'静态颜色对准准心 V / px',group:'准心与像素响应'},
   ...[['j00','DX / 底盘前进'],['j01','DX / 底盘左移'],['j02','DX / X 伸出'],['j10','DY / 底盘前进'],['j11','DY / 底盘左移'],['j12','DY / X 伸出']].map(([key,label])=>({key,label:`${label} / px·mm⁻¹`,group:'准心与像素响应'})),
   ...[['body_speed','底盘速度上限'],['x_speed','X 视觉对准速度上限'],['x_transfer_speed','X 正式取放 / 入仓测试速度'],['z_speed','Z 速度上限']].map(([key,label])=>({key,label:`${label} / mm·s⁻¹`,group:'控制与运动边界'})),
   {key:'z_pick_speed',label:'物料夹取下降速度 / mm·s⁻¹',group:'控制与运动边界'},
@@ -87,12 +88,13 @@ export const commands = [
   command('grab-route','vision','启动蓝色首件入仓测试','grab route {speed}',[number('speed','路线平移速度 / mm·s⁻¹',200,10,5000)],'右下起点、机械臂朝后；二维码点直接通过，到原料台抓蓝色入第一仓，再收回朝后结束。不覆盖任务码；第一仓需有参考、已配置且为空，先在地图页准备跑图。'),
   command('grab-mission','vision','启动后向机械臂两批任务','grab mission {speed}',[number('speed','路线平移速度 / mm·s⁻¹',200,10,5000)],'右下起点，朝后回零；二维码点先通过。按当前任务码三件入仓、加工取回、暂存与同色码垛。无任务码时用明确模拟码156+123+516+231。'),
   command('grab-mission-continue','vision','补齐参数后继续本件','grab mission continue'),
-  command('grab-pose-rear','vision','收回并朝后','grab pose rear'),
-  command('grab-pose-work','vision','外侧作业姿态','grab pose work'),
+  command('grab-pose-rear','vision','收回并朝后','grab pose rear',[],'按新鲜停稳位置完成剩余抬Z、收X、转Base；普通停止后可直接重试。手动Base就近回零后可局部验证参考，不重新回零X/Z。'),
+  command('grab-pose-work','vision','外侧作业姿态','grab pose work',[],'准备过程中可停止，确认停稳后直接重试；已完成动作不重复。手动Base就近回零后先局部确认本轴参考，再继续准备。'),
   command('grab-base-status','vision','读取Base到位诊断','grab status base'),
   command('grab-status','vision','刷新抓取状态','grab status'),
   command('grab-stop','vision','停止单件抓取','grab stop',[],'停止自动推进并请求机构停止；保留夹持和 Z 承载。停止确认以新鲜反馈为准。'),
-  command('grab-rehome','vision','重新建立三轴参考','grab rehome',[],'先移走夹持物并确认机械臂周围无障碍；按 Z、X、Base 顺序重新回零并读回验证。各轴确认后恢复对应默认参考，三轴完成后才能开始新任务。'),
+  command('grab-rehome','vision','重新建立三轴参考','grab rehome',[],'先移走夹持物并确认机械臂周围无障碍；并行启动Z/X/Base回零后逐轴验证，恢复对应默认参考。普通准备停止可直接重试，只有Base参考待验证时可由准备入口局部恢复。'),
+  command('grab-home-accept','vision','确认 Base 近似参考并继续','grab home accept',[],'仅用于本次 Base 回零失败后，人工确认夹爪已接近车仓方向。重新读取位置、实际转速和驱动状态，停稳后接受近似参考；不重发回零或重复 X/Z 动作。'),
   ...grabParameters.map(p=>command(`grab-get-${p.key}`,'vision',`读取 ${p.label}`,`grab get ${p.key}`)),
   ...grabParameters.map(p=>command(`grab-set-${p.key}`,'vision',p.label,`grab set ${p.key} {value}`,[{...number('value',p.label,grabDefaults[p.key]??'',p.min,p.max,p.step??'any'),exclusiveMin:p.exclusiveMin}],p.key in grabDefaults?'预填程序默认值，不是设备读回值；X/Z尺度和位置在上电或 grab rehome 对应轴验证成功后载入，容差和等待时间在启动时载入。单轴手动回零只受理动作，不自动恢复参考参数。修改仅存MCU RAM，运行中拒绝修改。':'仅设置 MCU RAM；复位后需重新配置。运行中拒绝修改，输入值不代表设备已接受。')),
   command('pos','arm','相对转动','pos {axis} {degree}',[axis(),number('degree','电机轴相对角度 / °',10,-360,360,0.1)],'正负值表示方向；这是相对运动，不是绝对位置。Z 轴单次输入范围 −3600～3600°，Base/X 为 −360～360°；固件另有脉冲限制。'),
@@ -125,6 +127,10 @@ export const commands = [
     choice('id','电机 ID',[['1','1 · 左前轮'],['2','2 · 左后轮'],['3','3 · 右后轮'],['4','4 · 右前轮'],['5','5 · Base'],['6','6 · Z'],['7','7 · X'],['8','8 · 车载转盘']]),
     number('rounds','测试轮数',10,1,100)],'每轮只读取所选 ID 的状态、位置和速度，暂停其他普通总线请求；不驱动电机、不解除运动锁定。共享线路上的电气干扰仍会影响测试。'),
   command('bus-test-status','system','查看单电机测试结果','bus test status'),
+  command('bus-read','system','电机只读诊断','bus read {id} {field}',[
+    choice('id','电机 ID',[['5','5 · Base'],['6','6 · Z'],['7','7 · X'],['8','8 · 车载转盘'],['1','1 · 左前轮'],['2','2 · 左后轮'],['3','3 · 右后轮'],['4','4 · 右前轮']]),
+    choice('field','读取项目',[['current','实际相电流 / mA'],['voltage','供电电压 / mV'],['error','位置误差 / °'],['home','驱动回零参数'],['driver','驱动电流上限与到位窗口']])],
+    '任务空闲时单次读取，不运动、不改参数。当前车使用Emm布局与65536反馈单位/圈；停止锁定期间可读。'),
   command('bus-test-stop','system','结束单电机测试','bus test stop',[],'结束通信测试；实际停车使用停车入口。'),
   command('help','system','固件指令帮助','help'),
   command('chassis-run','chassis','平移与转向测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-300,300,0.1),number('vy','左向速度 / mm·s⁻¹',0,-300,300,0.1),number('omega_deg','逆时针角速度 / °·s⁻¹',0,-100,100,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'角速度输入单位为 °/s，上限100；网页自动换算为固件rad/s。角速度为 0 时自动保持起步航向，需要 IMU 验证通过；非 0 时执行给定转向。起步和停车各 500 ms；总时长为保持时间加 1 秒。'),
@@ -276,12 +282,12 @@ export function parseGrabStatus(line) {
     result[match[1]]=match[2];
   }
   if (!/^[a-z_]+$/.test(result.state??'')) return null;
-  for (const key of ['x','xt','z','zt','b','bt','dx','dy','age','vf','vl','elapsed','rx_seq','color','slot','recovery_used','recovery_count','recovery_left_ms','loss_ms','loss_max_ms','grace_count','stop_requested','stop_confirmed']) {
+  for (const key of ['x','xt','z','zt','b','bt','dx','dy','age','vf','vl','elapsed','rx_seq','color','slot','recovery_used','recovery_count','recovery_left_ms','loss_ms','loss_max_ms','grace_count','stop_requested','stop_confirmed','base_home_degraded']) {
     const raw=result[key];
     if (raw===undefined || /^(?:nan|na)$/i.test(raw)) {result[key]=null;continue;}
     if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(raw) || !Number.isFinite(Number(raw))) return null;
     result[key]=Number(raw);
-    if (['stop_requested','stop_confirmed'].includes(key) && ![0,1].includes(result[key])) return null;
+    if (['stop_requested','stop_confirmed','base_home_degraded'].includes(key) && ![0,1].includes(result[key])) return null;
     if (Object.hasOwn({recovery_used:4294967295,recovery_count:3,recovery_left_ms:120000,grace_count:3},key) && (!Number.isInteger(result[key]) || result[key]<0 || result[key]>{recovery_used:4294967295,recovery_count:3,recovery_left_ms:120000,grace_count:3}[key])) return null;
     if (['rx_seq','loss_ms','loss_max_ms'].includes(key) && (!Number.isInteger(result[key]) || result[key]<0 || result[key]>0xffffffff)) return null;
     if (['age','elapsed'].includes(key) && result[key]<0) return null;

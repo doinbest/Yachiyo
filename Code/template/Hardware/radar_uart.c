@@ -327,6 +327,11 @@ static void queue_event(void)
   }
 }
 
+void RadarUart_ProcessCommands(void)
+{
+  if(radar_uart)service_commands(HAL_GetTick());
+}
+
 void RadarUart_Process(void)
 {
   uint32_t producer, available, read_start;

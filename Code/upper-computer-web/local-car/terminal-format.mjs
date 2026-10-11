@@ -11,6 +11,8 @@ const colors={1:'red',2:'yellow',3:'blue',4:'green',5:'black',6:'light_blue'};
 Object.assign(names,{stack_align:'码垛静态对准与补偿',stack_center_align:'正在对准绿色准心',stack_compensating:'准心已对准，正在执行码垛补偿',stack_aligned_ready:'码垛补偿到位，等待人工装料'});
 const referenceNames={boot_pending:'上电待验证',home_verifying:'三轴正在验证',home_verified:'三轴已验证',base_place_turn:'Base 已转向放置处',manual_home_all:'手动全部回零后待验证',manual_home_x:'手动 X 回零后待验证',manual_home_z:'手动 Z 回零后待验证',manual_home_base:'手动 Base 回零后待验证',manual_zero_all:'手动全部清零后待验证',manual_zero_x:'手动 X 清零后待验证',manual_zero_z:'手动 Z 清零后待验证',manual_zero_base:'手动 Base 清零后待验证',manual_base_move:'Base 已手动移动',x_reference_changed:'X 参考失效',z_reference_changed:'Z 参考失效',base_reference_changed:'Base 参考失效',all_reference_changed:'全部参考失效'};
 const value=v=>referenceNames[v]??names[v]??deviceText(v);
+Object.assign(names,{home_degraded:'Base 回零失败，已采用降级参考继续',home_degraded_check:'Base 回零失败，正在确认停稳与近似参考',home_complete_degraded:'回零流程完成，Base 使用降级参考'});
+Object.assign(referenceNames,{base_home_degraded:'Base 使用降级参考（近似车仓方向）'});
 Object.assign(names,{home_enable_wait:'回零完成，等待使能状态恢复',home_enable_recovery:'回零完成，正在恢复使能',home_enable_failed:'回零使能验证失败',home_position_changed:'恢复使能后回零位置发生变化'});
 export function replyIsFault(line){
   return /^\s*(?:arm>\s*)?ERR\b/.test(line)||/\b(?:locked|bus_locked)=1\b/.test(line)||/\bstate=(?:error|ERROR|FAULT|FAILED)\b/.test(line)||/\bresult=FAIL\b/.test(line)||/\breason=(?:motor_\w+|home_\w*(?:fail|timeout|unconfirmed)\w*|home_position_changed|\w*(?:timeout|failed|fault)|uart_error|config_missing|bus_unavailable|vision_recover_limit|vision_usb_off|vision_request_lost|vision_stale|vision_lost|feedback_stale|chassis_tx)\b/.test(line)||/^OK bus recover complete\b.*\b(?:arm_ready|chassis_ready)=0\b/.test(line);
@@ -56,6 +58,7 @@ function grabStatusSummary(line){
   if(status.vision==='Ok'&&finitePixel(status.dx)&&finitePixel(status.dy))
     parts.push(`像素偏差 dx/dy：${Number(status.dx)} / ${Number(status.dy)} px`);
   if(status.missing&&status.missing!=='none')parts.push(translateToken(`missing=${status.missing}`));
+  if(status.base_home_degraded==='1')parts.push('Base：使用降级参考（近似车仓方向）');
   const referenceChanged=/^(?:manual_(?:home|zero)_(?:all|x|z|base)|manual_base_move|base_place_turn|(?:x|z|base|all)_reference_changed)$/.test(status.ref_cause??'');
   if(referenceChanged||status.reason==='reference_invalid'){
     if(status.ref_cause&&status.ref_cause!=='none')parts.push(translateToken(`ref_cause=${status.ref_cause}`));
@@ -68,6 +71,18 @@ function grabStatusSummary(line){
 }
 export function chineseTerminalLine(original){
   const line=original.replace(/^(?:arm>\s*)+/, '');
+  if(/^OK bus read (?:start )?id=/.test(line)) {
+    const f=Object.fromEntries(line.split(/\s+/).filter(t=>t.includes('=')).map(t=>t.split('=')));
+    const labels={phase_ma:['实际相电流','mA'],voltage_mv:['供电电压','mV'],error_deg:['位置误差','°'],
+      error_raw:['原始误差',''],home_mode:['回零模式',''],home_dir:['回零方向',''],home_rpm:['回零速度','RPM'],
+      timeout_ms:['回零超时','ms'],collision_rpm:['碰撞阈值转速','RPM'],collision_ma:['碰撞阈值电流','mA'],
+      collision_ms:['碰撞阈值时间','ms'],boot_home:['驱动上电回零',''],driver:['驱动固件',''],
+      open_current_ma:['开环工作电流','mA'],current_limit_ma:['闭环电流上限','mA'],
+      output_limit_raw:['输出电压限制原始值',''],pulse_mode:['脉冲端口模式',''],stall_protect:['堵转保护',''],
+      stall_rpm:['堵转阈值转速','RPM'],stall_ma:['堵转阈值电流','mA'],stall_ms:['堵转阈值时间','ms'],reach_deg:['驱动到位窗口','°']};
+    const parts=Object.entries(f).filter(([key])=>labels[key]).map(([key,value])=>`${labels[key][0]} ${value}${labels[key][1]?' '+labels[key][1]:''}`);
+    return `电机 ID${f.id}${f.id==='5'?' · Base':''} 只读诊断：${parts.join('；')||'请求已受理，等待数据'}`;
+  }
   const busTestRejected=line.match(/^ERR bus test (active|tasks_busy|transport_busy)\b/);
   if(busTestRejected)return ({active:'已有电机通信测试，请查看结果或结束测试。',tasks_busy:'任务仍忙，请先停止当前任务后再测试通信。',transport_busy:'当前电机事务尚未结束，请等待后重新测试。'})[busTestRejected[1]];
   const busTest=line.match(/^(OK|ERR) bus test (start|reply|read|status|complete)\s+(id=.+)$/);
@@ -133,7 +148,13 @@ export function chineseTerminalLine(original){
   }
   if(line==='STM32 mechanical arm console ready')return 'STM32 已启动';
   if(/^Boot: arm auto-home=off\b/.test(line))return '上电自动回零已关闭；保持静止完成 IMU 验证 5 秒；手动三轴回零：grab rehome；遥测默认关闭';
-  if(line.startsWith('Boot: Z/X collision home'))return (line.includes('in parallel')?'上电流程：Z/X 碰撞回零、Base/ID8 车仓就近回零并行执行 → 全部完成后 IMU 静止验证 5 秒；':'上电流程：Z/X 碰撞回零 → Base 就近回零 → IMU 静止验证 5 秒；')+(line.includes('enable_verify=on')?'逐轴确认使能；':'')+'遥测默认关闭';
+  if(line.startsWith('Boot: Z/X collision home')) {
+    const stages=line.includes('+ ID8 near home in parallel -> Base near home')?
+      '上电流程：Z/X 碰撞回零、ID8 车仓就近回零并行执行 → 确认完成后 Base 最后就近回零 → IMU 静止验证 5 秒；':
+      line.includes('in parallel')?'上电流程：Z/X 碰撞回零、Base/ID8 车仓就近回零并行执行 → 全部完成后 IMU 静止验证 5 秒；':
+      '上电流程：Z/X 碰撞回零 → Base 就近回零 → IMU 静止验证 5 秒；';
+    return stages+(line.includes('enable_verify=on')?'逐轴确认使能；':'')+'遥测默认关闭';
+  }
   let m=line.match(/^ARM STM32F407 USART1=(\d+) UART5=(\d+)$/);
   if(m)return `主控 STM32F407；控制台 ${m[1]} 波特；电机总线 ${m[2]} 波特`;
   if(line.startsWith('BUILD '))return `固件构建信息：${line.slice(6).replace('motorbus_diag=1','电机总线诊断开启').replace('date=','日期 ').replace('time=','时间 ')}`;
@@ -141,6 +162,15 @@ export function chineseTerminalLine(original){
   if(line==='arm base=id5 z=id6 x=id7 pos=relative unit=degree')return '机械臂：Base=5、Z=6、X=7；pos 为相对角度指令，单位 °';
   if(line.startsWith('arm positive_dir '))return '机械臂正方向：'+line.slice(17).replace(/\b(base|z|x)=([01])/g,(_,a,d)=>`${value(a)} ${d==='0'?'顺时针':'逆时针'}`).replace(' (0=CW 1=CCW)','');
   if(line.startsWith('[MOTOR BUS] '))return `电机总线${/locked=1\b/.test(line)?'已锁定':'未锁定'}；`+line.slice(12).split(/\s+/).map(translateToken).join('；');
+  if(/^OK bus motion\b/.test(line)){
+    const errors=['无异常','驱动应答模式未确认','通信或发送异常','电机应答超时','驱动应答异常','请求已取消'];
+    return `${replyIsFault(line)?'故障 · ':''}总线：运动隔离状态；`+line.slice(14).trim().split(/\s+/).map(t=>{
+      const error=t.match(/^error=(\d+)$/);
+      if(error)return `错误：${errors[Number(error[1])]??error[1]}（${error[1]}）`;
+      if(t.startsWith('feedback_allowed='))return `允许反馈查询：${t.split('=')[1]}`;
+      return translateToken(t);
+    }).join('；');
+  }
   if(/^OK bus recover requested\b/.test(line))return '总线恢复请求已受理；任务不会自动继续';
   if(/^OK bus recover complete\b/.test(line))return `${replyIsFault(line)?'电机总线未完全恢复':'电机总线恢复完成'}；${line.slice(24).trim().split(/\s+/).filter(t=>!/^tasks_resumed=0$|^home_reference=check$/.test(t)).map(translateToken).join('；')}；任务不会自动继续，请检查回零参考`;
   if(/^OK chassis stop id=/.test(line))return '四轮停车：'+line.slice(16).split(/\s+/).map(translateToken).join('；');

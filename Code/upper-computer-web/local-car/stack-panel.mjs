@@ -36,7 +36,7 @@ export function mountStacking({root,send,canSend,schedule=setTimeout,cancel=clea
   for(const[value,label]of grabColorOptions){const option=make('option',label);option.value=value;color.append(option);}color.value='3';colorLabel.append(color);fields.append(colorLabel);align.append(fields);
   const alignActions=make('div',undefined,'actions');align.append(alignActions);
   action(alignActions,'静态对准并补偿',()=>buildCommand('grab-stack-align',{color:color.value}),'primary',()=>wheel.cancel());
-  align.append(make('p','保持Z最高识别；先对准绿色准心，再让目标在画面中向右39、向下1像素，补偿到位后等待装料。仅此码垛功能补偿，准心保持原值。','form-note'));
+  align.append(make('p','保持Z最高识别；使用视觉 DX、DY 对准绿色准心（视觉默认372,345），再让目标在画面中向右39、向下1像素，补偿到位后等待装料。仅此码垛功能补偿，不写回准心。','form-note'));
   const load=section('2 · 放入物料并夹紧'),loadActions=make('div',undefined,'actions');load.append(loadActions);
   action(loadActions,'打开夹爪','grip open','',()=>wheel.cancel());action(loadActions,'闭合夹爪','grip catch','primary',()=>wheel.cancel());
   const height=section('3 · 调整高度 · 保持夹持');

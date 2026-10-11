@@ -46,6 +46,7 @@ typedef struct
   MechanicalArm_AxisTypeDef CurrentAxis;
   int32_t PositionPulses;
   int32_t CurrentPosition;
+  int32_t CurrentSpeedRpm;
   int64_t CurrentPositionRaw;
   uint16_t SpeedRpm;
   uint8_t Acceleration;
@@ -54,6 +55,7 @@ typedef struct
   uint8_t ExpectedFunction;
   uint8_t SuccessMask;
   uint8_t FailureMask;
+  uint8_t StopIdMask;
   bool ScheduledStop;
   uint8_t StateFlags[MECHANICAL_ARM_AXIS_COUNT];
 } MechanicalArm_RequestTypeDef;
@@ -73,7 +75,8 @@ static MechanicalArm_AxisConfigTypeDef MechanicalArm_AxisConfig[MECHANICAL_ARM_A
      {40U, 20U, MECHANICAL_ARM_COMMAND_PULSES_PER_REV}}};
 
 static UART_HandleTypeDef *MechanicalArm_Uart;
-static volatile uint8_t MechanicalArm_StopAllPending;
+static uint8_t MechanicalArm_StopPendingMask, MechanicalArm_StopMask;
+static MechanicalArm_AxisTypeDef MechanicalArm_StopPendingAxis;
 static uint8_t MechanicalArm_StopAllAddress;
 static bool MechanicalArm_StopAllFailed;
 static MechanicalArm_StateTypeDef MechanicalArm_State;
@@ -118,6 +121,7 @@ static void MechanicalArm_RequestFinish(MechanicalArm_ResultTypeDef Result,
   MechanicalArm_Event.SpeedRpm = MechanicalArm_Request.SpeedRpm;
   MechanicalArm_Event.TxDoneMs = MechanicalArm_TxDoneMs;
   MechanicalArm_Event.CurrentPosition = MechanicalArm_Request.CurrentPosition;
+  MechanicalArm_Event.CurrentSpeedRpm = MechanicalArm_Request.CurrentSpeedRpm;
   MechanicalArm_Event.CurrentPositionRaw = MechanicalArm_Request.CurrentPositionRaw;
   MechanicalArm_Event.HomeMode = MechanicalArm_Request.HomeMode;
   MechanicalArm_Event.MotorCode = MotorCode;
@@ -125,6 +129,7 @@ static void MechanicalArm_RequestFinish(MechanicalArm_ResultTypeDef Result,
   MechanicalArm_Event.FailureMask = MechanicalArm_Request.FailureMask;
   MechanicalArm_Event.Transmitted = MechanicalArm_Transmitted;
   MechanicalArm_Event.Acknowledged = MechanicalArm_Acknowledged;
+  MechanicalArm_Event.StopIdMask = MechanicalArm_Request.StopIdMask;
   for (Index = 0U; Index < MECHANICAL_ARM_AXIS_COUNT; Index++)
   {
     MechanicalArm_Event.StateFlags[Index] = MechanicalArm_Request.StateFlags[Index];
@@ -188,6 +193,11 @@ static HAL_StatusTypeDef MechanicalArm_CurrentCommandSend(void)
   case MECHANICAL_ARM_ACTION_POSITION_READ:
     MechanicalArm_Request.ExpectedFunction = 0x36U;
     Emm_V5_Read_Sys_Params(AxisConfig->MotorId, S_CPOS);
+    break;
+
+  case MECHANICAL_ARM_ACTION_SPEED_READ:
+    MechanicalArm_Request.ExpectedFunction = 0x35U;
+    Emm_V5_Read_Sys_Params(AxisConfig->MotorId, S_VEL);
     break;
 
   case MECHANICAL_ARM_ACTION_STATE:
@@ -254,18 +264,21 @@ static HAL_StatusTypeDef MechanicalArm_CurrentCommandSend(void)
  * 返 回 值：HAL发送启动状态
  * 说    明：stop all逐ID1～8发送，TX完成推进，不等待单台应答
  */
-static HAL_StatusTypeDef MechanicalArm_StopAllSend(void)
+static HAL_StatusTypeDef MechanicalArm_StopSend(uint8_t mask,MechanicalArm_AxisTypeDef axis)
 {
   MechanicalArm_Transmitted = 0;
   MechanicalArm_Acknowledged = 0;
   memset(&MechanicalArm_Request, 0, sizeof(MechanicalArm_Request));
   MechanicalArm_Request.Action = MECHANICAL_ARM_ACTION_STOP;
-  MechanicalArm_Request.RequestedAxis = MECHANICAL_ARM_AXIS_ALL;
-  MechanicalArm_Request.CurrentAxis = MECHANICAL_ARM_AXIS_ALL;
+  MechanicalArm_Request.RequestedAxis = axis;
+  MechanicalArm_Request.CurrentAxis = axis;
 
+  MechanicalArm_StopMask=mask;
+  MechanicalArm_Request.StopIdMask=mask;
   MechanicalArm_StopAllAddress=1;
+  while(!(mask&(1U<<(MechanicalArm_StopAllAddress-1U))))MechanicalArm_StopAllAddress++;
   MechanicalArm_StopAllFailed=false;
-  const uint8_t stop[]={1,0xfe,0x98,0,0x6b};
+  const uint8_t stop[]={MechanicalArm_StopAllAddress,0xfe,0x98,0,0x6b};
   if(!MotorBus_Submit(MOTOR_BUS_ARM,stop,sizeof stop,0,0,true))return HAL_BUSY;
 
   MechanicalArm_State = MECHANICAL_ARM_STATE_WAIT_TX;
@@ -294,6 +307,7 @@ static MechanicalArm_ResultTypeDef MechanicalArm_RequestStartEx(MechanicalArm_Ac
    * homing/zeroing and drive configuration still require an idle chassis. */
   if ((ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) &&
       (Action != MECHANICAL_ARM_ACTION_POSITION_READ) &&
+      (Action != MECHANICAL_ARM_ACTION_SPEED_READ) &&
       (Action != MECHANICAL_ARM_ACTION_STATE) && (Action != MECHANICAL_ARM_ACTION_HOME_STATE) &&
       (Action != MECHANICAL_ARM_ACTION_POSITION) && (Action != MECHANICAL_ARM_ACTION_STOP) &&
       (Action != MECHANICAL_ARM_ACTION_HOME_ABORT))
@@ -384,6 +398,15 @@ static void MechanicalArm_ResponseProcess(const uint8_t *Response)
   AxisMask = (uint8_t)(1U << (uint8_t)MechanicalArm_Request.CurrentAxis);
   MotorCode = Response[2];
 
+  if (MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_SPEED_READ)
+  {
+    int32_t rpm = ((int32_t)Response[3] << 8) | Response[4];
+    MechanicalArm_Request.CurrentSpeedRpm = Response[2] ? -rpm : rpm;
+    MechanicalArm_Request.SuccessMask |= AxisMask;
+    MechanicalArm_RequestFinish(MECHANICAL_ARM_RESULT_OK, MECHANICAL_ARM_AXIS_INVALID, 0U);
+    return;
+  }
+
   if (MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_POSITION_READ)
   {
     uint32_t magnitude = ((uint32_t)Response[3] << 24) | ((uint32_t)Response[4] << 16) |
@@ -473,7 +496,7 @@ HAL_StatusTypeDef MechanicalArm_Init(UART_HandleTypeDef *huart)
   MechanicalArm_Uart = huart;
   MechanicalArm_State = MECHANICAL_ARM_STATE_IDLE;
   MechanicalArm_EventReady = 0;
-  MechanicalArm_StopAllPending = 0;
+  MechanicalArm_StopPendingMask=MechanicalArm_StopMask=0;
   memset(&MechanicalArm_Request, 0, sizeof(MechanicalArm_Request));
   memset(&MechanicalArm_Event, 0, sizeof(MechanicalArm_Event));
   return MotorBus_Init(huart);
@@ -494,22 +517,27 @@ void MechanicalArm_Process(void)
     return;
   MechanicalArm_Transmitted = (uint8_t)event.tx_completed;
   MechanicalArm_TxDoneMs = event.tx_ms;
-  if (MechanicalArm_StopAllPending)
+  if (MechanicalArm_StopPendingMask)
   {
-    MechanicalArm_StopAllPending = 0;
-    if (MechanicalArm_StopAllSend() != HAL_OK)
+    uint8_t mask=MechanicalArm_StopPendingMask;
+    MechanicalArm_StopPendingMask=0;
+    if (MechanicalArm_StopSend(mask,MechanicalArm_StopPendingAxis) != HAL_OK)
       MechanicalArm_RequestFinish(MECHANICAL_ARM_RESULT_TX_ERROR, MECHANICAL_ARM_AXIS_ALL, 0);
     return;
   }
   if(MechanicalArm_Request.Action==MECHANICAL_ARM_ACTION_STOP &&
-     MechanicalArm_Request.RequestedAxis==MECHANICAL_ARM_AXIS_ALL)
+     !MechanicalArm_Request.ScheduledStop && MechanicalArm_StopMask)
   {
     if(event.result!=MOTOR_BUS_TX_DONE)MechanicalArm_StopAllFailed=true;
-    while(MechanicalArm_StopAllAddress<8)
+    MechanicalArm_StopMask&=(uint8_t)~(1U<<(MechanicalArm_StopAllAddress-1U));
+    while(MechanicalArm_StopMask)
     {
-      uint8_t stop[]={++MechanicalArm_StopAllAddress,0xfe,0x98,0,0x6b};
+      MechanicalArm_StopAllAddress=1;
+      while(!(MechanicalArm_StopMask&(1U<<(MechanicalArm_StopAllAddress-1U))))MechanicalArm_StopAllAddress++;
+      uint8_t stop[]={MechanicalArm_StopAllAddress,0xfe,0x98,0,0x6b};
       if(MotorBus_Submit(MOTOR_BUS_ARM,stop,sizeof stop,0,0,true))return;
       MechanicalArm_StopAllFailed=true;
+      MechanicalArm_StopMask&=(uint8_t)~(1U<<(MechanicalArm_StopAllAddress-1U));
     }
     MechanicalArm_RequestFinish(MechanicalArm_StopAllFailed?MECHANICAL_ARM_RESULT_TX_ERROR:
       MECHANICAL_ARM_RESULT_OK,MECHANICAL_ARM_AXIS_ALL,0);
@@ -650,6 +678,12 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionRead(MechanicalArm_AxisTypeDef
   return MechanicalArm_RequestStart(MECHANICAL_ARM_ACTION_POSITION_READ, Axis, 0, 0U);
 }
 
+MechanicalArm_ResultTypeDef MechanicalArm_SpeedRead(MechanicalArm_AxisTypeDef Axis)
+{
+  if (MechanicalArm_AxisConfigGet(Axis) == NULL) return MECHANICAL_ARM_RESULT_PARAM_ERROR;
+  return MechanicalArm_RequestStart(MECHANICAL_ARM_ACTION_SPEED_READ, Axis, 0, 0U);
+}
+
 /**
  * 函    数：请求读取单轴或全部轴S_FLAG
  * 参    数：Axis 目标轴
@@ -728,21 +762,33 @@ MechanicalArm_ResultTypeDef MechanicalArm_StopScheduled(MechanicalArm_AxisTypeDe
 MechanicalArm_ResultTypeDef MechanicalArm_Stop(MechanicalArm_AxisTypeDef Axis)
 {
   MotorBus_Event_t discarded;
+  uint8_t mask;
   if (Axis > MECHANICAL_ARM_AXIS_ALL || MechanicalArm_Uart == NULL)
     return MECHANICAL_ARM_RESULT_PARAM_ERROR;
-  if (Axis != MECHANICAL_ARM_AXIS_ALL)
-    return MechanicalArm_RequestStart(MECHANICAL_ARM_ACTION_STOP, Axis, 0, 0);
-  /* Broadcast stop also addresses wheels: cancel their unsent synchronized batch first. */
-  (void)Mecanum_Test_Stop();
+  mask=Axis==MECHANICAL_ARM_AXIS_ALL?0xffU:
+    (uint8_t)(1U<<(MechanicalArm_AxisConfig[(unsigned)Axis].MotorId-1U));
+  /* A scoped stop must not cancel wheel batches. ALL retains IDs1..8. */
+  if(Axis==MECHANICAL_ARM_AXIS_ALL)(void)Mecanum_Test_Stop();
   MechanicalArm_EventReady = 0;
-  if (MechanicalArm_State != MECHANICAL_ARM_STATE_IDLE)
+  if(MechanicalArm_State!=MECHANICAL_ARM_STATE_IDLE && MechanicalArm_Request.Action==MECHANICAL_ARM_ACTION_STOP &&
+     !MechanicalArm_Request.ScheduledStop && !MechanicalArm_StopPendingMask && MechanicalArm_StopMask)
   {
-    MechanicalArm_StopAllPending = 1;
+    MechanicalArm_StopMask|=mask;
+    MechanicalArm_Request.StopIdMask|=mask;
+    if(MechanicalArm_Request.RequestedAxis!=Axis)MechanicalArm_Request.RequestedAxis=MECHANICAL_ARM_AXIS_ALL;
+    return MECHANICAL_ARM_RESULT_NONE;
+  }
+  if (MechanicalArm_State != MECHANICAL_ARM_STATE_IDLE || MotorBus_OwnerBusy(MOTOR_BUS_ARM))
+  {
+    if(!MechanicalArm_StopPendingMask)MechanicalArm_StopPendingAxis=Axis;
+    else if(MechanicalArm_StopPendingAxis!=Axis)MechanicalArm_StopPendingAxis=MECHANICAL_ARM_AXIS_ALL;
+    MechanicalArm_StopPendingMask|=mask;
     MotorBus_Cancel(MOTOR_BUS_ARM);
+    MechanicalArm_State=MECHANICAL_ARM_STATE_WAIT_TX;
     return MECHANICAL_ARM_RESULT_NONE;
   }
   (void)MotorBus_EventGet(MOTOR_BUS_ARM, &discarded);
-  if (MechanicalArm_StopAllSend() != HAL_OK)
+  if (MechanicalArm_StopSend(mask,Axis) != HAL_OK)
     return MECHANICAL_ARM_RESULT_TX_ERROR;
   return MECHANICAL_ARM_RESULT_NONE;
 }

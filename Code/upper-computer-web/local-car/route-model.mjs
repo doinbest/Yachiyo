@@ -74,7 +74,7 @@ export function footprintDiagnostic(p,{mask=0,bodySize=DEFAULT_BODY_SIZE}={}){
   const grid=[0,550,1000,1400,1850,2400];
   for(let i=0;i<25;i++)if(mask&(1<<i)){
     const row=Math.floor(i/5),col=i%5,box={x:grid[col],y:grid[row],w:grid[col+1]-grid[col],h:grid[row+1]-grid[row]};
-    if(overlaps(corners,box,p.yaw_rad))return {reason:'forbidden_area',obstacle:`地图障碍 R${row+1}C${col+1}`};
+    if(overlaps(corners,box,p.yaw_rad))return {reason:'forbidden_area',source:'grid',obstacle:`地图障碍 R${row+1}C${col+1}`};
   }
   return null;
 }

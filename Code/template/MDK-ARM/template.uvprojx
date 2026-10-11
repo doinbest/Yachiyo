@@ -2136,6 +2136,16 @@
               <FilePath>../App/mechanical_arm_config.h</FilePath>
             </File>
             <File>
+              <FileName>radar_geometry.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/radar_geometry.c</FilePath>
+            </File>
+            <File>
+              <FileName>radar_stability.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/radar_stability.c</FilePath>
+            </File>
+            <File>
               <FileName>radar_map.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/radar_map.c</FilePath>

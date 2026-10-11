@@ -20,7 +20,8 @@ typedef enum {
   HOST_TRANSFER_MAP,
   HOST_TRANSFER_PATH,
   HOST_TRANSFER_PREVIEW,
-  HOST_TRANSFER_CLOUD
+  HOST_TRANSFER_CLOUD,
+  HOST_TRANSFER_STABLE
 } HostTransferKind_t;
 
 typedef struct {
@@ -45,6 +46,7 @@ typedef struct {
 
 typedef struct {
   RadarHostMap_Result_t result;
+  RadarHostMap_Config_t config;
   HostIdentity_t identity;
   bool valid;
   bool delivered;
@@ -57,7 +59,7 @@ typedef struct {
   bool valid,draft;
 } HostConfig_t;
 
-#define HOST_CONFIG_RECORDS 27U
+#define HOST_CONFIG_RECORDS 36U
 #define HOST_MAP_RECORDS    (3U+RADAR_MAP_CELL_COUNT)
 
 static char Line[257];
@@ -80,15 +82,46 @@ static uint16_t CloudCrcCount;
 static uint32_t CloudCrcValue;
 static bool CloudCrcValid;
 /* Fast mode only changes the radar page's wire format, not its computation. */
-#define HOST_BUNDLE_BYTES 84U
-#define HOST_BUNDLE_HEADER 74U
+#define HOST_BUNDLE_BYTES 72U
+#define HOST_BUNDLE_HEADER 158U
+#define HOST_BUNDLE_MAX_PAGES 128U
 static bool FastEnabled,FastEndPending;
-static uint32_t FastPending,FastAutoPlan;
+static uint8_t FastPending[HOST_BUNDLE_MAX_PAGES/8U];
+static uint32_t FastAutoPlan;
+#if defined(__CC_ARM)
+__attribute__((section("CCM_RADAR"),zero_init))
+#else
+__attribute__((section("CCM_RADAR")))
+#endif
+static RadarStablePoint StableTx[RADAR_STABLE_CAPACITY];
+static uint16_t StableTxCount;
+static uint32_t StableTxScan;
+static uint8_t StableTxOwner;
+bool RadarStableTx_Freeze(uint8_t owner,uint32_t scan_id,const RadarStablePoint *points,uint16_t count)
+{
+  if(!owner || !scan_id || count>RADAR_STABLE_CAPACITY || (count && !points))return false;
+  if(StableTxOwner==owner && StableTxScan==scan_id)return true;
+  if(StableTxOwner && StableTxOwner!=owner)return false;
+  if(count)memcpy(StableTx,points,count*sizeof *points);
+  StableTxOwner=owner;StableTxScan=scan_id;StableTxCount=count;return true;
+}
+const RadarStablePoint *RadarStableTx_Points(uint8_t owner,uint32_t scan_id,uint16_t *count)
+{
+  bool valid=owner==StableTxOwner && scan_id==StableTxScan;
+  if(count)*count=valid?StableTxCount:0U;
+  return valid?StableTx:NULL;
+}
+void RadarStableTx_Release(uint8_t owner)
+{if(owner==StableTxOwner){StableTxOwner=0U;StableTxScan=0U;StableTxCount=0U;}}
+static bool fast_pending(void)
+{for(unsigned i=0U;i<sizeof FastPending;i++)if(FastPending[i])return true;return false;}
+static void fast_select(unsigned page)
+{if(page<HOST_BUNDLE_MAX_PAGES)FastPending[page/8U]|=(uint8_t)(1U<<(page%8U));}
 
 static const char *kind_name(HostTransferKind_t kind)
 {
-  static const char *const names[]={"none","host_config","host_map","host_path","host_preview","host_cloud"};
-  return kind<=HOST_TRANSFER_CLOUD?names[kind]:names[0];
+  static const char *const names[]={"none","host_config","host_map","host_path","host_preview","host_cloud","host_stable"};
+  return kind<=HOST_TRANSFER_STABLE?names[kind]:names[0];
 }
 
 static void append(const char *format,...)
@@ -141,7 +174,13 @@ static bool freeze_result(const RadarHost_Status_t *status)
   result=RadarHost_Map(&map_id,&scan_id);
   if(!result || !status->map_valid || !status->plan_id)return false;
   FrozenResult.result=*result;FrozenResult.identity=identity(status);
+  RadarHostMap_FreezeConfig(RadarHost_ActiveConfig(),&FrozenResult.config);
   FrozenResult.identity.map=map_id;FrozenResult.identity.scan=scan_id;
+  {
+    uint16_t count=0U;uint32_t stable_id=0U;const RadarStablePoint *points=RadarHost_Stable(&count,&stable_id);
+    if(result->stability.window_circles==RADAR_STABLE_CIRCLES && (!points || stable_id!=scan_id))return false;
+    if(points && stable_id==scan_id && !RadarStableTx_Freeze(2U,scan_id,points,count))return false;
+  }
   FrozenResult.valid=true;FrozenResult.delivered=false;FrozenResult.live=status->live_active;return true;
 }
 
@@ -255,22 +294,34 @@ static void begin_bundle(const char *kind)
 {
   const HostIdentity_t *id=&FrozenResult.identity;
   Length=0U;FormatOk=true;
-  append("@RADAR {\"v\":2,\"k\":\"%s\",\"i\":[%lu,%lu,%lu,%lu,%lu],\"l\":%u",kind,
+  append("@RADAR {\"v\":2,\"profile\":\"f1_host\",\"k\":\"%s\",\"i\":[%lu,%lu,%lu,%lu,%lu],\"l\":%u",kind,
     (unsigned long)id->session,(unsigned long)id->config,(unsigned long)id->scan,
     (unsigned long)id->map,(unsigned long)id->plan,FrozenResult.live?1U:0U);
 }
 /** @brief Serialize all map statistics and every waypoint without struct padding. */
 static bool render_bundle(unsigned page)
 {
-  uint8_t header[HOST_BUNDLE_HEADER],raw[HOST_BUNDLE_BYTES];char encoded[116];
+  uint8_t header[HOST_BUNDLE_HEADER],raw[HOST_BUNDLE_BYTES];char encoded[100];
   const RadarHostMap_Result_t *r=&FrozenResult.result;
+  const RadarHostMap_Config_t *config=&FrozenResult.config;
   unsigned offset=page*HOST_BUNDLE_BYTES,count,total=bundle_size();
   if(!FrozenResult.valid || page>=bundle_pages())return false;
-  header[0]=1U;put16(header+1U,r->raw_points);put16(header+3U,r->filtered_points);put16(header+5U,r->outside_points);
-  put32(header+7U,r->scanned_mask);put32(header+11U,r->manual_mask);put32(header+15U,r->effective_mask);
-  header[19]=r->path_valid?1U:0U;header[20]=r->failed_from_task;header[21]=r->failed_to_task;
-  put16(header+22U,r->waypoint_count);
-  for(unsigned i=0U;i<RADAR_MAP_CELL_COUNT;i++)put16(header+24U+2U*i,r->counts[i]);
+  memset(header,0,sizeof header);header[0]=2U;
+  put32(header+1U,r->raw_points);put32(header+5U,r->filtered_points);put32(header+9U,r->outside_points);
+  put32(header+13U,r->scanned_mask);put32(header+17U,r->manual_mask);put32(header+21U,r->effective_mask);
+  header[25]=r->path_valid?1U:0U;header[26]=r->failed_from_task;header[27]=r->failed_to_task;
+  put16(header+28U,r->waypoint_count);
+  for(unsigned i=0U;i<RADAR_MAP_CELL_COUNT;i++)put16(header+30U+2U*i,r->counts[i]);
+  put16(header+80U,r->stability.stable_count);header[82]=r->stability.window_circles;
+  header[83]=config->situation;header[84]=config->grid_version;header[85]=1U;
+  put16(header+86U,r->stability.candidate_count);
+  put32(header+88U,r->stability.candidate_replacements);put32(header+92U,r->stability.candidate_dropped);
+  put32(header+96U,r->stability.first_circle);put32(header+100U,r->stability.last_circle);
+  for(unsigned i=0U;i<4U;i++)put32(header+104U+i*4U,(uint32_t)config->geometry.matrix_q16[i]);
+  for(unsigned i=0U;i<2U;i++)put32(header+120U+i*4U,(uint32_t)config->geometry.origin_q16[i]);
+  put16(header+128U,config->geometry.zero_tenths);
+  for(unsigned i=0U;i<6U;i++){put16(header+130U+i*2U,(uint16_t)config->grid.x_mm[i]);put16(header+142U+i*2U,(uint16_t)config->grid.y_mm[i]);}
+  put16(header+154U,config->radar_x_mm);put16(header+156U,config->radar_y_mm);
   count=total-offset;if(count>HOST_BUNDLE_BYTES)count=HOST_BUNDLE_BYTES;
   for(unsigned i=0U;i<count;i++){
     unsigned index=offset+i;
@@ -383,6 +434,13 @@ static bool config_record(const RadarHostMap_Config_t *config,unsigned record,ch
       break;
     case 25:count=snprintf(text,capacity,"start,%u,%u,%u",config->start.row,config->start.column,config->start.anchor);break;
     case 26:count=snprintf(text,capacity,"goal,%u,%u,%u",config->goal.row,config->goal.column,config->goal.anchor);break;
+    case 27:count=snprintf(text,capacity,"situation,%u",config->situation);break;
+    case 28:count=snprintf(text,capacity,"grid_version,%u",config->grid_version);break;
+    case 29:count=snprintf(text,capacity,"zero_tenths,%u",config->geometry.zero_tenths);break;
+    case 30:case 31:case 32:case 33:{
+      static const char *const names[]={"m00_q16","m01_q16","m10_q16","m11_q16"};
+      count=snprintf(text,capacity,"%s,%ld",names[record-30U],(long)config->geometry.matrix_q16[record-30U]);break;}
+    case 34:case 35:count=snprintf(text,capacity,"%s,%ld",record==34U?"tx_q16":"ty_q16",(long)config->geometry.origin_q16[record-34U]);break;
     default:return false;
   }
   return count>=0 && (unsigned)count<capacity;
@@ -391,16 +449,20 @@ static bool config_record(const RadarHostMap_Config_t *config,unsigned record,ch
 static bool render_config(const HostTransfer_t *transfer,const RadarHost_Status_t *status,uint32_t *pages)
 {
   const RadarHostMap_Config_t *config=transfer->draft?RadarHost_DraftConfig():RadarHost_ActiveConfig();
+  bool captured=transfer==&Requested && !transfer->draft && FrozenResult.valid && transfer->id==FrozenResult.identity.config;
   char data[64];
+  if(captured)config=&FrozenResult.config;
   if(config==NULL || transfer->page>=HOST_CONFIG_RECORDS)return false;
-  if(!transfer->draft && transfer->id!=status->config_id)return false;
-  if(!FrozenConfig.valid || FrozenConfig.draft!=transfer->draft || FrozenConfig.identity.config!=transfer->id) {
+  if(!transfer->draft && !captured && transfer->id!=status->config_id)return false;
+  if(!FrozenConfig.valid || FrozenConfig.draft!=transfer->draft || FrozenConfig.identity.config!=transfer->id ||
+     (captured && FrozenConfig.identity.scan!=FrozenResult.identity.scan)) {
     /* New scan ids must not split a 27-page RAM read into different transfers. */
-    FrozenConfig.config=*config;FrozenConfig.identity=identity(status);
+    FrozenConfig.config=*config;FrozenConfig.identity=captured?FrozenResult.identity:identity(status);
     FrozenConfig.identity.config=transfer->id;FrozenConfig.draft=transfer->draft;FrozenConfig.valid=true;
   }
   if(!config_record(&FrozenConfig.config,(unsigned)transfer->page,data,sizeof data))return false;
   if(transfer->draft && transfer->page==0U)strcpy(data,"source,draft");
+  else if(captured && transfer->page==0U)strcpy(data,"source,capture");
   *pages=HOST_CONFIG_RECORDS;begin_transfer(HOST_TRANSFER_CONFIG,&FrozenConfig.identity,transfer->page,*pages,transfer->page,HOST_CONFIG_RECORDS);
   append("\"data\":\"%s\"",data);return finish(false);
 }
@@ -410,7 +472,7 @@ static bool result_record(HostTransferKind_t kind,const RadarHostMap_Result_t *r
 {
   int count;
   if(kind==HOST_TRANSFER_MAP) {
-    if(record==0U)count=snprintf(data,capacity,"s,%u,%u,%u",result->raw_points,result->filtered_points,result->outside_points);
+    if(record==0U)count=snprintf(data,capacity,"s,%lu,%lu,%lu",(unsigned long)result->raw_points,(unsigned long)result->filtered_points,(unsigned long)result->outside_points);
     else if(record==1U)count=snprintf(data,capacity,"m,%08lX,%08lX,%08lX",(unsigned long)result->scanned_mask,(unsigned long)result->manual_mask,(unsigned long)result->effective_mask);
     else if(record==2U)count=snprintf(data,capacity,"p,%u,%u,%u",result->path_valid?1U:0U,result->failed_from_task,result->failed_to_task);
     else count=snprintf(data,capacity,"c,%u,%u",record-3U,result->counts[record-3U]);
@@ -473,6 +535,7 @@ static bool render_result(const HostTransfer_t *transfer,const RadarHost_Status_
 static bool render_packed(const HostTransfer_t *transfer,const RadarHost_Status_t *status,uint32_t *pages)
 {
   HostIdentity_t id=identity(status);const RadarSample_t *cloud=NULL;const RadarLive_Point_t *preview=NULL;
+  const RadarStablePoint *stable=NULL;
   uint16_t total=0U;uint32_t source_id=0U,crc;unsigned bytes_per_point,capacity,count;uint32_t offset;
   uint8_t raw[120];char data[164];
   if(transfer->kind==HOST_TRANSFER_CLOUD) {
@@ -480,6 +543,11 @@ static bool render_packed(const HostTransfer_t *transfer,const RadarHost_Status_
     if(cloud==NULL || source_id!=transfer->id)return false;
     id.scan=source_id;
     crc=cloud_crc(cloud,total,source_id);
+  } else if(transfer->kind==HOST_TRANSFER_STABLE){
+    if(!freeze_result(status) || transfer->id!=FrozenResult.identity.scan)return false;
+    stable=RadarStableTx_Points(2U,transfer->id,&total);if(!stable)return false;
+    id=FrozenResult.identity;source_id=id.scan;bytes_per_point=10U;
+    crc=~crc32_update(0xFFFFFFFFUL,(const uint8_t *)stable,total*10U);
   } else {
     if(!freeze_preview(transfer->id,status))return false;
     preview=FrozenPreview.points;total=FrozenPreview.count;bytes_per_point=4U;
@@ -493,6 +561,11 @@ static bool render_packed(const HostTransfer_t *transfer,const RadarHost_Status_
       raw[i*5U]=(uint8_t)cloud[offset+i].angle_tenths;raw[i*5U+1U]=(uint8_t)(cloud[offset+i].angle_tenths>>8);
       raw[i*5U+2U]=(uint8_t)cloud[offset+i].distance_mm;raw[i*5U+3U]=(uint8_t)(cloud[offset+i].distance_mm>>8);
       raw[i*5U+4U]=cloud[offset+i].energy;
+    } else if(stable){
+      const RadarStablePoint *p=&stable[offset+i];
+      put16(raw+i*10U,p->angle_tenths);put16(raw+i*10U+2U,p->distance_mm);
+      put16(raw+i*10U+4U,p->x_mm);put16(raw+i*10U+6U,p->y_mm);
+      raw[i*10U+8U]=p->votes;raw[i*10U+9U]=p->flags;
     } else {
       raw[i*4U]=(uint8_t)preview[offset+i].angle_tenths;raw[i*4U+1U]=(uint8_t)(preview[offset+i].angle_tenths>>8);
       raw[i*4U+2U]=(uint8_t)preview[offset+i].distance_mm;raw[i*4U+3U]=(uint8_t)(preview[offset+i].distance_mm>>8);
@@ -510,7 +583,7 @@ static bool render(const HostTransfer_t *transfer,uint32_t *pages)
   switch(transfer->kind) {
     case HOST_TRANSFER_CONFIG:return render_config(transfer,&status,pages);
     case HOST_TRANSFER_MAP:case HOST_TRANSFER_PATH:return render_result(transfer,&status,pages);
-    case HOST_TRANSFER_PREVIEW:case HOST_TRANSFER_CLOUD:return render_packed(transfer,&status,pages);
+    case HOST_TRANSFER_PREVIEW:case HOST_TRANSFER_CLOUD:case HOST_TRANSFER_STABLE:return render_packed(transfer,&status,pages);
     default:return false;
   }
 }
@@ -519,7 +592,7 @@ static void cancel_transfers(void)
 {
   memset(&Requested,0,sizeof Requested);memset(&Manual,0,sizeof Manual);
   ResultStreaming=ResultEndPending=false;
-  FastPending=0U;FastEndPending=false;
+  memset(FastPending,0,sizeof FastPending);FastEndPending=false;
 }
 
 /* Page counts let the receiver repair a lost first/last page without replaying
@@ -539,6 +612,7 @@ void RadarHostConsole_Init(void)
 {
   RadarHost_Status_t status;
   RadarHost_Init();cancel_transfers();CloudCrcValid=false;
+  RadarStableTx_Release(2U);
   FrozenPreview.valid=FrozenResult.valid=PreviewDue=false;
   FrozenConfig.valid=false;
   AcknowledgedPlan=0U;
@@ -552,11 +626,11 @@ void RadarHostConsole_Process(void)
   RadarHost_Status_t status;HostTransfer_t *transfer=NULL;uint32_t pages=0U;
   RadarHost_Process();RadarHost_StatusGet(&status);
   if(!ConsoleTx_BulkReady())return;
-  if(FastPending){
-    unsigned page=0U;while(!(FastPending&(1UL<<page)))page++;
+  if(fast_pending()){
+    unsigned page=0U;while(!(FastPending[page/8U]&(1U<<(page%8U))))page++;
     if(render_bundle(page)){
-      FastPending&=~(1UL<<page);
-      if(!FastPending)FrozenResult.delivered=true;
+      FastPending[page/8U]&=(uint8_t)~(1U<<(page%8U));
+      if(!fast_pending())FrozenResult.delivered=true;
     }
     return;
   }
@@ -575,7 +649,8 @@ void RadarHostConsole_Process(void)
      !Manual.active) {
     if(freeze_result(&status)){
       FastAutoPlan=FrozenResult.identity.plan;
-      FastPending=(1UL<<bundle_pages())-1U;FastEndPending=true;
+      for(unsigned page=0U;page<bundle_pages();page++)fast_select(page);
+      FastEndPending=true;
       if(Manual.kind==HOST_TRANSFER_PREVIEW)memset(&Manual,0,sizeof Manual);
       (void)status_page(false);
     }
@@ -626,6 +701,7 @@ static HostTransferKind_t parse_kind_id(const char *text,uint32_t *id)
   if(!strcmp(kind,"path"))return HOST_TRANSFER_PATH;
   if(!strcmp(kind,"preview"))return HOST_TRANSFER_PREVIEW;
   if(!strcmp(kind,"cloud"))return HOST_TRANSFER_CLOUD;
+  if(!strcmp(kind,"stable"))return HOST_TRANSFER_STABLE;
   return HOST_TRANSFER_NONE;
 }
 
@@ -639,20 +715,21 @@ bool RadarHostConsole_Command(unsigned count,char *tokens[])
     return true;
   }
   if(count==5U && !strcmp(tokens[2],"bundle")) {
-    uint32_t selected=0U;const char *cursor=tokens[4];
+    uint8_t selected[sizeof FastPending]={0};bool any=false;const char *cursor=tokens[4];
     if(!parse_u32(tokens[3],UINT32_MAX,&value) || !value){reply(false,"plan",false);return true;}
     RadarHost_StatusGet(&status);
     if(!freeze_result(&status) || FrozenResult.identity.plan!=value){reply(false,"snapshot_or_page",false);return true;}
-    if(!strcmp(cursor,"all"))selected=(1UL<<bundle_pages())-1U;
+    if(!strcmp(cursor,"all")){for(unsigned p=0U;p<bundle_pages();p++)selected[p/8U]|=(uint8_t)(1U<<(p%8U));any=true;}
     else while(*cursor){
       char *end;unsigned long parsed;
       if(*cursor<'0' || *cursor>'9'){reply(false,"page",false);return true;}
       parsed=strtoul(cursor,&end,10);
       if(parsed>=bundle_pages() || (*end && (*end!=',' || !end[1]))){reply(false,"page",false);return true;}
-      selected|=1UL<<parsed;cursor=*end?end+1:end;
+      selected[parsed/8U]|=(uint8_t)(1U<<(parsed%8U));any=true;cursor=*end?end+1:end;
     }
-    if(!selected){reply(false,"page",false);return true;}
-    FastPending|=selected;FastEndPending=true;FastAutoPlan=value;return true;
+    if(!any){reply(false,"page",false);return true;}
+    for(unsigned i=0U;i<sizeof FastPending;i++)FastPending[i]|=selected[i];
+    FastEndPending=true;FastAutoPlan=value;return true;
   }
   if(count==3U && !strcmp(tokens[2],"status")){if(!status_page(true))reply(false,"page_size",false);return true;}
   if(count==4U && !strcmp(tokens[2],"result")) {
@@ -675,15 +752,18 @@ bool RadarHostConsole_Command(unsigned count,char *tokens[])
       /* Keep the preview, but not on every result cycle. Map/path have already
        * arrived; every fourth distinct ACK permits one low-priority preview. */
       if(++ResultsSincePreview>=4U){ResultsSincePreview=0U;PreviewDue=true;}
-      AcknowledgedPlan=value;FrozenResult.valid=false;FastPending=0U;FastEndPending=false;
+      AcknowledgedPlan=value;FrozenResult.valid=false;memset(FastPending,0,sizeof FastPending);FastEndPending=false;
+      RadarStableTx_Release(2U);
     }
     reply(ok,ok?"result_acknowledged":"result_not_delivered",false);return true;
   }
   if(count==3U && !strcmp(tokens[2],"start")){
-    ok=RadarHost_StartRotation();reply(ok,ok?"start_accepted":"start_busy_or_uart",false);return true;
+    ok=RadarHost_StartRotation();if(ok)RadarStableTx_Release(1U);
+    reply(ok,ok?"start_accepted":"start_busy_or_uart",false);return true;
   }
-  if((count==3U || (count==4U && !strcmp(tokens[3],"fast"))) && !strcmp(tokens[2],"scan")){
-    ok=RadarHost_Scan();if(ok){cancel_transfers();FrozenResult.valid=PreviewDue=false;FastEnabled=count==4U;FastAutoPlan=0U;}
+  if((count==3U || (count==4U && (!strcmp(tokens[3],"fast") || !strcmp(tokens[3],"15"))) ||
+      (count==5U && !strcmp(tokens[3],"15") && !strcmp(tokens[4],"fast"))) && !strcmp(tokens[2],"scan")){
+    ok=RadarHost_Scan();if(ok){cancel_transfers();RadarStableTx_Release(1U);RadarStableTx_Release(2U);FrozenResult.valid=PreviewDue=false;FastEnabled=count>3U && !strcmp(tokens[count-1U],"fast");FastAutoPlan=0U;}
     reply(ok,ok?"scan_accepted":"scan_busy_or_uart",false);return true;
   }
   if(count==3U && !strcmp(tokens[2],"stop")){
@@ -691,7 +771,7 @@ bool RadarHostConsole_Command(unsigned count,char *tokens[])
   }
   if((count==4U || (count==5U && !strcmp(tokens[4],"fast"))) && !strcmp(tokens[2],"live")) {
     if(!strcmp(tokens[3],"status")){if(!status_page(true))reply(false,"page_size",false);return true;}
-    if(!strcmp(tokens[3],"start")){ok=RadarHost_LiveStart();if(ok){cancel_transfers();FrozenResult.valid=PreviewDue=false;FastEnabled=count==5U;FastAutoPlan=0U;}reply(ok,ok?"live_start_accepted":"live_busy_or_uart",false);return true;}
+    if(!strcmp(tokens[3],"start")){ok=RadarHost_LiveStart();if(ok){cancel_transfers();RadarStableTx_Release(1U);RadarStableTx_Release(2U);FrozenResult.valid=PreviewDue=false;FastEnabled=count==5U;FastAutoPlan=0U;}reply(ok,ok?"live_start_accepted":"live_busy_or_uart",false);return true;}
     if(!strcmp(tokens[3],"stop")){RadarHost_LiveStop();cancel_transfers();reply(true,"live_stop_requested",true);return true;}
   }
   if(count==4U && !strcmp(tokens[2],"draft") && !strcmp(tokens[3],"reset")) {

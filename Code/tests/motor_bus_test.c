@@ -233,5 +233,52 @@ int main(void)
   MotorBus_DiagnosticGet(&diagnostic);
   assert(!strcmp(diagnostic.reason, "drain_timeout"));
   assert(diagnostic.owner == MOTOR_BUS_FEEDBACK && diagnostic.address == 1 && diagnostic.function == 0x35);
+  /* Timely buffered response survives a delayed foreground pass. */
+  assert(MotorBus_RecoverAfterReset());
+  cmd[0]=1;cmd[1]=0x36;
+  const uint8_t position[]={1,0x36,0,0,0,0,7,0x6b};
+  tick=1000;assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK,cmd,3,8,900,false));
+  MotorBus_Process();finish();
+  tick=1001;MotorBus_RxBytes(position,sizeof(position));
+  tick=1150;MotorBus_Process();
+  assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK,&e) && e.result==MOTOR_BUS_REPLY && e.tick_ms==1001);
+  assert(!MotorBus_IsQuarantined());
+  /* Deadline uses the final byte, never the first fragment. */
+  tick=1200;assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK,cmd,3,8,901,false));MotorBus_Process();finish();
+  tick=1299;MotorBus_RxBytes(position,7);
+  tick=1300;MotorBus_RxBytes(position+7,1);
+  tick=1350;MotorBus_Process();
+  assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK,&e) && e.result==MOTOR_BUS_TIMEOUT);
+  assert(MotorBus_IsQuarantined());
+  MotorBus_DiagnosticGet(&diagnostic);
+  assert(diagnostic.rx_bytes==8 && diagnostic.last_rx_ms==1300 && diagnostic.rx_pending==8);
+  assert(diagnostic.rx_sample_length==8 && !memcmp(diagnostic.rx_sample,position,8));
+  assert(diagnostic.process_gap_ms==150);
+  assert(MotorBus_RecoverAfterReset());
+  /* Timely final fragment, processed late, remains valid. */
+  tick=1400;assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK,cmd,3,8,902,false));MotorBus_Process();finish();
+  tick=1401;MotorBus_RxBytes(position,7);
+  tick=1499;MotorBus_RxBytes(position+7,1);
+  tick=1600;MotorBus_Process();
+  assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK,&e) && e.result==MOTOR_BUS_REPLY && e.tick_ms==1499);
+  assert(!MotorBus_IsQuarantined());
+  /* Tick wrap and TX completion not yet consumed in foreground. */
+  tick=0xfffffff0U;assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK,cmd,3,8,903,false));MotorBus_Process();
+  tick=0xfffffff1U;MotorBus_TxCpltCallback(&uart);
+  tick=5;MotorBus_RxBytes(position,sizeof(position));
+  tick=120;MotorBus_Process();
+  assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK,&e) && e.result==MOTOR_BUS_REPLY && e.tick_ms==5);
+  assert(!MotorBus_IsQuarantined());
+  /* Abandoned reply arrived in time: delayed drain must not quarantine. */
+  tick=200;assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK,cmd,3,8,904,false));MotorBus_Process();finish();
+  tick=201;MotorBus_Cancel(MOTOR_BUS_FEEDBACK);
+  assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK,&e) && e.result==MOTOR_BUS_CANCELLED);
+  tick=202;MotorBus_RxBytes(position,sizeof(position));tick=350;MotorBus_Process();
+  assert(!MotorBus_IsQuarantined());
+  /* A full response arriving beyond the deadline cannot rescue the request. */
+  tick=400;assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK,cmd,3,8,905,false));MotorBus_Process();finish();
+  tick=501;MotorBus_RxBytes(position,sizeof(position));MotorBus_Process();
+  assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK,&e) && e.result==MOTOR_BUS_TIMEOUT);
+  assert(MotorBus_IsQuarantined());
   puts("motor_bus_test: cancellation drains read reply, Stop priority, fault isolation OK");
 }

@@ -517,7 +517,7 @@ int main(void)
     Error_Handler();
   }
   ContestScreen_Init();
-  /* Launch Z/X/Base and ID8 HOME without waiting for another drive to finish. */
+  /* Launch Z/X and ID8 together; GrabTask waits for them before Base HOME. */
   GrabTask_BootHomeStart();
 
   /* USER CODE END 2 */

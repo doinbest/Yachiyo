@@ -2,7 +2,7 @@
   "keil": {
     "project": "Code/template/MDK-ARM/template.uvprojx",
     "target": "template",
-    "log_dir": ".embeddedskills/build"
+    "log_dir": ".embeddedskills/build/tracking-convergence-defaults-20261012"
   },
   "eide": {
     "project": "Code/template/MDK-ARM/eide",
@@ -23,7 +23,7 @@
     "board": "",
     "interface": "interface/cmsis-dap.cfg",
     "target": "target/stm32f4x.cfg",
-    "adapter_speed": "4000",
+    "adapter_speed": "1000",
     "transport": "swd",
     "tpiu_name": "stm32f4x.tpiu",
     "traceclk": "168000000",

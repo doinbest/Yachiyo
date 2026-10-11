@@ -38,7 +38,7 @@ const DEFAULT_VALUE = {
   missionRoute: [1, 5, 4, 2, 3, 4, 2, 3, 1],
   start: {row: 1, column: 1, anchor: 'radar'},
   goal: {row: 1, column: 5, anchor: 'goal-zone-one'},
-  displayMode: 'filtered',
+  displayMode: 'stable',
   theme: 'dark',
   radarPort: '',
   radarBaudrate: 500000,
@@ -168,7 +168,7 @@ export function normalizeRadarConfig(value) {
   const planningMode = value.planningMode ?? defaults.planningMode;
   if (!['mission', 'point-to-point'].includes(planningMode)) throw new RangeError('Unknown planning mode');
   const displayMode = value.displayMode ?? defaults.displayMode;
-  if (!['raw', 'filtered'].includes(displayMode)) throw new RangeError('Unknown radar display mode');
+  if (!['raw', 'filtered', 'stable', 'preview'].includes(displayMode)) throw new RangeError('Unknown radar display mode');
   const theme = value.theme ?? defaults.theme;
   if (!['dark', 'light'].includes(theme)) throw new RangeError('Unknown radar theme');
   const radarPort = value.radarPort ?? defaults.radarPort;

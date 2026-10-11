@@ -5,12 +5,14 @@
 #include <string.h>
 #include <math.h>
 
+static void legacy_defaults(RadarMap_Params_t *p) { RadarMap_Defaults(p);p->situation=0;p->grid_version=3;p->lidar_x_mm=2250;p->lidar_y_mm=150;p->zero_deg=180; }
+static void legacy_reset(RadarMap_t *m) { RadarMap_Reset(m);m->grid_version=3; }
 /* Defaults must accept rays outside the formerly selected first quadrant. */
 static void default_full_circle(void)
 {
   RadarMap_Params_t p;RadarMap_t map;
   const RadarSample_t samples[]={{0,500,80},{900,500,80},{1800,500,80},{2700,500,80}};
-  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
+  legacy_defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
   RadarMap_BuildCloud(&map,&p,samples,4);
   assert(map.accepted_points==4);
   assert(map.counts[11]==1 && map.counts[17]==1 && map.counts[13]==1 && map.counts[7]==1);
@@ -25,7 +27,7 @@ static void keep_connected_inside_points(void)
     {0,1400,80},{0,1450,80},{0,1500,80},{0,1550,80},{0,1600,80},
     {0,1650,80},{0,1700,80},{0,1750,80},{0,1800,80},{0,1850,80},
     {0,1900,80},{0,1950,80},{0,2000,80},{0,2050,80}};
-  RadarMap_Defaults(&p);p.lidar_x_mm=1900;p.lidar_y_mm=1200;
+  legacy_defaults(&p);p.lidar_x_mm=1900;p.lidar_y_mm=1200;
   RadarMap_BuildCloud(&map,&p,samples,sizeof(samples)/sizeof(samples[0]));
   assert(map.counts[11]==2 && map.counts[10]==8);
   assert(map.outside_points==7 && map.background_points==0);
@@ -38,7 +40,7 @@ static void threshold_per_cell(void)
 {
   RadarMap_Params_t p;RadarMap_t map;
   const RadarSample_t samples[]={{0,500,80},{0,800,80},{0,1000,80},{900,500,80}};
-  RadarMap_Defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=1200;p.threshold=2;
+  legacy_defaults(&p);p.lidar_x_mm=2250;p.lidar_y_mm=1200;p.threshold=2;
   RadarMap_BuildCloud(&map,&p,samples,4);
   assert(map.counts[13]==2 && map.counts[12]==1 && map.counts[19]==1);
   assert(map.mask==(RADAR_MAP_FIXED_MASK|(1UL<<13)));
@@ -52,7 +54,7 @@ static void rotated_f1_counts(void)
   RadarMap_Params_t p;RadarMap_t map;
   const RadarSample_t samples[]={{0,1800,80},{100,1700,80},{400,1500,80},
     {900,1000,80},{2700,1000,80},{1800,1000,80},{500,1500,0}};
-  RadarHostMap_Defaults(&host);RadarMap_Defaults(&p);
+  RadarHostMap_DefaultsSituation(&host,1U);legacy_defaults(&p);
   p.lidar_x_mm=2170;p.lidar_y_mm=230;p.zero_deg=180;
   const uint16_t ranges[][2]={{0,3600},{0,900},{3500,400},{0,0}};
   for(unsigned threshold=1;threshold<=2;threshold++)for(unsigned range=0;range<4;range++) {
@@ -73,7 +75,7 @@ static void f1_angle_endpoint_semantics(void)
   RadarHostMap_Config_t host;RadarHostMap_Result_t h;
   RadarMap_Params_t p;RadarMap_t m;
   const RadarSample_t samples[]={{0,600,80},{900,600,80},{3500,600,80},{100,600,80}};
-  RadarHostMap_Defaults(&host);RadarMap_Defaults(&p);
+  RadarHostMap_DefaultsSituation(&host,1U);legacy_defaults(&p);
   host.radar_x_mm=host.radar_y_mm=1200;p.lidar_x_mm=p.lidar_y_mm=1200;
   host.angle_min_tenths=p.angle_min_tenths=3500;
   host.angle_max_tenths=p.angle_max_tenths=3600;
@@ -89,7 +91,7 @@ static void f1_angle_endpoint_semantics(void)
 static void rotated_task_protection(void)
 {
   RadarMap_Params_t p;RadarMap_t m;
-  RadarMap_Defaults(&p);RadarMap_Reset(&m);
+  legacy_defaults(&p);legacy_reset(&m);
   for(unsigned i=0;i<25;i++)m.counts[i]=1;
   RadarMap_Finish(&m,&p);
   assert(m.evidence_mask==0x1FFFFFFUL);
@@ -103,18 +105,18 @@ static void rotated_boundary_ownership(void)
 {
   RadarMap_Params_t p;RadarMap_t m;
   RadarSample_t s={0,500,80};
-  RadarMap_Defaults(&p);p.zero_deg=0;p.lidar_x_mm=50;p.lidar_y_mm=1200;
-  RadarMap_Reset(&m);assert(RadarMap_Add(&m,&p,&s));
+  legacy_defaults(&p);p.zero_deg=0;p.lidar_x_mm=50;p.lidar_y_mm=1200;
+  legacy_reset(&m);assert(RadarMap_Add(&m,&p,&s));
   assert(m.counts[10]==1 && m.counts[11]==0); /* X=550 belongs to left. */
-  p.lidar_x_mm=1750;RadarMap_Reset(&m);assert(RadarMap_Add(&m,&p,&s));
+  p.lidar_x_mm=1750;legacy_reset(&m);assert(RadarMap_Add(&m,&p,&s));
   assert(m.counts[14]==1); /* X=2250 included after reference rotation. */
-  p.lidar_x_mm=-350;RadarMap_Reset(&m);assert(!RadarMap_Add(&m,&p,&s));
+  p.lidar_x_mm=-350;legacy_reset(&m);assert(!RadarMap_Add(&m,&p,&s));
   const unsigned edges[]={550,1000,1400,1850};
   for(unsigned i=0;i<4;i++) {
-    p.lidar_x_mm=50;p.lidar_y_mm=1200;p.zero_deg=0;RadarMap_Reset(&m);
+    p.lidar_x_mm=50;p.lidar_y_mm=1200;p.zero_deg=0;legacy_reset(&m);
     for(int delta=-1;delta<=1;delta++){s.distance_mm=(uint16_t)(edges[i]-50+delta);assert(RadarMap_Add(&m,&p,&s));}
     assert(m.counts[10+i]==2 && m.counts[11+i]==1);
-    p.lidar_x_mm=1200;p.lidar_y_mm=50;p.zero_deg=90;RadarMap_Reset(&m);
+    p.lidar_x_mm=1200;p.lidar_y_mm=50;p.zero_deg=90;legacy_reset(&m);
     for(int delta=-1;delta<=1;delta++){s.distance_mm=(uint16_t)(edges[i]-50+delta);assert(RadarMap_Add(&m,&p,&s));}
     assert(m.counts[i*5+2]==1 && m.counts[(i+1)*5+2]==2);
   }
@@ -127,7 +129,7 @@ static void all_rotated_grid_routes(void)
   const RadarGrid_t reference={{150,550,1000,1400,1850,2250},{150,550,1000,1400,1850,2250}};
   const int16_t centers[]={350,775,1200,1625,2050};
   for(unsigned extra=0;extra<=25;extra++) {
-    RadarMap_t m;RadarMap_Reset(&m);if(extra<25)m.mask|=1UL<<extra;
+    RadarMap_t m;legacy_reset(&m);if(extra<25)m.mask|=1UL<<extra;
     uint32_t inverse=0;for(unsigned cell=0;cell<25;cell++)if(m.mask&(1UL<<cell))inverse|=1UL<<((4-cell%5)*5+cell/5);
     for(unsigned start=0;start<25;start++)for(unsigned goal=0;goal<25;goal++) {
       uint8_t expected[25],count;RadarPlan_t p;
@@ -153,8 +155,8 @@ static void inset_outer_belt_matches_f1(void)
   RadarHostMap_Config_t host;RadarHostMap_Result_t h;
   RadarMap_Params_t p;RadarMap_t m;
   const RadarSample_t s[]={{0,1125,80},{900,1125,80},{1800,1125,80},{2700,1125,80}};
-  RadarHostMap_Defaults(&host);host.radar_x_mm=host.radar_y_mm=1200;
-  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
+  RadarHostMap_DefaultsSituation(&host,1U);host.radar_x_mm=host.radar_y_mm=1200;
+  legacy_defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
   assert(RadarHostMap_Build(&host,s,4,&h));RadarMap_BuildCloud(&m,&p,s,4);
   assert(h.outside_points==4 && m.outside_points==4 && m.accepted_points==0);
   assert(m.counts[10]==0 && m.counts[22]==0 && m.counts[14]==0 && m.counts[2]==0);
@@ -164,7 +166,7 @@ static void cardinal_directions(void)
 {
   const RadarSample_t s[]={{0,600,80},{900,600,80},{1800,600,80},{2700,600,80}};
   const float expected[4][2]={{600,1200},{1200,1800},{1800,1200},{1200,600}};
-  RadarMap_Params_t p;RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
+  RadarMap_Params_t p;legacy_defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
   for(unsigned i=0;i<4;i++) {
     float x,y;assert(RadarMap_Project(&p,&s[i],&x,&y));
     assert(fabsf(x-expected[i][0])<0.001f && fabsf(y-expected[i][1])<0.001f);
@@ -183,7 +185,7 @@ static void cardinal_directions(void)
 static void rotated_equal_cost_grid_route(void)
 {
   RadarMap_t m;RadarPlan_t p;
-  RadarMap_Reset(&m);
+  legacy_reset(&m);
   assert(RadarPlan_BuildLeg(&m,1200,1200,350,350,&p));
   assert(p.count==3);
   assert(p.points[1].x_mm==350 && p.points[1].y_mm==1200);
@@ -206,7 +208,7 @@ static void supported_field_edge_only(void)
 {
   RadarMap_Params_t p;RadarMap_t cloud_map,stream_map;
   RadarSample_t samples[14];
-  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
+  legacy_defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
   for(unsigned i=0;i<10;i++)samples[i]=world_sample(1400+100*i,i%2?2407:2393);
   samples[10]=world_sample(300,75); /* outer strip no longer participates */
   samples[11]=world_sample(800,1200); /* independent interior obstacle */
@@ -218,7 +220,7 @@ static void supported_field_edge_only(void)
   assert(cloud_map.mask==(RADAR_MAP_FIXED_MASK|(1UL<<11)|(1UL<<24)));
   assert(cloud_map.background_points==0 && cloud_map.accepted_points==2 && cloud_map.outside_points==12);
   /* The object at y=2240 survives; y=2370 is outside the selected grid. */
-  RadarMap_Reset(&stream_map);
+  legacy_reset(&stream_map);
   for(unsigned i=0;i<14;i++)RadarMap_Add(&stream_map,&p,&samples[i]);
   RadarMap_Finish(&stream_map,&p);
   assert(stream_map.mask==cloud_map.mask && stream_map.background_points==0);
@@ -236,14 +238,14 @@ static void noisy_continuous_edge_keeps_detached_object(void)
 {
   RadarMap_Params_t p;RadarMap_t m,stream;
   RadarSample_t samples[14];
-  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
+  legacy_defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
   for(unsigned i=0;i<12;i++)samples[i]=world_sample(600+100*i,i%2?2407:2374);
   samples[12]=world_sample(800,1200);
   samples[13]=world_sample(2000,2240);
   RadarMap_BuildCloud(&m,&p,samples,14);RadarMap_Finish(&m,&p);
   assert(m.mask==(RADAR_MAP_FIXED_MASK|(1UL<<11)|(1UL<<24)));
   assert(m.background_points==0);
-  RadarMap_Reset(&stream);
+  legacy_reset(&stream);
   for(unsigned i=0;i<14;i++)RadarMap_Add(&stream,&p,&samples[i]);
   RadarMap_Finish(&stream,&p);
   assert(stream.mask==m.mask && stream.background_points==0);
@@ -255,7 +257,7 @@ static void noisy_continuous_edge_keeps_detached_object(void)
 static void edge_support_across_circle_seam(void)
 {
   RadarMap_Params_t p;RadarMap_t m;RadarSample_t samples[11];
-  RadarMap_Defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
+  legacy_defaults(&p);p.lidar_x_mm=p.lidar_y_mm=1200;
   for(unsigned i=0;i<5;i++)samples[i]=world_sample(1100+100*i,i%2?2407:2374);
   samples[5]=world_sample(800,1200);
   for(unsigned i=0;i<5;i++)samples[6+i]=world_sample(600+100*i,i%2?2374:2407);

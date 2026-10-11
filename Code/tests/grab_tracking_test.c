@@ -202,8 +202,102 @@ static void replay_stationary_observation(const char *path)
   assert(rows==128 && peak<5);
 }
 
+static void visual_stopping_model(GrabTracking_Mode_t mode)
+{
+  float history[801]={0},position=0,actual=0,peak=0;
+  setup();cfg.mode=mode;cfg.body_accel_mm_s2=300;cfg.x_accel_mm_s2=120;
+  input.feedback_age_ms=80;input.actuating=true;
+  for(unsigned ms=0;ms<=8000;ms+=10)
+  {
+    unsigned n=ms/10;float target=ms<1500?30.f*ms/1000.f:45;
+    float change=output.velocity_mm_s[0]-actual;
+    actual+=fmaxf(-3.55f,fminf(3.55f,change));position+=actual*.01f;history[n]=position;
+    if(ms%30==0){input.sequence++;input.sample_ms=1000+ms;input.error_px[0]=roundf(2*(history[n>=5?n-5:0]-target));}
+    if(ms%20==0){input.now_ms=1000+ms;input.actual_mm_s[0]=actual;input.motion_mm[0]=position;GrabTracking_Update(&track,&cfg,&input,&output);}
+    if(ms>=1500)peak=fmaxf(peak,position-45);
+    assert(fabsf(output.target_px_s[0])<.001f && fabsf(output.target_px_s2[0])<.001f);
+  }
+  fprintf(stderr,"visual stop model mode=%u: overshoot=%.3f mm final_error=%.3f px\n",(unsigned)mode,peak,2*(position-45));
+  assert(fabsf(2*(position-45))<2);
+}
+
+static void visual_low_frame_rate(GrabTracking_Mode_t mode,unsigned frame_ms)
+{
+  float peak=0,command=0;
+  setup();cfg.mode=mode;
+  for(unsigned ms=0;ms<=1000;ms+=20)
+  {
+    if(ms%frame_ms==0)
+    {input.sequence++;input.sample_ms=1000+ms;input.error_px[0]=40;}
+    input.now_ms=1000+ms;
+    GrabTracking_Update(&track,&cfg,&input,&output);
+    if(ms%frame_ms==0)command=output.velocity_mm_s[0];
+    else assert(fabsf(output.velocity_mm_s[0]-command)<.001f);
+    assert(!output.visual_pause);
+    peak=fmaxf(peak,fabsf(output.velocity_mm_s[0]));
+  }
+  assert(track.error_count==1000/frame_ms+1);
+  assert(peak>20); /* Valid 5/10 Hz observations must sustain following. */
+  input.now_ms=input.sample_ms+frame_ms+40;
+  GrabTracking_Update(&track,&cfg,&input,&output);
+  assert(!output.visual_pause && fabsf(output.velocity_mm_s[0])<fabsf(command));
+  input.now_ms=input.sample_ms+cfg.grace_ms+20;
+  GrabTracking_Update(&track,&cfg,&input,&output);
+  assert(output.visual_pause && output.velocity_mm_s[0]==0);
+  sample(input.now_ms+20,40,0,0,0,0);
+  assert(!output.visual_pause && output.velocity_mm_s[0]<0);
+}
+
+static void invalid_models(void)
+{
+  for(unsigned mode=GRAB_TRACK_PREDICT;mode<=GRAB_TRACK_FEEDBACK;mode++)
+    for(unsigned invalid=0;invalid<2;invalid++)
+    {
+      setup();cfg.mode=(GrabTracking_Mode_t)mode;
+      if(invalid)memset(input.j,0,sizeof input.j);
+      else input.j[0][0]=NAN; /* Existing reference invalidation marker. */
+      sample(1000,40,-20,0,0,0);
+      assert(!output.model_valid);
+      for(unsigned k=0;k<3;k++)assert(isfinite(output.velocity_mm_s[k]) && output.velocity_mm_s[k]==0);
+    }
+}
+
 int main(int argc,char **argv)
 {
+  invalid_models();
+  for(unsigned mode=GRAB_TRACK_VISUAL;mode<=GRAB_TRACK_FEEDBACK;mode++)
+  {visual_low_frame_rate((GrabTracking_Mode_t)mode,100);visual_low_frame_rate((GrabTracking_Mode_t)mode,200);}
+  /* Stopped material at the reference must not inherit an old target trend. */
+  setup();cfg.mode=GRAB_TRACK_VISUAL;
+  for(unsigned n=1;n<=20;n++)sample(n*20,0,0,-(float)n,0,0);
+  assert(fabsf(output.velocity_mm_s[0])<.001f);
+  assert(fabsf(output.target_px_s[0])<.001f);
+  sample(420,40,0,-20,0,0);
+  float held=output.velocity_mm_s[0];
+  input.now_ms=440;GrabTracking_Update(&track,&cfg,&input,&output);
+  assert(fabsf(output.velocity_mm_s[0]-held)<.001f); /* no repeated old-error acceleration */
+  input.valid=false;input.now_ms=460;GrabTracking_Update(&track,&cfg,&input,&output);
+  assert(fabsf(output.velocity_mm_s[0])<fabsf(held));
+  sample(480,40,0,-20,0,0);input.valid=true;
+  sample(500,40,0,-20,0,0);assert(output.velocity_mm_s[0]<0);
+  setup();cfg.mode=GRAB_TRACK_FEEDBACK;cfg.body_accel_mm_s2=300;cfg.x_accel_mm_s2=120;
+  sample(100,0,-80,0,0,0);sample(120,0,-80,0,0,0);
+  assert(fabsf(output.velocity_mm_s[2])<=2.401f);
+  /* A faster actual approach consumes more braking room than a stopped mechanism. */
+  GrabTracking_t saved=track;input.actual_mm_s[2]=60;input.feedback_age_ms=100;
+  sample(220,0,-6,0,0,0);float with_motion=output.velocity_mm_s[2];
+  track=saved;input.actual_mm_s[2]=0;sample(220,0,-6,0,0,0);
+  assert(with_motion<output.velocity_mm_s[2]);
+  visual_stopping_model(GRAB_TRACK_VISUAL);visual_stopping_model(GRAB_TRACK_FEEDBACK);
+  setup();
+  sample(5000,155,26,0,0,0);
+  assert(hypotf(output.velocity_mm_s[0],output.velocity_mm_s[1])<.001f);
+  assert(fabsf(output.velocity_mm_s[2])<.001f);
+  sample(5020,155,26,0,0,0);
+  float first[3];memcpy(first,output.velocity_mm_s,sizeof first);
+  assert(sqrtf(first[0]*first[0]+first[1]*first[1]+first[2]*first[2])<=6.001f);
+  sample(5020,-155,-26,0,0,0);
+  for(unsigned k=0;k<3;k++)assert(fabsf(output.velocity_mm_s[k]-first[k])<.001f);
   quantized_stationary_noise(); slow_quantized_motion();
   own_motion_and_duplicates(); zero_error_feedforward_and_stop();
   reallocation_and_budget(); gap(); delayed_noise_and_rank(); acceleration_prediction(); circular_targets();

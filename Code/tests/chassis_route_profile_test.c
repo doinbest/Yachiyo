@@ -28,18 +28,24 @@ int main(void)
   }
   assert(!ChassisRouteProfile_FixedPoint(16,&point));
   assert(!ChassisRouteProfile_FixedPoint(0,NULL));
-  ChassisRoute_Profile_t first=build(expected[0],expected[1],90,true);
-  assert(first.count==2);
+  ChassisRoute_Profile_t first=build(expected[0],expected[1],180,true);
+  assert(first.count==3);
   close_to(first.phases[0].x_mm,2100);close_to(first.phases[0].y_mm,300);
   assert(!first.phases[0].turn && !strcmp(first.phases[0].direction,"diagonal"));
-  close_to(first.phases[1].x_mm,2100);close_to(first.phases[1].y_mm,1200);
-  assert(!first.phases[1].turn && !strcmp(first.phases[1].direction,"forward"));
-  close_to(first.nominal_time_s,(hypotf(150,150)+900)/200);
+  close_to(first.phases[0].yaw_deg,180);
+  assert(first.phases[1].turn);close_to(first.phases[1].x_mm,2100);close_to(first.phases[1].y_mm,300);close_to(first.phases[1].yaw_deg,90);
+  close_to(first.phases[2].x_mm,2100);close_to(first.phases[2].y_mm,1200);
+  assert(!first.phases[2].turn && !strcmp(first.phases[2].direction,"forward"));
+  close_to(first.nominal_time_s,(hypotf(150,150)+900)/200+0.9f);
   /* Explicit radar staging points must not be split or visited twice. */
   const RadarPlan_Point_t staged={2100,300,0,0};
-  ChassisRoute_Profile_t entry=build(expected[0],staged,90,true);
-  assert(entry.count==1 && !entry.phases[0].turn);
+  ChassisRoute_Profile_t entry=build(expected[0],staged,180,true);
+  assert(entry.count==2 && !entry.phases[0].turn);
   close_to(entry.phases[0].x_mm,2100);close_to(entry.phases[0].y_mm,300);
+  close_to(entry.phases[0].yaw_deg,180);assert(entry.phases[1].turn);close_to(entry.phases[1].yaw_deg,90);
+  ChassisRoute_Profile_t detour=build(expected[0],(RadarPlan_Point_t){1800,150,0,0},180,true);
+  assert(detour.count==2 && !detour.phases[0].turn);close_to(detour.phases[0].x_mm,1800);close_to(detour.phases[0].yaw_deg,180);
+  assert(detour.phases[1].turn);close_to(detour.phases[1].yaw_deg,90);
   ChassisRoute_Profile_t qr=build(staged,expected[1],entry.final_yaw_deg,true);
   assert(qr.count==1 && !qr.phases[0].turn);
   close_to(qr.phases[0].x_mm,2100);close_to(qr.phases[0].y_mm,1200);
@@ -49,11 +55,12 @@ int main(void)
   for(unsigned j=0;j<first.count;j++) assert(first.phases[j].y_mm!=300);
   first=build((RadarPlan_Point_t){1800,800,0,0},expected[1],90,true);
   assert(first.count==1);close_to(first.phases[0].y_mm,1200);
-  float yaw=90;
+  float yaw=180;
   for(unsigned i=1;i<=15;i++) {
     ChassisRoute_Profile_t p=build(expected[i-1],expected[i],yaw,i==1);
     if(expected[i].station || i>=13) close_to(p.final_yaw_deg,90);
-    if(i==1 || i==15) for(unsigned j=0;j<p.count;j++) close_to(p.phases[j].yaw_deg,90);
+    if(i==1) {assert(p.phases[0].yaw_deg==180 && !p.phases[0].turn);assert(p.phases[1].turn && p.phases[1].yaw_deg==90);}
+    if(i==15) for(unsigned j=0;j<p.count;j++) close_to(p.phases[j].yaw_deg,90);
     for(unsigned j=0;j<p.count;j++)
       if(p.phases[j].turn) assert(p.phases[j].x_mm!=350 || p.phases[j].y_mm!=1200);
     assert(p.nominal_time_s>0);

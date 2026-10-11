@@ -32,7 +32,7 @@ static void test_defaults_projection_and_filters(void)
   RadarSample_t cardinal[4]={{0,500,10},{900,500,10},{1800,500,10},{2700,500,10}};
   RadarSample_t cross[3]={{3500,500,10},{100,500,10},{900,500,10}};
 
-  RadarHostMap_Defaults(&config);
+  RadarHostMap_DefaultsSituation(&config,1U);
   CHECK(RadarHostMap_ConfigValid(&config));
   CHECK(config.grid.x_mm[0]==150 && config.grid.y_mm[0]==150);
   CHECK(config.grid.x_mm[5]==2250 && config.grid.y_mm[5]==2250);
@@ -61,7 +61,7 @@ static void test_obstacles_and_protection(void)
   RadarHostMap_Result_t result;
   RadarSample_t samples[2];
 
-  RadarHostMap_Defaults(&config);
+  RadarHostMap_DefaultsSituation(&config,1U);
   samples[0]=sample_at(&config,350.0f,350.0f,30);
   samples[1]=sample_at(&config,775.0f,350.0f,30);
   config.manual_mask=bit(1,1)|bit(1,2)|(1UL<<30);
@@ -80,7 +80,7 @@ static void test_default_mission_and_diagnostics(void)
   RadarHostMap_Config_t config;
   RadarHostMap_Result_t result,reroute;
 
-  RadarHostMap_Defaults(&config);
+  RadarHostMap_DefaultsSituation(&config,1U);
   CHECK(RadarHostMap_Build(&config,0,0,&result));
   CHECK(result.path_valid && result.waypoint_count==33);
   for(unsigned i=0;i<33;i++) {
@@ -111,7 +111,7 @@ static void test_point_to_point_and_dynamic_grid(void)
   RadarHostMap_Config_t config;
   RadarHostMap_Result_t result;
 
-  RadarHostMap_Defaults(&config);
+  RadarHostMap_DefaultsSituation(&config,1U);
   config.planning_mode=RADAR_HOST_PLAN_POINT;
   config.start.row=1;config.start.column=1;config.start.anchor=RADAR_HOST_ANCHOR_RADAR;
   config.goal.row=1;config.goal.column=5;config.goal.anchor=RADAR_HOST_ANCHOR_GOAL_ZONE_ONE;
@@ -120,7 +120,7 @@ static void test_point_to_point_and_dynamic_grid(void)
   CHECK(result.waypoints[0].x_mm==230 && result.waypoints[0].y_mm==230);
   CHECK(result.waypoints[4].x_mm==2250 && result.waypoints[4].y_mm==150);
 
-  RadarHostMap_Defaults(&config);
+  RadarHostMap_DefaultsSituation(&config,1U);
   config.grid.x_mm[1]=650;config.grid.y_mm[2]=1100;
   CHECK(RadarHostMap_ConfigValid(&config));
   CHECK(RadarHostMap_Build(&config,0,0,&result));
@@ -130,8 +130,69 @@ static void test_point_to_point_and_dynamic_grid(void)
   CHECK(!RadarHostMap_ConfigValid(&config));
 }
 
+static void test_case_two_mission_and_frozen_geometry(void)
+{
+  RadarHostMap_Config_t config,frozen;
+  RadarHostMap_Result_t result;
+  unsigned last_task_three=0U;
+
+  RadarHostMap_Defaults(&config);
+  CHECK(config.situation==2U && config.grid_version==4U);
+  CHECK(config.geometry.matrix_q16[0]==65809 && config.geometry.matrix_q16[1]==680);
+  CHECK(config.geometry.matrix_q16[2]==-407 && config.geometry.matrix_q16[3]==66623);
+  CHECK(config.geometry.origin_q16[0]==149407997 && config.geometry.origin_q16[1]==20569846);
+  CHECK(config.geometry.zero_tenths==1800U);
+  CHECK(config.protected_mask==0x00404414UL);
+  CHECK(RadarHostMap_Build(&config,0,0,&result));
+  CHECK(result.path_valid && result.waypoint_count==33U);
+  CHECK(result.waypoints[0].row==1U && result.waypoints[0].column==5U);
+  CHECK(result.waypoints[0].x_mm==2050U && result.waypoints[0].y_mm==350U);
+  CHECK(result.waypoints[result.waypoint_count-1U].x_mm==2050U);
+  CHECK(result.waypoints[result.waypoint_count-1U].y_mm==350U);
+  for(unsigned i=0U;i<result.waypoint_count;i++) {
+    const RadarHostMap_Waypoint_t *point=&result.waypoints[i];
+    CHECK(!(point->row==4U && point->column==4U));
+    CHECK((config.fixed_mask&bit(point->row,point->column))==0U);
+    if(point->row==5U && point->column==3U)last_task_three=i;
+  }
+  CHECK(last_task_three+1U<result.waypoint_count);
+  CHECK(result.waypoints[last_task_three+1U].row==5U);
+  CHECK(result.waypoints[last_task_three+1U].column==4U);
+
+  config.radar_x_mm+=10U;config.radar_y_mm-=5U;
+  RadarHostMap_FreezeConfig(&config,&frozen);
+  CHECK(frozen.geometry.origin_q16[0]==149407997+10L*65536L);
+  CHECK(frozen.geometry.origin_q16[1]==20569846-5L*65536L);
+  CHECK(frozen.radar_x_mm==2290U && frozen.radar_y_mm==309U);
+  config=frozen;RadarHostMap_FreezeConfig(&config,&frozen);
+  CHECK(frozen.geometry.origin_q16[0]==config.geometry.origin_q16[0]);
+  CHECK(frozen.geometry.origin_q16[1]==config.geometry.origin_q16[1]);
+}
+
+static void test_stable_xy_counts_and_window_statistics(void)
+{
+  RadarHostMap_Config_t config;
+  RadarHostMap_Result_t result;
+  RadarStableStatus status={0};
+  RadarStablePoint points[4]={{0,10,550,150,3,0},{0,10,550,150,15,0},
+                            {0,10,2250,150,3,0},{0,10,550,2250,3,0}};
+  RadarHostMap_Defaults(&config);
+  status.window_circles=15U;status.first_circle=17U;status.last_circle=31U;
+  status.raw_points=100000U;status.filtered_points=90000U;status.outside_points=80000U;
+  status.candidate_count=256U;status.candidate_replacements=70000U;status.candidate_dropped=80000U;
+  CHECK(RadarHostMap_BuildStable(&config,points,4U,&status,&result));
+  CHECK(result.raw_points==100000U && result.filtered_points==90000U && result.outside_points==80000U);
+  CHECK(result.stability.window_circles==15U && result.stability.first_circle==17U && result.stability.last_circle==31U);
+  CHECK(result.stability.candidate_count==256U && result.stability.candidate_replacements==70000U);
+  CHECK(result.stability.candidate_dropped==80000U && result.stability.stable_count==4U);
+  CHECK(result.counts[1]==2U);
+  for(unsigned i=0U;i<25U;i++)if(i!=1U)CHECK(result.counts[i]==0U);
+}
+
 int main(void)
 {
+  test_case_two_mission_and_frozen_geometry();
+  test_stable_xy_counts_and_window_statistics();
   test_defaults_projection_and_filters();
   test_obstacles_and_protection();
   test_default_mission_and_diagnostics();

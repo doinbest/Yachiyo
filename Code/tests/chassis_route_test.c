@@ -60,7 +60,7 @@ static void setup(void)
   memset(&loc,0,sizeof(loc));memset(&motion,0,sizeof(motion));memset(&bus,0,sizeof(bus));
   motion.reason="idle";loc.origin_valid=loc.feedback_valid=loc.speed_valid=true;
   loc.origin.x_mm=loc.observer.feedback.x_mm=2250;loc.origin.y_mm=loc.observer.feedback.y_mm=150;
-  loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI/2;
+  loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI;
   loc.generation=4;tick=100;loc.feedback_tick=tick;starts=stops=0;accept=true;last_turn=false;
   ChassisRoute_Init();
 }
@@ -94,12 +94,69 @@ static void expect_cancel(void)
 }
 int main(void)
 {
+  setup();loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI/2;assert(!ChassisRoute_QrTestStart(50,1200));
+  setup();loc.origin.y_mm=loc.observer.feedback.y_mm=2250;
+  loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=-CHASSIS_MODEL_PI/2;
+  assert(ChassisRoute_QrTestStart(50,1200));
+  assert(motion.target_x_mm==2100 && motion.target_y_mm==2100 && !last_turn);
+  finish_leg();ChassisRoute_Process();
+  assert(motion.target_y_mm==1200 && motion.target_map_yaw_deg==-90 && !last_turn);
+  arrive();
+  assert(last_turn && motion.target_x_mm==2100 && motion.target_y_mm==1200 &&
+    motion.target_map_yaw_deg==90 && !strcmp(status().phase,"qr_scan_turn"));
+  assert(!strcmp(status().state,"running") && !status().stop_confirmed);
+  unsigned qr_turn_starts=starts;
+  for(unsigned i=0;i<10;i++)ChassisRoute_Process();
+  assert(starts==qr_turn_starts && !strcmp(status().state,"running"));
+  arrive();ChassisRoute_Process();
+  assert(!strcmp(status().state,"done") && status().total==2 && status().stop_confirmed);
+  /* Lower QR route: keep left-facing yaw during the diagonal, turn clockwise,
+   * advance up the right-hand lane, then turn 180 at the scan point. */
+  setup();loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI;
+  assert(ChassisRoute_QrTestStart(50,1200));
+  assert(!last_turn && motion.target_x_mm==2100 && motion.target_y_mm==300 &&
+    motion.target_map_yaw_deg==180);
+  finish_leg();ChassisRoute_Process();
+  assert(last_turn && motion.target_x_mm==2100 && motion.target_y_mm==300 &&
+    motion.target_map_yaw_deg==90);
+  arrive();
+  assert(!last_turn && motion.target_x_mm==2100 && motion.target_y_mm==1200 &&
+    motion.target_map_yaw_deg==90);
+  arrive();
+  assert(last_turn && motion.target_x_mm==2100 && motion.target_y_mm==1200 &&
+    motion.target_map_yaw_deg==-90 && status().target_yaw_deg==-90 &&
+    !strcmp(status().phase,"qr_scan_turn") && !status().stop_confirmed);
+  qr_turn_starts=starts;
+  arrive();ChassisRoute_Process();
+  assert(!strcmp(status().state,"done") && status().stop_confirmed);
+  for(unsigned i=0;i<10;i++)ChassisRoute_Process();
+  assert(starts==qr_turn_starts); /* No second half-turn after completion. */
+  for(unsigned scenario=0;scenario<3;scenario++){
+    setup();loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI;
+    assert(ChassisRoute_QrTestStart(50,1200));
+    finish_leg();ChassisRoute_Process();arrive();arrive();
+    assert(last_turn && !strcmp(status().phase,"qr_scan_turn"));
+    if(scenario==0)expect_cancel();
+    else {
+      unsigned before=starts;
+      motion.state=scenario==1?CHASSIS_MOTION_DONE:CHASSIS_MOTION_ERROR;
+      motion.reason=scenario==1?"feedback_arrived":"bus_unavailable";
+      motion.stop_confirmed=false;ChassisRoute_Process();
+      assert(starts==before && !strcmp(status().state,"error") && !status().stop_confirmed);
+      assert(!strcmp(status().reason,scenario==1?"arrival_unconfirmed":"bus_unavailable"));
+    }
+  }
+  setup();loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI;
+  assert(ChassisRoute_QrTestStart(50,1100));
+  finish_leg();ChassisRoute_Process();assert(last_turn);
+  expect_cancel(); /* Cancellation during the turn must not start the straight. */
   setup();assert(start_fixed_station_plan());
   assert(status().segment==1 && motion.target_x_mm==2100 && motion.target_y_mm==300);
   assert(status().target_y_mm==1200 && !strcmp(status().direction,"diagonal"));
   arrive();
   assert(!strcmp(status().state,"running") && status().segment==1);
-  assert(starts==2 && motion.target_x_mm==2100 && motion.target_y_mm==1200);
+  assert(starts==2 && last_turn && motion.target_x_mm==2100 && motion.target_y_mm==300 && motion.target_map_yaw_deg==90);
+  arrive();assert(starts==3 && !last_turn && motion.target_x_mm==2100 && motion.target_y_mm==1200);
   assert(!strcmp(status().direction,"forward") && !ChassisRoute_StationResume());
   arrive();assert(!strcmp(status().state,"station") && status().station==5 && status().visit==1);
   setup();assert(!route_command("next"));assert(route_command("start"));
@@ -161,7 +218,7 @@ int main(void)
   setup();assert(route_command("start"));char *query[]={"chassis","route","status"};assert(ChassisRoute_Command(3,query));assert(strstr(reply,"segment=1") && strstr(reply,"total=15") && strstr(reply,"phase=move"));
   char *stop[]={"chassis","stop"};assert(ChassisRoute_Command(2,stop));assert(stops==1);
   setup();char *slow[]={"chassis","route","start","10"};assert(ChassisRoute_Command(4,slow));
-  assert(last_timeout>232000 && last_timeout<233000);finish_leg();assert(route_command("next"));finish_leg();assert(route_command("next"));
+  assert(last_timeout>234000 && last_timeout<235000);finish_leg();assert(route_command("next"));finish_leg();assert(route_command("next"));
   uint32_t first_timeout=last_timeout;advance_clock(1500);arrive();assert(last_timeout==first_timeout-1500);
   advance_clock(1000);arrive();assert(last_timeout==first_timeout-2500);
   advance_clock(last_timeout);ChassisRoute_Process();assert(!strcmp(status().reason,"route_timeout") && stops==1);
@@ -191,7 +248,7 @@ int main(void)
   setup();assert(start_fixed_station_plan());assert(ChassisRoute_StationReserved());finish_leg();
   assert(!strcmp(status().state,"station") && status().station==5 && status().visit==1 && status().segment==1);
   assert(!ChassisRoute_IsBusy() && ChassisRoute_StationReserved());
-  advance_clock(1200);ChassisRoute_Process();assert(starts==2 && !route_command("start"));
+  advance_clock(1200);ChassisRoute_Process();assert(starts==3 && !route_command("start"));
   assert(ChassisRoute_StationResume());finish_leg();advance_clock(100);ChassisRoute_Process();
   assert(status().segment==3 && ChassisRoute_StationReserved());
   while(!strcmp(status().state,"running")){arrive();assert(ChassisRoute_StationReserved());}
@@ -204,7 +261,7 @@ int main(void)
   memcpy(plan.points,planned,sizeof(planned));setup();assert(ChassisRoute_PlanStart(&plan,200,true));
   plan.points[1].x_mm=999;assert(motion.target_x_mm==1800 && status().planned && status().total==6);
   for(unsigned i=0;i<3;i++){
-    assert(!last_turn && motion.target_map_yaw_deg==90);finish_leg();
+    assert(!last_turn && motion.target_map_yaw_deg==(i==0?180:90));finish_leg();
     if(i<2){advance_clock(100);ChassisRoute_Process();}
   }
   assert(!strcmp(status().state,"station") && status().segment==3 && status().visit==1);

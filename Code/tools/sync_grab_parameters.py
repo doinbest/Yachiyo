@@ -10,8 +10,23 @@ OUTPUT = ROOT / "upper-computer-web/local-car/grab-parameter-metadata.mjs"
 
 
 def render():
-    parameters, defaults = {}, {}
+    parameters, defaults, track_defaults, track_parameters, comparison_defaults = {}, {}, {}, {}, {}
     for line in SOURCE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("TRACK_COMPARISON_DEFAULT("):
+            match = re.fullmatch(r'TRACK_COMPARISON_DEFAULT\((\w+), "(\w+)", ([^,]+)\)', line)
+            if match is None:
+                raise ValueError(f"Invalid tracking comparison default: {line}")
+            _, key, default = match.groups()
+            comparison_defaults[key] = float(default)
+            continue
+        if line.startswith("TRACK_PARAM("):
+            match = re.fullmatch(r'TRACK_PARAM\((\w+), "(\w+)", ([^,]+), ([^,]+), ([^,]+), (\d+)\)', line)
+            if match is None:
+                raise ValueError(f"Invalid tracking parameter definition: {line}")
+            _, key, default, minimum, maximum, integer = match.groups()
+            track_defaults[key] = float(default)
+            track_parameters[key] = dict(min=float(minimum), max=float(maximum), step=1 if int(integer) else "any")
+            continue
         if not line.startswith("PARAM("):
             continue
         fields = re.fullmatch(r'PARAM\((\w+), "(\w+)", ([^,]+), ([^,]+), ([^,]+), (\d+), (\d+)\)', line)
@@ -31,7 +46,10 @@ def render():
             "export const GRAB_PARAMETER_METADATA = Object.freeze(" +
             json.dumps(parameters, ensure_ascii=False, indent=2) + ");\n"
             "export const GRAB_FORM_DEFAULTS = Object.freeze(" +
-            json.dumps(defaults, ensure_ascii=False, indent=2) + ");\n")
+            json.dumps(defaults, ensure_ascii=False, indent=2) + ");\n" +
+            "export const TRACK_PARAMETER_DEFAULTS = Object.freeze(" + json.dumps(track_defaults, indent=2) + ");\n" +
+            "export const TRACK_COMPARISON_DEFAULTS = Object.freeze({...TRACK_PARAMETER_DEFAULTS, ..." + json.dumps(comparison_defaults, indent=2) + "});\n" +
+            "export const TRACK_PARAMETER_METADATA = Object.freeze(" + json.dumps(track_parameters, indent=2) + ");\n")
 
 
 if __name__ == "__main__":

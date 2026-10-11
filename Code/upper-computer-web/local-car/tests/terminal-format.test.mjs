@@ -4,6 +4,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {formatTerminalLine,describeReply} from '../protocol.mjs';
 
+test('Base approximate reference remains visible during later tasks without fault styling',()=>{
+  const line='OK grab state=complete mode=fixed reason=work_ready base_home_degraded=1 ref_cause=base_home_degraded missing=none';
+  assert.match(formatTerminalLine(line),/Base.*降级.*参考/);
+  assert.equal(replyIsFault(line),false);
+  assert.match(formatTerminalLine('OK grab home_degraded axis=base failed_home_flags=0x0B reference=approximate motion=quiet'),/降级/);
+});
+
+test('motor diagnostics distinguish actual current, current limit and drive home settings',()=>{
+  assert.match(formatTerminalLine('OK bus read id=5 phase_ma=2500'),/Base.*实际相电流.*2500 mA/);
+  assert.match(formatTerminalLine('OK bus read id=5 driver=Emm current_limit_ma=3000'),/闭环电流上限.*3000 mA/);
+  assert.match(formatTerminalLine('OK bus read id=5 home_mode=0 home_dir=0 home_rpm=30 timeout_ms=10000'),/回零速度.*30 RPM.*回零超时.*10000 ms/);
+});
+
 test('single ID probe keeps raw replies, current FE and retained motion lock visible',()=>{
   assert.match(formatTerminalLine('OK bus test start id=4 rounds=10 locked=1 read_only=1'),/ID4.*10 轮.*只读.*运动锁定仍保留/);
   assert.match(formatTerminalLine('OK bus test reply id=4 round=1 func=0x3A reply_ms=2 hex=04:3A:03:6B'),/状态.*2 ms.*04 3A 03 6B/);
@@ -23,6 +36,16 @@ test('cache recovery distinguishes zeroing, verification and stopped completion'
   assert.match(done,/同步缓存：已清除/);
   assert.match(done,/四轮停稳确认：1/);
   assert.match(done,/不会自动继续/);
+});
+
+test('bus motion status describes isolation without claiming measured movement',()=>{
+  const locked=formatTerminalLine('OK bus motion locked=1 error=2 feedback_allowed=0');
+  assert.match(locked,/运动隔离状态/);
+  assert.doesNotMatch(locked,/检测到运动/);
+  assert.match(locked,/通信或发送异常/);
+  const healthy=formatTerminalLine('OK bus motion locked=0 error=0 feedback_allowed=1');
+  assert.match(healthy,/运动隔离状态/);
+  assert.doesNotMatch(healthy,/故障|检测到运动/);
 });
 
 test('recovery settling and persistent motion retain measured RPM and sample time',()=>{
@@ -93,6 +116,15 @@ test('parallel boot homes describe the tray wait and failure in Chinese',()=>{
   const fault='ERR grab state=homing reason=home_turntable_failed';
   assert.equal(replyIsFault(fault),true);
   assert.match(formatTerminalLine(fault),/ID8车仓.*参考.*转盘状态.*电机总线/);
+});
+
+test('Base-last boot describes parallel linear/tray homes and the pre-Base tray wait',()=>{
+  const banner='Boot: Z/X collision home + ID8 near home in parallel -> Base near home -> IMU verify=5s; enable_verify=on';
+  assert.match(formatTerminalLine(banner),/Z\/X.*ID8.*并行.*确认完成后.*Base.*最后.*IMU/);
+  const wait='OK grab state=homing mode=fixed reason=home_wait_turntable home_started=3 home_verified=3';
+  assert.match(formatTerminalLine(wait),/等待ID8.*回零完成/);
+  assert.doesNotMatch(formatTerminalLine(wait),/机械臂回零已验证/);
+  assert.equal(bootProgress(banner,'已启动，等待设备状态'),'正在回零');
 });
 
 test('homing enable recovery is progress, while failed verification is a fault',()=>{
@@ -225,6 +257,8 @@ test('fault reasons are Chinese across modules while raw replies and numbers sta
 test('rejection instructions explain status queries in Chinese without inventing a cause',()=>{
   const text=formatTerminalLine('ERR grab stack rejected; inspect grab status');
   assert.match(text,/码垛.*请求被拒绝.*读取.*抓取任务状态/);
+  assert.match(text,/视觉任务.*点击“读取抓取任务状态”.*“抓取任务状态”.*原因/);
+  assert.match(formatTerminalLine('ERR grab pose rejected; inspect grab status'),/姿态准备.*请求被拒绝.*视觉任务.*点击“读取抓取任务状态”/);
   assert.doesNotMatch(text,/rejected|inspect|\bbusy\b|回零|总线故障/);
   assert.match(formatTerminalLine('ERR grab_busy use grab status or grab stop'),/抓取任务.*忙.*读取.*停止/);
   assert.match(formatTerminalLine('ERR camera usb_unconfigured'),/相机.*USB.*未枚举/);

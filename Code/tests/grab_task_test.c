@@ -32,6 +32,11 @@ static unsigned base_moves, homes, aborts;
 static unsigned test_homed_mask;
 static bool abort_stays_running;
 static uint8_t home_flags=3, base_state_flags=3;
+static bool pixel_center_override;
+static uint16_t pixel_center_x,pixel_center_y;
+static int32_t measured_base_rpm;
+static unsigned speed_reads;
+static uint8_t home_axis_flags[3]; /* 0xff keeps the shared legacy fixture. */
 static uint8_t linear_state_flags[2]={3,3};
 static unsigned enables[3], recovery_enables, disabled_seen;
 static unsigned home_disabled_axis=1;
@@ -119,7 +124,7 @@ MechanicalArm_ResultTypeDef MechanicalArm_Home(MechanicalArm_AxisTypeDef axis,ui
 MechanicalArm_ResultTypeDef MechanicalArm_HomeStateRead(MechanicalArm_AxisTypeDef axis)
 { return queue(MECHANICAL_ARM_ACTION_HOME_STATE,axis); }
 MechanicalArm_ResultTypeDef MechanicalArm_HomeAbort(MechanicalArm_AxisTypeDef axis)
-{ aborts++; if(!abort_stays_running)home_flags=3; return queue(MECHANICAL_ARM_ACTION_HOME_ABORT,axis); }
+{ aborts++; if(!abort_stays_running) { home_flags=3;home_axis_flags[axis]=3; } return queue(MECHANICAL_ARM_ACTION_HOME_ABORT,axis); }
 MechanicalArm_ResultTypeDef MechanicalArm_PositionRead(MechanicalArm_AxisTypeDef axis)
 { return queue(MECHANICAL_ARM_ACTION_POSITION_READ, axis); }
 MechanicalArm_ResultTypeDef MechanicalArm_StateRead(MechanicalArm_AxisTypeDef axis)
@@ -151,6 +156,8 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef a
   destination[idx]=(mode==MECHANICAL_ARM_POSITION_RELATIVE_CURRENT?physical[idx]:0)+pulses/100.0f;
   positions++; return queue(MECHANICAL_ARM_ACTION_POSITION, axis);
 }
+MechanicalArm_ResultTypeDef MechanicalArm_SpeedRead(MechanicalArm_AxisTypeDef axis)
+{ speed_reads++;return queue(MECHANICAL_ARM_ACTION_SPEED_READ,axis); }
 uint8_t MechanicalArm_ConfigGet(MechanicalArm_AxisTypeDef axis, MechanicalArm_ConfigTypeDef *out)
 { out->SpeedRpm=30; out->Acceleration=axis==MECHANICAL_ARM_AXIS_X?configured_x_acc:
     axis==MECHANICAL_ARM_AXIS_Z?configured_z_acc:20; out->PulseLimit=3200; return 1; }
@@ -240,6 +247,9 @@ static void reset(void)
   memset(linear_state_flags,3,sizeof linear_state_flags);memset(enables,0,sizeof enables);
   recovery_enables=disabled_seen=0;home_disabled_reads=0;
   abort_stays_running=false;
+  memset(home_axis_flags,0xff,sizeof home_axis_flags);
+  measured_base_rpm=0;speed_reads=0;
+  pixel_center_override=false;
   home_disabled_axis=1;
   pre_enable_succeeds=recovery_enable_succeeds=true;recovery_enable_result=MECHANICAL_ARM_RESULT_OK;
   feedback_selected = selection_busy = 0;
@@ -284,6 +294,7 @@ static void step(bool new_capture, unsigned phase, int dx, int dy)
     if (event.Action == MECHANICAL_ARM_ACTION_POSITION_READ)
       event.CurrentPositionRaw = (int64_t)lroundf(physical[axis] * (axis==2 ? 3200.0f/360 : 100.0f) * 65536.0f / 3200.0f) *
         ((axis == 0 && MECHANICAL_ARM_X_POSITIVE_DIR) || (axis==2 && MECHANICAL_ARM_BASE_POSITIVE_DIR) ? -1 : 1);
+    if(event.Action==MECHANICAL_ARM_ACTION_SPEED_READ)event.CurrentSpeedRpm=measured_base_rpm;
     if(event.Action==MECHANICAL_ARM_ACTION_ENABLE) {
       if(BootHomeSent) {
         event.Result=recovery_enable_result;
@@ -300,7 +311,8 @@ static void step(bool new_capture, unsigned phase, int dx, int dy)
         if(home_disabled_reads>0)home_disabled_reads--;
       }
       /* Each drive reports its own running bit; an unstarted drive is idle. */
-      uint8_t homing=test_homed_mask&(1U<<event.Axis)?home_flags:(home_flags&~0x0cU);
+      uint8_t drive_home=home_axis_flags[event.Axis]==0xff?home_flags:home_axis_flags[event.Axis];
+      uint8_t homing=test_homed_mask&(1U<<event.Axis)?drive_home:(drive_home&~0x0cU);
       event.StateFlags[event.Axis]=event.Action==MECHANICAL_ARM_ACTION_HOME_STATE?homing:flags;
     }
     if(!(base_stale && axis==2)) (void)GrabTask_MotorEventHandle(&event);
@@ -312,6 +324,7 @@ static void step(bool new_capture, unsigned phase, int dx, int dy)
   camera.Data.Target = requested_color;
   if(new_capture) { camera.Data.Sequence++; camera.Data.Tick = clock_ms; }
   camera.Data.CX = (uint16_t)((RingTest?378:334) + dx); camera.Data.CY = (uint16_t)((RingTest?333:338) - dy);
+  if(pixel_center_override) { camera.Data.CX=pixel_center_x;camera.Data.CY=pixel_center_y; }
   camera.Data.DX=(int16_t)dx;camera.Data.DY=(int16_t)dy;
 
   GrabTask_Process();
@@ -479,7 +492,7 @@ static void boot_defaults_start_align_without_settings(void)
   assert(GrabTask_Start("align"));
   run_to(GRAB_ALIGN,180,1);
   assert(camera_requests==1 && Axes[0].target==0 && Axes[1].target==0);
-  assert(!closures && base_moves==1 && fabsf(physical[2]-90)<.15f);
+  assert(!closures && base_moves==1 && fabsf(physical[2]-128)<.15f);
   run_to(GRAB_HOLD,250,2);
   assert(!closures && base_moves==1 && !strcmp(status().reason,"color_aligned_low"));
   status_write(false); assert(strstr(output,"model=initial"));
@@ -597,6 +610,65 @@ static void placement_feedback_and_cancel(void)
   reset(); configure(false); setting("z_place","21"); assert(!GrabTask_Start("fixed"));
   setting("z_place","10"); assert(!GrabTask_Start("fixed"));
 }
+static void base_home_waits_for_other_origins(void)
+{
+  /* Either linear drive still moving must defer Base, while Z/X both start. */
+  for(unsigned held=MECHANICAL_ARM_AXIS_Z;held<=MECHANICAL_ARM_AXIS_X;held++) {
+    reset();home_axis_flags[held]=7;GrabTask_BootHomeStart();
+    for(unsigned i=0;i<200;i++)step(false,0,0,0);
+    assert(homes==2 && !enables[2] && !boot_verify_calls);
+    home_axis_flags[held]=3;run_to(GRAB_IDLE,250,0);
+    assert(homes==3 && boot_verify_calls==1);
+  }
+  /* A stopped linear drive outside its zero window also defers Base. */
+  for(unsigned held=0;held<2;held++) {
+    reset();physical[held]=2;GrabTask_BootHomeStart();
+    for(unsigned i=0;i<200;i++)step(false,0,0,0);
+    assert(homes==2 && !enables[2] && !boot_verify_calls);
+    physical[held]=0;run_to(GRAB_IDLE,250,0);
+    assert(homes==3 && boot_verify_calls==1);
+  }
+  /* The car tray must also finish before the loaded Base begins. */
+  reset();tray_moving=true;tray_arrives=false;GrabTask_BootHomeStart();
+  for(unsigned i=0;i<200;i++)step(false,0,0,0);
+  assert(homes==2 && !enables[2] && !boot_verify_calls);
+  assert(!strcmp(status().reason,"home_wait_turntable"));
+  tray_moving=false;run_to(GRAB_IDLE,250,0);
+  assert(homes==3 && boot_verify_calls==1);
+
+  reset();tray_moving=true;tray_arrives=false;GrabTask_BootHomeStart();
+  for(unsigned i=0;i<200;i++)step(false,0,0,0);
+  GrabTask_Stop();run_to(GRAB_IDLE,150,0);tray_moving=false;
+  for(unsigned i=0;i<100;i++)step(false,0,0,0);
+  assert(homes==2 && !enables[2] && !boot_verify_calls && tray_stops);
+
+  reset();tray_ready=false;GrabTask_BootHomeStart();run_to(GRAB_ERROR,250,0);
+  assert(homes==2 && !enables[2] && !boot_verify_calls);
+  assert(!strcmp(status().reason,"home_turntable_failed"));
+
+  /* Base's motion timeout starts at its own HOME, after the tray wait. */
+  reset();tray_moving=true;tray_arrives=false;GrabTask_BootHomeStart();
+  for(unsigned i=0;i<900;i++)step(false,0,0,0);
+  assert(homes==2 && status().state==GRAB_HOMING);
+  tray_moving=false;home_axis_flags[MECHANICAL_ARM_AXIS_BASE]=7;
+  for(unsigned i=0;i<800;i++)step(false,0,0,0);
+  assert(homes==3 && status().state==GRAB_HOMING && !boot_verify_calls);
+  home_axis_flags[MECHANICAL_ARM_AXIS_BASE]=3;run_to(GRAB_IDLE,150,0);
+  assert(boot_verify_calls==1);
+
+  /* Once Base starts, cancellation interrupts Base only, with no late restart. */
+  reset();home_axis_flags[MECHANICAL_ARM_AXIS_BASE]=7;GrabTask_BootHomeStart();
+  for(unsigned i=0;i<250 && homes<3;i++)step(false,0,0,0);
+  assert(homes==3 && !boot_verify_calls);
+  GrabTask_Stop();run_to(GRAB_IDLE,150,0);
+  for(unsigned i=0;i<100;i++)step(false,0,0,0);
+  assert(homes==3 && aborts==1 && !boot_verify_calls);
+
+  reset();setting("base_home_degrade","0");home_axis_flags[MECHANICAL_ARM_AXIS_BASE]=11;GrabTask_BootHomeStart();
+  run_to(GRAB_ERROR,250,0);
+  assert(homes==3 && aborts==1 && !RearReferenceValid && !boot_verify_calls);
+  assert(!strcmp(status().reason,"home_driver_fault"));
+}
 static void boot_homing(void)
 {
   unsigned i;
@@ -604,11 +676,11 @@ static void boot_homing(void)
   for(i=0;i<70 && !homes;i++)step(false,0,0,0);
   assert(homes==1);home_flags=7;
   for(i=0;i<70;i++) step(false,0,0,0);
-  assert(homes==3 && status().state==GRAB_HOMING && !boot_verify_calls);
-  /* All HOME commands are issued while the first drive is still running. */
+  assert(homes==2 && status().state==GRAB_HOMING && !boot_verify_calls);
+  /* Z/X start together; Base waits for their verified origins. */
   home_flags=3; physical[1]=2;
   for(i=0;i<20;i++) step(false,0,0,0);
-  assert(homes==3 && !boot_verify_calls); /* Idle HOME flags alone are not verified origins. */
+  assert(homes==2 && !boot_verify_calls); /* Idle HOME flags alone are not verified origins. */
   physical[1]=0; run_to(GRAB_IDLE,250,0);
   assert(boot_verify_calls==1 && homes==3 && !strcmp(status().reason,"home_complete") && Config[C_Z_GRAB]==-80 && Config[C_Z_PLACE]==-60);
   assert(GrabTask_ConfigReady("fixed") && GrabTask_ConfigReady("align"));
@@ -618,7 +690,7 @@ static void boot_homing(void)
   reset(); GrabTask_BootHomeStart();
   for(i=0;i<70 && !homes;i++)step(false,0,0,0);
   home_flags=11; run_to(GRAB_ERROR,150,0);
-  assert(homes==3 && aborts==3 && !boot_verify_calls && !strcmp(status().reason,"home_driver_fault"));
+  assert(homes==2 && aborts==2 && !boot_verify_calls && !strcmp(status().reason,"home_driver_fault"));
   reset(); GrabTask_BootHomeStart();
   for(i=0;i<70 && !homes;i++)step(false,0,0,0);
   home_flags=7;
@@ -629,31 +701,48 @@ static void boot_homing(void)
   assert(homes==issued);
   reset(); GrabTask_BootHomeStart(); GrabTask_Stop(); run_to(GRAB_IDLE,100,0); assert(!homes && !aborts && !boot_verify_calls);
   reset();GrabTask_BootHomeStart();home_flags=7;
-  for(i=0;i<100 && homes<3;i++)step(false,0,0,0);
-  assert(homes==3 && !boot_verify_calls);
+  for(i=0;i<100 && homes<2;i++)step(false,0,0,0);
+  assert(homes==2 && !boot_verify_calls);
   GrabTask_Stop();run_to(GRAB_IDLE,150,0);
-  assert(aborts==3 && tray_stops && !boot_verify_calls);
+  assert(aborts==2 && tray_stops && !boot_verify_calls);
   for(i=0;i<50;i++)step(false,0,0,0);
-  assert(homes==3); /* No late HOME restart after cancellation. */
+  assert(homes==2); /* No late Base HOME after cancellation. */
 
   reset();GrabTask_BootHomeStart();home_flags=7;
-  for(i=0;i<100 && homes<3;i++)step(false,0,0,0);
+  for(i=0;i<100 && homes<2;i++)step(false,0,0,0);
   abort_stays_running=true;GrabTask_Stop();run_to(GRAB_ERROR,150,0);
-  assert(aborts==3 && !boot_verify_calls && !strcmp(status().reason,"home_stop_unconfirmed"));
+  assert(aborts==2 && !boot_verify_calls && !strcmp(status().reason,"home_stop_unconfirmed"));
   /* A drive that fails to exit HOME cannot prevent aborts to the other drives. */
 
   reset();GrabTask_BootHomeStart();tray_moving=true;tray_arrives=false;
   for(i=0;i<250;i++)step(false,0,0,0);
-  assert(homes==3 && !boot_verify_calls && status().state==GRAB_HOMING);
+  assert(homes==2 && !boot_verify_calls && status().state==GRAB_HOMING);
   assert(!strcmp(status().reason,"home_wait_turntable"));
-  tray_moving=false;run_to(GRAB_IDLE,20,0);assert(boot_verify_calls==1);
+  tray_moving=false;run_to(GRAB_IDLE,100,0);assert(boot_verify_calls==1);
   reset();GrabTask_BootHomeStart();tray_ready=false;
   run_to(GRAB_ERROR,250,0);
-  assert(homes==3 && !boot_verify_calls && !strcmp(status().reason,"home_turntable_failed"));
+  assert(homes==2 && !boot_verify_calls && !strcmp(status().reason,"home_turntable_failed"));
   reset();tray_ready=false;
   char *manual[]={"grab","rehome"};
   assert(GrabTask_Command(2,manual));run_to(GRAB_IDLE,250,0);
   assert(homes==3 && boot_verify_calls==1); /* Manual three-axis recovery has no new ID8 dependency. */
+}
+static void base_home_keeps_full_motion_window_after_preparation(void)
+{
+  reset();home_axis_flags[MECHANICAL_ARM_AXIS_BASE]=7;GrabTask_BootHomeStart();
+  for(unsigned i=0;i<250 && (BootAxisIndex!=2 || BootStep!=8);i++)step(false,0,0,0);
+  assert(homes==2 && BootAxisIndex==2 && BootStep==8);
+  home_submit_result=MECHANICAL_ARM_RESULT_BUSY;
+  for(unsigned i=0;i<80;i++)step(false,0,0,0);
+  assert(homes==2 && !boot_verify_calls);
+  home_submit_result=MECHANICAL_ARM_RESULT_NONE;
+  for(unsigned i=0;i<20 && homes<3;i++)step(false,0,0,0);
+  assert(homes==3);
+  uint32_t issued=clock_ms;
+  clock_ms=issued+59850U;step(false,0,0,0);
+  assert(status().state==GRAB_HOMING && !stops && !boot_verify_calls);
+  clock_ms=issued+60001U;run_to(GRAB_ERROR,150,0);
+  assert(!strcmp(status().reason,"home_timeout") && aborts==1 && !boot_verify_calls);
 }
 static void boot_enable_and_disabled_feedback_recovery(void)
 {
@@ -686,22 +775,22 @@ static void boot_enable_and_disabled_feedback_recovery(void)
 
   reset();home_disabled_reads=-1;recovery_enable_succeeds=false;GrabTask_BootHomeStart();
   run_to(GRAB_ERROR,250,0);
-  assert(homes==3 && recovery_enables==1 && !boot_verify_calls && isnan(Config[C_Z_PPM]));
+  assert(homes==2 && recovery_enables==1 && !boot_verify_calls && isnan(Config[C_Z_PPM]));
   assert(!strcmp(status().reason,"home_enable_failed"));
 
   reset();home_disabled_reads=-1;recovery_enable_result=MECHANICAL_ARM_RESULT_ACK_TIMEOUT;GrabTask_BootHomeStart();
   run_to(GRAB_ERROR,250,0);
-  assert(homes==3 && recovery_enables==1 && !boot_verify_calls);
+  assert(homes==2 && recovery_enables==1 && !boot_verify_calls);
   assert(!strcmp(status().reason,"home_feedback_failed"));
 
   reset();home_disabled_reads=-1;GrabTask_BootHomeStart();physical[1]=2;
   for(unsigned i=0;i<120;i++)step(false,0,0,0);
-  assert(homes==3 && !recovery_enables && !boot_verify_calls);
+  assert(homes==2 && !recovery_enables && !boot_verify_calls);
   physical[1]=0;run_to(GRAB_IDLE,350,0);assert(recovery_enables==1 && boot_verify_calls==1);
 
   reset();home_disabled_axis=2;home_disabled_reads=-1;physical[2]=360;GrabTask_BootHomeStart();
   for(unsigned i=0;i<250 && !recovery_enables;i++)step(false,0,0,0);
-  assert(recovery_enables==1);physical[2]+=5;run_to(GRAB_ERROR,150,0);
+  assert(recovery_enables==1);physical[2]+=GRAB_BASE_HOME_STABLE_TOL_DEG+1;run_to(GRAB_ERROR,150,0);
   assert(homes==3 && !boot_verify_calls && !RearReferenceValid);
   assert(!strcmp(status().reason,"home_position_changed"));
 
@@ -709,17 +798,17 @@ static void boot_enable_and_disabled_feedback_recovery(void)
   for(unsigned i=0;i<120 && !disabled_seen;i++)step(false,0,0,0);
   assert(disabled_seen && !recovery_enables);GrabTask_Stop();run_to(GRAB_IDLE,150,0);
   for(unsigned i=0;i<60;i++)step(false,0,0,0);
-  assert(homes==3 && !recovery_enables && !boot_verify_calls);
+  assert(homes==2 && !recovery_enables && !boot_verify_calls);
 
   reset();home_disabled_reads=-1;GrabTask_BootHomeStart();
   for(unsigned i=0;i<150 && !recovery_enables;i++)step(false,0,0,0);
   assert(recovery_enables==1 && pending_valid);GrabTask_Stop();run_to(GRAB_IDLE,150,0);
-  assert(homes==3 && recovery_enables==1 && !boot_verify_calls);
+  assert(homes==2 && recovery_enables==1 && !boot_verify_calls);
 
   reset();home_disabled_reads=-1;GrabTask_BootHomeStart();
   for(unsigned i=0;i<90 && !homes;i++)step(false,0,0,0);
   linear_state_flags[1]=10;run_to(GRAB_ERROR,180,0);
-  assert(homes==3 && !recovery_enables && !boot_verify_calls);
+  assert(homes==2 && !recovery_enables && !boot_verify_calls);
   assert(!strcmp(status().reason,"home_axis_fault"));
 
   reset();home_flags=0x23;GrabTask_BootHomeStart();run_to(GRAB_ERROR,150,0);
@@ -895,7 +984,7 @@ static void restart_after_stop_and_verified_rehome(void)
   for(unsigned i=0;i<70 && !homes;i++)step(false,0,0,0);
   home_flags=7;
   for(unsigned i=0;i<70;i++) step(false,0,0,0);
-  assert(homes==3 && !GrabTask_ConfigReady("align"));
+  assert(homes==2 && !GrabTask_ConfigReady("align"));
   home_flags=3; run_to(GRAB_IDLE,250,0);
   assert(homes==3 && boot_verify_calls==1 && GrabTask_ConfigReady("align"));
   assert(!strcmp(status().reference_cause,"home_verified"));
@@ -1223,7 +1312,7 @@ static void ring_no_preextension(void)
   base_arrives=false;
   assert(GrabTask_Command(3,cmd));
   for(unsigned i=0;i<200 && !base_moves;i++)step(true,1,0,0);
-  assert(base_moves==1 && fabsf(destination[2]-90)<.2f);
+  assert(base_moves==1 && fabsf(destination[2]-128)<.2f);
   for(unsigned i=0;i<40;i++)step(true,1,0,0);
   assert(fabsf(destination[0])<.2f && !camera_requests);
   base_arrives=true;physical[2]=destination[2];
@@ -1419,6 +1508,8 @@ int main(void)
     assert(requested_color==9+ring);
     GrabTask_Stop();run_to(GRAB_IDLE,150,1);
   }
+  base_home_waits_for_other_origins();
+  base_home_keeps_full_motion_window_after_preparation();
   boot_submit_wait_and_fault_diagnostics();
   boot_enable_and_disabled_feedback_recovery();
   car_x_default_survives_reset_and_verified_home();

@@ -40,6 +40,61 @@ def fields(line):
     return values
 
 
+def summarize_pixels(text):
+    """Each PIX row is one parsed B2 frame, not a timer/control snapshot."""
+    rows, session, expected, corrupt, began, ended, first = {}, None, None, 0, False, False, 0
+    queued, dropped = None, None
+    for line in text.splitlines():
+        if 'OK camera log_begin ' in line:
+            header = fields(line)
+            fresh = session != header.get('id') or (header.get('next', 0) == 0 and rows)
+            if fresh:
+                rows, expected, corrupt, ended, queued, dropped = {}, None, 0, False, None, None
+                first = int(header.get('next', 0))
+                began = first == 0
+            session = header.get('id')
+        if 'OK camera log_end ' in line:
+            tail = fields(line)
+            if session == tail.get('id'):
+                expected, ended = int(tail.get('count', 0)), True
+                queued, dropped = tail.get('queued'), tail.get('dropped')
+        if 'PIX id=' not in line:
+            continue
+        raw = line[line.index('PIX id='):].strip()
+        match = re.fullmatch(r'(.*) crc=([\da-fA-F]{8})', raw)
+        if not match or zlib.crc32(match[1].encode('ascii', errors='replace')) != int(match[2], 16):
+            corrupt += 1
+            continue
+        row = fields(raw)
+        if not all(isinstance(row.get(k), (int, float)) and math.isfinite(row[k]) and row[k].is_integer()
+                   for k in ('id', 'i', 't', 'c', 'v', 'm', 'x', 'y')):
+            corrupt += 1
+            continue
+        if not (1 <= row['id'] <= 0xffffffff and 0 <= row['i'] <= 0xffffffff and
+                0 <= row['t'] <= 0xffffffff and 0 <= row['c'] <= 255 and
+                row['v'] in (0, 1) and row['m'] in (0, 1) and 0 <= row['x'] <= 65535 and 0 <= row['y'] <= 65535):
+            corrupt += 1
+            continue
+        if session is None:
+            session = row['id']
+        if session == row['id']:
+            rows[int(row['i'])] = row
+    ordered = [rows[i] for i in sorted(rows)]
+    missing = [i for i in range(first, expected) if i not in rows] if expected is not None else None
+    intervals = [int(b['t'] - a['t']) & 0xffffffff for a, b in zip(ordered, ordered[1:])]
+    window = sum(intervals)
+    return {'source_type': 'pixels', 'stream_id': session, 'records': len(rows),
+            'expected_records': expected, 'missing_count': len(missing) if missing is not None else None,
+            'missing_preview': missing[:20] if missing is not None else [], 'corrupt_rows': corrupt,
+            'trace_complete': began and ended and expected is not None and set(rows) == set(range(first, expected)),
+            'valid_frames': sum(r['v'] == 1 for r in ordered), 'invalid_frames': sum(r['v'] == 0 for r in ordered),
+            'unmatched_frames': sum(r['m'] == 0 for r in ordered), 'window_ms': window,
+            'receive_hz': 1000 * len(intervals) / window if window else None,
+            'receive_interval_p95_ms': percentile(intervals), 'queued': queued, 'device_dropped': dropped,
+            'coordinate_range': {k: [min(r[k] for r in ordered if r['v']), max(r[k] for r in ordered if r['v'])]
+                                 for k in ('x', 'y')} if any(r['v'] for r in ordered) else None}
+
+
 def summarize(text, source='auto'):
     # A single file can contain live data AND a later ring export; never mix them.
     live = source == 'live' or (source == 'auto' and 'TRACK live ' in text and 'OK grab track trace_begin' not in text)
@@ -215,6 +270,8 @@ def main():
     args = parser.parse_args()
     text = decode_log(args.log.read_bytes())
     result = summarize(text, source=args.source)
+    if 'PIX id=' in text or 'OK camera log_begin ' in text:
+        result['pixels'] = summarize_pixels(text)
     result.update({'kind': args.kind, 'nominal_rpm': args.rpm, 'direction': args.direction, 'source': str(args.log)})
     print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
 

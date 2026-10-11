@@ -32,12 +32,74 @@ function surface(){
   const saved={document:globalThis.document,performance:globalThis.performance,requestAnimationFrame:globalThis.requestAnimationFrame,ResizeObserver:globalThis.ResizeObserver};
   globalThis.document={hidden:false,getElementById:get,createElement:tag=>new Element(tag),createElementNS:(_,tag)=>new Element(tag),addEventListener(){}};
   globalThis.performance={now:()=>now};globalThis.requestAnimationFrame=handler=>{nextFrame=handler;};globalThis.ResizeObserver=undefined;
-  return {get,buttons,frame(ms=120){now+=ms;nextFrame(now);},click(id){get(id).events.click({target:get(id)});},legend(layer){const target=buttons[layer];get('map-legend').events.click({target});},start(){get('sim-form').events.submit({preventDefault(){}});},restore(){Object.assign(globalThis,saved);}};
+  return {get,buttons,frame(ms=120){now+=ms;nextFrame(now);},click(id){return get(id).events.click({target:get(id)});},legend(layer){const target=buttons[layer];get('map-legend').events.click({target});},start(){get('sim-form').events.submit({preventDefault(){}});},restore(){Object.assign(globalThis,saved);}};
 }
 const config={v:1,kind:'config',session:42,rev:'map-test',geometry:{wheelbase_mm:210,track_mm:240,wheel_diameter_mm:80,gear_ratio:1},wheel_ids:[1,2,3,4],forward_dir:[0,0,1,1]};
 const state=(t,valid=true)=>({v:1,kind:'state',session:42,t_ms:t,target:{body:[0,0,0],rpm:[0,0,0,0]},feedback:{rpm:[0,0,0,0],pos:[0,0,0,0],speed_valid:[true,true,true,true],position_valid:[valid,true,true,true],speed_ms:[t,t,t,t],position_ms:[t,t,t,t]},yaw:{valid:true,rad:Math.PI/2},pose:{command:{valid:true,x_mm:2000,y_mm:1000,yaw_rad:0},feedback:{valid:true,x_mm:2250,y_mm:150,yaw_rad:Math.PI/2}}});
 const receive=(view,packet)=>view.receive('@CHASSIS '+JSON.stringify(packet));
 function online(view){view.beginPreparedTelemetry(42);receive(view,config);receive(view,state(20));}
+
+test('compact monitor has one explicit update toggle and hides empty live data and stop history',async()=>{
+  const ui=surface(),wires=[];try{
+    const view=mountMap({send:async wire=>{wires.push(wire);return true;}});
+    assert.equal(ui.get('telemetry-status').textContent,'未连接设备');
+    assert.equal(ui.get('monitor-live-data').hidden,true);
+    assert.equal(ui.get('monitor-last-stop').hidden,true);
+    assert.equal(ui.get('monitor-stop-history').hidden,true);
+    assert.equal(ui.get('monitor-toggle').disabled,true);
+    await ui.click('monitor-toggle');assert.deepEqual(wires,[]);
+    view.connection(true);assert.deepEqual(wires,[]);
+    assert.equal(ui.get('monitor-toggle').textContent,'开始监控');
+    await ui.click('monitor-toggle');assert.match(wires[0],/^chassis stream on \d+$/);
+    assert.equal(ui.get('monitor-toggle').textContent,'暂停更新');
+    await ui.click('monitor-toggle');assert.equal(wires[1],'chassis stream off');
+    assert.equal(ui.get('monitor-toggle').textContent,'开始监控');
+    assert.equal(ui.get('telemetry-status').textContent,'更新已暂停');
+    view.connection(false);view.connection(true);assert.equal(wires.length,2);
+  }finally{ui.restore();}
+});
+
+test('compact monitor uses fresh motion data, preserves historical stops and never infers parking from zero speed',()=>{
+  const ui=surface();try{
+    const view=mountMap({send:async()=>true});view.connection(true);online(view);
+    const packet=state(40);packet.target.body=[30,40,Math.PI/6];
+    packet.route={state:'running',reason:'none',segment:3,total:15,action_id:12,target:[1200,2100,90],error:[1,2,0],feedback_valid:true,stop_confirmed:false,phase:'dock',phase_target:[1200,2100,90],speed_mm_s:200,phase_speed_mm_s:50};
+    receive(view,packet);ui.frame();
+    assert.equal(ui.get('monitor-live-data').hidden,false);
+    assert.match(ui.get('monitor-current-target').textContent,/3.*15.*对接/);
+    assert.equal(ui.get('monitor-stop-state').textContent,'运行中');
+    assert.equal(ui.get('monitor-plan-speed').textContent,'50 mm/s');
+    assert.match(ui.get('monitor-command-speed').textContent,/50\.0 mm\/s.*30\.0°\/s/);
+    packet.t_ms=60;packet.target.body=[0,0,0];receive(view,packet);ui.frame();
+    assert.equal(ui.get('monitor-stop-state').textContent,'运行中');
+    ui.frame(1000);assert.equal(ui.get('monitor-live-data').hidden,true);
+    assert.match(ui.get('telemetry-status').textContent,/更新中断/);
+    packet.t_ms=80;packet.feedback.speed_ms=packet.feedback.position_ms=[80,80,80,80];
+    packet.route.state='waiting';packet.route.reason='reached';packet.route.stop_confirmed=true;
+    packet.pose.feedback.x_mm=1201;packet.pose.feedback.y_mm=2102;
+    receive(view,packet);ui.frame();
+    assert.equal(ui.get('monitor-stop-state').textContent,'停车已确认');
+    assert.equal(ui.get('monitor-last-stop').hidden,false);assert.equal(ui.get('monitor-stop-history').hidden,false);
+    assert.match(ui.get('monitor-final-stop').textContent,/X 1201\.0 · Y 2102\.0/);
+    assert.match(ui.get('monitor-stop-delta').textContent,/ΔX 1\.0.*ΔY 2\.0/);
+    view.connection(false);
+    assert.equal(ui.get('monitor-live-data').hidden,true);assert.equal(ui.get('monitor-last-stop').hidden,false);
+    assert.equal(ui.get('monitor-stop-results').children.length,1);
+  }finally{ui.restore();}
+});
+
+test('failed monitor toggle does not invent subscription changes or send a parking command',async()=>{
+  const ui=surface(),wires=[];let accepted=false;try{
+    const view=mountMap({send:async wire=>{wires.push(wire);return accepted;}});view.connection(true);
+    await ui.click('monitor-toggle');assert.equal(view.snapshot().session,null);
+    assert.equal(ui.get('monitor-toggle').textContent,'开始监控');
+    accepted=true;await ui.click('monitor-toggle');const session=view.snapshot().session;
+    accepted=false;await ui.click('monitor-toggle');assert.equal(view.snapshot().session,session);
+    assert.equal(ui.get('monitor-toggle').textContent,'暂停更新');
+    assert.match(ui.get('telemetry-status').textContent,/暂停更新未发送/);
+    assert.ok(wires.every(wire=>wire.startsWith('chassis stream ')));
+  }finally{ui.restore();}
+});
 
 test('formal field defaults to the inset nonuniform grid and retains its 2400 mm outer frame',()=>{
   const ui=surface();try{

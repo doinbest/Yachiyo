@@ -2,6 +2,12 @@ import {rejectionText} from './device-text.mjs';
 const accepted='OK chassis request accepted (not motion/ACK confirmation)';
 const fields=line=>Object.fromEntries([...line.matchAll(/\b([a-z_]+)=([^\s]+)/g)].map(m=>[m[1],m[2]]));
 const idleRoute=s=>['idle','done','error','cancelled'].includes(s);
+const atStart=(position,heading,mm,degrees)=>{
+  const xy=String(position??'').split(',').map(Number),yaw=Number(heading);
+  if(xy.length!==2||xy.some(v=>!Number.isFinite(v))||heading===undefined||!Number.isFinite(yaw))return false;
+  const error=Math.atan2(Math.sin((yaw-180)*Math.PI/180),Math.cos((yaw-180)*Math.PI/180));
+  return Math.hypot(xy[0]-2250,xy[1]-150)<=mm&&Math.abs(error)<=degrees*Math.PI/180;
+};
 export const validCarConfig=c=>!!c&&c.directions_confirmed===true;
 
 /** Explicit browser preparation only. Never sends motion or driver configuration. */
@@ -40,9 +46,13 @@ export class RoutePreparation {
     return true;
   }
   readImu(){this.request('imu','imu status','3/5 检查本次启动的 IMU 验证资格…');}
+  startTelemetry(){
+    this.session=this.nonce();this.beginTelemetry(this.session);
+    this.request('telemetry','chassis stream on '+this.session,'5/5 开启遥测，等待起点反馈与静止状态…');
+  }
   confirmOrigin(){
     if(this.phase!=='confirm'||!this.connected)return false;
-    this.request('origin','chassis origin 2250 150 90','4/5 设置已确认的起点 (2250,150,90°)…');
+    this.request('origin','chassis origin 2250 150 180','4/5 设置已确认的起点 (2250,150,180°)…');
     return true;
   }
   receive(raw){
@@ -109,8 +119,7 @@ export class RoutePreparation {
         }
         if(cal.verified==='1'&&cal.control_ready==='1'&&cal.normal_mode==='1'&&
           (!this.verifiedNow||cal.run_id!==this.previousRun)){
-          this.pending=null;this.until=this.now()+120000;
-          this.show('confirm','3/5 检查通过。请确认车体中心在右下起点 (2250,150)，车头朝上且整车静止。');break;
+          this.request('origin_check','chassis task','4/5 检查已有地图原点，合适时直接复用…');break;
         }
         if(this.verifiedNow){this.fail('5 秒验证未通过，请查看 IMU 结果；必要时执行原生标定。');break;}
         this.previousRun=cal.run_id;
@@ -123,8 +132,21 @@ export class RoutePreparation {
         this.show('verify_wait','3/5 正在进行 5 秒静止验证，完成后自动读取结果…');break;
       case 'origin':
         if(line!==accepted)break;
-        this.session=this.nonce();this.beginTelemetry(this.session);
-        this.request('telemetry','chassis stream on '+this.session,'5/5 开启遥测，等待起点反馈与静止状态…');break;
+        this.startTelemetry();break;
+      case 'origin_check': {
+        if(!line.startsWith('OK chassis task '))break;
+        if(f.locked!=='0'||f.error!=='0'||!['0','3','4'].includes(f.state)||!['0','5'].includes(f.stage)||
+          f.ack!=='2'||f.units!=='65536'){
+          this.fail('底盘状态已变化，请读取任务状态并处理故障后重新准备。');break;
+        }
+        if(f.origin_valid==='1'&&f.feedback_valid==='1'&&/^\d+$/.test(f.feedback_age_ms??'')&&
+          Number(f.feedback_age_ms)<=600&&atStart(f.origin_mm,f.origin_deg,0.1,0.1)&&
+          atStart(f.feedback_mm,f.feedback_deg,10,2)){
+          this.startTelemetry();break;
+        }
+        this.pending=null;this.until=this.now()+120000;
+        this.show('confirm','4/5 请确认车体中心在右下起点 (2250,150)，车头朝左（180°）且整车静止；确认后设置原点，保留已完成的有效雷达地图。');break;
+      }
       case 'telemetry':
         if(line===accepted){this.streamAccepted=true;}
         break;
@@ -138,7 +160,7 @@ export class RoutePreparation {
       !Array.isArray(r.feedback?.rpm)||r.feedback.rpm.length!==4)return false;
     if(r.feedback.rpm.some((v,i)=>!Number.isFinite(v)||Math.abs(v)>1||r.feedback.speed_valid?.[i]!==true||
       !Number.isInteger(r.feedback.speed_ms?.[i])||((r.t_ms-r.feedback.speed_ms[i])>>>0)>600))return false;
-    const angle=Math.atan2(Math.sin(p.yaw_rad-Math.PI/2),Math.cos(p.yaw_rad-Math.PI/2));
+    const angle=Math.atan2(Math.sin(p.yaw_rad-Math.PI),Math.cos(p.yaw_rad-Math.PI));
     return Math.hypot(p.x_mm-2250,p.y_mm-150)<=10&&Math.abs(angle)<=2*Math.PI/180;
   }
   tick(){
@@ -152,7 +174,7 @@ export class RoutePreparation {
     }
     if(!this.busy)return;
     if(this.phase==='telemetry'&&this.streamAccepted&&this.validStartSnapshot()){
-      this.pending=null;this.show('ready','准备完成 · 起点反馈有效，可以点击“开始第 1 段”。');return;
+      this.pending=null;this.show('ready','准备完成 · 起点反馈有效，可执行已完成的雷达路线或固定路线。');return;
     }
     if(this.pending&&this.now()>this.pending.deadline){
       this.fail(this.phase==='telemetry'?'未收到有效起点反馈，请查看地图遥测、轮子反馈与 IMU 状态。':'等待设备回复超时，请查看收发记录后重新准备。');return;
@@ -167,7 +189,7 @@ export class RoutePreparation {
 export function mountPreparation({root,send,beginTelemetry,telemetry,getConfig=()=>null,saveConfig,configAvailable=()=>false,isStopped=()=>false,acquire=async()=>{},release=async()=>{},changed=()=>{}}){
   const doc=root.ownerDocument,make=(tag,text)=>{const e=doc.createElement(tag);e.textContent=text;return e;};
   const section=make('section','');section.className='route-preparation';section.id='route-preparation';
-  section.append(make('h3','准备跑图'),make('p','保持整车静止。程序检查四轮反馈和 IMU；随后由你确认小车摆放位置。完成准备不会启动运动。'));
+  section.append(make('h3','准备跑图'),make('p','保持整车静止。可先扫描再准备，也可先准备再扫描。程序检查四轮反馈和 IMU；已有合适原点直接复用，首次或原点不匹配时需确认摆放位置。完成准备不会启动运动。'));
   const details=make('details','');details.className='car-config';details.append(make('summary','本车配置 · Emm 默认预设'));
   details.append(make('p','已确认：Emm42 固件，仅修改 ID。控制 3200 脉冲/圈；位置反馈 65536 单位/圈；Receive 接收应答。均按电机轴一圈计。'));
   const directionsLabel=make('label',''),directions=make('input','');directions.type='checkbox';directions.id='car-directions-confirmed';directionsLabel.append(directions,make('span','已确认四轮安装方向与程序的前进方向一致'));

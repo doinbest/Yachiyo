@@ -58,6 +58,22 @@ static void measure(bool fixed,unsigned start,unsigned count,bool bad)
 static void full_circle(bool fixed,unsigned count)
 { measure(fixed,2700,count,false);measure(fixed,0,count,false);measure(fixed,900,count,false);measure(fixed,1800,count,false);measure(fixed,2700,count,false);measure(fixed,0,count,false); }
 static void board_circle(bool upper,bool lower,bool beyond_cloud);
+/* Frozen historical geometry belongs to diagnostic parser/raw fixtures.
+ * Current production geometry and stability are exercised independently below. */
+static void legacy_defaults(RadarMap_Params_t *p)
+{
+  RadarMap_Defaults(p);p->lidar_x_mm=2250.0f;p->lidar_y_mm=150.0f;
+  p->zero_deg=180.0f;p->situation=0U;p->grid_version=3U;
+}
+static bool legacy_debug_start(const RadarMap_Params_t *p,uint32_t origin)
+{ return RadarScan_DebugStart(p,origin,RADAR_START_LOWER); }
+static bool legacy_debug_auto(const RadarMap_Params_t *p,uint32_t origin)
+{ return RadarScan_DebugStart(p,origin,RADAR_START_UNKNOWN); }
+static bool legacy_debug_at(const RadarMap_Params_t *p,uint32_t origin,RadarStart_Id_t id)
+{
+  return (id==RADAR_START_UPPER || id==RADAR_START_LOWER) && RadarScan_DebugStart(p,origin,id);
+}
+
 static uint32_t crc32_bytes(const uint8_t *bytes,unsigned count)
 {
   uint32_t crc=0xffffffffU;
@@ -94,7 +110,7 @@ static void test_debug_raw(void)
     assert(uart_raw.total==sizeof nested && RadarUart_RawRead(0,downloaded,sizeof downloaded)==sizeof nested && !memcmp(downloaded,nested,sizeof nested));
   }
   for(unsigned fixed=0;fixed<2;fixed++){
-    RadarMap_Defaults(&p);assert(RadarScan_Init(&uart)==HAL_OK);
+    legacy_defaults(&p);assert(RadarScan_Init(&uart)==HAL_OK);
     RadarScan_RawStatusGet(&raw);assert(!raw.id && !raw.complete && !RadarScan_RawRead(0,downloaded,1));
     assert(RadarScan_DebugStart(&p,71,RADAR_START_LOWER));configured();
     unsigned length=0,n=packet(frame,fixed,1800,4);frame[n-1]^=1;
@@ -116,16 +132,16 @@ static void test_debug_raw(void)
     memcpy(saved,points,count*sizeof(*points));saved_map=*RadarScan_Map();
     assert(RadarScan_SetParam("zero_deg",90));RadarScan_RawStatusGet(&raw);assert(raw.parameters.zero_deg==180);
     /* Replay the actual captured bytes through the real parser and assembler. */
-    assert(RadarScan_Init(&uart)==HAL_OK);assert(RadarScan_Start(&p,71));configured();
+    assert(RadarScan_Init(&uart)==HAL_OK);assert(legacy_debug_start(&p,71));configured();
     input(expected,length);for(unsigned i=0;i<100;i++)service();
     points=RadarScan_Points(&count);assert(points && count==expected_count);
     for(unsigned i=0;i<count;i++)assert(points[i].angle_tenths==saved[i].angle_tenths &&
       points[i].distance_mm==saved[i].distance_mm && points[i].energy==saved[i].energy);
     assert(!memcmp(RadarScan_Map(),&saved_map,sizeof saved_map));
-    RadarScan_RawStatusGet(&raw);assert(!raw.id);
+    RadarScan_RawStatusGet(&raw);assert(raw.id==1U);
   }
   /* A long prelude rolls away, but the final circle remains downloadable. */
-  assert(RadarScan_Init(&uart)==HAL_OK);RadarMap_Defaults(&p);
+  assert(RadarScan_Init(&uart)==HAL_OK);legacy_defaults(&p);
   assert(RadarScan_DebugStart(&p,72,RADAR_START_UPPER));configured();
   memset(downloaded,0x21,1000);
   for(unsigned i=0;i<20;i++){input(downloaded,1000);for(unsigned j=0;j<4;j++)service();}
@@ -136,6 +152,8 @@ static void test_debug_raw(void)
   assert(RadarScan_RawRead(0,downloaded,sizeof downloaded)==sizeof downloaded && raw.raw.crc32==crc32_bytes(downloaded,sizeof downloaded));
   uint32_t raw_id=raw.id;assert(RadarScan_Start(&p,73));RadarScan_RawStatusGet(&raw);
   assert(raw.id==raw_id && raw.complete && !raw.cloud_valid);configured();full_circle(false,4);
+  for(unsigned circle=1U;circle<15U;circle++){measure(false,900,4,false);measure(false,1800,4,false);measure(false,2700,4,false);measure(false,0,4,false);}
+  for(unsigned step=0U;step<128U;step++)service();
   RadarScan_RawStatusGet(&raw);assert(raw.id==raw_id && !raw.cloud_valid);
   /* Partial stop and timeout publish diagnostic bytes, never a complete circle. */
   assert(RadarScan_DebugStart(&p,74,RADAR_START_LOWER));configured();input(prefix,sizeof prefix);service();RadarScan_Stop();
@@ -178,79 +196,152 @@ static void point_packet(unsigned start,unsigned count,unsigned distance)
   for(unsigned i=0;i<count;i++){p[at]=80;put16(p+at+1,distance);sum+=80+distance;at+=3;}
   put16(p+at,sum);input(p,at+2);for(unsigned i=0;i<6;i++)service();tick++;
 }
-/* Actual failing signature: a valid CE packet at 0deg is followed by 72deg
- * instead of 36deg, with no checksum error. Its points must not be spread over
- * twice their sector and then merged as a complete obstacle circle. */
+static void stable_seed(void)
+{ point_packet(2700,1,0);point_packet(0,1,0); }
+/* Zero-span CF carries the exact physical return at raw 30deg/1500mm.
+ * Factory 2 projects it to (983,1084), cell 11. Repeated samples remain one
+ * circle vote and one final representative. */
+static void stable_circle(bool object,unsigned repeats,bool transient)
+{
+  point_packet(300,object?repeats:1U,object?1500U:0U);
+  point_packet(600,1,transient?1000U:0U);
+  point_packet(900,1,0);point_packet(1800,1,0);
+  point_packet(2700,1,0);point_packet(0,1,0);
+  for(unsigned i=0;i<128U;i++)service();
+}
 static void test_missing_ce_sector(void)
 {
   RadarMap_Params_t p;RadarScan_Status_t s;RadarMap_Defaults(&p);
   assert(RadarScan_Init(&uart)==HAL_OK);
-  assert(RadarScan_StartAtCycles(&p,99,RADAR_START_LOWER,3));configured();
+  assert(RadarScan_StartAtCycles(&p,99,RADAR_START_LOWER,15));configured();
   measure(false,3240,4,false);measure(false,0,4,false);
   for(unsigned angle=720;angle<3600;angle+=360)measure(false,angle,4,false);
   measure(false,0,4,false);RadarScan_StatusGet(&s);
   assert(s.circles_done==0 && s.circle_restarts && !s.map_valid);
-  /* Recover in this same command/window, not a new scan or motor restart. */
-  for(unsigned turn=0;turn<4;turn++){
+  /* Cadence loss discards only this draft; the same command can still finish. */
+  measure(false,3240,4,false);measure(false,0,4,false);
+  for(unsigned turn=0;turn<15U;turn++){
     for(unsigned angle=360;angle<3600;angle+=360)measure(false,angle,4,false);
     measure(false,0,4,false);
   }
-  RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_READY && s.circles_done==3);
-  const RadarScan_Evidence_t *e=RadarScan_Evidence();assert(e && e->circles==3);
-  for(unsigned circle=0;circle<3;circle++)for(unsigned cell=0;cell<25;cell++)
-    for(unsigned hit=0;hit<e->circle[circle].hit_count[cell];hit++)
-      assert(e->circle[circle].hits[cell][hit].packet_span==360);
-}
-
-/* Three independently classified circles: a black object's single return in
- * any circle survives, but sub-threshold returns are not pooled to promote it. */
-static void test_three_circles(void)
-{
-  RadarMap_Params_t p;RadarScan_Status_t s;RadarMap_Defaults(&p);
-  assert(RadarScan_Init(&uart)==HAL_OK);
-  assert(!RadarScan_StartAtCycles(&p,90,RADAR_START_LOWER,0));
-  assert(RadarScan_StartAtCycles(&p,90,RADAR_START_LOWER,3));configured();
-  unsigned sends=tx_count;
-  point_packet(2700,1,0);point_packet(0,1,0);
-  point_packet(355,1,1810);point_packet(2700,1,0);point_packet(0,1,0);
-  RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_COLLECTING && s.circles_done==1 && s.circles_target==3 && !s.map_valid);
-  point_packet(450,1,2687);point_packet(2700,1,0);point_packet(0,1,0);
-  RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_COLLECTING && s.circles_done==2 && !s.map_valid);
-  point_packet(900,1,0);point_packet(2700,1,0);point_packet(0,1,0);
+  for(unsigned i=0;i<128U;i++)service();
   RadarScan_StatusGet(&s);
-  assert(s.state==RADAR_SCAN_READY && s.circles_done==3 && s.map_id==1 && s.scan_id==1);
-  assert((RadarScan_Map()->mask&((1UL<<11)|(1UL<<20)))==((1UL<<11)|(1UL<<20)));
-  assert(RadarScan_Map()->counts[11]==1 && RadarScan_Map()->counts[20]==1);
-  /* Per-circle evidence must not be overwritten by the final empty circle,
-   * and must retain the actual sensor sample plus its packet provenance. */
-  const RadarScan_Evidence_t *e=RadarScan_Evidence();
-  assert(e && e->scan_id==s.scan_id && e->map_id==s.map_id && e->circles==3);
-  assert(e->circle[0].counts[11]==1 && e->circle[0].counts[20]==0);
-  assert(e->circle[1].counts[11]==0 && e->circle[1].counts[20]==1);
-  assert(e->circle[2].counts[11]==0 && e->circle[2].counts[20]==0);
-  const RadarScan_Hit_t *hit=&e->circle[0].hits[11][0];
-  assert(hit->angle_tenths==355 && hit->distance_mm==1810 && hit->raw_distance==1810);
-  assert(hit->packet_start==355 && hit->packet_span==0 && hit->packet_count==1 && hit->packet_index==0);
-  assert(hit->energy==80 && hit->flags==1);
-  assert(e->circle[0].hit_count[11]==1 && !e->circle[2].hit_count[11]);
-  service();assert(tx_count==sends+1 && !strcmp(last_tx,"LSTOPH"));
-  /* A fresh three-circle capture does not retain removed objects forever.
-   * Threshold applies to each complete circle, not three summed counts. */
-  p.threshold=2;assert(RadarScan_StartAtCycles(&p,91,RADAR_START_LOWER,3));configured();
-  assert(!RadarScan_Evidence()); /* never label partial evidence as complete */
-  point_packet(2700,1,0);point_packet(0,1,0);
-  for(unsigned i=0;i<3;i++){
-    point_packet(355,1,1810);point_packet(2700,1,0);point_packet(0,1,0);
-    RadarScan_StatusGet(&s);if(i<2)assert(s.map_id==1);
+  assert(s.state==RADAR_SCAN_READY && s.circles_done==15U);
+  assert(s.stability.window_circles==15U && s.stability.first_circle==1U && s.stability.last_circle==15U);
+  RadarScan_LiveStop();assert(RadarScan_LiveMapStart(&p,99,RADAR_START_LOWER));configured();
+  measure(false,3240,4,false);measure(false,0,4,false);
+  for(unsigned angle=720;angle<3600;angle+=360)measure(false,angle,4,false);
+  measure(false,0,4,false);RadarScan_LiveStatus_t live;RadarScan_LiveStatusGet(&live);
+  assert(live.circle_restarts && live.stability.window_circles==0U);
+  measure(false,3240,4,false);measure(false,0,4,false);
+  for(unsigned turn=0;turn<15U;turn++){
+    for(unsigned angle=360;angle<3600;angle+=360)measure(false,angle,4,false);
+    measure(false,0,4,false);
   }
-  RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_READY && s.map_id==2);
-  assert(RadarScan_Map()->counts[11]==3 && !(RadarScan_Map()->mask&(1UL<<11)) && !(RadarScan_Map()->mask&(1UL<<20)));
-  /* A partial new capture/stop preserves the preceding complete result. */
-  uint32_t mask=RadarScan_Map()->mask;
-  assert(RadarScan_StartAtCycles(&p,92,RADAR_START_LOWER,3));configured();
-  point_packet(2700,1,0);point_packet(0,1,0);point_packet(450,3,2687);
-  point_packet(2700,1,0);point_packet(0,1,0);RadarScan_Stop();RadarScan_StatusGet(&s);
-  assert(s.map_id==2 && RadarScan_Map()->mask==mask);
+  for(unsigned i=0;i<128;i++)service();
+  RadarScan_LiveStatusGet(&live);assert(live.active && live.stability.window_circles==15U);
+  RadarScan_LiveStop();
+}
+static void test_fifteen_circles(void)
+{
+  RadarMap_Params_t p;RadarScan_Status_t s;uint16_t count;uint32_t scan;
+  RadarMap_Defaults(&p);assert(RadarScan_Init(&uart)==HAL_OK);
+  assert(p.situation==2U && p.grid_version==4U);
+  assert(!RadarScan_StartAtCycles(&p,90,RADAR_START_LOWER,0));
+  assert(RadarScan_StartAtCycles(&p,90,RADAR_START_LOWER,15));configured();
+  unsigned sends=tx_count;stable_seed();
+  for(unsigned circle=1U;circle<=15U;circle++){
+    stable_circle(circle<=3U,25U,circle==1U);
+    RadarScan_StatusGet(&s);
+    assert(s.circles_done==circle && s.circles_target==15U);
+    if(circle<15U)assert(s.state==RADAR_SCAN_COLLECTING && !s.map_valid);
+  }
+  assert(s.state==RADAR_SCAN_READY && s.map_id==1U && s.scan_id==1U && s.map_circles==15U);
+  const RadarStablePoint *points=RadarScan_StablePoints(&count,&scan);
+  assert(points && count==1U && scan==s.scan_id && points[0].votes==3U);
+  assert(points[0].angle_tenths==300U && points[0].distance_mm==1500U);
+  assert(points[0].x_mm==983U && points[0].y_mm==1084U);
+  assert(RadarScan_Map()->counts[11]==1U && (RadarScan_Map()->mask&(1UL<<11)));
+  assert(s.stability.raw_points==162U && s.stability.filtered_points==76U);
+  assert(s.stability.first_circle==1U && s.stability.last_circle==15U && s.stability.stable_count==1U);
+  service();assert(tx_count==sends+1 && !strcmp(last_tx,"LSTOPH"));
+  RadarMap_t saved=*RadarScan_Map();uint32_t map=s.map_id;
+  RadarScan_Stop();points=RadarScan_StablePoints(&count,&scan);
+  assert(count==1U && points[0].votes==3U && !memcmp(RadarScan_Map(),&saved,sizeof saved));
+  p.threshold=2U;assert(RadarScan_RebuildStableMap(&p));
+  assert(RadarScan_Map()->counts[11]==1U && !(RadarScan_Map()->mask&(1UL<<11)));
+  RadarScan_StatusGet(&s);assert(s.map_id==map+1U && s.scan_id==scan);
+  assert(RadarScan_Start(&p,92));configured();stable_seed();stable_circle(true,1U,false);
+  RadarScan_Stop();RadarScan_StatusGet(&s);assert(s.map_id==map+1U && s.map_valid);
+}
+static void test_rolling_map_expiry_and_bad_circle(void)
+{
+  RadarMap_Params_t p;RadarScan_Status_t s;RadarStableStatus stable;
+  RadarScan_LiveStatus_t live;uint16_t count;uint32_t scan;
+  RadarMap_Defaults(&p);assert(RadarScan_Init(&uart)==HAL_OK);
+  assert(RadarScan_LiveMapStart(&p,101U,RADAR_START_LOWER));configured();stable_seed();
+  for(unsigned circle=1U;circle<=15U;circle++){
+    stable_circle(circle<=3U,8U,false);RadarScan_StatusGet(&s);
+    if(circle<15U)assert(!s.map_valid);
+  }
+  RadarScan_LiveStatusGet(&live);RadarScan_StableStatusGet(&stable);
+  assert(live.active && live.mapping && live.sequence==15U && stable.window_circles==15U);
+  const RadarStablePoint *points=RadarScan_StablePoints(&count,&scan);
+  assert(points && count==1U && points[0].votes==3U && s.map_valid);
+  RadarMap_t saved=*RadarScan_Map();uint32_t saved_scan=scan;
+  point_packet(300,1,1500);measure(true,900,4,true);
+  RadarScan_StableStatusGet(&stable);RadarScan_LiveStatusGet(&live);
+  assert(stable.window_circles==15U && stable.first_circle==1U && stable.last_circle==15U);
+  assert(live.circle_restarts && !memcmp(RadarScan_Map(),&saved,sizeof saved));
+  points=RadarScan_StablePoints(&count,&scan);assert(count==1U && scan==saved_scan);
+  stable_seed();stable_circle(false,1U,false);
+  RadarScan_StableStatusGet(&stable);points=RadarScan_StablePoints(&count,&scan);
+  assert(points && count==0U && scan==saved_scan+1U);
+  assert(stable.first_circle==2U && stable.last_circle==16U && stable.window_circles==15U);
+  assert(RadarScan_Map()->counts[11]==0U && !(RadarScan_Map()->mask&(1UL<<11)));
+  RadarMap_t expired=*RadarScan_Map();RadarScan_LiveStop();
+  points=RadarScan_StablePoints(&count,&scan);assert(points && count==0U);
+  assert(!memcmp(RadarScan_Map(),&expired,sizeof expired));
+}
+static void test_stable_automatic_hypotheses(void)
+{
+  RadarMap_Params_t p;RadarScan_Status_t status;RadarScan_StartStatus_t start;
+  uint16_t count;uint32_t scan;
+  RadarMap_Defaults(&p);assert(RadarScan_Init(&uart)==HAL_OK);
+  assert(RadarScan_StartAuto(&p,102U));configured();stable_seed();
+  /* Both independently calibrated hypotheses see one stable return. The
+   * upper hypothesis places it in its protected QR cell; lower is unique. */
+  for(unsigned circle=1U;circle<=15U;circle++){
+    point_packet(108,30U,1069U);point_packet(900,1,0);point_packet(1800,1,0);
+    point_packet(2700,1,0);point_packet(0,1,0);
+    for(unsigned step=0U;step<128U;step++)service();
+    RadarScan_StatusGet(&status);if(circle<15U)assert(!status.map_valid);
+  }
+  RadarScan_StatusGet(&status);RadarScan_StartStatusGet(&start);
+  assert(status.state==RADAR_SCAN_READY && status.map_valid && status.map_applicable);
+  assert(start.automatic && start.result.start_id==RADAR_START_LOWER);
+  assert(start.result.qr_counts[0]==1U && start.result.qr_counts[1]==0U);
+  const RadarStablePoint *points=RadarScan_StablePoints(&count,&scan);
+  assert(points && count==1U && points[0].votes==15U && scan==status.scan_id);
+  assert(points[0].angle_tenths==108U && points[0].distance_mm==1069U);
+  assert(RadarScan_MapParams()->situation==2U);
+  /* An ambiguous result preserves the preceding map until manual selection;
+   * selecting a corner also switches the retained stable representative pool. */
+  RadarMap_t saved=*RadarScan_Map();uint32_t old_map=status.map_id;
+  assert(RadarScan_StartAuto(&p,103U));configured();stable_seed();
+  for(unsigned circle=1U;circle<=15U;circle++)stable_circle(true,1U,false);
+  RadarScan_StatusGet(&status);RadarScan_StartStatusGet(&start);
+  assert(status.state==RADAR_SCAN_READY && status.map_id==old_map && !status.map_applicable);
+  assert(start.automatic && start.result.start_id==RADAR_START_UNKNOWN);
+  assert(!memcmp(RadarScan_Map(),&saved,sizeof saved));
+  assert(RadarScan_SelectStart(RADAR_START_UPPER));
+  points=RadarScan_StablePoints(&count,&scan);
+  assert(count==1U && points[0].x_mm==1300U && points[0].y_mm==951U && points[0].votes==15U);
+  assert(RadarScan_MapParams()->situation==1U);
+  assert(RadarScan_SelectStart(RADAR_START_LOWER));
+  points=RadarScan_StablePoints(&count,&scan);
+  assert(count==1U && points[0].x_mm==983U && points[0].y_mm==1084U && points[0].votes==15U);
+  RadarScan_StatusGet(&status);assert(status.map_id==old_map+2U && status.map_applicable);
 }
 static void board_circle(bool upper,bool lower,bool beyond_cloud)
 {
@@ -284,10 +375,10 @@ static void background_circle(void)
 static void test_complete_cloud_mapping(void)
 {
   RadarMap_Params_t p;RadarScan_Status_t s;RadarScan_StartStatus_t selected;
-  RadarMap_Defaults(&p);assert(RadarScan_Init(&uart)==HAL_OK);
+  legacy_defaults(&p);assert(RadarScan_Init(&uart)==HAL_OK);
   for(unsigned automatic=0;automatic<2;automatic++){
-    assert(automatic?RadarScan_StartAuto(&p,90+automatic):
-      RadarScan_StartAt(&p,90+automatic,RADAR_START_LOWER));
+    assert(automatic?legacy_debug_auto(&p,90+automatic):
+      legacy_debug_at(&p,90+automatic,RADAR_START_LOWER));
     configured();background_circle();RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&selected);
     assert(s.state==RADAR_SCAN_READY && !s.truncated && s.points_valid && s.map_applicable);
     assert(selected.automatic==(automatic!=0) && selected.result.start_id==RADAR_START_LOWER);
@@ -319,14 +410,14 @@ static void manual_circle(RadarStart_Id_t start)
 static void test_nominal_manual_start(void)
 {
   RadarMap_Params_t reference;RadarScan_Status_t s;RadarScan_StartStatus_t selected;
-  RadarMap_Defaults(&reference);reference.zero_deg=90;reference.angle_max_tenths=3600;
+  legacy_defaults(&reference);reference.zero_deg=90;reference.angle_max_tenths=3600;
   assert(RadarScan_Init(&uart)==HAL_OK);
-  assert(!RadarScan_StartAt(&reference,31,RADAR_START_UNKNOWN));
-  assert(!RadarScan_StartAt(&reference,31,(RadarStart_Id_t)99));
+  assert(!legacy_debug_at(&reference,31,RADAR_START_UNKNOWN));
+  assert(!legacy_debug_at(&reference,31,(RadarStart_Id_t)99));
   RadarScan_StartStatusGet(&selected);
   assert(!selected.scan_id && !strcmp(selected.result.reason,"not_scanned"));
   for(unsigned id=RADAR_START_UPPER;id<=RADAR_START_LOWER;id++){
-    assert(RadarScan_StartAt(&reference,31+id,(RadarStart_Id_t)id));
+    assert(legacy_debug_at(&reference,31+id,(RadarStart_Id_t)id));
     assert(!RadarScan_SelectStart(RADAR_START_LOWER));configured();
     if(id==RADAR_START_UPPER){
       /* Bad-frame recapture keeps the chosen corner, discards partial counts. */
@@ -350,21 +441,21 @@ static void test_nominal_manual_start(void)
     const RadarMap_Params_t *pose=RadarScan_MapParams();
     assert(pose->lidar_x_mm==2250 && pose->lidar_y_mm==(id==RADAR_START_UPPER?2250:150) &&
       pose->zero_deg==(id==RADAR_START_UPPER?180:90));
-    assert(RadarScan_Params()->zero_deg==180 && RadarScan_Params()->lidar_x_mm==2250);
+    assert(RadarScan_Params()->zero_deg==180 && RadarScan_Params()->lidar_x_mm==2280);
     assert(!RadarScan_SelectStart(RADAR_START_UPPER));
     /* Extra packets after this one circle cannot publish another result. */
     full_circle(false,4);RadarScan_StatusGet(&s);assert(s.scan_id==id && s.map_id==id);
   }
   /* Invalid explicit input cannot destroy retained complete auto candidates. */
-  assert(RadarScan_StartAuto(&reference,34));configured();board_circle(false,false,false);
+  assert(legacy_debug_auto(&reference,34));configured();board_circle(false,false,false);
   RadarScan_StartStatusGet(&selected);assert(selected.automatic && selected.result.start_id==RADAR_START_UNKNOWN);
-  assert(!RadarScan_StartAt(&reference,34,RADAR_START_UNKNOWN));
+  assert(!legacy_debug_at(&reference,34,RADAR_START_UNKNOWN));
   assert(RadarScan_SelectStart(RADAR_START_UPPER));assert(RadarScan_SelectStart(RADAR_START_LOWER));
   RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&selected);
   RadarMap_t historical=*RadarScan_Map();RadarMap_Params_t historical_pose=*RadarScan_MapParams();
   uint32_t old_map=s.map_id,old_scan=s.scan_id;
   /* New explicit capture follows the same candidate/cloud cancellation rules. */
-  assert(RadarScan_StartAt(&reference,35,RADAR_START_UPPER));
+  assert(legacy_debug_at(&reference,35,RADAR_START_UPPER));
   RadarScan_StartStatus_t during;RadarScan_StartStatusGet(&during);
   assert(during.scan_id==selected.scan_id && during.automatic &&
     during.result.start_id==selected.result.start_id);
@@ -375,7 +466,7 @@ static void test_nominal_manual_start(void)
     !memcmp(RadarScan_MapParams(),&historical_pose,sizeof historical_pose));
   assert(during.scan_id==selected.scan_id && during.result.start_id==selected.result.start_id);
   assert(!RadarScan_SelectStart(RADAR_START_LOWER));
-  assert(RadarScan_StartAt(&reference,36,RADAR_START_UPPER));configured();tick+=10001;service();
+  assert(legacy_debug_at(&reference,36,RADAR_START_UPPER));configured();tick+=10001;service();
   RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&during);
   assert(s.state==RADAR_SCAN_ERROR && s.map_id==old_map && s.scan_id==old_scan &&
     s.map_valid && during.scan_id==selected.scan_id && during.result.start_id==selected.result.start_id);
@@ -388,13 +479,13 @@ static void test_live_cloud(void)
   /* The preceding debug scan supplies a complete static map/cloud/raw history. */
   RadarScan_StatusGet(&saved_status);RadarScan_RawStatusGet(&saved_raw);RadarScan_StartStatusGet(&saved_start);
   saved_map=*RadarScan_Map();const RadarSample_t *cloud=RadarScan_Points(&count);assert(count<=32);
-  memcpy(saved_cloud,cloud,count*sizeof(*cloud));RadarMap_Defaults(&p);p.zero_deg=90;
+  memcpy(saved_cloud,cloud,count*sizeof(*cloud));legacy_defaults(&p);p.zero_deg=90;
   p.angle_min_tenths=p.angle_max_tenths=900; /* Live diagnostics cover all 360deg. */
   assert(!RadarScan_LiveStart(&p,81,RADAR_START_UNKNOWN));
   for(unsigned fixed=0;fixed<2;fixed++){
     unsigned sent=tx_count;
     assert(RadarScan_LiveStart(&p,81,RADAR_START_UPPER));assert(!RadarScan_LiveStart(&p,81,RADAR_START_LOWER));
-    assert(!RadarScan_Start(&p,81) && !RadarScan_DebugStart(&p,81,RADAR_START_LOWER));
+    assert(!legacy_debug_start(&p,81) && !RadarScan_DebugStart(&p,81,RADAR_START_LOWER));
     RadarScan_LiveStatusGet(&live);assert(live.active && live.state==RADAR_LIVE_PREPARING && !live.sequence);
     assert(live.parameters.lidar_x_mm==2250 && live.parameters.lidar_y_mm==2250 && live.parameters.zero_deg==180);
     assert(!RadarScan_LiveCopy(points));configured();full_circle(fixed,4);
@@ -445,113 +536,126 @@ static void test_live_cloud(void)
 static void test_host_scan_isolation(void)
 {
   RadarMap_Params_t vehicle_params,host_params;
-  RadarScan_Status_t vehicle_status,after;
-  RadarScan_StartStatus_t vehicle_start,after_start;
+  RadarScan_Status_t before,after;
+  RadarScan_StartStatus_t start_before,start_after;
   RadarScan_HostStatus_t host;
-  RadarScan_LiveStatus_t legacy_live,legacy_live_after;
-  RadarMap_t vehicle_map;
-  RadarMap_Params_t vehicle_map_params;
-  RadarLive_Point_t preview[RADAR_LIVE_BINS];
-  const RadarSample_t *points;
-  uint16_t count;
-  uint8_t junk[4096];
-
-  memset(junk,0x21,sizeof junk);
-  assert(RadarScan_Init(&uart)==HAL_OK);RadarMap_Defaults(&vehicle_params);
-  assert(RadarScan_Start(&vehicle_params,901));configured();full_circle(false,4);
-  RadarScan_StatusGet(&vehicle_status);RadarScan_StartStatusGet(&vehicle_start);
-  vehicle_map=*RadarScan_Map();vehicle_map_params=*RadarScan_MapParams();
-  assert(vehicle_status.map_valid && vehicle_status.points_valid && RadarScan_Points(&count));
-
-  host_params=vehicle_params;host_params.lidar_x_mm=230;host_params.lidar_y_mm=230;
-  host_params.zero_deg=90;host_params.angle_max_tenths=3600;
+  RadarHostMap_Config_t config;
+  uint16_t count;uint32_t scan;
+  RadarMap_Defaults(&vehicle_params);assert(RadarScan_Init(&uart)==HAL_OK);
+  assert(RadarScan_Start(&vehicle_params,901U));configured();stable_seed();
+  for(unsigned circle=1U;circle<=15U;circle++)stable_circle(true,1U,false);
+  RadarScan_StatusGet(&before);RadarScan_StartStatusGet(&start_before);
+  RadarMap_t vehicle_map=*RadarScan_Map();RadarMap_Params_t vehicle_pose=*RadarScan_MapParams();
+  host_params=vehicle_params;RadarHostMap_Defaults(&config);
+  RadarScan_HostConfigureMap(&config);
   assert(RadarScan_HostStart(&host_params));
-  assert(!RadarScan_Start(&vehicle_params,902) && !RadarScan_LiveStart(&vehicle_params,902,RADAR_START_LOWER));
-  RadarScan_StatusGet(&after);RadarScan_StartStatusGet(&after_start);
-  assert(after.map_id==vehicle_status.map_id && after.scan_id==vehicle_status.scan_id && after.map_valid && !after.points_valid);
-  assert(after_start.scan_id==vehicle_start.scan_id && !RadarScan_Points(&count));
-  configured();
-  for(unsigned retry=0;retry<12;retry++)measure(false,(retry*173U)%3600U,4,true);
-  input(junk,sizeof junk);input(junk,sizeof junk);input(junk,sizeof junk);service();
-  full_circle(false,4);RadarScan_HostStatusGet(&host);
-  assert(host.state==RADAR_SCAN_READY && host.scan_id==1 && host.points_valid && !host.truncated);
-  assert(host.circle_restarts>=12 && host.point_count==16);
-  points=RadarScan_HostPoints(&count);assert(points && count==16);
-  RadarScan_StatusGet(&after);RadarScan_StartStatusGet(&after_start);
-  assert(after.map_id==vehicle_status.map_id && after.scan_id==vehicle_status.scan_id && after.map_valid && !after.points_valid);
-  assert(after_start.scan_id==vehicle_start.scan_id);
-  assert(!memcmp(RadarScan_Map(),&vehicle_map,sizeof vehicle_map));
-  assert(!memcmp(RadarScan_MapParams(),&vehicle_map_params,sizeof vehicle_map_params));
+  assert(!RadarScan_Start(&vehicle_params,902U) && !RadarScan_LiveStart(&vehicle_params,902U,RADAR_START_LOWER));
+  configured();stable_seed();
+  for(unsigned circle=1U;circle<=5U;circle++)stable_circle(true,20U,false);
+  point_packet(300,1,1500U);measure(true,900,4,true);
+  RadarScan_HostStatusGet(&host);
+  assert(host.active && host.circle_restarts && host.stability.window_circles==5U);
+  stable_seed();
+  for(unsigned circle=6U;circle<=15U;circle++)stable_circle(true,20U,false);
+  RadarScan_HostStatusGet(&host);
+  assert(host.state==RADAR_SCAN_READY && !host.active && host.scan_id==1U && host.stability.window_circles==15U);
+  const RadarStablePoint *points=RadarScan_StablePoints(&count,&scan);
+  assert(points && count==1U && points[0].votes==15U && scan==host.scan_id);
+  const RadarHostMap_Result_t *result=RadarScan_HostMap(&scan);
+  assert(result && scan==host.scan_id && result->counts[11]==1U && (result->scanned_mask&(1UL<<11)));
+  RadarScan_StatusGet(&after);RadarScan_StartStatusGet(&start_after);
+  assert(after.map_id==before.map_id && after.scan_id==before.scan_id && after.map_valid);
+  assert(start_after.scan_id==start_before.scan_id && start_after.result.start_id==start_before.result.start_id);
+  assert(!memcmp(RadarScan_Map(),&vehicle_map,sizeof vehicle_map) &&
+    !memcmp(RadarScan_MapParams(),&vehicle_pose,sizeof vehicle_pose));
   assert(!RadarScan_Points(&count));
-
-  assert(RadarScan_HostStart(&host_params));configured();
-  measure(false,2700,4,false);measure(false,0,4,false);
-  {uint8_t cm[]={0x53,0x54,0x0e,0,0,0,0x45,0x44};input(cm,sizeof cm);service();}
-  RadarScan_HostStatusGet(&host);assert(host.unit==RADAR_UNIT_CM && host.unit_changes==1 && host.circle_restarts);
-  full_circle(false,4);RadarScan_HostStatusGet(&host);assert(host.scan_id==2 && host.points_valid);
-
+  config.threshold=2U;assert(RadarScan_HostRebuildStableMap(&config));
+  result=RadarScan_HostMap(&scan);assert(result->counts[11]==1U && !(result->scanned_mask&(1UL<<11)));
+  config.threshold=1U;
   assert(RadarScan_HostStart(&host_params));configured();tick+=RADAR_SCAN_TIMEOUT_MS+1U;service();
-  RadarScan_HostStatusGet(&host);assert(host.state==RADAR_SCAN_ERROR && !strcmp(host.reason,"scan_timeout") && host.scan_id==2);
+  RadarScan_HostStatusGet(&host);assert(host.state==RADAR_SCAN_ERROR && !strcmp(host.reason,"scan_timeout") && host.scan_id==1U);
   assert(RadarScan_HostStart(&host_params));configured();RadarScan_HostStop();
-  RadarScan_HostStatusGet(&host);assert(host.state==RADAR_SCAN_STOPPED && !strcmp(host.reason,"operator_stop") && host.scan_id==2);
-
+  RadarScan_HostStatusGet(&host);assert(host.state==RADAR_SCAN_STOPPED && host.scan_id==1U);
   assert(RadarScan_HostStart(&host_params));RadarScan_Process();assert(tx_busy);
-  tick+=501;RadarScan_Process();RadarScan_HostStatusGet(&host);
-  assert(host.state==RADAR_SCAN_ERROR && !strcmp(host.reason,"command_failed") && host.scan_id==2);
-
-  assert(RadarScan_HostStart(&host_params));configured();
-  measure(false,2700,256,false);measure(false,0,256,false);
-  for(unsigned angle=100;angle<3600;angle+=100)measure(false,angle,256,false);
-  measure(false,0,256,false);RadarScan_HostStatusGet(&host);
-  assert(host.state==RADAR_SCAN_READY && host.scan_id==3 && host.truncated && !host.points_valid && host.raw_points==9216);
-  assert(!RadarScan_HostPoints(&count));
-
-  RadarScan_LiveStatusGet(&legacy_live);
-  RadarHostMap_Config_t host_config;RadarHostMap_Defaults(&host_config);
-  assert(RadarScan_HostLiveStart(&host_params,&host_config));
-  RadarScan_HostStatusGet(&host);assert(host.state==RADAR_SCAN_PREPARING);
-  configured();full_circle(false,4);
-  RadarScan_HostStatusGet(&host);assert(host.live_active && host.live_sequence==1 && host.live_points==16);
-  assert(host.state==RADAR_SCAN_READY && host.raw_points==16U);
-  uint32_t live_scan_id;
-  const RadarHostMap_Result_t *live_map=RadarScan_HostLiveMap(&live_scan_id);
-  assert(live_map && live_scan_id==host.scan_id && live_map->raw_points==16U && live_map->path_valid);
-  assert(!RadarScan_HostPoints(&count));
-  assert(RadarScan_HostLiveCopy(preview));assert(!RadarScan_LiveCopy(preview));
-  RadarScan_LiveStatusGet(&legacy_live_after);
-  assert(legacy_live_after.id==legacy_live.id && legacy_live_after.sequence==legacy_live.sequence &&
-    legacy_live_after.state==legacy_live.state && legacy_live_after.active==legacy_live.active);
-  /* A return in R1C2 is a real obstacle; the previous circle is not accumulated. */
-  point_packet(2700,1,0);point_packet(0,1,0);point_packet(900,1,545);
-  point_packet(2700,1,0);point_packet(0,1,0);
-  live_map=RadarScan_HostLiveMap(&live_scan_id);
-  assert(live_map && live_map->counts[1]==1U && live_map->scanned_mask==2U);
-  assert(!(live_map->scanned_mask & RADAR_HOST_PROTECTED_MASK));
-  const uint32_t saved_live_scan=live_scan_id;
-  const RadarHostMap_Result_t saved_live_map=*live_map;
-  /* A corrupt partial circle cannot replace the completed obstacle map. */
-  measure(false,900,4,true);
-  live_map=RadarScan_HostLiveMap(&live_scan_id);
-  assert(live_scan_id==saved_live_scan && !memcmp(live_map,&saved_live_map,sizeof saved_live_map));
-  full_circle(false,4);
-  live_map=RadarScan_HostLiveMap(&live_scan_id);
-  assert(live_scan_id!=saved_live_scan && live_map->raw_points==16U && !live_map->scanned_mask);
-  /* All 9216 returns participate: neither the 120-bin preview nor 4096-point
-   * diagnostic storage capacity limits continuous obstacle counts. */
-  point_packet(2700,1,0);point_packet(0,256,100);
-  for(unsigned angle=5;angle<=175;angle+=5)point_packet(angle,256,100);
-  point_packet(2700,1,0);point_packet(0,1,0);
-  live_map=RadarScan_HostLiveMap(&live_scan_id);
-  assert(live_map->raw_points==9217U && live_map->counts[0]==9216U && !live_map->scanned_mask);
-  RadarScan_HostStatusGet(&host);assert(host.live_points<10U);
-  host_config.energy_min=100U;RadarScan_HostLiveConfigure(&host_config);full_circle(false,4);
-  live_map=RadarScan_HostLiveMap(&live_scan_id);
-  assert(live_map->raw_points==16U && live_map->filtered_points==0U && live_map->counts[0]==0U);
+  tick+=501U;RadarScan_Process();RadarScan_HostStatusGet(&host);
+  assert(host.state==RADAR_SCAN_ERROR && !strcmp(host.reason,"command_failed") && host.scan_id==1U);
+  assert(RadarScan_HostLiveStart(&host_params,&config));configured();stable_seed();
+  for(unsigned circle=1U;circle<=15U;circle++)stable_circle(circle<=3U,50U,false);
+  RadarScan_HostStatusGet(&host);assert(host.live_active && host.live_sequence==15U && host.stability.window_circles==15U);
+  result=RadarScan_HostLiveMap(&scan);assert(result && result->counts[11]==1U && (result->scanned_mask&(1UL<<11)));
+  RadarHostMap_Result_t saved=*result;uint32_t saved_scan=scan;
+  point_packet(300,1,1500U);measure(true,900,4,true);
+  result=RadarScan_HostLiveMap(&scan);assert(scan==saved_scan && !memcmp(result,&saved,sizeof saved));
+  stable_seed();stable_circle(false,1U,false);
+  result=RadarScan_HostLiveMap(&scan);assert(scan==saved_scan+1U && result->counts[11]==0U && !(result->scanned_mask&(1UL<<11)));
+  RadarScan_HostStatusGet(&host);assert(host.stability.first_circle==2U && host.stability.last_circle==16U);
+  config.energy_min=100U;RadarScan_HostLiveConfigure(&config);
+  RadarScan_HostStatusGet(&host);assert(host.stability.window_circles==0U);
+  stable_seed();for(unsigned circle=1U;circle<=15U;circle++)stable_circle(true,1U,false);
+  result=RadarScan_HostLiveMap(&scan);assert(result && result->filtered_points==0U && result->counts[11]==0U);
   RadarScan_HostLiveStop();RadarScan_HostStatusGet(&host);
   assert(!host.live_active && !strcmp(host.live_reason,"operator_stop"));
-  assert(RadarScan_HostLiveMap(&live_scan_id)==live_map);
   assert(!memcmp(RadarScan_Map(),&vehicle_map,sizeof vehicle_map));
 }
+static void test_configuration_evidence_and_stop_processing(void)
+{
+  RadarMap_Params_t p;RadarScan_Status_t s;RadarScan_HostStatus_t h;RadarStableStatus stable;
+  RadarHostMap_Config_t config;uint16_t count;uint32_t id;
+  assert(RadarScan_Init(&uart)==HAL_OK);RadarMap_Defaults(&p);
+  assert(RadarScan_Start(&p,1001U));configured();stable_seed();
+  for(unsigned c=0;c<15;c++)stable_circle(true,1U,false);
+  assert(RadarScan_SetParam("threshold",2));RadarScan_StatusGet(&s);
+  assert(s.map_applicable && RadarScan_Map()->counts[11]==1U);
+  assert(RadarScan_SetParam("upper_lidar_x_mm",2040));RadarScan_StatusGet(&s);
+  assert(s.map_applicable && RadarScan_MapParams()->lidar_x_mm==2280);
+  assert(RadarScan_SetParam("zero_deg",90));RadarScan_StatusGet(&s);assert(!s.map_applicable);
+  assert(RadarScan_SetParam("threshold",3));RadarScan_StatusGet(&s);
+  assert(!s.map_applicable && RadarScan_MapParams()->geometry.zero_tenths==1800U);
+  assert(RadarScan_Start(RadarScan_Params(),1002U));configured();stable_seed();
+  for(unsigned c=0;c<15;c++)stable_circle(true,1U,false);
+  assert(RadarScan_MapParams()->geometry.zero_tenths==900U);
+
+  assert(RadarScan_Init(&uart)==HAL_OK);RadarMap_Defaults(&p);RadarHostMap_Defaults(&config);
+  RadarScan_HostConfigureMap(&config);assert(RadarScan_HostStart(&p));configured();stable_seed();
+  for(unsigned c=0;c<5;c++)stable_circle(true,1U,false);
+  unsigned tx=tx_count;config.energy_min=100U;RadarScan_HostConfigureMap(&config);RadarScan_StableConfigurationChanged();
+  RadarScan_HostStatusGet(&h);assert(h.active && h.stability.window_circles==0U && tx_count==tx);
+  stable_seed();for(unsigned c=0;c<15;c++)stable_circle(true,1U,false);
+  const RadarHostMap_Result_t *host=RadarScan_HostMap(&id);
+  assert(host && !host->filtered_points && !host->stability.stable_count);
+  assert(!RadarScan_VehicleStablePoints(&count,&id) && count==0U && id==0U);
+  config.energy_min=0U;RadarScan_HostConfigureMap(&config);RadarScan_StableConfigurationChanged();
+  config.threshold=2U;assert(!RadarScan_HostRebuildStableMap(&config));
+
+  assert(RadarScan_Init(&uart)==HAL_OK);RadarMap_Defaults(&p);
+  assert(RadarScan_LiveMapStart(&p,1003U,RADAR_START_LOWER));configured();stable_seed();
+  for(unsigned c=0;c<15;c++)stable_circle(true,1U,false);
+  point_packet(300,1,1500U);point_packet(900,1,0);point_packet(1800,1,0);point_packet(2700,1,0);
+  uint8_t frame[LDS_MAX_FRAME_BYTES];unsigned n=packet(frame,true,0U,1U);input(frame,n);service();
+  RadarScan_StableStatusGet(&stable);assert(stable.finalizing);
+  RadarScan_LiveStop();assert(!RadarScan_RebuildStableMap(&p));
+  for(unsigned step=0;step<128;step++)service();
+  const RadarStablePoint *points=RadarScan_VehicleStablePoints(&count,&id);
+  assert(points && count==1U && RadarScan_Map()->counts[11]==1U);
+  assert(!RadarScan_HostStablePoints(&count,&id));
+  p.threshold=2U;assert(RadarScan_RebuildStableMap(&p));assert(RadarScan_Map()->counts[11]==1U);
+
+  /* An unresolved automatic capture cannot republish the other hypothesis
+   * under the retained map's lower installation after a threshold edit. */
+  assert(RadarScan_Init(&uart)==HAL_OK);RadarMap_Defaults(&p);
+  assert(RadarScan_Start(&p,1004U));configured();stable_seed();
+  for(unsigned c=0;c<15;c++)stable_circle(true,1U,false);
+  RadarMap_t retained=*RadarScan_Map();RadarScan_StatusGet(&s);id=s.map_id;
+  assert(RadarScan_StartAuto(&p,1005U));configured();stable_seed();
+  for(unsigned c=0;c<15;c++)stable_circle(true,1U,false);
+  RadarScan_StartStatus_t start;RadarScan_StartStatusGet(&start);
+  assert(start.result.start_id==RADAR_START_UNKNOWN);
+  assert(RadarScan_SetParam("threshold",2));RadarScan_StatusGet(&s);
+  assert(s.map_id==id && !s.map_applicable && !memcmp(RadarScan_Map(),&retained,sizeof retained));
+  assert(RadarScan_SelectStart(RADAR_START_LOWER));RadarScan_StatusGet(&s);
+  assert(s.map_applicable && RadarScan_MapParams()->threshold==2U && RadarScan_Map()->counts[11]==1U);
+}
+
 int main(void)
 {
   RadarScan_Status_t s;RadarUart_Status_t us;RadarMap_Params_t params;
@@ -559,12 +663,18 @@ int main(void)
   uint16_t count;const RadarSample_t *points;uint32_t id;unsigned i;
   uint8_t junk[4096];memset(junk,0,sizeof junk);
   assert(RadarScan_Init(&uart)==HAL_OK);RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_IDLE&&tx_count==0);
+  assert(RadarScan_SetParam("upper_lidar_x_mm",2040.5f));
+  assert(RadarScan_SetParam("upper_lidar_y_mm",2240));
+  assert(RadarScan_Params()->upper_lidar_x_mm==2040.5f && RadarScan_Params()->upper_lidar_y_mm==2240);
+  assert(RadarScan_Params()->lidar_x_mm==2280 && RadarScan_Params()->lidar_y_mm==314 && tx_count==0);
+  assert(!RadarScan_SetParam("upper_lidar_x_mm",2401));
+  assert(RadarScan_Init(&uart)==HAL_OK);
   RadarScan_StartStatusGet(&start_status);assert(!start_status.scan_id && !strcmp(start_status.result.reason,"not_scanned"));
   assert(!RadarScan_SelectStart(RADAR_START_LOWER));
-  RadarMap_Defaults(&params);
+  legacy_defaults(&params);
   assert(params.lidar_x_mm==2250 && params.lidar_y_mm==150 && params.zero_deg==180 &&
     params.angle_min_tenths==0 && params.angle_max_tenths==3600 && params.threshold==1);
-  assert(RadarScan_Start(&params,7));force_busy=true;service();assert(tx_count==0);
+  assert(legacy_debug_start(&params,7));force_busy=true;service();assert(tx_count==0);
   force_busy=false;configured();assert(tx_count==6);
   for(i=1;i<6;i++)assert(tx_ticks[i]-tx_ticks[i-1]>=20);
   full_circle(false,32);RadarScan_StatusGet(&s);
@@ -572,36 +682,36 @@ int main(void)
   assert(s.coverage_tenths==3600&&s.point_count==128&&s.unit==RADAR_UNIT_UNKNOWN);
   points=RadarScan_Points(&count);assert(points&&count==128&&points[0].angle_tenths==0&&points[31].angle_tenths==871);
   RadarScan_StartStatusGet(&start_status);assert(start_status.scan_id==1&&!start_status.automatic&&start_status.result.start_id==RADAR_START_LOWER&&!strcmp(start_status.result.reason,"manual_reference"));
-  id=s.map_id;assert(RadarScan_Start(&params,8));configured();RadarScan_StatusGet(&s);
+  id=s.map_id;assert(legacy_debug_start(&params,8));configured();RadarScan_StatusGet(&s);
   assert(s.map_valid&&!s.points_valid&&RadarScan_Map()!=0&&RadarScan_Points(&count)==0);
   measure(true,2700,4,false);measure(true,0,4,false);measure(true,900,4,true);
   RadarScan_StatusGet(&s);assert(s.circle_restarts&&s.state==RADAR_SCAN_WAIT_WRAP&&s.map_id==id);
   full_circle(true,4);RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_READY&&s.map_id==id+1);
-  assert(RadarScan_Start(&params,9));configured();measure(false,2700,4,false);measure(false,0,4,false);
+  assert(legacy_debug_start(&params,9));configured();measure(false,2700,4,false);measure(false,0,4,false);
   {uint8_t st[]={0x53,0x54,0x0e,0,0,0,0x45,0x44};input(st,sizeof st);service();}
   RadarScan_StatusGet(&s);assert(s.unit==RADAR_UNIT_CM&&s.state==RADAR_SCAN_WAIT_WRAP&&s.unit_changes==1);
   full_circle(false,4);points=RadarScan_Points(&count);assert(points&&points[0].distance_mm==1000);
   assert(RadarScan_SetParam("threshold",5));RadarScan_StatusGet(&s);assert(s.map_valid&&!s.map_applicable);
   assert(!RadarScan_SetParam("threshold",0));assert(RadarScan_MapParams()->threshold==1);
-  assert(RadarScan_Start(RadarScan_Params(),10));configured();full_circle(false,4);RadarScan_StatusGet(&s);assert(s.map_applicable);
+  assert(legacy_debug_start(RadarScan_Params(),10));configured();full_circle(false,4);RadarScan_StatusGet(&s);assert(s.map_applicable);
   /* DMA overwrites must be counted by absolute TC epochs, even while main stalls. */
-  assert(RadarScan_Start(&params,11));configured();measure(true,2700,4,false);measure(true,0,4,false);
+  assert(legacy_debug_start(&params,11));configured();measure(true,2700,4,false);measure(true,0,4,false);
   input(junk,sizeof junk);input(junk,sizeof junk);input(junk,sizeof junk);service();
   RadarScan_StatusGet(&s);RadarUart_StatusGet(&us);assert(us.overwritten_bytes>=8192&&s.circle_restarts&&s.map_valid);
   full_circle(false,4);RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_READY);
   /* A complete map survives timeout and an explicit stop. */
-  id=s.map_id;assert(RadarScan_Start(&params,12));configured();tick+=10001;service();RadarScan_StatusGet(&s);
+  id=s.map_id;assert(legacy_debug_start(&params,12));configured();tick+=10001;service();RadarScan_StatusGet(&s);
   assert(s.state==RADAR_SCAN_ERROR&&s.map_valid&&!s.points_valid&&s.map_id==id);RadarScan_Stop();
   /* Point-cloud truncation affects display only: all 9216 samples still map.
    * A derived world pose passed to Start does not change the user revision. */
   params=*RadarScan_Params();params.lidar_x_mm=1200;params.lidar_y_mm=1200;params.zero_deg=0;params.angle_max_tenths=3600;
-  assert(RadarScan_Start(&params,13));configured();measure(false,2700,256,false);measure(false,0,256,false);
+  assert(legacy_debug_start(&params,13));configured();measure(false,2700,256,false);measure(false,0,256,false);
   for(i=100;i<3600;i+=100)measure(false,i,256,false);
   measure(false,0,256,false);RadarScan_StatusGet(&s);
   assert(s.state==RADAR_SCAN_READY&&s.truncated&&s.point_count==4096&&s.raw_points==9216&&s.map_applicable);
   assert(RadarScan_Map()->counts[12]==9216);
   /* Parameters edited during a capture take effect on its successor. */
-  assert(RadarScan_Start(&params,14));configured();assert(RadarScan_SetParam("threshold",6));
+  assert(legacy_debug_start(&params,14));configured();assert(RadarScan_SetParam("threshold",6));
   full_circle(false,4);RadarScan_StatusGet(&s);assert(!s.map_applicable&&RadarScan_MapParams()->threshold==5);
   /* Late TC after an IDLE that already observed wrap cannot count it twice. */
   RadarUart_StatusGet(&us);i=us.received_bytes;rx_at=4000;dma.counter=96;rx_type=HAL_UART_RXEVENT_IDLE;RadarUart_RxEventCallback(&uart,4000);
@@ -614,33 +724,33 @@ int main(void)
   assert(RadarScan_Init(&uart)==HAL_OK);input(junk,1000);RadarUart_Process();RadarUart_StatusGet(&us);assert(us.parsed_bytes<=512);
   /* An initialization failure stays local and is retried on the next service. */
   receive_failures=1;assert(RadarScan_Init(&uart)==HAL_ERROR);service();RadarUart_StatusGet(&us);
-  assert(us.rx_ready&&us.restarts==1);assert(RadarScan_Start(&params,15));configured();
+  assert(us.rx_ready&&us.restarts==1);assert(legacy_debug_start(&params,15));configured();
   input(junk,37);service();RadarUart_ErrorCallback(&uart);service();
   full_circle(false,4);RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_READY&&s.map_valid);
   RadarUart_StatusGet(&us);assert(us.uart_errors==1&&us.restarts==2);
   {UART_HandleTypeDef other=uart;RadarUart_ErrorCallback(&other);RadarUart_StatusGet(&us);assert(us.uart_errors==1);}
   /* ST can arrive during configuration; retaining its cm flag is essential. */
-  assert(RadarScan_Start(&params,16));
+  assert(legacy_debug_start(&params,16));
   {uint8_t st[]={0x53,0x54,0x0e,0,0,0,0x45,0x44};input(st,sizeof st);service();}
   configured();full_circle(false,4);points=RadarScan_Points(&count);assert(points&&points[0].distance_mm==1000);
   /* Crossing zero alone is insufficient if the starting packet was at 30deg.
    * Complete the remaining angular coverage before publishing. */
-  assert(RadarScan_Start(&params,17));configured();measure(false,2700,4,false);measure(false,300,4,false);
+  assert(legacy_debug_start(&params,17));configured();measure(false,2700,4,false);measure(false,300,4,false);
   measure(false,1200,4,false);measure(false,2100,4,false);measure(false,3000,4,false);measure(false,50,4,false);
   RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_COLLECTING&&s.coverage_tenths==3350);
   measure(false,300,4,false);RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_READY&&s.coverage_tenths==3600);
   /* A genuine zero crossing need not have its last start in the final 90deg. */
-  assert(RadarScan_Start(&params,18));configured();measure(false,2650,4,false);measure(false,100,4,false);
+  assert(legacy_debug_start(&params,18));configured();measure(false,2650,4,false);measure(false,100,4,false);
   measure(false,1000,4,false);measure(false,1900,4,false);measure(false,2800,4,false);measure(false,100,4,false);
   RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_READY);
   /* Real fault signature: every received byte belongs to a six-byte alarm.
    * Expose its code; later valid measurements can still complete a new scan. */
-  assert(RadarScan_Init(&uart)==HAL_OK);assert(RadarScan_Start(&params,19));configured();
+  assert(RadarScan_Init(&uart)==HAL_OK);assert(legacy_debug_start(&params,19));configured();
   {uint8_t alarm[]={0xce,0xce,0xce,0xce,1,0};input(alarm,sizeof alarm);service();input(alarm,sizeof alarm);service();}
   RadarScan_StatusGet(&s);assert(s.bytes==12&&s.alarm==2&&s.last_alarm==1&&s.packets==0);
   assert(s.state==RADAR_SCAN_WAIT_WRAP&&s.unit==RADAR_UNIT_UNKNOWN&&!s.points_valid);
   tick+=10001;service();RadarScan_StatusGet(&s);assert(s.state==RADAR_SCAN_ERROR&&!strcmp(s.reason,"scan_timeout"));
-  assert(RadarScan_Start(&params,20));configured();full_circle(false,4);RadarScan_StatusGet(&s);
+  assert(legacy_debug_start(&params,20));configured();full_circle(false,4);RadarScan_StatusGet(&s);
   assert(s.state==RADAR_SCAN_READY&&s.points_valid&&s.alarm==2&&s.last_alarm==1);
   /* Read-only identity verification retains the complete map, cloud and RAM. */
   {RadarUart_Probe_t probe;uint32_t mask=RadarScan_Map()->mask;uint16_t threshold=RadarScan_Params()->threshold;
@@ -654,7 +764,7 @@ int main(void)
    * the newly captured result; their complete raw cloud remains available. */
   RadarMap_t historical=*RadarScan_Map();RadarMap_Params_t historical_params=*RadarScan_MapParams();
   uint32_t historical_map=s.map_id,previous_scan=s.scan_id,historical_tick=s.completed_tick;
-  RadarMap_Defaults(&params);assert(RadarScan_StartAuto(&params,21));configured();board_circle(false,false,false);
+  legacy_defaults(&params);assert(legacy_debug_auto(&params,21));configured();board_circle(false,false,false);
   RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
   assert(s.state==RADAR_SCAN_READY && s.scan_id==previous_scan+1 && s.map_id==historical_map);
   assert(s.completed_tick==historical_tick);
@@ -669,16 +779,16 @@ int main(void)
   assert(s.completed_tick==circle_completed_tick);
   assert(start_status.result.start_id==RADAR_START_LOWER && !strcmp(start_status.result.reason,"manual_selection"));
   RadarScan_Stop();RadarScan_StartStatusGet(&start_status);assert(start_status.result.start_id==RADAR_START_LOWER);
-  assert(RadarScan_StartAuto(&params,22));assert(!RadarScan_SelectStart(RADAR_START_UPPER));RadarScan_Stop();
+  assert(legacy_debug_auto(&params,22));assert(!RadarScan_SelectStart(RADAR_START_UPPER));RadarScan_Stop();
   RadarScan_StartStatusGet(&start_status);assert(start_status.scan_id==previous_scan+1);
   /* All raw samples feed classification, including evidence beyond 4096. */
-  assert(RadarScan_StartAuto(&params,23));configured();board_circle(false,true,true);
+  assert(legacy_debug_auto(&params,23));configured();board_circle(false,true,true);
   RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
   assert(s.state==RADAR_SCAN_READY && s.truncated && s.point_count==4096 && s.raw_points==5124);
   assert(start_status.result.start_id==RADAR_START_LOWER && start_status.result.qr_counts[0]==3 && start_status.result.qr_counts[1]==0);
   assert(s.map_applicable && s.points_map_id==s.map_id && RadarScan_MapParams()->lidar_y_mm==150);
   /* Contradictory frames never silently publish the lower assumption. */
-  historical_map=s.map_id;assert(RadarScan_StartAuto(&params,24));configured();board_circle(true,true,false);
+  historical_map=s.map_id;assert(legacy_debug_auto(&params,24));configured();board_circle(true,true,false);
   RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
   assert(s.map_id==historical_map && !strcmp(s.reason,"start_both_conflict") && !s.points_map_id);
   assert(start_status.result.qr_counts[0]==3 && start_status.result.raw_counts[1]==3 && start_status.result.start_id==RADAR_START_UNKNOWN);
@@ -686,9 +796,10 @@ int main(void)
   assert(s.scan_id==previous_scan && s.map_id==historical_map+1 && RadarScan_MapParams()->lidar_x_mm==2250 && RadarScan_MapParams()->lidar_y_mm==2250);
   assert(RadarScan_Map()->counts[14]==3 && !(RadarScan_Map()->mask&RADAR_MAP_REQUIRED_CLEAR_MASK));
   /* A damaged partial circle must discard its hypothesis counts as well. */
-  assert(RadarScan_StartAuto(&params,25));configured();point_packet(2700,1,0);point_packet(0,1,0);point_packet(611,3,2171);
+  assert(legacy_debug_auto(&params,25));configured();point_packet(2700,1,0);point_packet(0,1,0);point_packet(611,3,2171);
   measure(true,1800,4,true);board_circle(false,false,false);RadarScan_StatusGet(&s);RadarScan_StartStatusGet(&start_status);
   assert(s.state==RADAR_SCAN_READY && s.circle_restarts && start_status.result.start_id==RADAR_START_UNKNOWN && !start_status.result.raw_counts[1]);
-  test_complete_cloud_mapping();test_nominal_manual_start();test_three_circles();test_debug_raw();test_live_cloud();test_host_scan_isolation();test_missing_ce_sector();
-  puts("radar_scan: static/raw CE/CF replay, continuous live bins/unit/filter/recovery/history, commands and snapshot retention PASS");return 0;
+  test_complete_cloud_mapping();test_nominal_manual_start();test_fifteen_circles();test_rolling_map_expiry_and_bad_circle();test_stable_automatic_hypotheses();test_debug_raw();test_live_cloud();test_host_scan_isolation();test_missing_ce_sector();
+  test_configuration_evidence_and_stop_processing();
+  puts("radar_scan: 15-circle stability, rolling expiry/abort, automatic hypotheses, host isolation and legacy raw/parser regressions PASS");return 0;
 }

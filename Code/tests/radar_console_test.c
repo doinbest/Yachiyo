@@ -1,6 +1,7 @@
 /* Production wire formatter and command admission; actuator/scan endpoints are
  * deterministic fixtures, so a query cannot accidentally start real hardware. */
 #include "radar_console.h"
+#include "radar_host_console.h"
 #include "radar_scan.h"
 #include "chassis_route.h"
 #include "chassis_localization.h"
@@ -47,6 +48,31 @@ static RadarScan_LiveStatus_t live_fixture;
 static RadarLive_Point_t live_points[RADAR_LIVE_BINS];
 static unsigned live_starts,live_stops,live_copies;
 static unsigned host_inits,host_processes,host_commands;
+static RadarStablePoint stable_tx[RADAR_STABLE_CAPACITY];
+static uint16_t stable_tx_count;
+static uint32_t stable_tx_id;
+static RadarStablePoint stable_fixture[RADAR_STABLE_CAPACITY];
+static uint16_t stable_count;
+static uint32_t stable_id;
+bool RadarStableTx_Freeze(uint8_t owner,uint32_t id,const RadarStablePoint *points,uint16_t count){
+  (void)owner;if(stable_tx_id==id)return true;
+  memcpy(stable_tx,points,count*sizeof *points);stable_tx_count=count;stable_tx_id=id;return true;
+}
+const RadarStablePoint *RadarStableTx_Points(uint8_t owner,uint32_t id,uint16_t *count){
+  (void)owner;if(count)*count=id==stable_tx_id?stable_tx_count:0U;return id==stable_tx_id?stable_tx:NULL;
+}
+void RadarStableTx_Release(uint8_t owner){(void)owner;stable_tx_id=0U;}
+const RadarStablePoint *RadarScan_StablePoints(uint16_t *count,uint32_t *id){
+  if(count)*count=stable_count;
+  if(id)*id=stable_id;
+  return stable_id?stable_fixture:NULL;
+}
+const RadarStablePoint *RadarScan_VehicleStablePoints(uint16_t *count,uint32_t *id){return RadarScan_StablePoints(count,id);}
+bool RadarScan_SetCalibrationParam(const char *key,int32_t value){(void)key;(void)value;return true;}
+bool RadarScan_IsLiveMap(void){return live_fixture.mapping;}
+bool RadarScan_LiveMapStart(const RadarMap_Params_t *p,uint32_t origin,RadarStart_Id_t start){
+  bool ok=RadarScan_LiveStart(p,origin,start);if(ok)live_fixture.mapping=true;return ok;
+}
 void RadarHostConsole_Init(void){host_inits++;}
 void RadarHostConsole_Process(void){host_processes++;}
 bool RadarHostConsole_Command(unsigned n,char *t[]){(void)n;(void)t;host_commands++;return true;}
@@ -99,7 +125,7 @@ bool RadarScan_StartAt(const RadarMap_Params_t *p,uint32_t origin,RadarStart_Id_
   requested_start=start;manual_scans++;return RadarScan_Start(p,origin);
 }
 bool RadarScan_StartAtCycles(const RadarMap_Params_t *p,uint32_t origin,RadarStart_Id_t start,uint8_t circles){
-  assert(circles==3);scan.circles_target=circles;return RadarScan_StartAt(p,origin,start);
+  assert(circles==15);scan.circles_target=circles;return RadarScan_StartAt(p,origin,start);
 }
 bool RadarScan_SelectStart(RadarStart_Id_t start){
   if(!start_status.scan_id || !start_status.automatic || RadarConsole_ScanBusy() || start==RADAR_START_UNKNOWN)return false;
@@ -323,11 +349,56 @@ static void test_evidence_console(void)
   fetch("evidence",UINT32_MAX,152);assert(strlen(page)<=256 && page_field("cell")==24);
   evidence_fixture.complete=false;
 }
+
+static void test_stable_geometry_window_and_formal_live_map(void)
+{
+  puts("NEW_STABLE_BEGIN");
+  RadarMap_Defaults(&params);captured=params;RadarMap_Reset(&map);map.counts[1]=4U;
+  scan.scan_id=200U;scan.map_id=201U;scan.origin_generation=7U;location.generation=7U;
+  scan.state=RADAR_SCAN_READY;scan.map_valid=scan.map_applicable=true;scan.points_valid=false;
+  scan.reason="complete";scan.circles_done=scan.circles_target=15U;
+  scan.stability.raw_points=100000U;scan.stability.filtered_points=90000U;scan.stability.outside_points=80000U;
+  scan.stability.window_circles=15U;scan.stability.first_circle=1U;scan.stability.last_circle=15U;
+  scan.stability.stable_count=stable_count=256U;scan.stability.candidate_count=256U;
+  stable_id=200U;
+  for(unsigned i=0U;i<stable_count;i++)stable_fixture[i]=(RadarStablePoint){(uint16_t)(i*10U),500U,(uint16_t)(175U+i),400U,3U,1U};
+  RadarConsole_Init();fast_pump();fetch("map",201U,0U);unsigned pages=page_field("pages");assert(pages>=6U && strstr(page,"\"g\":4"));
+  for(unsigned p=1U;p<pages;p++)fetch("map",201U,p);
+  fetch("map",201U,1U);assert(strstr(page,"149407997,20569846,1800") && strstr(page,"65809,680,-407,66623"));
+  fetch("map",201U,2U);assert(strstr(page,"\"window\":[1,15,15]") && strstr(page,"\"stable\":[256,256,0,0]"));
+  fetch("map",201U,3U);assert(strstr(page,"\"stats\":[100000,90000,80000]"));
+  fetch("stable",200U,0U);pages=page_field("pages");assert(pages>32U && strstr(page,"\"total\":256"));
+  stable_fixture[0].x_mm=999U;
+  for(unsigned p=1U;p<pages;p++)fetch("stable",200U,p);
+  fetch("params",0U,17U);assert(strstr(page,"\"value\":149407997"));
+  fetch("params",0U,19U);assert(strstr(page,"\"key\":\"upper_lidar_x_mm\"") && strstr(page,"\"value\":2050"));
+  fetch("params",0U,20U);assert(strstr(page,"\"key\":\"upper_lidar_y_mm\"") && strstr(page,"\"value\":2250"));
+  for(unsigned p=0U;p<21U;p++)fetch("params",0U,p);
+  /* Keep the frozen result readable while several new rolling windows arrive. */
+  command("radar result 1");tick+=100U;fast_pump();assert(strstr(page,"\"k\":\"map\""));
+  scan.scan_id=202U;scan.map_id=203U;stable_id=202U;map.counts[1]=99U;
+  scan.stability.first_circle=2U;scan.stability.last_circle=16U;
+  unsigned streamed=0U;
+  do{
+    tick+=100U;page[0]=0;fast_pump();assert(page[0] && !strstr(reply,"snapshot_changed"));
+    if(strstr(page,"\"k\":\"stable\""))assert(page_field("scan")==200U);
+    if(strstr(page,"\"k\":\"map\"") || strstr(page,"\"k\":\"path\""))assert(strstr(page,",7,200,201,1]"));
+    assert(++streamed<400U);
+  }while(!strstr(page,"\"k\":\"result_end\""));
+  assert(page_field("scan")==200U && page_field("sp")>32U);
+  fetch("stable",200U,0U);assert(page_field("scan")==200U);
+  command("radar ack 1");assert(strstr(reply,"result_acknowledged"));
+  fetch("map",203U,0U);assert(strstr(page,",7,202,203,2]"));
+  live_fixture.active=false;busy=false;command("radar live map start lower");
+  assert(live_fixture.mapping && live_fixture.active && requested_start==RADAR_START_LOWER);
+  command("radar stop");assert(!live_fixture.active);
+}
 int main(void)
 {
   RadarMap_Defaults(&params);captured=params;RadarMap_Reset(&map);
-  assert(params.lidar_x_mm==2250 && params.lidar_y_mm==150 && params.zero_deg==180 &&
+  assert(params.lidar_x_mm==2280 && params.lidar_y_mm==314 && params.zero_deg==180 &&
     params.angle_min_tenths==0 && params.angle_max_tenths==3600 && params.threshold==1);
+  params.lidar_x_mm=2250;params.lidar_y_mm=150;params.situation=0;params.grid_version=3;captured=params;
   scan.state=RADAR_SCAN_READY;scan.reason="complete";scan.map_valid=scan.map_applicable=scan.points_valid=true;
   scan.map_id=scan.scan_id=4;scan.origin_generation=7;scan.coverage_tenths=3600;
   scan.points_map_id=4;start_status.scan_id=4;start_status.result.start_id=RADAR_START_LOWER;start_status.result.reason="manual_reference";
@@ -359,6 +430,7 @@ int main(void)
   bulk_ready=false;command("radar fetch map 4 0");page[0]=0;fast_pump();assert(!page[0]);
   command("radar fetch map 4 1");assert(strstr(reply,"page_pending"));
   bulk_ready=true;fast_pump();assert(strstr(page,"\"page\":0,"));assert(!moves && !scans);
+  command("radar ack 1");assert(strstr(reply,"result_acknowledged"));
   for(unsigned i=0;i<RADAR_MAP_CELL_COUNT;i++)map.counts[i]=(uint16_t)(65000+i);
   unsigned map_pages=fetch_map(4),points_pages=fetch_points(4),path_pages=fetch_path(1,false);
   assert(map_pages<6 && points_pages<120);
@@ -381,8 +453,12 @@ int main(void)
   assert(scans==stream_scans && moves==stream_moves);
   command("radar get");pump();assert(strstr(page,"\"key\":\"lidar_x_mm\""));
   for(unsigned i=1;i<10;i++){fetch("params",0,i);assert(strstr(page,"\"k\":\"params\""));}
+  /* A fixed-field scan can precede first origin preparation (0 -> 1). */
+  scan.origin_generation=0;location.generation=1;
   command("radar nav start 50");assert(moves==1 && submitted_speed==50);
-  location.generation++;command("radar nav start 50");assert(moves==1 && strstr(reply,"map_origin"));location.generation--;
+  location.generation++;fetch("map",4,0);assert(strstr(page,"\"applicable\":true"));
+  command("radar status");assert(strstr(foreground[0],"\"applicable\":true"));
+  scan.origin_generation=location.generation=7;
   command("radar set threshold 4");assert(map.mask==RADAR_MAP_FIXED_MASK);command("radar nav start 50");assert(moves==1);
   scan.map_applicable=true;command("radar scan");assert(scans==1 && captured.zero_deg==180 && captured.lidar_x_mm==2250);
   command("radar stop");assert(stops==1 && map.mask==RADAR_MAP_FIXED_MASK);
@@ -397,7 +473,8 @@ int main(void)
   assert(moves==1);
   scan.origin_generation=0;scan.map_valid=false;scan.state=RADAR_SCAN_IDLE;
   command("radar scan");unsigned before=stops;pump();assert(stops==before);
-  location.generation++;pump();assert(stops==before+1);
+  location.generation++;pump();assert(stops==before);
+  busy=true;pump();assert(stops==before+1);busy=false;
   /* Full uint32 identity values still need to fit the DL20 wire-page budget. */
   tick=UINT32_MAX-1000U;scan.state=RADAR_SCAN_READY;scan.map_valid=scan.map_applicable=scan.points_valid=true;
   scan.map_id=scan.scan_id=scan.origin_generation=location.generation=UINT32_MAX;
@@ -501,11 +578,12 @@ int main(void)
   assert(manual_scans==2 && strstr(reply,"stationary_capture_required"));busy=false;
   command("radar scan sideways");assert(manual_scans==2 && strstr(reply,"format"));
   command("radar scan lower 3");
-  assert(manual_scans==3 && requested_start==RADAR_START_LOWER && scan.circles_target==3 &&
+  assert(manual_scans==3 && requested_start==RADAR_START_LOWER && scan.circles_target==15 &&
     captured.lidar_x_mm==2250 && captured.lidar_y_mm==150 && captured.zero_deg==90 && moves==movement_count);
   command("radar stop");
   test_raw_console();
   test_live_console();
   test_evidence_console();
+  test_stable_geometry_window_and_formal_live_map();
   puts("radar_console_test: PASS (paging, pose, first scan, no implicit drive, origin and parameter validity)");
 }

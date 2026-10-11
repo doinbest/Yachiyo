@@ -18,6 +18,28 @@ import serve
 
 
 class RadarServiceTests(unittest.TestCase):
+    def test_fifteen_circle_shared_core_and_rolling_expiry(self):
+        circles = [[[0, 1000, 80]] for _ in range(3)] + [[] for _ in range(12)]
+        result = serve.plan_radar_offline({'circles': circles})
+        self.assertEqual(result['algorithm'], 'radar_stable_c_v2')
+        self.assertEqual(result['grid_version'], 4)
+        self.assertEqual(result['raw_points'], 3)
+        self.assertEqual(len(result['stable_points']), 1)
+        self.assertEqual(result['stable_points'][0][2], 3)
+        self.assertEqual(result['geometry']['origin_q16'], [149407997, 20569846])
+        # The same fixed neighborhood loses support as circles leave the window.
+        expired = serve.plan_radar_offline({'circles': circles + [[] for _ in range(3)]})
+        self.assertFalse(expired['stable_points'])
+        self.assertEqual(expired['raw_points'], 0)
+        self.assertEqual(expired['window'], {'first': 4, 'last': 18, 'circles': 15})
+
+    def test_one_dense_circle_is_not_three_distinct_circles(self):
+        result = serve.plan_radar_offline({'circles': [[[0, 1000, 80]] * 100] + [[] for _ in range(14)]})
+        self.assertFalse(result['stable_points'])
+        self.assertEqual(result['raw_points'], 100)
+        with self.assertRaisesRegex(ValueError, '至少15'):
+            serve.plan_radar_offline({'circles': [[]] * 14})
+
     def test_default_keeps_single_return_obstacle_like_firmware(self):
         result=serve.plan_radar_offline({'points':[[400,1500,30]]})
         self.assertEqual(result['counts'][12],1)
@@ -196,12 +218,12 @@ class RadarServiceTests(unittest.TestCase):
         self.assertEqual(planned['points'][:3],[[2250,150,1,0],[2100,300,0,0],[2100,1200,5,1]])
         first=planned['phases'][0]
         self.assertEqual(first,dict(kind='move',phase='move',direction='diagonal',segment=1,
-                                   station=0,visit=0,target=[2100,300,90],speed_mm_s=200))
+                                   station=0,visit=0,target=[2100,300,180],speed_mm_s=200))
         for profile in (fixed,planned):
-            self.assertEqual([p['target'] for p in profile['phases'][:2]],[[2100,300,90],[2100,1200,90]])
-            self.assertEqual([p['direction'] for p in profile['phases'][:2]],['diagonal','forward'])
-        self.assertTrue(all(p['segment']==1 and p['station']==5 and p['visit']==1 for p in fixed['phases'][:2]))
-        self.assertEqual([(p['segment'],p['station'],p['visit']) for p in planned['phases'][:2]],[(1,0,0),(2,5,1)])
+            self.assertEqual([p['target'] for p in profile['phases'][:3]],[[2100,300,180],[2100,300,90],[2100,1200,90]])
+            self.assertEqual([p['direction'] for p in profile['phases'][:3]],['diagonal','turn','forward'])
+        self.assertTrue(all(p['segment']==1 and p['station']==5 and p['visit']==1 for p in fixed['phases'][:3]))
+        self.assertEqual([(p['segment'],p['station'],p['visit']) for p in planned['phases'][:3]],[(1,0,0),(1,0,0),(2,5,1)])
         docking=[p for p in fixed['phases'] if p['segment']==6]
         self.assertEqual([p['phase'] for p in docking],['turn','dock_approach','arrival_turn','dock'])
         self.assertEqual([p['target'] for p in docking],[[1200,1200,180],[425,1200,180],[425,1200,90],[350,1200,90]])
@@ -242,7 +264,9 @@ class RadarServiceTests(unittest.TestCase):
         self.assertGreater(qr_index,1)
         first_leg=[p for p in profile['phases'] if p['segment']<=qr_index]
         self.assertTrue(first_leg)
-        self.assertTrue(all(p['target'][2]==90 for p in first_leg))
+        self.assertEqual(first_leg[0]['kind'],'move')
+        self.assertEqual(first_leg[0]['target'][2],180)
+        self.assertTrue(all(p['target'][2]==90 for p in first_leg[1:]))
         self.assertEqual(first_leg[-1]['station'],5)
         self.assertEqual(first_leg[-1]['visit'],1)
 
@@ -285,6 +309,8 @@ class RadarServiceTests(unittest.TestCase):
         # Changing the shared C core must invalidate a cached host executable.
         workspace=ROOT.parents[2]
         files=('Code/tools/radar_plan_cli.c','Code/template/App/radar_map.c','Code/template/App/radar_map.h',
+               'Code/template/App/radar_geometry.c','Code/template/App/radar_geometry.h',
+               'Code/template/App/radar_stability.c','Code/template/App/radar_stability.h',
                'Code/template/App/radar_start.c','Code/template/App/radar_start.h',
                'Code/template/App/chassis_route_profile.c','Code/template/App/chassis_route_profile.h',
                'Code/template/App/chassis_config.h','Code/template/App/motor_id_config.h')
@@ -297,6 +323,7 @@ class RadarServiceTests(unittest.TestCase):
                 serve.plan_radar_offline({})
                 executable=clone/'.embeddedskills/tests/radar_plan_cli.exe'
                 for name in ('Code/template/App/chassis_route_profile.c','Code/template/App/chassis_route_profile.h',
+                             'Code/template/App/radar_geometry.c','Code/template/App/radar_stability.h',
                              'Code/template/App/radar_start.c','Code/template/App/radar_start.h'):
                     path=clone/name;stamp=executable.stat().st_mtime+2
                     os.utime(path,(stamp,stamp))

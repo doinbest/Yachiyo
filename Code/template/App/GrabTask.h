@@ -28,6 +28,7 @@ typedef struct
   const char *operation, *scene, *result; /**< align/store/take/return; action scene; software result. */
   uint8_t slot; /**< Onboard slot 1..3, or 0 for alignment/return. */
   bool busy, stop_requested, stop_confirmed;
+  bool base_home_degraded; /**< Approximate rear anchor accepted after a failed Base HOME. */
   float x_mm, x_target_mm, z_mm, z_target_mm, forward_mm_s, left_mm_s;
   int16_t dx, dy;
   uint32_t rx_seq; /**< MCU receive sequence, not camera capture sequence. */
@@ -77,7 +78,8 @@ bool GrabTask_VisualResponseSet(float forward_dx,float forward_dy,float x_dx,flo
 /** @brief 只读检查所选模式标定完整性和数值/机械边界，不访问硬件。 */
 bool GrabTask_ConfigReady(const char *mode);
 #define GRAB_TASK_POSE 1
-/** @brief 从已验证的后向机械回零锚点切换姿态；先抬Z收X，work为顺时针90°。
+/** @brief 从后向锚点切换姿态；按新鲜停稳反馈补齐抬Z/收X/转Base，work为顺时针90°。
+ * 手动Base就近回零已受理时，先局部验证该轴参考，再衔接准备；停止取消衔接。
  * @return 受理；完成结果为work_ready/travel_ready，不操作夹爪或重新回零。
  */
 bool GrabTask_PoseStart(bool work);

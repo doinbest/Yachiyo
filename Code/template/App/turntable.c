@@ -96,6 +96,15 @@ static void stop_start(const char *reason)
 }
 static void fail(const char *reason)
 {
+  MotorBus_Diagnostic_t bus;
+  MotorBus_DiagnosticGet(&bus);
+  /* Report the first failing action immediately; subsequent rejected commands
+   * and stop verification must not be the user's only evidence. */
+  reply("ERR turntable fault reason=%s bus_locked=%u bus_reason=%s addr=%u func=0x%02X uart_error=0x%08lX\r\n",
+        reason,(unsigned)bus.locked,bus.locked?bus.reason:"none",
+        (unsigned)(bus.locked?bus.address:MOTOR_ID_TURNTABLE),
+        (unsigned)(bus.locked?bus.function:0U),
+        (unsigned long)(bus.locked?bus.uart_error:0U));
   if (MotionStarted && Op != OP_STOP) stop_start(reason);
   else finish(reason, false);
 }
@@ -315,6 +324,9 @@ static void sampled(void)
     else if (!Stable) { Stable = true; StableSince = now; }
     else if ((uint32_t)(now - StableSince) >= (uint32_t)Params[STABLE_MS]) {
       finish("arrived", true);
+      reply("OK turntable arrived angle_deg=%.6g target_deg=%.6g speed_rpm=%.6g ref=%u\r\n",
+            (double)Status.angle_deg,(double)Status.target_deg,
+            (double)Status.speed_rpm,(unsigned)Status.reference_valid);
       return;
     }
     if ((uint32_t)(now - Started) > MotionBudget) fail("position_timeout");
@@ -409,12 +421,16 @@ void Turntable_Process(void)
     cmd[1] = 0xf3; cmd[2] = 0xab; cmd[3] = Op == OP_POWER ? (uint8_t)PowerEnabled : 1; cmd[4] = 0; cmd[5] = 0x6b;
     (void)submit(cmd, 6, 4, false);
   } else if (Step == TT_PHASE_MOVE) {
-    uint32_t pulses = (uint32_t)(fabs(DeltaDeg) * COMMAND_PULSES_PER_REV / 360.0 + 0.5);
+    double target_pulses = floor(fabs(TargetRaw) * COMMAND_PULSES_PER_REV / 360.0 + 0.5);
+    if (target_pulses > 4294967295.0) { fail("invalid_degree"); return; }
+    uint32_t pulses = (uint32_t)target_pulses;
     unsigned rpm = (unsigned)Params[SPEED_RPM];
-    cmd[1] = 0xfd; cmd[2] = DeltaDeg < 0.0; cmd[3] = (uint8_t)(rpm >> 8); cmd[4] = (uint8_t)rpm;
+    cmd[1] = 0xfd; cmd[2] = TargetRaw < 0.0; cmd[3] = (uint8_t)(rpm >> 8); cmd[4] = (uint8_t)rpm;
     cmd[5] = (uint8_t)Params[ACC]; cmd[6] = (uint8_t)(pulses >> 24); cmd[7] = (uint8_t)(pulses >> 16);
     cmd[8] = (uint8_t)(pulses >> 8); cmd[9] = (uint8_t)pulses;
-    cmd[10] = 2; cmd[11] = 0; cmd[12] = 0x6b; /* relative to current realtime position */
+    /* Compute the target from a fresh sample, then use documented absolute
+     * mode 1. Mode 2 has repeatedly behaved as absolute on this car. */
+    cmd[10] = 1; cmd[11] = 0; cmd[12] = 0x6b;
     /* Once copied for transmission, a lost/rejected ACK cannot prove the motor
      * stayed still. The failure path must issue Stop as well as report failure. */
     if (submit(cmd, 13, 4, false)) MotionStarted = true;

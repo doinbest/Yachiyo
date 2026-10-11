@@ -26,7 +26,7 @@ compile_output = run([
     "gcc", "-std=c99", "-Wall", "-Wextra", "-Wno-unused-function", "-DRADAR_HOST_WIRE_FIXTURE",
     "-Itests/radar_stubs", "-Itests/usb_stubs", "-Itemplate/Hardware", "-Itemplate/App",
     "tests/radar_host_console_test.c", "template/App/radar_host_console.c",
-    "template/App/radar_host_map.c", "template/App/radar_map.c", "-lm", "-o", str(EXE),
+    "template/App/radar_host_map.c", "template/App/radar_map.c", "template/App/radar_geometry.c", "-lm", "-o", str(EXE),
 ])
 assert not compile_output.strip(), compile_output
 wire = run([str(EXE)])
@@ -75,17 +75,24 @@ client.receive('@RADAR '+JSON.stringify({...marker,k:'host_status',ss:4,a:0,l:1,
 for(let i=0;i<30&&!commands.includes('radar host ack 4');i++)await new Promise(setImmediate);
 if(!commands.includes('radar host ack 4')||client.lastError)throw new Error('Real C stream not acknowledged: '+JSON.stringify({commands,error:client.lastError}));
 const compact=lines.filter(line=>['r','e'].includes(JSON.parse(line.slice(7)).k)),compactCommands=[];
+const configStart=lines.findIndex(line=>{const f=JSON.parse(line.slice(7));return f.k==='host_config'&&f.data==='source,capture';});
+const configPages=JSON.parse(lines[configStart].slice(7)).pages;
+const captureConfig=lines.slice(configStart,configStart+configPages);
 const last=JSON.parse(compact[0].slice(7)).n-1;let fast;
 fast=new RadarHostClient({fastResults:true,send:async command=>{
   compactCommands.push(command);
   const match=/^radar host bundle 4 (.+)$/.exec(command);
   if(match)queueMicrotask(()=>{for(const line of compact){const f=JSON.parse(line.slice(7));if(f.k==='e'||match[1].split(',').includes(String(f.p)))fast.receive(line);}});
+  if(/^radar host fetch stable:2 0$/.test(command))queueMicrotask(()=>fast.receive(lines.find(line=>JSON.parse(line.slice(7)).k==='host_stable')));
+  const cfg=/^radar host fetch config:1 (\d+)$/.exec(command);
+  if(cfg)queueMicrotask(()=>fast.receive(captureConfig.find(line=>JSON.parse(line.slice(7)).page===Number(cfg[1]))));
   return {};
 }});
 for(const line of compact){const f=JSON.parse(line.slice(7));if(f.p!==0&&f.p!==last)fast.receive(line);}
 for(let i=0;i<30&&!compactCommands.includes('radar host ack 4');i++)await new Promise(setImmediate);
 if(JSON.stringify(fast.model.snapshots.path?.points)!==JSON.stringify(legacyPath)||fast.model.snapshots.map.receivedAt!==fast.model.snapshots.path.receivedAt)throw new Error('Real C compact pair not published together');
-if(JSON.stringify(compactCommands)!==JSON.stringify([`radar host bundle 4 0,${last}`,'radar host ack 4']))throw new Error('Real C compact repair not batched: '+JSON.stringify(compactCommands));
+const expected=[`radar host bundle 4 0,${last}`,...captureConfig.map(line=>`radar host fetch config:1 ${JSON.parse(line.slice(7)).page}`),'radar host fetch stable:2 0','radar host ack 4'];
+if(JSON.stringify(compactCommands)!==JSON.stringify(expected))throw new Error('Real C compact repair not batched: '+JSON.stringify(compactCommands));
 console.log(JSON.stringify({
   config:s.config&&{threshold:s.config.threshold,protected_mask:s.config.protected_mask,radar_x:s.config.radar_x,radar_y:s.config.radar_y},
   map:s.map&&{mask:s.map.mask,counts:s.map.counts},
@@ -100,20 +107,20 @@ console.log(JSON.stringify({
 summary = json.loads(run(["node", "--input-type=module", "-e", consumer, str(MODEL)], input_text=wire))
 assert summary["errors"] == [], summary
 assert summary["config"] == {
-    "threshold": 1, "protected_mask": 0x00404405, "radar_x": 230, "radar_y": 230,
+    "threshold": 1, "protected_mask": 0x00404414, "radar_x": 2280, "radar_y": 314,
 }
 assert summary["map"]["mask"] == 0x00050140
 assert summary["map"]["counts"] == [0] * 25
 assert summary["path"]["count"] == 33
-assert summary["path"]["first"][:2] == [230, 230]
-assert summary["path"]["last"][:2] == [230, 230]
+assert summary["path"]["first"][:2] == [2050, 350]
+assert summary["path"]["last"][:2] == [2050, 350]
 assert summary["stream"]["commands"] == [
     "radar host result 4", "radar host fetch map:3 1",
     f'radar host fetch path:4 {summary["stream"]["pp"]-1}', "radar host ack 4",
 ]
 assert summary["stream"]["repairedPoints"] == 33
-assert summary["compact"]["pages"] == 5
-assert summary["compact"]["bytes"] < 1200
+assert summary["compact"]["pages"] == 7
+assert summary["compact"]["bytes"] < 1800
 assert summary["cloud"]["points"] == [
     {"angle_deg": 0, "distance_mm": 100, "energy": 7},
     {"angle_deg": 90.1, "distance_mm": 65535, "energy": 255},

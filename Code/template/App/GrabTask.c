@@ -98,6 +98,7 @@ static Camera_DataTypeDef Vision;
 static Camera_ColorTypeDef ActiveColor;
 static bool BootActive, BootStopping, BootFailed, BootHomeSent;
 static bool BootLaunching, BootStopUnconfirmed, BootWaitTurntable;
+static bool ManualBaseHomePending, BootBaseOnly, BootResumePose, BootResumePoseWork;
 static uint8_t BootStartedMask, BootVerifiedMask, BootAbortMask, BootAbortSentMask;
 static uint32_t BootHomeTick[3];
 static unsigned BootAxisIndex, BootStep, BootGood;
@@ -107,6 +108,8 @@ static uint8_t BootHomeFlags, BootMotorFlags;
 static bool BootHomeFlagsValid, BootMotorFlagsValid;
 static uint32_t BootTick, BootPoll, BootEnableTick, BootDisabledTick;
 static bool BootDisabledWaiting, BootEnableRecovery;
+static bool BootBaseDegraded, BootAcceptBase, BaseHomeAcceptAvailable;
+static uint8_t BaseHomeFailureFlags;
 static int64_t BootRecoveryRaw;
 /* A full home/position/state round takes at least 300 ms at the 100 ms poll.
  * Allow two rounds for transient disable, then one bounded enable verification. */
@@ -116,6 +119,7 @@ static const MechanicalArm_AxisTypeDef BootAxes[3]={MECHANICAL_ARM_AXIS_Z,MECHAN
 static void boot_stop(const char *reason,bool failed);
 static void boot_process(uint32_t now);
 static uint8_t boot_event(const MechanicalArm_EventTypeDef *event);
+static void base_reference_verify_start(bool work);
 typedef enum { OP_ALIGN, OP_STORE, OP_TAKE, OP_RETURN, OP_CAR_PLACE, OP_TRACK_PICK } GrabOperation_t;
 typedef enum { SCENE_RAW, SCENE_PROC, SCENE_ROUGH, SCENE_TEMP1, SCENE_TEMP2 } GrabScene_t;
 static GrabOperation_t Operation;
@@ -251,6 +255,12 @@ static float align_parameter(unsigned key)
   if(RingTest && key==C_REF_V)return 333;
   return Config[key];
 }
+/* B2 always carries signed errors, including a real zero. Stacking follows
+ * the camera crosshair; legacy color/ring alignment keeps its own reference. */
+static int alignment_dx(const Camera_DataTypeDef *data)
+{ return StackTest?data->DX:(int)data->CX-(int)align_parameter(C_REF_U); }
+static int alignment_dy(const Camera_DataTypeDef *data)
+{ return StackTest?data->DY:(int)align_parameter(C_REF_V)-(int)data->CY; }
 static Camera_ColorTypeDef target_color(void)
 { return RingTest ? (Camera_ColorTypeDef)(0x09U+RingNumber) : ActiveColor; }
 static HAL_StatusTypeDef request_target(void)
@@ -387,6 +397,8 @@ void GrabTask_Init(void)
 {
   unsigned i;
   BootActive=BootStopping=false;
+  BootBaseDegraded=BootAcceptBase=BaseHomeAcceptAvailable=false;
+  ManualBaseHomePending=BootBaseOnly=BootResumePose=false;
   RecoveryUsed=RecoveryCount=0; RecoveryWaiting=RecoveryRestartPending=false;
   LossActive=false; LossTick=LossLastMs=LossMaxMs=GraceCount=GraceSequence=0;
   for(i=0;i<C_COUNT;i++) Config[i]=NAN;
@@ -411,7 +423,7 @@ void GrabTask_Init(void)
   HaveCapture=false; LastReport=HAL_GetTick(); ReportPending=false;
   GrabTracking_Init(&Tracking); GrabTracking_Defaults(&TrackConfig);
   TrackMode=GRAB_TRACK_PREDICT;
-  for(unsigned i=0;i<2;i++){GrabTracking_Defaults(&TrackComparison[i]);TrackComparison[i].mode=(GrabTracking_Mode_t)(i+1U);}
+  for(unsigned i=0;i<2;i++)GrabTracking_DefaultsForMode(&TrackComparison[i],(GrabTracking_Mode_t)(i+1U));
   ChassisObserver_Init(&TrackObserver,0,0,0);
   memset(TrackWheel,0,sizeof TrackWheel); memset(&TrackPositionVelocity,0,sizeof TrackPositionVelocity);
   TrackCommandCount=0; TrackCommandApplied=0; TrackCommandActive=false;
@@ -468,6 +480,7 @@ static void fault(const char *reason)
 }
 void GrabTask_Stop(void)
 {
+  BaseHomeAcceptAvailable=false;
   if(BootActive) { boot_stop("home_cancelled",false); return; }
   if(CalibrationTask) GrabCalibration_Cancel();
   if(Status.state==GRAB_IDLE || Status.state==GRAB_COMPLETE) return;
@@ -490,8 +503,13 @@ void GrabTask_ReferenceInvalidate(MechanicalArm_AxisTypeDef axis)
   unsigned i;
   if(GrabTask_IsBusy()) fault("reference_changed");
   OutsideReferenceValid=false; OutsidePose=true;
+  BaseHomeAcceptAvailable=false; /* Any changed origin invalidates the saved X/Z proof. */
+  if(axis==MECHANICAL_ARM_AXIS_ALL)Status.base_home_degraded=false;
   RearPose=false;
-  if(axis==MECHANICAL_ARM_AXIS_BASE) RearReferenceValid=false;
+  if(axis==MECHANICAL_ARM_AXIS_BASE) {
+    RearReferenceValid=false;ManualBaseHomePending=false;
+    Status.base_home_degraded=false;BaseHomeAcceptAvailable=false;
+  }
   Tracking.reference_valid=false; Tracking.samples=Tracking.motions=0; Tracking.have_sample=false;
   Status.reference_cause=axis==MECHANICAL_ARM_AXIS_X?"x_reference_changed":
     axis==MECHANICAL_ARM_AXIS_Z?"z_reference_changed":
@@ -661,7 +679,7 @@ bool GrabTask_PoseStart(bool work)
   if(GrabTask_IsBusy() || MechanicalArm_IsBusy() || Turntable_IsBusy() ||
      HWT101_Cal_IsBusy())
   { Status.reason="busy";return false; }
-  if(!RearReferenceValid) { Status.reason="rear_reference_missing";return false; }
+  if(!RearReferenceValid && !ManualBaseHomePending) { Status.reason="rear_reference_missing";return false; }
   for(i=C_X_PPM;i<=C_Z_MAX;i++) if(!isfinite(Config[i]))
   { Status.reason="config_missing";Status.missing=Keys[i];return false; }
   if(!isfinite(Config[C_Z_CAR_LIFT]) || Config[C_Z_CAR_LIFT]<Config[C_Z_MIN] ||
@@ -673,6 +691,7 @@ bool GrabTask_PoseStart(bool work)
    * pose. A travel preparation itself waits for the chassis to finish. */
   if(ChassisMotion_IsBusy() && (!work || !RearPose))
   { Status.reason="busy";return false; }
+  if(!RearReferenceValid) { base_reference_verify_start(work);return true; }
   PoseWork=work;PoseStep=0;PollIndex=0;
   CalibrationTask=false;
   Status.mode="fixed";Status.operation="pose";Status.scene="none";
@@ -680,7 +699,7 @@ bool GrabTask_PoseStart(bool work)
   Status.missing="none";
   Status.stop_requested=false;Status.stop_confirmed=false;Status.slot=0;
   memset(Axes,0,sizeof Axes);PendingAction=MECHANICAL_ARM_ACTION_NONE;
-  StartTick=LastPoll=HAL_GetTick();OutsideBase=RearBase+90;
+  StartTick=LastPoll=HAL_GetTick();OutsideBase=RearBase+GRAB_BASE_WORK_OFFSET_DEG;
   OutsideReferenceValid=true;enter(GRAB_ROUTE_POSE);
   return true;
 }
@@ -827,15 +846,22 @@ uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
          (event->Action==MECHANICAL_ARM_ACTION_POSITION && event->Axis==MECHANICAL_ARM_AXIS_BASE))
         GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_BASE);
       if(event->Action==MECHANICAL_ARM_ACTION_HOME)
+      {
+        ManualBaseHomePending=event->Axis==MECHANICAL_ARM_AXIS_BASE && event->HomeMode==0 &&
+          event->Result==MECHANICAL_ARM_RESULT_OK;
         Status.reference_cause=event->Axis==MECHANICAL_ARM_AXIS_ALL?"manual_home_all":
           event->Axis==MECHANICAL_ARM_AXIS_X?"manual_home_x":
           event->Axis==MECHANICAL_ARM_AXIS_Z?"manual_home_z":"manual_home_base";
+      }
       else if(event->Action==MECHANICAL_ARM_ACTION_ZERO)
         Status.reference_cause=event->Axis==MECHANICAL_ARM_AXIS_ALL?"manual_zero_all":
           event->Axis==MECHANICAL_ARM_AXIS_X?"manual_zero_x":
           event->Axis==MECHANICAL_ARM_AXIS_Z?"manual_zero_z":"manual_zero_base";
       else if(event->Action==MECHANICAL_ARM_ACTION_POSITION && event->Axis==MECHANICAL_ARM_AXIS_BASE)
         Status.reference_cause="manual_base_move";
+      else if((event->Action==MECHANICAL_ARM_ACTION_STOP || event->Action==MECHANICAL_ARM_ACTION_HOME_ABORT) &&
+              (event->Axis==MECHANICAL_ARM_AXIS_BASE || event->Axis==MECHANICAL_ARM_AXIS_ALL))
+        ManualBaseHomePending=false;
     }
     return 0;
   }
@@ -993,7 +1019,7 @@ static void vision_grace_process(uint32_t now)
   else if(s.Data.Sequence!=GraceSequence)
   {
     GraceSequence=s.Data.Sequence;
-    dx=(int)s.Data.CX-(int)align_parameter(C_REF_U); dy=(int)align_parameter(C_REF_V)-(int)s.Data.CY;
+    dx=alignment_dx(&s.Data);dy=alignment_dy(&s.Data);
     /* A new near-window or reversed error makes the previous direction unsafe
      * to reuse even before three observations have confirmed visual recovery. */
     if(vision_near_window(dx,dy) ||
@@ -1059,8 +1085,8 @@ static void vision_pause_process(uint32_t now)
   if(RecoveryCount<GRAB_RECOVERY_OBSERVATIONS || !Status.stop_confirmed) return;
   RecoveryUsed++; RecoveryWaiting=false; RecoveryCount=0; loss_finish(now);
   LastSequence=s.Data.Sequence; Vision=s.Data; HaveCapture=true; FreshVision=false;
-  Status.dx=(int16_t)((int)Vision.CX-(int)align_parameter(C_REF_U));
-  Status.dy=(int16_t)((int)align_parameter(C_REF_V)-(int)Vision.CY);
+  Status.dx=(int16_t)alignment_dx(&Vision);
+  Status.dy=(int16_t)alignment_dy(&Vision);
   Axes[0].target=XIntegral=Axes[0].mm; Axes[0].commanded=false;
   Status.x_target_mm=Axes[0].mm; memset(PreviousVelocity,0,sizeof PreviousVelocity);
   LastControl=now; stable_reset(); Status.stop_requested=Status.stop_confirmed=false;
@@ -1095,8 +1121,8 @@ static bool vision_read(uint32_t now)
   if(!HaveCapture) stable_reset();
   LastSequence=s.Data.Sequence; Vision=s.Data;
   HaveCapture=FreshVision=true;
-  Status.dx=(int16_t)((int)Vision.CX-(int)align_parameter(C_REF_U));
-  Status.dy=(int16_t)((int)align_parameter(C_REF_V)-(int)Vision.CY);
+  Status.dx=(int16_t)alignment_dx(&Vision);
+  Status.dy=(int16_t)alignment_dy(&Vision);
   return true;
 }
 /* Error stays referenced to the green camera crosshair in all reports. Only the
@@ -1358,36 +1384,54 @@ static void transfer_process(uint32_t now)
   }
 }
 
+static void pose_complete(void)
+{
+  RearPose=!PoseWork;OutsidePose=PoseWork;
+  Status.result=PoseWork?"work_ready":"travel_ready";Status.reason=Status.result;
+  Status.reference_cause=PoseWork?"work_pose_verified":"travel_pose_verified";
+  Status.missing="none";Status.stop_confirmed=true;enter(GRAB_COMPLETE);
+}
+static bool pose_axis_held(unsigned i,uint32_t now)
+{
+  return axis_quiet(i,now,StartTick) && (Axes[i].flags&0x0dU)==1U;
+}
 static void pose_process(uint32_t now)
 {
   unsigned i;
   if(PoseStep==0)
   {
-    for(i=0;i<3;i++) if(!axis_fresh(i,now)) { poll_axes(now);return; }
+    /* Fresh stationary measurements select the remaining moves after a stop;
+     * a cached rear-pose flag is not enough to skip a moving X/Z axis. */
+    for(i=0;i<3;i++) if(!pose_axis_held(i,now)) { poll_axes(now);return; }
     if(Axes[0].mm<Config[C_X_MIN]-Config[C_POS_TOL] || Axes[0].mm>Config[C_X_MAX]+Config[C_POS_TOL] ||
        Axes[1].mm<Config[C_Z_MIN]-Config[C_POS_TOL] || Axes[1].mm>Config[C_Z_MAX]+Config[C_POS_TOL])
     { fault("initial_axis_limit");return; }
-    if(PoseWork && RearPose &&
-       fabsf(Axes[0].mm-Config[C_X_MIN])<=Config[C_POS_TOL] &&
+    if(fabsf(Axes[0].mm-Config[C_X_MIN])<=Config[C_POS_TOL] &&
        Axes[1].mm>=Config[C_Z_CAR_LIFT]-Config[C_POS_TOL])
-      PoseStep=4; /* certified rear pose: only Base, even after chassis turn finishes */
+      PoseStep=4;
     else if(PoseWork && ChassisMotion_IsBusy())
     { fault("travel_pose_changed");return; }
-    else PoseStep=1;
+    else PoseStep=Axes[1].mm>=Config[C_Z_CAR_LIFT]-Config[C_POS_TOL]?3:1;
   }
   for(i=0;i<3;i++) if(!axis_fresh(i,now)) { fault("feedback_stale");return; }
   if(PoseStep==1) { if(axis_move(1,fmaxf(Axes[1].mm,Config[C_Z_CAR_LIFT]))) PoseStep=2; }
   else if(PoseStep==2 && arrived(1,now)) PoseStep=3;
-  else if(PoseStep==3) { if(axis_move(0,Config[C_X_MIN])) PoseStep=4; }
+  else if(PoseStep==3) {
+    if(pose_axis_held(0,now) && fabsf(Axes[0].mm-Config[C_X_MIN])<=Config[C_POS_TOL])PoseStep=4;
+    else if(axis_move(0,Config[C_X_MIN]))PoseStep=4;
+  }
   else if(PoseStep==4 && (!Axes[0].commanded || arrived(0,now)))
-  { if(base_move(PoseWork?RearBase+90:RearBase)) PoseStep=5; }
+  {
+    float target=PoseWork?RearBase+GRAB_BASE_WORK_OFFSET_DEG:RearBase;
+    if(pose_axis_held(2,now) && fabsf(Axes[2].mm-target)<=GRAB_BASE_POSITION_TOL_DEG &&
+       PendingAction==MECHANICAL_ARM_ACTION_NONE && !MechanicalArm_IsBusy())
+    { pose_complete();return; }
+    if(base_move(target))PoseStep=5;
+  }
   else if(PoseStep==5 && base_arrival(now) && PendingAction==MECHANICAL_ARM_ACTION_NONE &&
           !MechanicalArm_IsBusy())
   {
-    RearPose=!PoseWork;OutsidePose=PoseWork;
-    Status.result=PoseWork?"work_ready":"travel_ready";Status.reason=Status.result;
-    Status.reference_cause=PoseWork?"work_pose_verified":"travel_pose_verified";
-    Status.missing="none";Status.stop_confirmed=true;enter(GRAB_COMPLETE);return;
+    pose_complete();return;
   }
   poll_axes(now);
 }
@@ -1545,13 +1589,13 @@ void GrabTask_Process(void)
         }
         if(Operation==OP_CAR_PLACE)
         {
-          OutsideBase=RearBase+90; OutsideReferenceValid=true;
+          OutsideBase=RearBase+GRAB_BASE_WORK_OFFSET_DEG; OutsideReferenceValid=true;
           enter_axis(GRAB_RETRACT,1);
           return;
         }
         if(Operation!=OP_RETURN)
         {
-          OutsideBase=RearReferenceValid && RearPose?RearBase+90:Axes[2].mm;
+          OutsideBase=RearReferenceValid && RearPose?RearBase+GRAB_BASE_WORK_OFFSET_DEG:Axes[2].mm;
           ObserveX=ExternalX=Axes[0].mm; ObserveZ=Axes[1].mm;
           OutsideReferenceValid=true; OutsidePose=true;
         }
@@ -1692,8 +1736,8 @@ void GrabTask_StatusGet(GrabTask_Status_t *out)
        camera.RequestTarget==target_color() && camera.Data.Target==target_color())
     {
       /* Read-only low-view diagnostics must not re-enter the motion controller. */
-      Status.dx=(int)camera.Data.CX-(int)align_parameter(C_REF_U);
-      Status.dy=(int)align_parameter(C_REF_V)-(int)camera.Data.CY;
+      Status.dx=(int16_t)alignment_dx(&camera.Data);
+      Status.dy=(int16_t)alignment_dy(&camera.Data);
     }
   }
   Status.recovery_used=RecoveryUsed; Status.recovery_count=RecoveryCount;
@@ -1719,6 +1763,8 @@ static void boot_home_start(bool wait_turntable)
   Status.reference_cause="home_verifying";
   Status.missing="home_pending";
   BootActive=true; BootStopping=BootFailed=BootHomeSent=false;
+  BootBaseDegraded=BootAcceptBase=BaseHomeAcceptAvailable=false;
+  BootBaseOnly=BootResumePose=false;
   BootLaunching=true;BootStopUnconfirmed=false;
   BootWaitTurntable=wait_turntable;
   BootStartedMask=BootVerifiedMask=BootAbortMask=BootAbortSentMask=0;
@@ -1730,12 +1776,32 @@ static void boot_home_start(bool wait_turntable)
   enter(GRAB_HOMING);
 }
 void GrabTask_BootHomeStart(void) { boot_home_start(true); }
+/* Verify the already requested manual near-home, without repeating HOME on
+ * Base or disturbing the established X/Z origins and settings. */
+static void base_reference_verify_start(bool work)
+{
+  CalibrationTask=false;ManualBaseHomePending=false;
+  BootActive=BootBaseOnly=BootResumePose=true;BootResumePoseWork=work;
+  BootBaseDegraded=BootAcceptBase=BaseHomeAcceptAvailable=false;
+  BootStopping=BootFailed=BootLaunching=BootStopUnconfirmed=BootWaitTurntable=false;
+  BootStartedMask=4U;BootVerifiedMask=3U;BootAbortMask=BootAbortSentMask=0;
+  BootAxisIndex=2;BootStep=2;BootGood=0;BootHomeSent=true;
+  BootTick=StartTick=BootHomeTick[2]=HAL_GetTick();BootPoll=BootTick-100U;
+  BootPositionValid=BootPositionStable=BootHomeFlagsValid=BootMotorFlagsValid=false;
+  BootDisabledWaiting=BootEnableRecovery=false;
+  PendingAction=MECHANICAL_ARM_ACTION_NONE;
+  Status.mode="fixed";Status.operation="pose";Status.scene="none";Status.slot=0;
+  Status.result="pending";Status.reason=Status.reference_cause="base_reference_verifying";
+  Status.missing="rear_reference";Status.stop_requested=Status.stop_confirmed=false;
+  enter(GRAB_HOMING);
+}
 static void reply(const char *text);
-/* HOME starts a drive-local operation. Launch every axis before waiting for
- * completion, then retain the existing per-axis feedback verification. */
+/* Z/X HOME run together; verify both before starting the loaded Base.
+ * The startup tray must also finish before Base receives ENABLE/HOME. */
 static void boot_axis_select(unsigned index,uint32_t now,bool verify)
 {
   BootAxisIndex=index;BootGood=0;BootStep=verify?2:5;
+  BootBaseDegraded=false;
   BootHomeSent=(BootStartedMask&(1U<<index))!=0;
   BootTick=verify?BootHomeTick[index]:now;BootPoll=now-100U;
   BootPositionValid=BootPositionStable=BootHomeFlagsValid=BootMotorFlagsValid=false;
@@ -1762,6 +1828,7 @@ static void boot_stop(const char *reason,bool failed)
 {
   if(BootStopping) return;
   BootStopping=true; BootFailed=failed; BootStep=10; BootTick=HAL_GetTick();
+  BootResumePose=false;
   BootAbortMask=BootStartedMask&(uint8_t)~BootVerifiedMask;BootAbortSentMask=0;
   Turntable_Stop(); /* Cancel pending boot HOME as well as an active ID8 HOME. */
   Status.reason=reason; Status.stop_requested=true; Status.stop_confirmed=false;
@@ -1790,7 +1857,8 @@ static bool boot_request(MechanicalArm_ResultTypeDef result,MechanicalArm_Action
       const char *action_name=action==MECHANICAL_ARM_ACTION_ENABLE?"enable":
         action==MECHANICAL_ARM_ACTION_HOME?"home":
         action==MECHANICAL_ARM_ACTION_HOME_STATE?"home_state":
-        action==MECHANICAL_ARM_ACTION_POSITION_READ?"position_read":"state";
+        action==MECHANICAL_ARM_ACTION_POSITION_READ?"position_read":
+        action==MECHANICAL_ARM_ACTION_SPEED_READ?"speed_read":"state";
       MotorBus_DiagnosticGet(&diagnostic);
       (void)snprintf(message,sizeof message,
         "ERR grab home_request axis=%s action=%s result=%s bus_locked=%u bus_reason=%s uart_error=0x%08lX fault_ms=%lu\r\n",
@@ -1821,10 +1889,19 @@ static void boot_process(uint32_t now)
       if(Turntable_IsBusy()) { Status.reason="home_wait_turntable";return; }
       if(BootWaitTurntable && !Turntable_ReferenceValid()) { boot_stop("home_turntable_failed",true); }
       else {
-        BootActive=false;Status.reason="home_complete";Status.reference_cause="home_verified";
+        BootActive=false;
+        Status.reason=Status.base_home_degraded?"home_complete_degraded":"home_complete";
+        Status.reference_cause=Status.base_home_degraded?"base_home_degraded":"home_verified";
         Status.missing=configuration_missing(Status.mode);
         if(!Status.missing)Status.missing="none";
         enter(GRAB_IDLE);
+        if(BootBaseOnly) {
+          bool resume=BootResumePose,work=BootResumePoseWork;
+          BootBaseOnly=BootResumePose=false;
+          Status.reference_cause=Status.base_home_degraded?"base_home_degraded":"base_home_verified";
+          if(resume && !GrabTask_PoseStart(work)) { Status.result="rejected";enter(GRAB_ERROR); }
+          return;
+        }
         /* Arm only when all four drives have finished; motion-busy would fail IMU boot verification. */
         HWT101_Cal_BootVerifyArm();return;
       }
@@ -1838,6 +1915,18 @@ static void boot_process(uint32_t now)
   if(!BootStopping && (BootStep==7 || BootEnableRecovery) &&
      now-BootEnableTick>=BOOT_ENABLE_VERIFY_MS)
     boot_stop("home_enable_failed",true);
+  if(!BootStopping && BootStep==16) /* Z/X verified; wait before launching Base. */
+  {
+    if(Turntable_IsBusy()) {
+      if(strcmp(Status.reason,"home_wait_turntable")) {
+        Status.reason="home_wait_turntable";ReportPending=true;
+      }
+      return;
+    }
+    if(BootWaitTurntable && !Turntable_ReferenceValid())
+      boot_stop("home_turntable_failed",true);
+    else boot_axis_select(2,now,false); /* Base gets its own enable/motion window. */
+  }
   if(BootStep==10) /* Drain ordinary reads first; external priority stop may already have cancelled them. */
   {
     if(PendingAction!=MECHANICAL_ARM_ACTION_NONE || MechanicalArm_IsBusy()) return;
@@ -1871,7 +1960,9 @@ static void boot_process(uint32_t now)
   {
     if(boot_request(MechanicalArm_Home(axis,axis==MECHANICAL_ARM_AXIS_BASE?0:2),MECHANICAL_ARM_ACTION_HOME,axis))
     { BootHomeSent=true;BootStartedMask|=(uint8_t)(1U<<BootAxisIndex);
-      BootHomeTick[BootAxisIndex]=now;BootStep=1; }
+      BootHomeTick[BootAxisIndex]=now;
+      if(axis==MECHANICAL_ARM_AXIS_BASE)BootTick=now;
+      BootStep=1; }
   }
   else if(BootStep==2 || BootStep==14)
     (void)boot_request(MechanicalArm_HomeStateRead(axis),MECHANICAL_ARM_ACTION_HOME_STATE,axis);
@@ -1879,10 +1970,41 @@ static void boot_process(uint32_t now)
     (void)boot_request(MechanicalArm_PositionRead(axis),MECHANICAL_ARM_ACTION_POSITION_READ,axis);
   else if(BootStep==4)
     (void)boot_request(MechanicalArm_StateRead(axis),MECHANICAL_ARM_ACTION_STATE,axis);
+  else if(BootStep==17 || BootStep==18)
+    (void)boot_request(MechanicalArm_SpeedRead(axis),MECHANICAL_ARM_ACTION_SPEED_READ,axis);
   else if(BootStep==12)
   {
     if(boot_request(MechanicalArm_HomeAbort(axis),MECHANICAL_ARM_ACTION_HOME_ABORT,axis)) BootStep=13;
   }
+}
+static void boot_axis_verified(MechanicalArm_AxisTypeDef axis)
+{
+  if(axis==MECHANICAL_ARM_AXIS_Z) defaults_restore(DEFAULT_Z_HOME);
+  else if(axis==MECHANICAL_ARM_AXIS_X) defaults_restore(DEFAULT_X_HOME);
+  else {
+    visual_defaults_restore();
+    RearBase=(float)BootPositionRaw*360.0f/65536.0f;
+    if(MECHANICAL_ARM_BASE_POSITIVE_DIR) RearBase=-RearBase;
+    RearReferenceValid=RearPose=true;
+    Status.base_home_degraded=BootBaseDegraded;
+    BaseHomeAcceptAvailable=false;
+    if(BootBaseDegraded) {
+      char line[160];
+      (void)snprintf(line,sizeof line,
+        "OK grab home_degraded axis=base failed_home_flags=0x%02X rear_deg=%.2f reference=approximate motion=quiet\r\n",
+        BaseHomeFailureFlags,RearBase);
+      reply(line);
+      Status.reference_cause="base_home_degraded";
+    }
+  }
+  Status.missing="home_pending";
+  BootVerifiedMask|=(uint8_t)(1U<<BootAxisIndex);
+  if(BootVerifiedMask==7U) {
+    BootStep=15;Status.reason=Status.base_home_degraded?"home_complete_degraded":
+      BootBaseOnly?"base_home_verified":"home_wait_turntable";ReportPending=true;
+  }
+  else if(BootAxisIndex==1) { boot_axis_select(2,HAL_GetTick(),false);BootStep=16; }
+  else boot_axis_select(BootAxisIndex+1,HAL_GetTick(),true);
 }
 static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
 {
@@ -1915,7 +2037,7 @@ static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
   if(event->Action==MECHANICAL_ARM_ACTION_ENABLE)
   { BootStep=BootHomeSent?2:7;BootPoll=HAL_GetTick(); }
   else if(event->Action==MECHANICAL_ARM_ACTION_HOME) {
-    if(BootLaunching && BootAxisIndex<2)boot_axis_select(BootAxisIndex+1,HAL_GetTick(),false);
+    if(BootLaunching && BootAxisIndex==0)boot_axis_select(1,HAL_GetTick(),false);
     else if(BootLaunching) { BootLaunching=false;boot_axis_select(0,HAL_GetTick(),true); }
     else { BootStep=2;BootPoll=HAL_GetTick(); }
   }
@@ -1925,16 +2047,31 @@ static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
     BootHomeFlags=flags; BootHomeFlagsValid=true;
     /* Bit3 before HOME describes the previous attempt, which a new HOME may
      * clear. Overtemperature/current and missing calibration remain faults. */
-    if((flags&(BootHomeSent?0x38U:0x30U)) || (flags&3U)!=3U) boot_stop("home_driver_fault",true);
+    if((flags&0x30U) || (flags&3U)!=3U) boot_stop("home_driver_fault",true);
+    else if(BootHomeSent && (flags&8U)) {
+      if(axis!=MECHANICAL_ARM_AXIS_BASE) boot_stop("home_driver_fault",true);
+      else {
+        BaseHomeAcceptAvailable=true;
+        BaseHomeFailureFlags=flags;
+        if(!BootAcceptBase && Config[C_BASE_HOME_DEGRADE]<.5f) boot_stop("home_driver_fault",true);
+        else if(!(flags&4U)) {
+          BootBaseDegraded=true;BootStep=3;
+          Status.reason="home_degraded_check";ReportPending=true;
+        }
+        else { BootGood=0;BootPositionValid=BootPositionStable=false; }
+      }
+    }
     else if(!(flags&4U)) BootStep=BootHomeSent?3:6;
     else { BootGood=0; BootPositionValid=BootPositionStable=false; }
   }
   else if(event->Action==MECHANICAL_ARM_ACTION_POSITION_READ)
   {
     int64_t raw=event->CurrentPositionRaw;
-    BootPositionStable=BootPositionValid && llabs(raw-BootPositionRaw)<=182;
+    int64_t stable_tol=axis==MECHANICAL_ARM_AXIS_BASE?
+      (int64_t)(GRAB_BASE_HOME_STABLE_TOL_DEG*65536.0f/360.0f):182;
+    BootPositionStable=BootPositionValid && llabs(raw-BootPositionRaw)<=stable_tol;
     BootPositionRaw=raw; BootPositionValid=true;
-    if(BootEnableRecovery && llabs(raw-BootRecoveryRaw)>182)
+    if(BootEnableRecovery && llabs(raw-BootRecoveryRaw)>stable_tol)
     { boot_stop("home_position_changed",true);return 1; }
     /* Base near-home targets a saved single-turn mechanical origin, not the
      * multi-turn position counter's numerical zero. Do not clear that counter. */
@@ -1964,7 +2101,9 @@ static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
           "OK grab home_enable_recovery axis=%s home_flags=0x%02X motor_flags=0x%02X raw=%lld\r\n",
           axis==MECHANICAL_ARM_AXIS_Z?"z":axis==MECHANICAL_ARM_AXIS_X?"x":"base",
           BootHomeFlags,BootMotorFlags,(long long)BootPositionRaw);
-        reply(line);BootStep=9;Status.reason="home_enable_recovery";ReportPending=true;
+        /* A failed HOME needs measured zero speed before re-enabling too. */
+        reply(line);BootStep=BootBaseDegraded?18:9;
+        Status.reason="home_enable_recovery";ReportPending=true;
       }
     }
     else if(!BootPositionStable || (flags&4U) ||
@@ -1973,34 +2112,21 @@ static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
     /* 0x3B already confirms homing finished; Base need not assert the separate
      * position-move reached flag after near-home. Enabled/non-protected is required. */
     else if(axis!=MECHANICAL_ARM_AXIS_BASE && (flags&3U)!=3U) { BootGood=0; BootStep=2; }
+    else if(BootBaseDegraded) BootStep=17;
     else if(++BootGood<2) {
       BootDisabledWaiting=false;BootStep=2;
       Status.reason=BootEnableRecovery?"home_enable_recovery":
         axis==MECHANICAL_ARM_AXIS_Z?"home_z":axis==MECHANICAL_ARM_AXIS_X?"home_x":"home_base";
     }
-    else
-    {
-      /* Restore known defaults only after this axis has passed homing feedback. */
-      if(axis==MECHANICAL_ARM_AXIS_Z)
-      {
-        defaults_restore(DEFAULT_Z_HOME);
-      }
-      else if(axis==MECHANICAL_ARM_AXIS_X)
-      {
-        defaults_restore(DEFAULT_X_HOME);
-      }
-      else if(axis==MECHANICAL_ARM_AXIS_BASE)
-      {
-        visual_defaults_restore();
-        RearBase=(float)BootPositionRaw*360.0f/65536.0f;
-        if(MECHANICAL_ARM_BASE_POSITIVE_DIR) RearBase=-RearBase;
-        RearReferenceValid=RearPose=true;
-      }
-      Status.missing="home_pending";
-      BootVerifiedMask|=(uint8_t)(1U<<BootAxisIndex);
-      if(BootVerifiedMask==7U) { BootStep=15;Status.reason="home_wait_turntable";ReportPending=true; }
-      else boot_axis_select(BootAxisIndex+1,HAL_GetTick(),true);
-    }
+    else boot_axis_verified(axis);
+  }
+  else if(event->Action==MECHANICAL_ARM_ACTION_SPEED_READ) {
+    /* Two separate fresh HOME/position/state/speed rounds are required.
+     * The 5-degree position window alone never proves standstill. */
+    if(event->CurrentSpeedRpm!=0) { BootGood=0;BootStep=2; }
+    else if(BootStep==18) BootStep=9;
+    else if(++BootGood<2) { BootDisabledWaiting=false;BootStep=2; }
+    else boot_axis_verified(axis);
   }
   return 1;
 }
@@ -2308,8 +2434,10 @@ static void track_process(uint32_t now)
     camera.Data.Function==0xB2 && camera.Data.Target==target_color();
   TrackInput.now_ms=now; TrackInput.sample_ms=camera.Data.Tick; TrackInput.sequence=camera.Data.Sequence;
   TrackInput.received_ms=camera.Data.ReceivedTick; TrackInput.receive_time_valid=camera.Data.HasReceiveTime!=0;
-  TrackInput.error_px[0]=(float)camera.Data.CX-Config[C_REF_U];
-  TrackInput.error_px[1]=Config[C_REF_V]-(float)camera.Data.CY;
+  /* Keep the camera's adjustable material reference authoritative. CX/CY
+   * remain diagnostics, not a second controller-side target definition. */
+  TrackInput.error_px[0]=(float)camera.Data.DX;
+  TrackInput.error_px[1]=(float)camera.Data.DY;
   TrackInput.x_mm=Axes[0].mm; TrackInput.x_min_mm=Config[C_X_MIN]; TrackInput.x_max_mm=Config[C_X_MAX];
   TrackInput.feedback_age_ms=now-Axes[0].position_tick;
   if(TrackMode==GRAB_TRACK_FEEDBACK)
@@ -2465,8 +2593,8 @@ static void track_status_write(bool debug)
 {
   char line[320]; Camera_SnapshotTypeDef camera; Camera_SnapshotGet(&camera);
   (void)snprintf(line,sizeof line,
-    "OK grab track state=%s reason=%s mode=%s color=%u ref=%u valid=%u cx=%u cy=%u dx=%d dy=%d vf=%.2f vl=%.2f vx=%.2f x=%.2f room=%.2f xr=%.2f stop_requested=%u stop_confirmed=%u seq=%lu\r\n",
-    States[Status.state],Status.reason,track_mode_name(TrackMode),(unsigned)ActiveColor,Tracking.reference_valid?1U:0U,
+    "OK grab track state=%s reason=%s mode=%s base_home_degraded=%u color=%u ref=%u valid=%u cx=%u cy=%u dx=%d dy=%d vf=%.2f vl=%.2f vx=%.2f x=%.2f room=%.2f xr=%.2f stop_requested=%u stop_confirmed=%u seq=%lu\r\n",
+    States[Status.state],Status.reason,track_mode_name(TrackMode),Status.base_home_degraded?1U:0U,(unsigned)ActiveColor,Tracking.reference_valid?1U:0U,
     (TrackInput.valid && HAL_GetTick()-camera.Data.Tick<=track_config(TrackMode)->grace_ms)?1U:0U,camera.Data.CX,camera.Data.CY,Status.dx,Status.dy,
     Status.forward_mm_s,Status.left_mm_s,TrackMoving?TrackOutput.velocity_mm_s[2]:0,
     Axes[0].position_valid?Axes[0].mm:NAN,TrackOutput.body_room_mm,TrackOutput.x_room_mm,
@@ -2877,8 +3005,8 @@ static void status_write(bool debug)
       (void)snprintf(missing,sizeof missing,"%s",invalid?invalid:"none");
     }
     (void)snprintf(line,sizeof line,
-      "OK grab state=%s mode=%s reason=%s missing=%s ref_cause=%s operation=%s scene=%s slot=%u result=%s stop_requested=%u stop_confirmed=%u elapsed=%lu\r\n",
-      s.state_name,s.mode,s.reason,missing,s.reference_cause,s.operation,s.scene,(unsigned)s.slot,s.result,s.stop_requested?1U:0U,s.stop_confirmed?1U:0U,(unsigned long)s.elapsed_ms);
+      "OK grab state=%s mode=%s reason=%s missing=%s ref_cause=%s base_home_degraded=%u operation=%s scene=%s slot=%u result=%s stop_requested=%u stop_confirmed=%u elapsed=%lu\r\n",
+      s.state_name,s.mode,s.reason,missing,s.reference_cause,s.base_home_degraded?1U:0U,s.operation,s.scene,(unsigned)s.slot,s.result,s.stop_requested?1U:0U,s.stop_confirmed?1U:0U,(unsigned long)s.elapsed_ms);
     reply(line); return;
   }
   if(s.state==GRAB_HOMING)
@@ -2889,17 +3017,23 @@ static void status_write(bool debug)
     if(BootHomeFlagsValid) (void)snprintf(home,sizeof home,"0x%02X",BootHomeFlags);
     if(BootMotorFlagsValid) (void)snprintf(motor,sizeof motor,"0x%02X",BootMotorFlags);
     (void)snprintf(line,sizeof line,
-      "OK grab state=homing mode=%s reason=%s axis=%s step=%u home_flags=%s raw=%s motor_flags=%s stable=%u enable_recovery=%u home_started=%u home_verified=%u stop_requested=%u stop_confirmed=0 elapsed=%lu\r\n",
-      s.mode,s.reason,names[BootAxisIndex],BootStep,home,raw,motor,BootGood,
-      BootEnableRecovery?1U:0U,(unsigned)BootStartedMask,(unsigned)BootVerifiedMask,
+      "OK grab state=homing mode=%s operation=%s reason=%s ref_cause=%s base_home_degraded=%u home_scope=%s axis=%s step=%u home_flags=%s raw=%s motor_flags=%s stable=%u enable_recovery=%u home_started=%u home_verified=%u stop_requested=%u stop_confirmed=0 elapsed=%lu\r\n",
+      s.mode,BootBaseOnly?"pose":"home",s.reason,s.reference_cause,s.base_home_degraded?1U:0U,BootBaseOnly?"base":"all",names[BootAxisIndex],BootStep,home,raw,motor,BootGood,
+      BootEnableRecovery?1U:0U,(unsigned)BootStartedMask,(unsigned)(BootBaseOnly?(BootVerifiedMask&4U):BootVerifiedMask),
       s.stop_requested?1U:0U,(unsigned long)s.elapsed_ms);
+    if(debug && strlen(line)>319U)
+      (void)snprintf(line,sizeof line,
+        "OK grab state=homing mode=%s operation=%s reason=%s base_home_degraded=%u home_scope=%s axis=%s home_flags=%s raw=%s motor_flags=%s stable=%u stop_requested=%u stop_confirmed=0 elapsed=%lu\r\n",
+        s.mode,BootBaseOnly?"pose":"home",s.reason,s.base_home_degraded?1U:0U,
+        BootBaseOnly?"base":"all",names[BootAxisIndex],home,raw,motor,BootGood,
+        s.stop_requested?1U:0U,(unsigned long)s.elapsed_ms);
     if(debug) (void)ConsoleTx_Debug(CONSOLE_DEBUG_VISION,line,(uint16_t)strlen(line));
     else reply(line);
     return;
   }
   (void)snprintf(line,sizeof line,
-    "OK grab state=%s mode=%s reason=%s missing=%s ref_cause=%s operation=%s scene=%s slot=%u result=%s x=%.3f xt=%.3f z=%.3f zt=%.3f b=%.2f bt=%.2f dx=%s dy=%s protocol=B2 age_source=rx rx_seq=%lu vision=%s color=%u model=%s age=%lu vf=%.3f vl=%.3f stop_requested=%u stop_confirmed=%u elapsed=%lu recovery_used=%lu recovery_count=%lu recovery_left_ms=%s loss_ms=%lu loss_max_ms=%lu grace_count=%lu\r\n",
-    s.state_name,s.mode,s.reason,s.missing,s.reference_cause,s.operation,s.scene,(unsigned)s.slot,s.result,s.x_mm,s.x_target_mm,s.z_mm,s.z_target_mm,
+    "OK grab state=%s mode=%s reason=%s missing=%s ref_cause=%s base_home_degraded=%u operation=%s scene=%s slot=%u result=%s x=%.3f xt=%.3f z=%.3f zt=%.3f b=%.2f bt=%.2f dx=%s dy=%s protocol=B2 age_source=rx rx_seq=%lu vision=%s color=%u model=%s age=%lu vf=%.3f vl=%.3f stop_requested=%u stop_confirmed=%u elapsed=%lu recovery_used=%lu recovery_count=%lu recovery_left_ms=%s loss_ms=%lu loss_max_ms=%lu grace_count=%lu\r\n",
+    s.state_name,s.mode,s.reason,s.missing,s.reference_cause,s.base_home_degraded?1U:0U,s.operation,s.scene,(unsigned)s.slot,s.result,s.x_mm,s.x_target_mm,s.z_mm,s.z_target_mm,
     Axes[2].position_valid?Axes[2].mm:NAN,Axes[2].commanded?Axes[2].target:NAN,
     dx,dy,(unsigned long)s.rx_seq,s.vision_state,(unsigned)target_color(),visual_model_name(),(unsigned long)s.age_ms,s.forward_mm_s,s.left_mm_s,
     s.stop_requested?1U:0U,s.stop_confirmed?1U:0U,(unsigned long)s.elapsed_ms,
@@ -2915,14 +3049,14 @@ static void status_write(bool debug)
       /* Preserve complete key/value tokens when the full snapshot exceeds the debug slot. */
       if(Operation==OP_ALIGN || Status.state==GRAB_ACQUIRE || Status.state==GRAB_ALIGN ||
          Status.state==GRAB_SETTLE || Status.state==GRAB_VISION_PAUSE || Status.state==GRAB_VISION_GRACE)
-        (void)snprintf(line,sizeof line,"OK grab state=%s mode=%s reason=%s protocol=B2 age_source=rx rx_seq=%lu vision=%s dx=%s dy=%s color=%u stop_requested=%u stop_confirmed=%u recovery_used=%lu recovery_count=%lu recovery_left_ms=%s loss_ms=%lu loss_max_ms=%lu grace_count=%lu\r\n",
-          s.state_name,s.mode,s.reason,(unsigned long)s.rx_seq,s.vision_state,dx,dy,(unsigned)target_color(),
+        (void)snprintf(line,sizeof line,"OK grab state=%s mode=%s reason=%s base_home_degraded=%u protocol=B2 age_source=rx rx_seq=%lu vision=%s dx=%s dy=%s color=%u stop_requested=%u stop_confirmed=%u recovery_used=%lu recovery_count=%lu recovery_left_ms=%s loss_ms=%lu loss_max_ms=%lu grace_count=%lu\r\n",
+          s.state_name,s.mode,s.reason,s.base_home_degraded?1U:0U,(unsigned long)s.rx_seq,s.vision_state,dx,dy,(unsigned)target_color(),
           s.stop_requested?1U:0U,s.stop_confirmed?1U:0U,(unsigned long)s.recovery_used,(unsigned long)s.recovery_count,remaining,
           (unsigned long)s.loss_ms,(unsigned long)s.loss_max_ms,(unsigned long)s.grace_count);
       else
-        (void)snprintf(line,sizeof line,"OK grab state=%s mode=%s reason=%s operation=%s scene=%s slot=%u result=%s x=%.3f xt=%.3f z=%.3f zt=%.3f ref_cause=%s color=%u stop_requested=%u stop_confirmed=%u\r\n",
+        (void)snprintf(line,sizeof line,"OK grab state=%s mode=%s reason=%s operation=%s scene=%s slot=%u result=%s x=%.3f xt=%.3f z=%.3f zt=%.3f ref_cause=%s base_home_degraded=%u color=%u stop_requested=%u stop_confirmed=%u\r\n",
           s.state_name,s.mode,s.reason,s.operation,s.scene,(unsigned)s.slot,s.result,s.x_mm,s.x_target_mm,
-          s.z_mm,s.z_target_mm,s.reference_cause,(unsigned)target_color(),s.stop_requested?1U:0U,s.stop_confirmed?1U:0U);
+          s.z_mm,s.z_target_mm,s.reference_cause,s.base_home_degraded?1U:0U,(unsigned)target_color(),s.stop_requested?1U:0U,s.stop_confirmed?1U:0U);
       length=strlen(line);
     }
     (void)ConsoleTx_Debug(CONSOLE_DEBUG_VISION,line,(uint16_t)length);
@@ -3140,6 +3274,27 @@ bool GrabTask_Command(unsigned count,char *tokens[])
        bus.locked || bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)
       reply("ERR grab rehome rejected; stop tasks and inspect bus status\r\n");
     else { boot_home_start(false); reply("OK grab rehome accepted; Z/X/Base verification pending\r\n"); status_write(false); }
+  }
+  else if(count==3 && !strcmp(tokens[1],"home") && !strcmp(tokens[2],"accept"))
+  {
+    Mecanum_Status_t bus;Mecanum_StatusGet(&bus);
+    if(Status.state!=GRAB_ERROR || !BaseHomeAcceptAvailable || (BootVerifiedMask&3U)!=3U ||
+       MechanicalArm_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() ||
+       Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy() || bus.locked ||
+       bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)
+      reply("ERR grab home accept rejected; inspect grab status\r\n");
+    else {
+      /* Explicit acceptance retries fresh feedback, never HOME or X/Z motion.
+       * Preserve startup/manual scope so startup still arms IMU verification. */
+      BootActive=BootAcceptBase=true;BootStopping=BootFailed=BootLaunching=false;
+      BootResumePose=false;BootStopUnconfirmed=false;BootAbortMask=BootAbortSentMask=0;
+      BootHomeTick[2]=HAL_GetTick();boot_axis_select(2,HAL_GetTick(),true);
+      BootBaseDegraded=true; /* Abort may clear bit3; this remains an approximate anchor. */
+      Status.stop_requested=Status.stop_confirmed=false;
+      Status.reason="home_degraded_check";StartTick=HAL_GetTick();enter(GRAB_HOMING);
+      reply("OK grab home accept accepted; fresh Base feedback pending\r\n");
+    }
+    status_write(false);
   }
   else if(count>=3 && count<=5 && !strcmp(tokens[1],"start"))
   {

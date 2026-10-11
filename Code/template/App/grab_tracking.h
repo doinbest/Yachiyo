@@ -6,11 +6,15 @@
 #define GRAB_TRACKING_SAMPLES 32U
 #define GRAB_TRACKING_TRACE 128U
 
+typedef enum { GRAB_TRACK_PREDICT, GRAB_TRACK_VISUAL, GRAB_TRACK_FEEDBACK } GrabTracking_Mode_t;
+
 typedef struct
 {
   float body_speed_mm_s, x_speed_mm_s, accel_mm_s2, lambda_s;
   float x_weight, lead_mm, tolerance_px;
   uint32_t control_ms, batch_ms, latency_ms, fit_ms, horizon_ms, grace_ms;
+  float body_accel_mm_s2, x_accel_mm_s2; /* feedback-mode software response, not Emm grades */
+  GrabTracking_Mode_t mode;
 } GrabTracking_Config_t;
 
 typedef struct
@@ -39,6 +43,7 @@ typedef struct
   uint32_t time_ms, sample_ms, sequence;
   uint16_t feedback_age_ms, batch_interval_ms, request_age_ms, sent_age_ms;
   uint8_t flags; /* 1=fresh observation, 2=motion mode, 4=stable, 8=predicting */
+  uint8_t mode; /* retained with this row, including frozen exports */
   float error_px[2], target_px_s[2], actual_mm_s[3], command_mm_s[3];
   float x_mm, forward_mm, left_mm, body_room_mm;
 } GrabTracking_Record_t;
@@ -58,7 +63,7 @@ typedef struct
 {
   GrabTracking_Sample_t samples_data[GRAB_TRACKING_SAMPLES], motion[GRAB_TRACKING_SAMPLES];
   unsigned samples, motions;
-  uint32_t last_sequence, last_sample_ms, last_update_ms, stable_since;
+  uint32_t last_sequence, last_sample_ms, last_update_ms, stable_since, visual_interval_ms;
   bool have_sample, have_update, stable_pending, reference_valid, frozen;
   float reference_left_mm, target_px_s[2], target_px_s2[2], previous_mm_s[3];
   float raw_velocity_px_s[2], raw_accel_px_s2[2];
@@ -84,6 +89,8 @@ unsigned GrabTracking_Percentile(const GrabTracking_Timing_t *timing,unsigned pe
  * @retval 无
  */
 void GrabTracking_Defaults(GrabTracking_Config_t *config);
+/** @brief 取得指定模式的初值；visual/feedback采用各自联调初值。 */
+void GrabTracking_DefaultsForMode(GrabTracking_Config_t *config,GrabTracking_Mode_t mode);
 /** @brief 清空追踪实例，未建立料台参考。
  * @param track 独立追踪状态。
  * @retval 无
@@ -100,13 +107,15 @@ void GrabTracking_Reference(GrabTracking_t *track,float left_mm);
  * @retval 无
  */
 void GrabTracking_Begin(GrabTracking_t *track);
-/** @brief 扣除相机自身位移，拟合目标运动并按真实剩余行程分配速度。
+/** Clear estimation history on a stopped mode change; retain reference and records. */
+void GrabTracking_ResetModel(GrabTracking_t *track);
+/** @brief 原模式拟合目标运动；验证模式按新视觉纠偏，可选反馈减速。
  * @param track 独立状态，调用期间持续保留。
  * @param config 独立追踪参数。
  * @param input 本次反馈/视觉快照；新测量按sequence及sample_ms去重。
  * @param output 输出预测、速度和暂停原因；本函数不发送硬件命令。
  * @retval 无
- * @note 误差约定(CX-ref_u,ref_v-CY)，沿用已验证J；延迟为联调假设。
+ * @note 误差约定(CX-ref_u,ref_v-CY)，共用J；预测延迟/反馈加减速为联调初值。
  */
 void GrabTracking_Update(GrabTracking_t *track,const GrabTracking_Config_t *config,
                          const GrabTracking_Input_t *input,GrabTracking_Output_t *output);

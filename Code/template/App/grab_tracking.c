@@ -14,15 +14,32 @@ unsigned GrabTracking_Percentile(const GrabTracking_Timing_t *t,unsigned percent
   for(unsigned i=0;i<=200;i++){sum+=t->bins[i];if(sum>=goal)return i;}return 200;
 }
 void GrabTracking_Defaults(GrabTracking_Config_t *c)
+{ GrabTracking_DefaultsForMode(c,GRAB_TRACK_PREDICT); }
+void GrabTracking_DefaultsForMode(GrabTracking_Config_t *c,GrabTracking_Mode_t mode)
 {
-  c->body_speed_mm_s=160; c->x_speed_mm_s=60; c->accel_mm_s2=300;
-  c->lambda_s=2.5f; c->x_weight=2.333333f; c->lead_mm=12; c->tolerance_px=5;
-  c->control_ms=20; c->batch_ms=0; c->latency_ms=50; c->fit_ms=240;
-  c->horizon_ms=120; c->grace_ms=250;
+#define PARAM(id,key,initial,minimum,maximum,flags,phase)
+#define TRACK_PARAM(field,key,initial,minimum,maximum,integer) c->field=initial;
+#define TRACK_COMPARISON_DEFAULT(field,key,initial) if(mode!=GRAB_TRACK_PREDICT)c->field=initial;
+#include "grab_parameters.def"
+#undef TRACK_COMPARISON_DEFAULT
+#undef TRACK_PARAM
+#undef PARAM
+  c->mode=mode;
 }
 void GrabTracking_Init(GrabTracking_t *t) { memset(t,0,sizeof(*t)); }
 void GrabTracking_Reference(GrabTracking_t *t,float left)
 { t->reference_left_mm=left; t->reference_valid=true; }
+void GrabTracking_ResetModel(GrabTracking_t *t)
+{
+  t->samples=t->motions=0;t->have_sample=t->have_update=t->stable_pending=false;
+  t->last_sequence=t->last_sample_ms=t->prior_ms=t->visual_interval_ms=0;
+  memset(t->target_px_s,0,sizeof t->target_px_s);memset(t->target_px_s2,0,sizeof t->target_px_s2);
+  memset(t->previous_mm_s,0,sizeof t->previous_mm_s);
+  memset(t->raw_velocity_px_s,0,sizeof t->raw_velocity_px_s);memset(t->raw_accel_px_s2,0,sizeof t->raw_accel_px_s2);
+  memset(t->velocity_confidence,0,sizeof t->velocity_confidence);
+  memset(t->last_compensated_px,0,sizeof t->last_compensated_px);
+  memset(t->prior_target,0,sizeof t->prior_target);memset(t->prior_velocity,0,sizeof t->prior_velocity);memset(t->prior_accel,0,sizeof t->prior_accel);
+}
 void GrabTracking_Begin(GrabTracking_t *t)
 {
   t->frozen=false; t->record_head=t->record_count=0;
@@ -205,9 +222,145 @@ static void record(GrabTracking_t *t,const GrabTracking_Input_t *in,const GrabTr
   if(t->record_count<GRAB_TRACKING_TRACE)t->record_count++;
 }
 
+static void velocity_step(float velocity[3],const float previous[3],float accel,float dt)
+{
+  float change[3],length=0;
+  for(unsigned k=0;k<3;k++){change[k]=velocity[k]-previous[k];length+=change[k]*change[k];}
+  length=sqrtf(length);
+  if(length>accel*dt)
+    for(unsigned k=0;k<3;k++)velocity[k]=previous[k]+change[k]*accel*dt/length;
+}
+static bool model_valid(const GrabTracking_Config_t *c,const GrabTracking_Input_t *in)
+{
+  float a=0,b=0,d=0;
+  if(!(c->x_weight>0))return false;
+  for(unsigned k=0;k<3;k++)
+  {
+    if(!isfinite(in->j[0][k]) || !isfinite(in->j[1][k]))return false;
+    a+=in->j[0][k]*in->j[0][k];b+=in->j[0][k]*in->j[1][k];d+=in->j[1][k]*in->j[1][k];
+  }
+  return a*d-b*b>1e-6f;
+}
+static void visual_record(GrabTracking_t *t,const GrabTracking_Input_t *in,
+                          const GrabTracking_Output_t *out,GrabTracking_Mode_t mode)
+{
+  if(t->frozen)return;
+  record(t,in,out);
+  t->records[(t->record_head+GRAB_TRACKING_TRACE-1U)%GRAB_TRACKING_TRACE].mode=(uint8_t)mode;
+}
+
+/* No target fit, target extrapolation or camera self-motion subtraction. Only a
+ * new observation may request another correction; short gaps use the last
+ * velocity, then decelerate it without reusing the old pixel error. */
+static void visual_update(GrabTracking_t *t,const GrabTracking_Config_t *c,
+                          const GrabTracking_Input_t *in,GrabTracking_Output_t *out)
+{
+  bool fresh=in->valid && (!t->have_sample ||
+    (in->sequence!=t->last_sequence && in->sample_ms!=t->last_sample_ms));
+  float dt=t->have_update?bounded((in->now_ms-t->last_update_ms)/1000.f,0,.2f):0;
+  float weight[3]={1,1,c->x_weight},low[3],high[3],demand[2]={0},scale=1;
+  bool feedback=c->mode==GRAB_TRACK_FEEDBACK;
+  float body_a=feedback?c->body_accel_mm_s2:c->accel_mm_s2;
+  float x_a=feedback?c->x_accel_mm_s2:c->accel_mm_s2;
+  float delay=fmaxf(c->control_ms,fmaxf(c->batch_ms,in->batch_interval_ms))/1000.f;
+  if(feedback)delay+=in->feedback_age_ms/1000.f;
+  if(t->have_update){timing_add(&t->control_timing,in->now_ms-t->last_update_ms);if(!fresh)timing_add(&t->prediction_timing,in->now_ms-t->last_update_ms);}
+  if(fresh){t->visual_updates++;if(in->receive_time_valid)timing_add(&t->visual_delay,in->now_ms-in->received_ms);}
+  else t->timer_updates++;
+  t->control_sequence++;t->last_rx_ms=in->receive_time_valid?in->received_ms:0;t->last_control_ms=in->now_ms;
+  t->last_update_ms=in->now_ms;t->have_update=true;
+  memset(out,0,sizeof *out);
+  out->x_target_mm=in->x_mm;
+  out->body_room_mm=t->reference_valid?fmaxf(0,50-(in->motion_mm[1]-t->reference_left_mm)):0;
+  out->x_room_mm=fminf(in->x_max_mm-in->x_mm,in->x_mm-in->x_min_mm);
+  for(unsigned k=0;k<3;k++){high[k]=k==2?c->x_speed_mm_s:c->body_speed_mm_s;low[k]=-high[k];}
+  high[1]=room_speed(out->body_room_mm,body_a,delay,c->body_speed_mm_s);
+  high[2]=room_speed(in->x_max_mm-in->x_mm,x_a,c->horizon_ms/1000.f,c->x_speed_mm_s);
+  low[2]=-room_speed(in->x_mm-in->x_min_mm,x_a,c->horizon_ms/1000.f,c->x_speed_mm_s);
+  out->model_valid=model_valid(c,in);
+  if(!out->model_valid)
+  {memset(t->previous_mm_s,0,sizeof t->previous_mm_s);t->stable_pending=false;visual_record(t,in,out,c->mode);return;}
+  if(fresh)
+  {
+    if(t->have_sample)t->visual_interval_ms=in->sample_ms-t->last_sample_ms;
+    for(unsigned axis=0;axis<2;axis++)
+    {
+      t->last_error_px[axis]=out->predicted_px[axis]=in->error_px[axis];
+      demand[axis]=-c->lambda_s*in->error_px[axis]*(fabsf(in->error_px[axis])<=c->tolerance_px?.5f:1);
+      t->target_px_s[axis]=t->target_px_s2[axis]=0;
+      t->error_square[axis]+=in->error_px[axis]*in->error_px[axis];
+      t->error_bins[axis][(unsigned)fminf(100,ceilf(fabsf(in->error_px[axis]))) ]++;
+    }
+    t->error_count++;t->samples=t->samples<GRAB_TRACKING_SAMPLES?t->samples+1:t->samples;
+    t->last_sequence=in->sequence;t->last_sample_ms=in->sample_ms;t->have_sample=true;
+    if(!allocate(in->j,demand,weight,low,high,c->body_speed_mm_s,out->velocity_mm_s))
+    {
+      float lo=0,hi=1;
+      for(unsigned k=0;k<14;k++)
+      {
+        float mid=(lo+hi)*.5f,requested[2]={mid*demand[0],mid*demand[1]},candidate[3];
+        if(allocate(in->j,requested,weight,low,high,c->body_speed_mm_s,candidate))
+        {lo=mid;memcpy(out->velocity_mm_s,candidate,sizeof candidate);}else hi=mid;
+      }
+      scale=lo;
+      out->window_end=scale<.15f && hypotf(demand[0],demand[1])>2 &&
+        (out->body_room_mm<.5f || out->x_room_mm<.5f);
+    }
+    memcpy(out->correction_mm_s,out->velocity_mm_s,sizeof out->correction_mm_s);
+    if(feedback)
+    {
+      for(unsigned k=0;k<3;k++)
+      {
+        float sign=out->velocity_mm_s[k]>=0?1:-1;
+        float room=fabsf(out->velocity_mm_s[k])/c->lambda_s;
+        float excess=fmaxf(0,sign*(in->actual_mm_s[k]-t->previous_mm_s[k]));
+        float cap=room_speed(fmaxf(0,room-excess*delay),k==2?x_a:body_a,delay,
+                            k==2?c->x_speed_mm_s:c->body_speed_mm_s);
+        out->velocity_mm_s[k]=bounded(out->velocity_mm_s[k],-cap,cap);
+      }
+    }
+    if(fabsf(in->error_px[0])<=c->tolerance_px && fabsf(in->error_px[1])<=c->tolerance_px)
+    {if(!t->stable_pending){t->stable_pending=true;t->stable_since=in->sample_ms;}out->stable=in->sample_ms-t->stable_since>=200;}
+    else t->stable_pending=false;
+  }
+  uint32_t age=t->have_sample?in->now_ms-t->last_sample_ms:UINT32_MAX;
+  uint32_t hold_ms=t->visual_interval_ms?t->visual_interval_ms+c->control_ms:c->grace_ms;
+  if(hold_ms<2*c->control_ms)hold_ms=2*c->control_ms;
+  if(hold_ms>c->grace_ms)hold_ms=c->grace_ms;
+  out->visual_pause=age>c->grace_ms;
+  if(!out->model_valid || out->visual_pause)
+  {memset(t->previous_mm_s,0,sizeof t->previous_mm_s);memset(out->velocity_mm_s,0,sizeof out->velocity_mm_s);t->stable_pending=false;visual_record(t,in,out,c->mode);return;}
+  if(!fresh && in->valid && age<=hold_ms)
+  {
+    memcpy(out->velocity_mm_s,t->previous_mm_s,sizeof out->velocity_mm_s);
+    out->stable=t->stable_pending && t->last_sample_ms-t->stable_since>=200;
+  }
+  if(out->window_end)memset(out->velocity_mm_s,0,sizeof out->velocity_mm_s);
+  else
+  {
+    velocity_step(out->velocity_mm_s,t->previous_mm_s,c->accel_mm_s2,dt);
+    if(feedback)
+    {
+      float dx=out->velocity_mm_s[0]-t->previous_mm_s[0],dy=out->velocity_mm_s[1]-t->previous_mm_s[1];
+      float length=hypotf(dx,dy);
+      if(length>body_a*dt){out->velocity_mm_s[0]=t->previous_mm_s[0]+dx*body_a*dt/length;out->velocity_mm_s[1]=t->previous_mm_s[1]+dy*body_a*dt/length;}
+      out->velocity_mm_s[2]=bounded(out->velocity_mm_s[2],t->previous_mm_s[2]-x_a*dt,t->previous_mm_s[2]+x_a*dt);
+    }
+    for(unsigned k=0;k<3;k++)out->velocity_mm_s[k]=bounded(out->velocity_mm_s[k],low[k],high[k]);
+  }
+  memcpy(t->previous_mm_s,out->velocity_mm_s,sizeof t->previous_mm_s);
+  out->x_target_mm=bounded(in->x_mm+bounded(out->velocity_mm_s[2]*c->horizon_ms/1000.f,-c->lead_mm,c->lead_mm),in->x_min_mm,in->x_max_mm);
+  visual_record(t,in,out,c->mode);
+}
+
 void GrabTracking_Update(GrabTracking_t *t,const GrabTracking_Config_t *c,
                          const GrabTracking_Input_t *in,GrabTracking_Output_t *out)
 {
+  if(c->mode!=GRAB_TRACK_PREDICT)
+  {
+    visual_update(t,c,in,out);
+    return;
+  }
   unsigned axis,k; float measured[3],camera[3],dt,age_s,demand[2],correct[2];
   float weight[3]={1,1,c->x_weight},low[3],high[3],scale=1;
   bool new_measurement=in->valid && (!t->have_sample ||
@@ -230,16 +383,7 @@ void GrabTracking_Update(GrabTracking_t *t,const GrabTracking_Config_t *c,
   out->body_room_mm=t->reference_valid?fmaxf(0,50-(in->motion_mm[1]-t->reference_left_mm)):0;
   out->x_room_mm=fminf(in->x_max_mm-in->x_mm,in->x_mm-in->x_min_mm);
   out->x_target_mm=in->x_mm;
-  {
-    float a=0,b=0,d=0;
-    out->model_valid=c->x_weight>0;
-    for(k=0;k<3;k++)
-    {
-      if(!isfinite(in->j[0][k]) || !isfinite(in->j[1][k]))out->model_valid=false;
-      a+=in->j[0][k]*in->j[0][k]; b+=in->j[0][k]*in->j[1][k]; d+=in->j[1][k]*in->j[1][k];
-    }
-    out->model_valid=out->model_valid && a*d-b*b>1e-6f;
-  }
+  out->model_valid=model_valid(c,in);
   if(in->valid && (!t->have_sample || (in->sequence!=t->last_sequence && in->sample_ms!=t->last_sample_ms)))
   {
     float blend; uint32_t delta=t->have_sample?in->sample_ms-t->last_sample_ms:0;
@@ -339,7 +483,9 @@ void GrabTracking_Update(GrabTracking_t *t,const GrabTracking_Config_t *c,
     float change[3],length=0;
     for(k=0;k<3;k++) { change[k]=out->velocity_mm_s[k]-t->previous_mm_s[k]; length+=change[k]*change[k]; }
     length=sqrtf(length);
-    if(dt>0 && length>c->accel_mm_s2*dt)
+    /* No elapsed time means no velocity step, including the first update
+     * after Begin and multiple camera frames parsed at the same MCU tick. */
+    if(length>c->accel_mm_s2*dt)
       for(k=0;k<3;k++)out->velocity_mm_s[k]=t->previous_mm_s[k]+change[k]*c->accel_mm_s2*dt/length;
     for(k=0;k<3;k++)out->velocity_mm_s[k]=bounded(out->velocity_mm_s[k],low[k],high[k]);
   }

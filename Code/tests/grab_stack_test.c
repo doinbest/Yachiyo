@@ -101,6 +101,36 @@ static void stacking_compensates_only_after_green_center_alignment(void)
 
 int main(void)
 {
+  char *stack[]={"grab","stack","align","3"};
+  reset();configure(true);setting("z_min","-150");setting("z_max","0");
+  setting("z_observe","0");setting("z_car_lift","0");setting("x_max","100");
+  setting("loss_grace_ms","250");
+  pixel_center_override=true;pixel_center_x=334;pixel_center_y=338;
+  assert(GrabTask_Command(4,stack));run_to(GRAB_ALIGN,300,1);
+  for(unsigned i=0;i<20;i++)step(true,1,-38,7);
+  assert(status().dx==-38 && status().dy==7 && !StackCompensating);
+  /* Brief loss must recover using packet errors even with old-center CX/CY. */
+  camera_valid=false;step(true,1,-38,7);
+  assert(status().state==GRAB_VISION_GRACE);
+  camera_valid=true;
+  step(true,1,-38,7);step(true,1,-38,7);step(true,1,-38,7);
+  assert(status().state==GRAB_ALIGN && status().dx==-38 && status().dy==7);
+  assert(!strcmp(status().reason,"vision_gap_recovered"));
+  /* Stop/reacquire keeps the same source, including a real zero. */
+  camera_valid=false;
+  for(unsigned i=0;i<100 && !RecoveryWaiting;i++)step(true,1,-38,7);
+  assert(status().state==GRAB_VISION_PAUSE && RecoveryWaiting && status().stop_confirmed);
+  camera_valid=true;
+  /* New camera reference, independent of the old MCU static ref_u/ref_v. */
+  pixel_center_x=372;pixel_center_y=345;
+  run_to(GRAB_ALIGN,30,1);
+  assert(status().dx==0 && status().dy==0 && !StackCompensating && RecoveryUsed==1);
+  for(unsigned i=0;i<500 && !StackCompensating;i++)step(true,1,0,0);
+  assert(StackCompensating && status().state==GRAB_ALIGN);
+  pixel_center_x=411;pixel_center_y=346;
+  for(unsigned i=0;i<500 && status().state!=GRAB_HOLD;i++)step(true,1,39,-1);
+  assert(status().state==GRAB_HOLD && status().dx==39 && status().dy==-1);
+  assert(status().stop_confirmed && !closures && Config[C_REF_U]==334 && Config[C_REF_V]==338);
   stack_manual_height_and_release();
   common_static_entry_keeps_target_references();
   stacking_compensates_only_after_green_center_alignment();

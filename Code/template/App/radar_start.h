@@ -25,7 +25,8 @@ typedef struct {
 
 /** @brief 从下方引用参数推导静态角点扫描参数，不改输入或车辆参考。
  * @param lower_reference 下方雷达XY(mm)、世界零角(度)和筛选条件。
- * @param start_id 上方或下方；上方XY镜像，零角为下方+90度。
+ * @param start_id 上方或下方；g4上方独立可调XY、270°和单位矩阵，下方沿设备参数。
+ * 历史g3仍按原镜像约定解释。
  * @param out 输出参数，可与输入同地址；筛选条件原样保留。
  * @return 非空输入/输出且起点有效时为true；未知起点返回false。 */
 bool RadarStart_ParamsForStart(const RadarMap_Params_t *lower_reference,

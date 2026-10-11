@@ -12,6 +12,23 @@ static RadarHostMap_Result_t fake_live_map;
 static uint32_t fake_live_scan_id;
 static unsigned rotate_calls,scan_calls,stop_calls,live_start_calls,live_stop_calls;
 static RadarMap_Params_t last_scan_parameters,last_live_parameters;
+static RadarStablePoint fake_stable[2];
+static unsigned configure_calls,reset_calls,rebuild_calls,live_configure_calls;
+static RadarHostMap_Config_t backend_config;
+void RadarScan_HostConfigureMap(const RadarHostMap_Config_t *config)
+{assert(config);backend_config=*config;configure_calls++;}
+void RadarScan_StableConfigurationChanged(void){reset_calls++;fake_live_scan_id=0U;}
+const RadarHostMap_Result_t *RadarScan_HostMap(uint32_t *scan_id)
+{if(scan_id)*scan_id=fake_live_scan_id;return fake_live_scan_id?&fake_live_map:NULL;}
+bool RadarScan_HostRebuildStableMap(const RadarHostMap_Config_t *config)
+{
+  rebuild_calls++;if(!fake_live_scan_id)return false;
+  RadarHostMap_Finish(config,&fake_live_map);return true;
+}
+const RadarStablePoint *RadarScan_StablePoints(uint16_t *count,uint32_t *scan_id)
+{if(count)*count=fake_live_scan_id?1U:0U;if(scan_id)*scan_id=fake_live_scan_id;return fake_live_scan_id?fake_stable:NULL;}
+const RadarStablePoint *RadarScan_HostStablePoints(uint16_t *count,uint32_t *scan_id)
+{return RadarScan_StablePoints(count,scan_id);}
 
 bool RadarUart_StartScan(void){rotate_calls++;return true;}
 bool RadarScan_HostStart(const RadarMap_Params_t *params)
@@ -37,7 +54,7 @@ bool RadarScan_HostLiveStart(const RadarMap_Params_t *params,const RadarHostMap_
   fake_status.live_active=true;fake_status.live_state=RADAR_LIVE_PREPARING;
   fake_status.live_reason="configuring";return true;
 }
-void RadarScan_HostLiveConfigure(const RadarHostMap_Config_t *config){assert(config);}
+void RadarScan_HostLiveConfigure(const RadarHostMap_Config_t *config){assert(config);live_configure_calls++;fake_status.stability.window_circles=0U;}
 const RadarHostMap_Result_t *RadarScan_HostLiveMap(uint32_t *scan_id)
 {if(scan_id)*scan_id=fake_live_scan_id;return fake_live_scan_id?&fake_live_map:NULL;}
 void RadarScan_HostLiveStop(void)
@@ -54,6 +71,11 @@ static void complete_scan(uint32_t id)
   fake_status.scan_id=id;fake_status.state=RADAR_SCAN_READY;fake_status.reason="complete";
   fake_status.points_valid=true;fake_status.point_count=fake_cloud_count;
   fake_status.raw_points=fake_cloud_count;fake_status.coverage_tenths=3600;
+  fake_stable[0]=(RadarStablePoint){0U,100U,775U,350U,3U,1U};
+  RadarStableStatus stable={0};stable.raw_points=stable.filtered_points=fake_cloud_count;
+  stable.window_circles=15U;stable.first_circle=id;stable.last_circle=id+14U;stable.stable_count=1U;
+  assert(RadarHostMap_BuildStable(RadarHost_ActiveConfig(),fake_stable,1U,&stable,&fake_live_map));
+  fake_live_scan_id=id;fake_status.stability=stable;
 }
 
 static void test_defaults_and_transactional_draft(void)
@@ -64,8 +86,8 @@ static void test_defaults_and_transactional_draft(void)
 
   RadarHost_Init();RadarHost_StatusGet(&status);active=RadarHost_ActiveConfig();
   assert(status.session_id && status.config_id==1 && !status.map_id && !status.plan_id);
-  assert(active->radar_x_mm==230 && active->radar_y_mm==230 && active->threshold==1);
-  assert(active->protected_mask==RADAR_HOST_PROTECTED_MASK && active->fixed_mask==RADAR_HOST_FIXED_MASK);
+  assert(active->radar_x_mm==2280 && active->radar_y_mm==314 && active->threshold==1);
+  assert(active->protected_mask==((RADAR_HOST_PROTECTED_MASK&~1UL)|16UL) && active->fixed_mask==RADAR_HOST_FIXED_MASK);
 
   revision=RadarHost_DraftReset();assert(revision);draft=RadarHost_DraftConfig();
   assert(!memcmp(active,draft,sizeof *active));
@@ -98,7 +120,7 @@ static void test_defaults_and_transactional_draft(void)
   assert(RadarHost_DraftSet("x1","1020"));
   assert(!RadarHost_Apply(revision));
   RadarHost_StatusGet(&status);assert(status.config_id==config_id);
-  assert(!RadarHost_DraftSet("manual_mask","1"));
+  assert(!RadarHost_DraftSet("manual_mask","16"));
   assert(!RadarHost_DraftSet("mission","1-7-1"));
   assert(!RadarHost_Apply(revision-1U));
   assert(RadarHost_DraftReset());assert(RadarHost_DraftSet("threshold","7"));
@@ -122,7 +144,7 @@ static void test_rebuild_scan_and_history(void)
   uint32_t revision=RadarHost_DraftReset();assert(RadarHost_DraftSet("threshold","2"));
   assert(RadarHost_Apply(revision));RadarHost_StatusGet(&status);
   assert(scan_calls==scans_before && status.scan_id==7 && status.map_id==2 && status.plan_id==2 && status.config_id==2);
-  assert(RadarHost_Map(&map_id,&scan_id)->counts[0]==1 && scan_id==7);
+  assert(RadarHost_Map(&map_id,&scan_id)->counts[1]==1 && scan_id==7);
 
   complete_scan(8);fake_cloud[0]=(RadarSample_t){900,545,30};RadarHost_Process();
   RadarHost_StatusGet(&status);assert(status.scan_id==8 && status.map_id==3 && status.plan_id==3);
@@ -141,11 +163,11 @@ static void test_commands_preview_and_cloud(void)
   RadarHost_Init();rotate_calls=scan_calls=stop_calls=live_start_calls=live_stop_calls=0;
   assert(RadarHost_StartRotation() && rotate_calls==1);
   assert(RadarHost_Scan() && scan_calls==1);
-  assert(last_scan_parameters.lidar_x_mm==230 && last_scan_parameters.lidar_y_mm==230 &&
-    last_scan_parameters.zero_deg==90 && last_scan_parameters.angle_max_tenths==3600);
+  assert(last_scan_parameters.lidar_x_mm==2280 && last_scan_parameters.lidar_y_mm==314 &&
+    last_scan_parameters.zero_deg==180 && last_scan_parameters.angle_max_tenths==3600);
   RadarHost_Stop();assert(stop_calls==1);
   assert(RadarHost_LiveStart() && live_start_calls==1);
-  assert(last_live_parameters.zero_deg==90 && last_live_parameters.angle_max_tenths==3600);
+  assert(last_live_parameters.zero_deg==180 && last_live_parameters.angle_max_tenths==3600);
   fake_preview[0]=(RadarLive_Point_t){5,123};fake_status.live_sequence=4;fake_status.live_points=1;
   fake_status.live_active=true;RadarHost_Process();
   preview=RadarHost_Preview(&count,&identity);assert(preview && count==1 && identity==1 && preview[0].distance_mm==123);
@@ -199,7 +221,9 @@ static void test_live_result_becomes_the_published_map_and_path(void)
   uint32_t map_id,scan_id;uint16_t cloud_count;
   memset(&fake_status,0,sizeof fake_status);RadarHost_Init();
   const RadarSample_t obstacle={900U,545U,80U};
-  assert(RadarHostMap_Build(RadarHost_ActiveConfig(),&obstacle,1U,&fake_live_map));
+  RadarStableStatus stable={0};stable.raw_points=stable.filtered_points=1U;stable.window_circles=15U;
+  fake_stable[0]=(RadarStablePoint){900U,545U,775U,350U,3U,1U};
+  assert(RadarHostMap_BuildStable(RadarHost_ActiveConfig(),fake_stable,1U,&stable,&fake_live_map));
   fake_status.scan_id=fake_live_scan_id=30U;fake_status.live_active=true;
   fake_status.state=RADAR_SCAN_READY;fake_status.raw_points=1U;
   RadarHost_Process();
@@ -220,6 +244,50 @@ static void test_live_result_becomes_the_published_map_and_path(void)
   fake_live_scan_id=0U;
 }
 
+static void test_derived_parameters_apply_during_static_collection(void)
+{
+  RadarHost_Status_t status;
+  RadarStableStatus stable={0};
+  memset(&fake_status,0,sizeof fake_status);fake_live_scan_id=0U;
+  RadarHost_Init();assert(RadarHost_Scan());
+  fake_status.state=RADAR_SCAN_COLLECTING;
+  fake_status.stability.window_circles=5U;
+  unsigned resets_before=reset_calls;
+  uint32_t revision=RadarHost_DraftReset();
+  assert(RadarHost_DraftSet("threshold","2"));assert(RadarHost_Apply(revision));
+  assert(backend_config.threshold==2U);
+  assert(reset_calls==resets_before && fake_status.stability.window_circles==5U);
+
+  /* Finish the remaining ten circles using the backend configuration that Apply supplied. */
+  stable.window_circles=15U;stable.first_circle=1U;stable.last_circle=15U;
+  stable.raw_points=stable.filtered_points=15000U;stable.stable_count=1U;
+  fake_stable[0]=(RadarStablePoint){0U,100U,775U,350U,15U,1U};
+  assert(RadarHostMap_BuildStable(&backend_config,fake_stable,1U,&stable,&fake_live_map));
+  fake_live_scan_id=fake_status.scan_id=41U;fake_status.active=false;
+  fake_status.state=RADAR_SCAN_READY;fake_status.stability=stable;
+  RadarHost_Process();RadarHost_StatusGet(&status);
+  assert(status.map_valid && status.config_id==2U);
+  const RadarHostMap_Result_t *map=RadarHost_Map(NULL,NULL);
+  assert(map && map->counts[1]==1U && map->scanned_mask==0U);
+
+  /* A stopped capture can still have its last complete circle in the finalizer. */
+  fake_live_scan_id=0U;fake_status.stability.finalizing=1U;
+  revision=RadarHost_DraftReset();assert(RadarHost_DraftSet("threshold","3"));
+  assert(RadarHost_Apply(revision));
+  assert(backend_config.threshold==3U && reset_calls==resets_before);
+  fake_status.stability.finalizing=0U;
+
+  memset(&fake_status,0,sizeof fake_status);fake_live_scan_id=0U;
+  RadarHost_Init();assert(RadarHost_LiveStart());fake_status.stability.window_circles=5U;
+  unsigned live_resets_before=live_configure_calls;
+  revision=RadarHost_DraftReset();assert(RadarHost_DraftSet("threshold","2"));
+  assert(RadarHost_Apply(revision));
+  assert(backend_config.threshold==2U && fake_status.stability.window_circles==5U && live_configure_calls==live_resets_before);
+  fake_status.stability.window_circles=15U;fake_status.stability.finalizing=1U;
+  revision=RadarHost_DraftReset();assert(RadarHost_DraftSet("threshold","3"));assert(RadarHost_Apply(revision));
+  assert(fake_status.stability.window_circles==15U && live_configure_calls==live_resets_before);
+}
+
 int main(void)
 {
   test_single_scan_switches_out_of_host_live_mode();
@@ -229,6 +297,7 @@ int main(void)
   test_restarting_live_does_not_reuse_a_preview_identifier();
   test_sparse_preview_keeps_the_last_valid_bin();
   test_live_result_becomes_the_published_map_and_path();
+  test_derived_parameters_apply_during_static_collection();
   puts("radar_host: transactional config, same-circle rebuild, scan history and preview PASS");
   return 0;
 }

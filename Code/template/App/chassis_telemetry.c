@@ -291,7 +291,7 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
   ChassisMotion_Target_t target;
   ChassisMotion_Status_t status;
   Mecanum_Status_t tx;
-  char text[320];
+  char text[640];
   ChassisLocalization_Status_t localization;
   if (n < 2 || strcmp(t[0], "chassis"))
     return false;
@@ -397,14 +397,23 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
     ChassisLocalization_Get(&localization);
     (void)snprintf(text, sizeof(text),
                    "OK chassis task state=%u reason=%s dt_ms=%lu seq=%lu stage=%u error=%u ack=%u "
-                   "locked=%u units=%lu mode=%u target_deg=%.2f yaw_deg=%.2f yaw_valid=%u omega=%.4f\r\n",
+                   "locked=%u units=%lu mode=%u target_deg=%.2f yaw_deg=%.2f yaw_valid=%u omega=%.4f "
+                   "origin_valid=%u origin_mm=%.3f,%.3f origin_deg=%.3f feedback_valid=%u "
+                   "feedback_mm=%.3f,%.3f feedback_deg=%.3f feedback_age_ms=%lu\r\n",
                    (unsigned)status.state, status.reason ? status.reason : "none",
                    (unsigned long)status.control_dt_ms, (unsigned long)tx.sequence,
                    (unsigned)tx.stage, (unsigned)tx.error, (unsigned)tx.ack_profile,
                    (unsigned)tx.locked, (unsigned long)localization.units_per_rev,
                    (unsigned)status.requested.mode, (double)status.requested.heading_deg,
                    (double)status.current_deg, (unsigned)status.heading_valid,
-                   (double)status.body_target.omega_rad_s);
+                   (double)status.body_target.omega_rad_s,
+                   (unsigned)localization.origin_valid,(double)localization.origin.x_mm,
+                   (double)localization.origin.y_mm,
+                   (double)(localization.origin.yaw_rad*180.0f/CHASSIS_MODEL_PI),
+                   (unsigned)localization.feedback_valid,
+                   (double)localization.observer.feedback.x_mm,(double)localization.observer.feedback.y_mm,
+                   (double)(localization.observer.feedback.yaw_rad*180.0f/CHASSIS_MODEL_PI),
+                   (unsigned long)(HAL_GetTick()-localization.feedback_tick));
     reply(text);
     if(status.distance_mode)
     {

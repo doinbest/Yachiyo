@@ -38,7 +38,8 @@ class LatestVisionTest(unittest.TestCase):
 
     def test_numbered_ring_and_material_have_separate_default_centers(self):
         args = self.arguments()
-        self.assertEqual((args.center_x, args.center_y), (334, 338))
+        self.assertEqual((args.center_x, args.center_y), (372, 345))
+        self.assertEqual(self.classes['ColorCircleDetector'].__init__.__defaults__[:2], (372, 345))
         self.assertEqual((args.ring_center_x, args.ring_center_y), (378, 333))
 
     def test_material_center_override_does_not_change_ring_center(self):
@@ -48,7 +49,7 @@ class LatestVisionTest(unittest.TestCase):
 
     def test_ring_center_override_does_not_change_material_center(self):
         args = self.arguments('--ring-center-x', '380', '--ring-center-y', '330')
-        self.assertEqual((args.center_x, args.center_y), (334, 338))
+        self.assertEqual((args.center_x, args.center_y), (372, 345))
         self.assertEqual((args.ring_center_x, args.ring_center_y), (380, 330))
 
     def camera(self):

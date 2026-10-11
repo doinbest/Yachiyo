@@ -104,7 +104,7 @@ test('monitor execution button sends the current planned route, while preview re
     const execute=buttons.find(button=>button.id==='monitor-radar-execute');assert.ok(execute);assert.equal(execute.disabled,false);
     assert.deepEqual(wires,[],'mount must never configure or move the device');
     get('monitor-scan').onclick();await new Promise(resolve=>setImmediate(resolve));
-    assert.deepEqual(wires,['radar scan lower 3'],'three-circle capture uses RAM static pose, not chassis feedback');
+    assert.deepEqual(wires,['radar scan lower 15'],'15-circle capture preserves the device installation and filter parameters');
     wires.length=0;
     execute.onclick();await new Promise(resolve=>setImmediate(resolve));
     assert.deepEqual(wires,['radar nav start 200']);
@@ -120,7 +120,7 @@ test('backup mounting enters the competition frame with a 90 degree counterclock
   assert.equal(asymmetric.lidar_x_mm,1990);assert.equal(asymmetric.lidar_y_mm,320);
 });
 
-test('monitor corner scan applies full-circle point-count defaults before scanning',async()=>{
+test('monitor scans preserve current device parameters and normalize acquisition to 15 circles',async()=>{
   class Element{
     children=[];dataset={};style={};attributes={};value='current';disabled=false;
     append(...items){this.children.push(...items);}replaceChildren(...items){this.children=items;}
@@ -136,13 +136,13 @@ test('monitor corner scan applies full-circle point-count defaults before scanni
     const model={connected:true,params:{},paramsLive:false};
     mountMonitorRadar({model,store:new MonitorResult(),workspace:{busy:()=>false,canScan:()=>true,message:()=>'',readParameters:async()=>actions.push('read'),applyParameters:async p=>actions.push(p),requestWire:async wire=>actions.push(wire)},api:()=>assert.fail('no planning request'),backupConfig:()=>backup,preparationRoot:new Element()});
     get('monitor-capture').value='lower';get('monitor-scan').onclick();await new Promise(resolve=>setImmediate(resolve));
-    assert.deepEqual(actions,[{lidar_x_mm:2250,lidar_y_mm:150,zero_deg:180,angle_min_tenths:0,angle_max_tenths:3600,threshold:1,distance_min_mm:100,distance_max_mm:40000,energy_min:0,energy_max:255},'radar scan lower 3']);
+    assert.deepEqual(actions,[{zero_deg:180},'radar scan lower 15']);
     actions.length=0;
     get('monitor-capture').value='backup';get('monitor-scan').onclick();await new Promise(resolve=>setImmediate(resolve));
-    assert.deepEqual(actions,['read',backupInstallation(backup),'radar scan lower 3'],'read current RAM before copying only changed mounting values');
+    assert.deepEqual(actions,[{zero_deg:180},'radar scan lower 15'],'an old selection confirms direction without applying old coordinates or filters');
     Object.assign(model,{params:{...backupInstallation(backup),lidar_y_mm:150},paramsLive:true,identity:{session:1},snapshots:{params:{session:1}}});
     actions.length=0;get('monitor-scan').onclick();await new Promise(resolve=>setImmediate(resolve));
-    assert.deepEqual(actions,[{lidar_y_mm:230},'radar scan lower 3'],'do not repeat unchanged filter writes');
+    assert.deepEqual(actions,['radar scan lower 15'],'custom filters and mounting survive the scan button');
   }finally{Object.assign(globalThis,saved);}
 });
 

@@ -254,6 +254,22 @@ test('real calibration completion uses the firmware complete state',()=>{
   assert.deepEqual(f.wires,[]);
 });
 
+test('pose rejection guides an explicit query and the task card displays the returned cause and missing parameters',async()=>{
+  const f=consoleFixture();f.sim.mountGrabStatus();
+  f.sim.receive('ERR grab pose rejected; inspect grab status');
+  const text=e=>[e.textContent,...e.children.map(text)].join(' ');
+  assert.match(text(f.$('grab-task-status')),/抓取任务状态.*视觉任务.*点击“读取抓取任务状态”/);
+  assert.deepEqual(f.wires,[]);
+  await f.sim.send('grab status');
+  assert.deepEqual(f.wires,['grab status']);
+  f.sim.receive('OK grab state=idle operation=pose reason=config_missing missing=z_ppm ref_cause=base_reference_changed');
+  const feedback=text(f.$('grab-task-status'));
+  assert.match(feedback,/抓取任务状态.*原因：缺少参数.*缺少参数：/);
+  assert.match(feedback,/完整反馈与诊断.*参考状态.*Base.*参考失效/);
+  assert.equal(f.sim.grabSnapshot.data.missing,'z_ppm');
+  assert.deepEqual(f.wires,['grab status']);
+});
+
 test('actual task and calibration status cards translate causes without changing snapshots or sending',()=>{
   const f=consoleFixture();f.sim.mountGrabStatus();f.sim.buildGrabCalibrationPanel(f.$('system-body'));
   f.sim.receive('OK grab state=error mode=align operation=stack_align reason=matrix_rank ref_cause=transfer_off_pose missing=none');

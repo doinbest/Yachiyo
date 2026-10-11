@@ -250,7 +250,7 @@ function tabs(container,items,navigation=container){
 function buildGrabPreparation(body){
   const prep=node('details',undefined,'vision-recovery');
   prep.append(node('summary','回零与通信恢复'),node('p','上电自动完成 Z、X、Base 回零，再静止验证 IMU。需要重建参考时使用“重新建立三轴参考”；通信异常时查看或恢复电机总线。','form-note'));
-  actions(prep,[['grab-rehome'],['bus-recover','恢复电机总线'],['bus-status','读取总线状态']]);
+  actions(prep,[['grab-rehome'],['grab-home-accept'],['bus-recover','恢复电机总线'],['bus-status','读取总线状态']]);
   const axes=node('details',undefined,'advanced');axes.append(node('summary','单轴手动回零'));
   for(const [axisName,label,mode,homeLabel] of [['base','Base · 底座','near','就近回零'],['x','X · 伸缩轴','collision','碰撞回零'],['z','Z · 升降轴','collision','碰撞回零']]){
     const row=node('div',undefined,'grab-home-row');
@@ -340,8 +340,8 @@ function buildVisionWorkspace(body){
       actions(root,[['camera-status','读取相机状态'],['camera-stop','停止识别']]);
     }]
   ],controls);
-  const toolbar=actions(controls,[['grab-status','读取任务状态'],['grab-stop','停止并退出']]);toolbar.classList.add('vision-toolbar');toolbar.lastElementChild.classList.add('task-stop');
-  grabPanel=node('section',undefined,'grab-status');grabPanel.id='grab-task-status';grabPanel.setAttribute('aria-label','抓取与放置反馈');
+  const toolbar=actions(controls,[['grab-status','读取抓取任务状态'],['grab-stop','停止并退出']]);toolbar.classList.add('vision-toolbar');toolbar.lastElementChild.classList.add('task-stop');
+  grabPanel=node('section',undefined,'grab-status');grabPanel.id='grab-task-status';grabPanel.setAttribute('aria-label','抓取任务状态');
   body.append(controls,modes,grabPanel);buildGrabPreparation(body);renderGrabStatus();
 }
 function renderGrabStatus(){
@@ -352,18 +352,19 @@ function renderGrabStatus(){
   const s=grabSnapshot?.data,age=grabSnapshot?Math.max(0,Math.floor((Date.now()-grabSnapshot.time)/1000)):null;
   const current=grabSnapshot?.live&&age<=5;
   const heading=node('h3',s?`${current?'最近快照':'历史快照'} · ${({route_pose:'机构姿态切换',idle:'空闲',prepare:'观察准备',acquire:'获取目标',align:'协同对准',vision_grace:'短暂漏检 · 减速等待',vision_pause:'视觉暂停 · 不会下降夹取',settle:'水平停稳',descend:'Z 下降',close:'夹爪闭合',lift:'带物料提起',turn:'Base 转向放置处',place:'下降至放置高度',release:'松爪放置',retract:'放置后提起',homing:'上电自动回零',hold:s.operation==='ring_place'&&s.result==='released'?'放置完成 · 已松爪提起':s.operation==='ring_align'?(s.reason==='ring_aligned_low'?'色环对准完成 · 保持低位观察':'色环对准完成 · 等待装料'):s.mode==='align'?'对准完成 · 未抓取':'等待人工验收',stopping:'正在停止',error:'故障停止',route:'路线运行',scan:'模拟扫码',calibration:'视觉响应标定',complete:s.operation==='calibration'?'标定完成 · 已更新视觉响应':'单件完成 · 可开始下一件',done:s.operation==='calibration'?'标定完成 · 已更新视觉响应':'单件完成 · 可开始下一件',car_index:'转盘分度',car_x:'X 到车载取放口',car_descend:'车载下降',car_lift:'退出仓位',outside_turn:'返回外侧',return_observe:'恢复观察姿态'})[s.state]||deviceText(s.state)}`:'尚无抓取状态');
-  const freshness=node('p',s?`收到于 ${new Date(grabSnapshot.time).toLocaleTimeString('zh-CN',{hour12:false})} · ${age} 秒前`:'点击上方“读取任务状态”查看设备反馈。','form-note');
+  const freshness=node('p',s?`收到于 ${new Date(grabSnapshot.time).toLocaleTimeString('zh-CN',{hour12:false})} · ${age} 秒前`:'点击“读取抓取任务状态”查询；设备返回后在此查看原因，展开“完整反馈与诊断”查看参考状态。','form-note');
   const list=node('dl',undefined,'grab-readout');
   const value=(key,unit='')=>s?.[key]===null||s?.[key]===undefined?'—':`${s[key]}${unit}`;
-  const rows=[['操作',deviceText(s?.operation||s?.op)],['场景',deviceText(s?.scene)],['仓位',value('slot')],['完成结果',deviceText(s?.result)],['视觉恢复',grabRecoveryText(s)],['本次或最近中断',value('loss_ms',' ms')],['本任务最长中断',value('loss_max_ms',' ms')],['模式',({fixed:'固定位置',align:'仅对准',pick:'视觉抓取'})[s?.mode]||s?.mode||'—'],['视觉目标',[10,11,12].includes(s?.color)?`${s.color-9}号同心圆`:grabColorOptions.find(([id])=>Number(id)===s?.color)?.[1]||value('color')],['视觉协议',s?.protocol||'未报告'],['坐标状态',visualStateText(s?.vision)],['MCU 接收序号',s?.rx_seq===null||s?.rx_seq===undefined?'未报告':String(s.rx_seq)],['响应模型',({initial:'联调初值 · 未实测',custom:'自定义参数 · 不代表已标定',unset:'未设置'})[s?.model]||'—'],['缺少标定',describeGrabMissing(s?.missing)],['参考状态',({boot_pending:'上电待验证',home_verifying:'正在验证三轴',home_verified:'三轴已验证',base_place_turn:'Base 已转向放置处',manual_home_all:'手动全部回零后待验证',manual_home_x:'手动 X 回零后待验证',manual_home_z:'手动 Z 回零后待验证',manual_home_base:'手动 Base 回零后待验证',manual_zero_all:'手动全部清零后待验证',manual_zero_x:'手动 X 清零后待验证',manual_zero_z:'手动 Z 清零后待验证',manual_zero_base:'手动 Base 清零后待验证',manual_base_move:'Base 已手动移动',x_reference_changed:'X 参考失效',z_reference_changed:'Z 参考失效',base_reference_changed:'Base 参考失效',all_reference_changed:'三轴参考失效'})[s?.ref_cause]||deviceText(s?.ref_cause)],['原因',reasonText(s?.reason)],['X 实际 / 目标',`${value('x')} / ${value('xt')} mm`],['Base 实际 / 目标',`${value('b')} / ${value('bt')} °`],['Z 实际 / 目标',`${value('z')} / ${value('zt')} mm`],['DX / DY',grabPixelText(s)],['坐标接收间隔',s?.age_source==='rx'?value('age',' ms'):'未报告'],['前向 / 左向速度',`${value('vf')} / ${value('vl')} mm/s`],['任务耗时',value('elapsed',' ms')],['停止请求',s?.stop_requested===1?'已请求':s?.stop_requested===0?'未请求':'—'],['最近停止请求反馈',s?.stop_confirmed===1?'该次已确认（结合当前阶段）':s?.stop_confirmed===0?'尚未确认':'—']];
+  const rows=[['Base 回零参考',s?.base_home_degraded===1?'降级参考（近似车仓方向）':s?.base_home_degraded===0?'未使用降级参考':'未报告'],['操作',deviceText(s?.operation||s?.op)],['场景',deviceText(s?.scene)],['仓位',value('slot')],['完成结果',deviceText(s?.result)],['视觉恢复',grabRecoveryText(s)],['本次或最近中断',value('loss_ms',' ms')],['本任务最长中断',value('loss_max_ms',' ms')],['模式',({fixed:'固定位置',align:'仅对准',pick:'视觉抓取'})[s?.mode]||s?.mode||'—'],['视觉目标',[10,11,12].includes(s?.color)?`${s.color-9}号同心圆`:grabColorOptions.find(([id])=>Number(id)===s?.color)?.[1]||value('color')],['视觉协议',s?.protocol||'未报告'],['坐标状态',visualStateText(s?.vision)],['MCU 接收序号',s?.rx_seq===null||s?.rx_seq===undefined?'未报告':String(s.rx_seq)],['响应模型',({initial:'联调初值 · 未实测',custom:'自定义参数 · 不代表已标定',unset:'未设置'})[s?.model]||'—'],['缺少标定',describeGrabMissing(s?.missing)],['参考状态',({boot_pending:'上电待验证',home_verifying:'正在验证三轴',home_verified:'三轴已验证',base_place_turn:'Base 已转向放置处',manual_home_all:'手动全部回零后待验证',manual_home_x:'手动 X 回零后待验证',manual_home_z:'手动 Z 回零后待验证',manual_home_base:'手动 Base 回零后待验证',manual_zero_all:'手动全部清零后待验证',manual_zero_x:'手动 X 清零后待验证',manual_zero_z:'手动 Z 清零后待验证',manual_zero_base:'手动 Base 清零后待验证',manual_base_move:'Base 已手动移动',x_reference_changed:'X 参考失效',z_reference_changed:'Z 参考失效',base_reference_changed:'Base 参考失效',all_reference_changed:'三轴参考失效'})[s?.ref_cause]||deviceText(s?.ref_cause)],['原因',reasonText(s?.reason)],['X 实际 / 目标',`${value('x')} / ${value('xt')} mm`],['Base 实际 / 目标',`${value('b')} / ${value('bt')} °`],['Z 实际 / 目标',`${value('z')} / ${value('zt')} mm`],['DX / DY',grabPixelText(s)],['坐标接收间隔',s?.age_source==='rx'?value('age',' ms'):'未报告'],['前向 / 左向速度',`${value('vf')} / ${value('vl')} mm/s`],['任务耗时',value('elapsed',' ms')],['停止请求',s?.stop_requested===1?'已请求':s?.stop_requested===0?'未请求':'—'],['最近停止请求反馈',s?.stop_confirmed===1?'该次已确认（结合当前阶段）':s?.stop_confirmed===0?'尚未确认':'—']];
   const details=node('details',undefined,'grab-status-details'),diagnostics=node('dl',undefined,'grab-readout');
   details.open=diagnosticsOpen;details.append(node('summary','完整反馈与诊断'));
-  const primaryLabels=new Set(['完成结果','视觉目标','X 实际 / 目标','Z 实际 / 目标','Base 实际 / 目标','DX / DY']);
+  const primaryLabels=new Set(['Base 回零参考','完成结果','视觉目标','X 实际 / 目标','Z 实际 / 目标','Base 实际 / 目标','DX / DY']);
   for(const [label,text] of rows){const target=primaryLabels.has(label)?list:diagnostics;target.append(node('dt',label),node('dd',text));}
   const reply=node('p',grabReply?`${grabReply.live?'':'历史 · '}${displayReply(grabReply.line)}`:'设备回复将在此显示。','grab-reply');reply.classList.toggle('error',!!grabReply&&replyIsFault(grabReply.line));
   const routeReply=node('div',undefined,'grab-route-status');
   if(r){const old=!grabRouteSnapshot.live||Date.now()-grabRouteSnapshot.time>5000;const progress=(r.mode==='mission'||r.mode==='single')?`工位 ${r.station??'—'} · 入仓 ${r.stored??'—'} / 放出 ${r.placed??'—'}`:`第 ${r.segment??'—'} 段`;routeReply.append(node('h3',`${old?'历史 · ':''}${describeGrabRoute(r)}`),node('p',`${progress} · 来源 ${r.source==='test'?'固定蓝色测试':r.source==='simulated'?'模拟任务码':r.source||'—'} · ${r.code||'—'} · ${r.elapsed_ms??'—'} ms`, 'form-note'),node('p',`路线原因：${r.state==='config_wait'?describeGrabMissing(r.reason):reasonText(r.reason)}`,r.state==='error'?'grab-reply error':'grab-reply'));}
   details.append(diagnostics,reply);
+  heading.textContent='抓取任务状态 · '+heading.textContent;
   grabPanel.replaceChildren(routeReply,heading,freshness);
   if(s){
     const reason=node('p',`原因：${reasonText(s.reason)}`,'grab-reason');reason.classList.toggle('error',s.state==='error');grabPanel.append(list,reason);
@@ -399,7 +400,7 @@ const wheelSection=node('details',undefined,'advanced');wheelSection.append(node
 actions(wheelSection,[['feedback-read','刷新四轮快照']]);wheelView=mountWheelFeedback(wheelSection);ch.append(wheelSection);
 const realRoute=node('details',undefined,'glass map-controls map-details real-route-panel');realRoute.id='real-route-panel';realRoute.append(node('summary','准备跑图 · 绕障预演 / 固定路线执行'));
 prepView=mountPreparation({root:realRoute,send:wire=>send(wire,true),beginTelemetry:nonce=>mapView.beginPreparedTelemetry(nonce),telemetry:()=>mapView?.snapshot(),getConfig:()=>bridge.config,saveConfig:c=>bridge.saveConfig(c),configAvailable:()=>bridge.available,isStopped:stopped,acquire:()=>bridge.acquirePreparation(),release:()=>bridge.releasePreparation(),changed:updateControls});
-realRoute.append(node('p','从 (2250,150,90°) 出发，先斜移到 (2100,300)，再保持90°直行到扫码位 (2100,1200)。按固定15个目标经过扫码位、原料区、粗加工区、暂存区，最终返回起点。手动逐目标或停稳后自动继续；两批搬运在视觉任务页启动。','form-note'));
+realRoute.append(node('p','从 (2250,150,180°) 出发，保持车头朝左斜移到 (2100,300)，再原地顺时针转90°，直行到扫码位 (2100,1200)。按固定15个目标经过扫码位、原料区、粗加工区、暂存区，最终返回起点。手动逐目标或停稳后自动继续；两批搬运在视觉任务页启动。','form-note'));
 realRoute.append(controlForm('chassis-route-start',{label:'手动分段运行'}));
 realRoute.append(controlForm('chassis-route-auto'),parameterLink('调整路线参数','radar','route_speed','地图 · 实车监控'));
 actions(realRoute,[['chassis-route-next','手动下一段'],['chassis-route-cancel','取消路线'],['chassis-route-status','查询实车路线']]);
@@ -459,7 +460,7 @@ function route(){
   document.querySelector('.desk').classList.toggle('map-focused',active==='map');document.querySelector('.desk').classList.toggle('params-focused',active==='params');
   $('map-page').hidden=active!=='map';$('console-page').hidden=active==='map';for(const [key,page]of Object.entries(pages))page.hidden=key!==active;
   if(active==='params')paramsView.selectTab(next.tab,next.key);
-  if(active==='vision'){visionTabs?.select(next.tab);grabPanel.hidden=['track','camera'].includes(next.tab);}
+  if(active==='vision'){visionTabs?.select(next.tab);grabPanel.hidden=next.tab==='camera';}
   document.querySelector('.feedback-panel').hidden=active==='vision'&&next.tab!=='camera';
   if(active==='map')radarView?.selectTab(next.tab);
   document.querySelectorAll('#navigation a').forEach(a=>a.setAttribute('aria-current',a.hash===`#${active}`?'page':'false'));

@@ -1,5 +1,6 @@
 // Display text only. Parsers, command builders and exported raw logs use firmware codes.
 const names={
+  home_degraded:'Base 回零失败，已采用降级参考继续',home_degraded_check:'Base 回零失败，正在确认停稳与近似参考',home_complete_degraded:'回零流程完成，Base 使用降级参考',base_home_degraded:'Base 使用降级参考（近似车仓方向）',
   none:'无',idle:'空闲',prepare:'准备中',acquire:'等待视觉',align:'协同对准',settle:'确认停稳',
   stopping:'正在停止',error:'故障',running:'运行中',waiting:'等待中',done:'已完成',complete:'已完成',
   failed:'失败',cancelled:'已取消',pending:'等待执行',accepted:'请求已受理，未确认到位',
@@ -32,6 +33,8 @@ const names={
   zero_ack_failed:'驱动器拒绝零速缓存写入',sync_ack_failed:'驱动器拒绝零速同步',
   chassis_cache_or_state_requires_reset:'底盘同步缓存或驱动状态仍待恢复',tasks_not_idle:'任务尚未退出，无法开始总线恢复',
   recovery_busy:'总线恢复正在进行',ack_profile_unknown:'电机应答模式未确认',
+  map_origin_or_parameters_changed:'雷达地图缺失或扫描参数已变化',
+  navigation_or_grab_not_ready:'底盘起点、反馈或机械臂未就绪，请读取对应状态',
   feedback_stale:'机械反馈过期',feedback_invalid:'位置反馈不可用',feedback_timeout:'读取反馈超时',
   feedback_moving:'底盘仍在运动',feedback_arrived:'反馈确认到位',
   axis_disabled_or_stall:'机械臂轴失能或报告堵转相关状态',wheel_disabled_or_stall:'底盘电机失能或报告堵转相关状态',
@@ -69,13 +72,14 @@ const names={
   mechanical_zero_saved:'驱动机械零点已保存',reference_established:'转盘参考已建立',position_timeout:'到位等待超时',
   home_pending:'回零未完成，参考尚未验证',home_z:'Z碰撞回零',home_x:'X碰撞回零',home_base:'Base就近回零',
   home_complete:'回零完成',home_cancelled:'回零已取消',home_failed:'驱动回零失败',home_timeout:'回零超时',
-  home_wait_turntable:'机械臂回零已验证，等待ID8车仓回零完成',
+  home_wait_turntable:'等待ID8车仓回零完成',
   home_turntable_failed:'ID8车仓回零未建立参考，请检查转盘状态和电机总线',
   home_stop_unconfirmed:'回零停止未确认',home_request_failed:'回零请求提交失败',home_bus_fault:'回零电机总线故障',
   home_feedback_failed:'回零反馈失败',home_driver_fault:'回零驱动故障',home_axis_fault:'回零轴状态异常',
   home_enable_wait:'回零完成，等待使能状态恢复',home_enable_recovery:'回零完成，正在恢复使能',
   home_enable_failed:'回零使能验证失败',home_position_changed:'恢复使能后回零位置发生变化',
   boot_pending:'上电待验证',home_verifying:'三轴正在验证',home_verified:'三轴已验证',
+  base_reference_verifying:'正在确认Base回零与停稳反馈',base_home_verified:'Base后向参考已验证',
   transfer_off_pose:'Base已转离观察姿态',base_place_turn:'Base已转向放置处',manual_base_move:'Base已手动移动',
   manual_home_all:'手动全部回零后待验证',manual_home_x:'手动X回零后待验证',manual_home_z:'手动Z回零后待验证',
   manual_home_base:'手动Base回零后待验证',manual_zero_all:'手动全部清零后待验证',manual_zero_x:'手动X清零后待验证',
@@ -161,7 +165,7 @@ export const reasonText=value=>value==null||value===''?'—':names[value]??`未�
 export function rejectionText(line){
   const text=String(line).trim().replace(/^(?:arm>\s*)+/,'').replace(/^ERR\s+/,'');
   const phrases={
-    'inspect grab status':'请读取抓取任务状态','inspect bus status':'请读取电机总线状态',
+    'inspect grab status':'请在“视觉任务”页点击“读取抓取任务状态”，在下方“抓取任务状态”查看原因','inspect bus status':'请读取电机总线状态',
     'use grab status or grab stop':'请读取抓取任务状态，或停止当前抓取任务',
     'stop tasks and inspect bus status':'请停止任务，再读取电机总线状态',
     'stop existing motion first':'请先停止当前运动','stop all motion first':'请先停止所有运动',

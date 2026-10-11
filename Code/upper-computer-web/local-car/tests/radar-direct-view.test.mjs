@@ -98,6 +98,40 @@ function harness(ui) {
 
 const flush = () => new Promise(setImmediate);
 
+test('frozen F1 geometry and protection remain unchanged while active config and editing draft advance',async()=>{
+  const ui=surface(),h=harness(ui);await flush();
+  const frozen=configSnapshot({source:'capture',zero_tenths:0,m00_q16:65536,m01_q16:0,m10_q16:0,m11_q16:65536,tx_q16:230*65536,ty_q16:230*65536});
+  h.hostClient.model.snapshots={capture_config:frozen,active_config:configSnapshot(),map:mapSnapshot({pose:[230,230,0],geometry:{matrix_q16:[65536,0,0,65536],origin_q16:[230*65536,230*65536],zero_tenths:0}}),path:pathSnapshot()};h.view.refresh();
+  ui.get('radar-direct-radar-x').value='500';ui.get('radar-direct-radar-x').oninput();
+  h.hostClient.model.snapshots.active_config=configSnapshot({config:2,radar_x:1700,x1:700,fixed_mask:2,protected_mask:0});h.view.refresh();
+  const drawn=h.maps.at(-1);assert.equal(drawn.radar.x,230);assert.equal(drawn.radar.zero_deg,0);assert.equal(drawn.xLines[1],550);assert.equal(drawn.cells[6].flags.fixed,true);
+  assert.equal(ui.get('radar-direct-radar-x').value,'500');assert.deepEqual(h.applications,[]);assert.deepEqual(h.commands,[]);
+});
+
+test('importing a frozen F1 snapshot preserves the actual continuous device state and sends nothing',async()=>{
+  const ui=surface(),h=harness(ui);await flush();h.hostClient.model.status={session:1,config:2,scan:8,map:9,plan:10,l:1,ss:3,a:1};
+  ui.get('radar-direct-import').files=[{text:async()=>JSON.stringify({profile:'f1_host',snapshots:{map:mapSnapshot(),path:pathSnapshot(),capture_config:configSnapshot({source:'capture'})}})}];
+  await ui.get('radar-direct-import').onchange();assert.equal(h.hostClient.model.status.l,1);assert.equal(h.hostClient.model.snapshots.map.historical,true);assert.deepEqual(h.commands,[]);assert.deepEqual(h.applications,[]);
+});
+
+test('stable diagnostics use XY and support columns and disconnected device reads are disabled',async()=>{
+  const ui=surface(),h=harness(ui);await flush();
+  assert.deepEqual(ui.get('radar-direct-preview-head').children[0].children.map(th=>th.textContent),['X mm','Y mm','支持圈']);
+  for(const id of ['radar-direct-fetch-stable','radar-direct-fetch-cloud','radar-direct-apply-filter','radar-direct-apply-map'])assert.equal(ui.get(id).disabled,true,id);
+  assert.equal(ui.get('radar-direct-save').disabled,false);assert.equal(ui.get('radar-direct-import').disabled,false);
+  h.view.connection({state:'connected',port:'COM7',baudrate:115200});h.hostClient.model.snapshots={map:mapSnapshot(),path:pathSnapshot(),stable:{session:1,config:1,scan:2,map:3,plan:4,points:[{angle_deg:0,distance_mm:900,x_mm:1300,y_mm:320,votes:4,flags:1}]}};h.view.refresh();
+  assert.deepEqual(ui.get('radar-direct-preview').children[0].children.map(td=>td.textContent),['1300','320','4']);assert.equal(ui.get('radar-direct-fetch-stable').disabled,false);
+  await ui.get('radar-direct-show-raw').click();assert.deepEqual(ui.get('radar-direct-preview-head').children[0].children.map(th=>th.textContent),['角度','距离','能量']);
+});
+
+test('independent preview uses its own installation while the completed map keeps frozen geometry',async()=>{
+  const ui=surface(),h=harness(ui);await flush();
+  const geometry={matrix_q16:[65536,0,0,65536],origin_q16:[230*65536,230*65536],zero_tenths:0};
+  h.hostClient.model.snapshots={capture_config:configSnapshot({source:'capture'}),active_config:configSnapshot({config:2,radar_x:1000,radar_y:1000,zero_tenths:0,m00_q16:65536,m01_q16:0,m10_q16:0,m11_q16:65536,tx_q16:1000*65536,ty_q16:1000*65536}),map:mapSnapshot({pose:[230,230,0],geometry}),path:pathSnapshot(),preview:{session:1,config:2,scan:3,map:4,plan:5,points:[{angle_deg:0,distance_mm:100}]}};
+  h.view.refresh();await ui.get('radar-direct-show-preview').click();const drawn=h.maps.at(-1);
+  assert.deepEqual([drawn.points[0].x,drawn.points[0].y],[1100,1000]);assert.deepEqual([drawn.radar.x,drawn.radar.y],[230,230]);
+});
+
 test('an unavailable device map is pending, not a zero-point scan',async()=>{
   const ui=surface(),h=harness(ui);await flush();
   h.view.connection({state:'connected',port:'COM7',baudrate:115200});
@@ -162,7 +196,7 @@ test('changing continuous filters reports next-circle application without starti
   h.hostClient.model.status={ss:4,a:0,l:1,ls:2,cloud:0,reason:'complete'};h.view.refresh();
   await ui.get('radar-direct-apply-filter').click();
   assert.equal(h.applications.length,1);
-  assert.match(ui.get('radar-direct-settings-status').textContent,/下一完整圈/);
+  assert.match(ui.get('radar-direct-settings-status').textContent,/新的15圈窗口.*保持旋转/);
   assert.deepEqual(h.commands,[]);
 });
 
@@ -232,7 +266,7 @@ test('filter and map buttons stage device configuration without replacing device
   assert.equal(h.view.snapshot().config.map.obstaclePointThreshold, 1);
 });
 
-test('device map and path render before cloud; preview is replaced only by a matching full cloud', () => {
+test('stable, last-circle raw and preview layers remain explicitly separate', async () => {
   const ui = surface(), h = harness(ui);
   h.hostClient.model.status = {session: 1, config: 1, scan: 2, map: 3, plan: 4, ss: 4, ls: 3, l: 0};
   h.hostClient.model.snapshots = {
@@ -245,13 +279,16 @@ test('device map and path render before cloud; preview is replaced only by a mat
 
   assert.deepEqual(h.maps.at(-1).path, [{x: 230, y: 230}, {x: 775, y: 230}]);
   assert.equal(h.maps.at(-1).cells[1].flags.scanned, true);
-  assert.equal(h.view.snapshot().displayedPoints[0].angle_deg, 10);
+  assert.equal(h.view.snapshot().displayedPoints.length,0,'stable XY is the default, and preview is never substituted');
+  await ui.get('radar-direct-show-preview').click();assert.equal(h.view.snapshot().displayedPoints[0].angle_deg,10);
   assert.equal(ui.get('radar-direct-csv').disabled, true);
 
   h.hostClient.model.snapshots.cloud = {k: 'host_cloud', session: 1, config: 1, scan: 2, map: 3, plan: 4, points: [
     {angle_deg: 20, distance_mm: 600, energy: 4}, {angle_deg: 30, distance_mm: 700, energy: 5},
   ], complete: true};
   h.view.refresh();
+  assert.equal(h.view.snapshot().displayedPoints.length,1,'a raw cloud does not replace the explicitly selected preview');
+  await ui.get('radar-direct-show-raw').click();
   assert.equal(h.view.snapshot().displayedPoints.length, 2);
   assert.equal(ui.get('radar-direct-csv').disabled, false);
 });

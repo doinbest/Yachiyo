@@ -13,7 +13,8 @@
 #include <errno.h>
 static ChassisRoute_Status_t Route;
 static bool Submitting, Automatic, Stations, FirstScanLeg;
-static bool TaskRoute, RequestTask;
+static bool TaskRoute, RequestTask, QrRoute, RequestQr;
+static bool QrLowerStart, RequestQrLower;
 static uint32_t Generation, LegStartTick, LegBudget;
 static float RouteSpeed = CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
 static float AcceptedYaw;
@@ -34,7 +35,8 @@ void ChassisRoute_Init(void)
   memset(&Route,0,sizeof(Route));Route.state="idle";Route.reason="idle";
   Route.phase="idle";Route.direction="none";Route.total=CHASSIS_ROUTE_TARGET_COUNT;
   Submitting=Automatic=Stations=FirstScanLeg=false;PlannedCount=PhaseIndex=0;
-  TaskRoute=RequestTask=false;
+  TaskRoute=RequestTask=QrRoute=RequestQr=false;
+  QrLowerStart=RequestQrLower=false;
   RouteSpeed=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;AcceptedYaw=90;
 }
 bool ChassisRoute_IsBusy(void)
@@ -100,7 +102,26 @@ static bool submit(unsigned index)
     (void)ChassisRouteProfile_FixedPoint(index,&from);
     (void)ChassisRouteProfile_FixedPoint(index+1U,&to);
   }
-  if(!(TaskRoute?ChassisRouteProfile_BuildTask(&from,&to,AcceptedYaw,RouteSpeed,FirstScanLeg,&Profile):
+  if(QrRoute)
+  {
+    if(!index)from=(RadarPlan_Point_t){2250,QrLowerStart?150:2250,1,0};
+    unsigned move_phase=QrLowerStart && index?1U:0U;
+    float heading=QrLowerStart?(index?90:180):-90;
+    memset(&Profile,0,sizeof Profile);Profile.count=move_phase+1U;Profile.final_yaw_deg=heading;
+    if(move_phase)
+      Profile.phases[0]=(ChassisRoute_Phase_t){true,"qr_turn","turn",from.x_mm,from.y_mm,90,0};
+    Profile.phases[move_phase]=(ChassisRoute_Phase_t){false,"qr_move",index?"forward":"diagonal",to.x_mm,to.y_mm,heading,RouteSpeed};
+    Profile.nominal_time_s=hypotf(to.x_mm-from.x_mm,to.y_mm-from.y_mm)/RouteSpeed;
+    if(move_phase)Profile.nominal_time_s+=90.0f/CHASSIS_MOTION_MAX_OMEGA_DEG_S;
+    if(index+1U==PlannedCount)
+    {
+      Profile.final_yaw_deg=angle_error(heading+180.0f,0);
+      Profile.phases[Profile.count++]=(ChassisRoute_Phase_t){true,"qr_scan_turn","turn",
+        to.x_mm,to.y_mm,Profile.final_yaw_deg,0};
+      Profile.nominal_time_s+=180.0f/CHASSIS_MOTION_MAX_OMEGA_DEG_S;
+    }
+  }
+  else if(!(TaskRoute?ChassisRouteProfile_BuildTask(&from,&to,AcceptedYaw,RouteSpeed,FirstScanLeg,&Profile):
       ChassisRouteProfile_Build(&from,&to,AcceptedYaw,RouteSpeed,FirstScanLeg,&Profile)))
   { Route.state="error";Route.reason="route_profile_invalid";return false; }
   LegStartTick=HAL_GetTick();
@@ -119,21 +140,37 @@ static bool start_at_speed(float speed, bool automatic, bool planned)
   if (!isfinite(speed) || speed < 10.0f || speed > CHASSIS_MOTION_MAX_LINEAR_MM_S) return false;
   if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved() || ChassisMotion_IsBusy()) return false;
   ChassisLocalization_Get(&Position);
+  float origin_y=RequestQr && !RequestQrLower?2250:150;
+  float origin_yaw=RequestQr?(RequestQrLower?180:-90):180;
   if(!Position.origin_valid || !Position.feedback_valid || !Position.speed_valid ||
      (uint32_t)(HAL_GetTick()-Position.feedback_tick)>600U ||
-     fabsf(Position.origin.x_mm-2250)>0.1f || fabsf(Position.origin.y_mm-150)>0.1f ||
-     fabsf(angle_error(Position.origin.yaw_rad*180/CHASSIS_MODEL_PI,90))>0.1f ||
-     hypotf(Position.observer.feedback.x_mm-2250,Position.observer.feedback.y_mm-150)>CHASSIS_DISTANCE_TOLERANCE_MM ||
-     fabsf(angle_error(Position.observer.feedback.yaw_rad*180/CHASSIS_MODEL_PI,90))>CHASSIS_DISTANCE_HEADING_DEG)
+      fabsf(Position.origin.x_mm-2250)>0.1f || fabsf(Position.origin.y_mm-origin_y)>0.1f ||
+      fabsf(angle_error(Position.origin.yaw_rad*180/CHASSIS_MODEL_PI,origin_yaw))>0.1f ||
+      hypotf(Position.observer.feedback.x_mm-2250,Position.observer.feedback.y_mm-origin_y)>CHASSIS_DISTANCE_TOLERANCE_MM ||
+      fabsf(angle_error(Position.observer.feedback.yaw_rad*180/CHASSIS_MODEL_PI,origin_yaw))>CHASSIS_DISTANCE_HEADING_DEG)
   { Route.state="error";Route.reason="start_origin_or_feedback";return false; }
-  TaskRoute=RequestTask;
-  RouteSpeed=speed;Automatic=automatic;Stations=false;AcceptedYaw=90;FirstScanLeg=!planned;
+  TaskRoute=RequestTask;QrRoute=RequestQr;
+  QrLowerStart=RequestQr && RequestQrLower;
+  RouteSpeed=speed;Automatic=automatic;Stations=false;AcceptedYaw=origin_yaw;FirstScanLeg=!planned;
   if(planned) for(i=0;i<PlannedCount;i++)
     if(Planned[i].station==5U && Planned[i].visit==1U) FirstScanLeg=true;
   Route.planned=planned;Route.total=planned?PlannedCount:CHASSIS_ROUTE_TARGET_COUNT;
   Generation=Position.generation;
   StartOrigin=Position.origin;StartUnits=Position.units_per_rev;
   return submit(0);
+}
+bool ChassisRoute_QrTestStart(float speed,float scan_y)
+{
+  if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved() || ChassisMotion_IsBusy())return false;
+  if(!isfinite(scan_y) || scan_y<1100 || scan_y>1300 ||
+     !isfinite(speed) || speed<10 || speed>200)return false;
+  ChassisLocalization_Get(&Position);
+  RequestQrLower=fabsf(Position.origin.y_mm-150)<0.1f;
+  PlannedCount=2;Planned[0]=(RadarPlan_Point_t){2100,RequestQrLower?300:2100,0,0};
+  Planned[1]=(RadarPlan_Point_t){2100,(int16_t)lroundf(scan_y),5,1};
+  RequestQr=true;
+  bool accepted=start_at_speed(speed,true,true);
+  RequestQr=RequestQrLower=false;return accepted;
 }
 bool ChassisRoute_PlanStart(const RadarPlan_t *plan, float speed, bool station_mode)
 {

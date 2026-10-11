@@ -43,6 +43,8 @@ int main(void)
   ChassisLocalization_Status_t s;
   uint32_t generation;
   ChassisLocalization_Init();
+  ChassisLocalization_Get(&s);
+  assert(s.units_per_rev == CHASSIS_EMM_POSITION_UNITS_PER_REV);
   motion.heading_valid = true;
   assert(!ChassisLocalization_ConfirmPositionUnits(16384));
   assert(ChassisLocalization_ConfirmPositionUnits(65536));

@@ -43,6 +43,25 @@ test('grid reachability can coexist with a blocked footprint and mask obstacles 
   const r=new module.RouteProfileRunner(make([phase('move',[2100,1500,90])]),{mask:1<<19});
   r.advance(30);assert.equal(r.state,'error');assert.match(r.issue.obstacle,/R4C5/);assert.equal(r.issue.phase,'move');
 });
+
+test('playback completes a central turn with a coarse-grid warning while the formal check reports it',()=>{
+  const profile=make([phase('turn',[1200,1200,180],{segment:4})],[[1200,1200,0,0]]);
+  const formal=new module.RouteProfileRunner(profile,{mask:1<<11});formal.advance(20);
+  assert.equal(formal.state,'error');assert.equal(formal.issue.obstacle,'地图障碍 R3C2');
+  assert.ok(formal.pose.yaw_rad>Math.PI/2&&formal.pose.yaw_rad<Math.PI);
+  const playback=new module.RouteProfileRunner(profile,{mask:1<<11,gridPolicy:'warn'});playback.advance(20);
+  assert.equal(playback.state,'done');assert.equal(playback.issue,null);
+  assert.equal(playback.warnings.length,1);assert.equal(playback.warnings[0].segment,4);
+  assert.equal(playback.warnings[0].obstacle,'地图障碍 R3C2');
+  assert.ok(Math.abs(playback.pose.yaw_rad-Math.PI)<1e-8);
+  assert.match(module.profileResultText(playback),/风险.*R3C2/);
+});
+
+test('coarse-grid playback warnings retain stops at known physical obstacles',()=>{
+  const r=new module.RouteProfileRunner(make([phase('turn',[350,1200,0])],[[350,1200,0,0]]),{gridPolicy:'warn'});
+  r.advance(20);assert.equal(r.state,'error');assert.equal(r.issue.obstacle,'非行车区 5');
+  assert.equal(footprintIssue(r.pose),null);
+});
 test('integer endpoint settling preserves even the minimum 10 mm/s speed norm',()=>{
   const r=new module.RouteProfileRunner(make([phase('move',[2100,400,90],{speed_mm_s:10})]),{integer:true});
   for(let i=0;i<1000&&r.state==='running';i++){
@@ -63,7 +82,8 @@ test('current model uses 300 mm/s² ramp and 3000 RPM scaling even with explicit
 
 // Captured from the shared C CLI default profile on 2026-10-03; no JS heading selection.
 const fixedCPhases=[
-  ["move","move","diagonal",1,5,1,[2100,300,90],200],
+  ["move","move","diagonal",1,5,1,[2100,300,180],200],
+  ["turn","turn","turn",1,5,1,[2100,300,90],0],
   ["move","move","forward",1,5,1,[2100,1200,90],200],
   ["move","move","forward",2,0,0,[2100,2100,90],200],
   ["turn","turn","turn",3,4,2,[2100,2100,180],0],
@@ -96,7 +116,7 @@ const fixedCPhases=[
 ].map(([kind,phase,direction,segment,station,visit,target,speed_mm_s])=>({kind,phase,direction,segment,station,visit,target,speed_mm_s}));
 test("default fixed15 C profile clears the complete swept footprint in both playback models",()=>{
   for(const integer of [false,true]){
-    const r=new module.RouteProfileRunner({points:[[2250,150,1,0]],speed_mm_s:200,turn_speed_deg_s:100,phases:fixedCPhases},{integer});
+    const r=new module.RouteProfileRunner({points:[[2250,150,1,0]],initial_yaw_deg:180,speed_mm_s:200,turn_speed_deg_s:100,phases:fixedCPhases},{integer});
     r.advance(1000);assert.equal(r.state,"done");assert.equal(r.issue,null);assert.equal(r.rows.at(-1).segment,15);
     assert.deepEqual([r.pose.x_mm,r.pose.y_mm],[2250,150]);assert.ok(r.path.every(p=>footprintIssue(p)===null));
   }
@@ -111,4 +131,12 @@ test('preview consumes the turn speed supplied by C instead of the old 0.15 rad/
     for(let i=0;i<300 && r.state==='running';i++){r.advance(.02);peak=Math.max(peak,Math.abs(r.body[2]));}
     assert.equal(r.state,'done');assert.ok(peak>1);assert.ok(peak<=limit*Math.PI/180+1e-8);
   }
+});
+
+test("C preview preserves the left-facing initial heading before lane entry",()=>{
+  const profile=make([phase("move",[2100,300,180]),phase("turn",[2100,300,90]),phase("move",[2100,1200,90])],[[2250,150,1,0]]);
+  profile.initial_yaw_deg=180;
+  const r=new module.RouteProfileRunner(profile);
+  assert.equal(r.pose.yaw_rad,Math.PI);r.advance(.1);assert.equal(r.pose.yaw_rad,Math.PI);
+  r.advance(100);assert.equal(r.state,"done");assert.equal(r.issue,null);
 });

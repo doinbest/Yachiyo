@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+
+static void legacy_defaults(RadarMap_Params_t *p) { RadarMap_Defaults(p); p->situation=0; p->grid_version=3; p->lidar_x_mm=2250; p->lidar_y_mm=150; p->zero_deg=180; }
 static unsigned checks,failures;
 #define CHECK(c) do { ++checks; if(!(c)){++failures; \
   printf("FAIL line %d: %s\n",__LINE__,#c);} } while(0)
@@ -11,7 +13,7 @@ static int near(float a,float b){return fabsf(a-b)<0.03f;}
 static void test_shared_corner_params(void)
 {
   RadarMap_Params_t lower,out,saved;
-  RadarMap_Defaults(&lower);lower.lidar_x_mm=2180;lower.lidar_y_mm=220;lower.zero_deg=350;
+  legacy_defaults(&lower);lower.lidar_x_mm=2180;lower.lidar_y_mm=220;lower.zero_deg=350;
   lower.threshold=7;lower.angle_max_tenths=700;saved=lower;
   CHECK(RadarStart_ParamsForStart(&lower,RADAR_START_UPPER,&out));
   CHECK(near(out.lidar_x_mm,2320) && near(out.lidar_y_mm,2180) && near(out.zero_deg,80));
@@ -59,7 +61,7 @@ static void test_reference_and_poses(void)
   RadarStart_Context_t context;
   const RadarMap_Params_t *upper,*lower;
   const RadarStart_Pose_t *pose;
-  RadarMap_Defaults(&reference);RadarStart_Begin(&context,&reference);
+  legacy_defaults(&reference);RadarStart_Begin(&context,&reference);
   upper=RadarStart_Params(&context,RADAR_START_UPPER);
   lower=RadarStart_Params(&context,RADAR_START_LOWER);
   CHECK(upper!=NULL && lower!=NULL);
@@ -93,7 +95,7 @@ static void test_reference_and_poses(void)
 static void test_ambiguity_and_conflicts(void)
 {
   RadarMap_Params_t params;RadarStart_Context_t context;RadarStart_Result_t result;
-  RadarMap_Defaults(&params);RadarStart_Begin(&context,&params);
+  legacy_defaults(&params);RadarStart_Begin(&context,&params);
   RadarStart_Finish(&context,&result);
   CHECK(result.start_id==RADAR_START_UNKNOWN && !strcmp(result.reason,"ambiguous"));
   CHECK(result.conflict_mask[0]==0 && result.conflict_mask[1]==0);
@@ -120,7 +122,7 @@ static void test_ambiguity_and_conflicts(void)
 static void test_board_classification_both_starts(void)
 {
   RadarMap_Params_t params;RadarStart_Context_t context;RadarStart_Result_t result;
-  RadarMap_Defaults(&params);
+  legacy_defaults(&params);
   for(unsigned id=RADAR_START_UPPER;id<=RADAR_START_LOWER;id++) {
     RadarStart_Id_t start=(RadarStart_Id_t)id;
     RadarStart_Begin(&context,&params);board(&context,start,3);
@@ -153,7 +155,7 @@ static void test_board_classification_both_starts(void)
 static void test_raw_conflict_and_count_retention(void)
 {
   RadarMap_Params_t params;RadarStart_Context_t context;RadarStart_Result_t result;
-  RadarMap_Defaults(&params);RadarStart_Begin(&context,&params);
+  legacy_defaults(&params);RadarStart_Begin(&context,&params);
   for(unsigned i=0;i<3;i++) {
     RadarSample_t sample=polar(2250,150,180,1200,2100,80);
     RadarStart_Add(&context,&sample);
@@ -171,16 +173,16 @@ static void test_filters_streaming_and_saturation(void)
 {
   RadarMap_Params_t params;RadarStart_Context_t context;RadarStart_Result_t result;
   RadarSample_t sample=polar(2250,150,180,1200,350,80);
-  RadarMap_Defaults(&params);params.energy_min=81;RadarStart_Begin(&context,&params);
+  legacy_defaults(&params);params.energy_min=81;RadarStart_Begin(&context,&params);
   board(&context,RADAR_START_LOWER,3);RadarStart_Finish(&context,&result);
   CHECK(result.start_id==RADAR_START_UNKNOWN && result.qr_counts[0]==0);
-  RadarMap_Defaults(&params);params.distance_max_mm=900;RadarStart_Begin(&context,&params);
+  legacy_defaults(&params);params.distance_max_mm=900;RadarStart_Begin(&context,&params);
   board(&context,RADAR_START_LOWER,3);RadarStart_Finish(&context,&result);
   CHECK(result.start_id==RADAR_START_UNKNOWN && result.qr_counts[0]==0);
-  RadarMap_Defaults(&params);params.angle_max_tenths=100;RadarStart_Begin(&context,&params);
+  legacy_defaults(&params);params.angle_max_tenths=100;RadarStart_Begin(&context,&params);
   board(&context,RADAR_START_LOWER,3);RadarStart_Finish(&context,&result);
   CHECK(result.start_id==RADAR_START_UNKNOWN && result.qr_counts[0]==0);
-  RadarMap_Defaults(&params);RadarStart_Begin(&context,&params);
+  legacy_defaults(&params);RadarStart_Begin(&context,&params);
   for(unsigned i=0;i<5000;i++)RadarStart_Add(&context,&sample);
   RadarStart_Finish(&context,&result);
   CHECK(result.start_id==RADAR_START_LOWER && result.qr_counts[0]==5000);

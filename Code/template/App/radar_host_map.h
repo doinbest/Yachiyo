@@ -6,6 +6,8 @@
 #define RADAR_HOST_MAP_H
 
 #include "radar_map.h"
+#include "radar_geometry.h"
+#include "radar_stability.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +63,8 @@ typedef struct {
   uint8_t mission_count;
   uint8_t mission[RADAR_HOST_MAX_MISSION_VISITS];
   RadarHostMap_Endpoint_t start,goal;
+  RadarGeometry geometry;
+  uint8_t situation,grid_version;
 } RadarHostMap_Config_t;
 
 typedef struct {
@@ -69,17 +73,23 @@ typedef struct {
 } RadarHostMap_Waypoint_t;
 
 typedef struct {
-  uint16_t raw_points,filtered_points,outside_points;
+  uint32_t raw_points,filtered_points,outside_points;
   uint16_t counts[RADAR_MAP_CELL_COUNT];
   uint32_t scanned_mask,manual_mask,effective_mask;
   bool path_valid;
   uint8_t failed_from_task,failed_to_task;
   uint16_t waypoint_count;
   RadarHostMap_Waypoint_t waypoints[RADAR_HOST_MAX_WAYPOINTS];
+  RadarStableStatus stability;
 } RadarHostMap_Result_t;
 
 /** @brief 载入F1页面默认筛选、网格、保护格和1-5-4-2-3-4-2-3-1路线。 */
 void RadarHostMap_Defaults(RadarHostMap_Config_t *config);
+void RadarHostMap_DefaultsSituation(RadarHostMap_Config_t *config,uint8_t situation);
+void RadarHostMap_FreezeConfig(const RadarHostMap_Config_t *input,RadarHostMap_Config_t *frozen);
+bool RadarHostMap_BuildStable(const RadarHostMap_Config_t *config,
+                             const RadarStablePoint *points,uint16_t count,
+                             const RadarStableStatus *status,RadarHostMap_Result_t *result);
 /** @return 配置范围、动态网格、任务顺序和端点完整合法时为true。 */
 bool RadarHostMap_ConfigValid(const RadarHostMap_Config_t *config);
 /** @brief 将一个毫米原始点加入当前圈的统计；result须先清零，config须合法。

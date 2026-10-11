@@ -9,6 +9,15 @@ static uint8_t usb_configured = 1U;
 static uint8_t tx[6];
 static uint16_t tx_length;
 static uint32_t tick;
+static unsigned observed;
+static uint8_t observed_valid[4], observed_match[4];
+static uint32_t observed_tick[4];
+static void observe_frame(const uint8_t *frame,uint32_t received,uint8_t matched)
+{
+  assert(observed<4);observed_valid[observed]=frame[3];
+  observed_match[observed]=matched;observed_tick[observed++]=received;
+}
+static void pixel_observer_test(void);
 
 uint32_t HAL_GetTick(void) { return tick; }
 uint8_t CDC_IsConfigured_FS(void) { return usb_configured; }
@@ -77,6 +86,7 @@ static void b2_boundaries(void)
 
 int main(void)
 {
+  pixel_observer_test();
   Camera_SnapshotTypeDef snapshot;
   Camera_SnapshotTypeDef consumer;
   uint8_t frame[CAMERA_FRAME_SIZE];
@@ -211,4 +221,19 @@ int main(void)
   b2_boundaries();
   puts("camera USB snapshot, counters, B2 protocol and visual-state tests passed");
   return 0;
+}
+
+static void pixel_observer_test(void)
+{
+  uint8_t frames[42];
+  Camera_Init();Camera_FrameObserverSet(observe_frame);Camera_MaterialStart(CAMERA_COLOR_BLUE);
+  observed=0;tick=12;
+  make_frame(frames,1);make_frame(frames+14,0);make_frame(frames+28,1);
+  frames[30]=1;frames[40]-=2; /* A valid reply for a different target still belongs in the raw log. */
+  Camera_UsbRxCallback(frames,42);tick=20;Camera_Process();
+  assert(observed==3 && observed_valid[0]==1 && observed_valid[1]==0);
+  assert(observed_match[0]==1 && observed_match[1]==1 && observed_match[2]==0);
+  assert(observed_tick[0]==12 && observed_tick[2]==12);
+  frames[12]++;Camera_UsbRxCallback(frames,14);Camera_Process();assert(observed==3);
+  Camera_FrameObserverSet(NULL);Camera_UsbRxCallback(frames+14,14);Camera_Process();assert(observed==3);
 }

@@ -57,6 +57,9 @@ void RadarUart_ProbeGet(RadarUart_Probe_t *status);
 HAL_StatusTypeDef RadarUart_Init(UART_HandleTypeDef *uart);
 /** @brief Main-loop service, at most 512 input bytes; no HAL_Delay. */
 void RadarUart_Process(void);
+/** @brief Service queued sensor commands without consuming RX/events.
+ * Used while the CPU-only map finalizer is stepped, so STOP TX is not delayed. */
+void RadarUart_ProcessCommands(void);
 void RadarUart_RxEventCallback(UART_HandleTypeDef *uart, uint16_t size);
 void RadarUart_TxCpltCallback(UART_HandleTypeDef *uart);
 void RadarUart_ErrorCallback(UART_HandleTypeDef *uart);

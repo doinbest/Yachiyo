@@ -37,7 +37,10 @@ void RadarMap_Defaults(RadarMap_Params_t *p)
 {
   if(p==NULL) return;
   memset(p,0,sizeof(*p));
-  p->lidar_x_mm=2250.0f;p->lidar_y_mm=150.0f;p->zero_deg=180.0f;
+  p->lidar_x_mm=2280.0f;p->lidar_y_mm=314.0f;p->zero_deg=180.0f;
+  p->upper_lidar_x_mm=2050.0f;p->upper_lidar_y_mm=2250.0f;
+  RadarGeometry_Default(&p->geometry,2U);p->situation=2U;p->grid_version=4U;
+  p->start_id=RADAR_START_LOWER;
   p->distance_min_mm=100U;p->distance_max_mm=40000U;
   p->angle_min_tenths=0U;p->angle_max_tenths=3600U;
   p->threshold=1U;p->energy_min=0U;p->energy_max=255U;
@@ -54,7 +57,27 @@ bool RadarMap_ParamsValid(const RadarMap_Params_t *p)
 void RadarMap_Reset(RadarMap_t *m)
 {
   if(m==NULL) return;
-  memset(m,0,sizeof(*m));m->mask=RADAR_MAP_FIXED_MASK;
+  memset(m,0,sizeof(*m));m->mask=RADAR_MAP_FIXED_MASK;m->grid_version=4U;
+}
+
+void RadarMap_FreezeParams(const RadarMap_Params_t *p,RadarMap_Params_t *frozen)
+{
+  RadarMap_Params_t next=*p;
+  if(next.situation){
+    bool upper=next.grid_version>=4U && next.start_id==RADAR_START_UPPER;
+    float nx=(float)next.geometry.origin_q16[0]/65536.0f;
+    float ny=(float)next.geometry.origin_q16[1]/65536.0f;
+    if(!upper){nx=roundf(nx);ny=roundf(ny);}
+    float angle=fmodf(next.zero_deg,360.0f);if(angle<0.0f)angle+=360.0f;
+    next.geometry.origin_q16[0]+=(int32_t)roundf((next.lidar_x_mm-(float)nx)*65536.0f);
+    next.geometry.origin_q16[1]+=(int32_t)roundf((next.lidar_y_mm-(float)ny)*65536.0f);
+    next.geometry.zero_tenths=(uint16_t)roundf(angle*10.0f);
+    next.lidar_x_mm=(float)next.geometry.origin_q16[0]/65536.0f;
+    next.lidar_y_mm=(float)next.geometry.origin_q16[1]/65536.0f;
+    if(!upper){next.lidar_x_mm=roundf(next.lidar_x_mm);next.lidar_y_mm=roundf(next.lidar_y_mm);}
+    next.zero_deg=(float)next.geometry.zero_tenths*0.1f;
+  }
+  *frozen=next;
 }
 
 bool RadarMap_Project(const RadarMap_Params_t *p,const RadarSample_t *s,float *x,float *y)
@@ -62,6 +85,14 @@ bool RadarMap_Project(const RadarMap_Params_t *p,const RadarSample_t *s,float *x
   float angle,px,py;
   if(p==NULL || s==NULL || x==NULL || y==NULL ||
      !isfinite(p->lidar_x_mm) || !isfinite(p->lidar_y_mm) || !isfinite(p->zero_deg)) return false;
+  if(p->situation){
+    RadarMap_Params_t frozen;RadarGeometry g;int32_t ix,iy;
+    /* Keep the source's fractional translation; nominal edits move the origin
+     * relative to its rounded display position, without applying it twice. */
+    RadarMap_FreezeParams(p,&frozen);g=frozen.geometry;
+    RadarGeometry_Project(&g,s->angle_tenths,s->distance_mm,&ix,&iy);
+    *x=(float)ix;*y=(float)iy;return true;
+  }
   angle=(fmodf(p->zero_deg,360.0f)-(float)(s->angle_tenths%3600U)*0.1f)*RADAR_DEG_TO_RAD;
   px=p->lidar_x_mm+(float)s->distance_mm*cosf(angle);
   py=p->lidar_y_mm+(float)s->distance_mm*sinf(angle);
@@ -110,10 +141,11 @@ static int find_cell(float x,float y,bool endpoint)
   return (int)RadarGrid_FindCell(&DefaultGrid,x,y,endpoint);
 }
 
-static bool sample_allowed(const RadarMap_Params_t *p,const RadarSample_t *s)
+bool RadarMap_SampleAllowed(const RadarMap_Params_t *p,const RadarSample_t *s)
 {
   uint16_t angle,minimum,maximum;
   bool allowed;
+  if(!p || !s || !s->distance_mm)return false;
   angle=(uint16_t)(s->angle_tenths%3600U);
   minimum=(uint16_t)(p->angle_min_tenths%3600U);
   maximum=(uint16_t)(p->angle_max_tenths%3600U);
@@ -203,12 +235,14 @@ bool RadarMap_Add(RadarMap_t *m,const RadarMap_Params_t *p,const RadarSample_t *
 {
   float x,y;
   int cell;
-  if(m==NULL || s==NULL || !RadarMap_ParamsValid(p) || !sample_allowed(p,s) ||
+  if(m==NULL || s==NULL || !RadarMap_ParamsValid(p) || !RadarMap_SampleAllowed(p,s) ||
      !RadarMap_Project(p,s,&x,&y)) return false;
   /* Half-open reference boundaries must rotate with the points, too.
    * F1 (row,column) becomes vehicle (column,4-row), not a mirrored grid. */
-  cell=RadarGrid_FindCell(&DefaultGrid,y,2400.0f-x,false);
-  if(cell>=0)cell=(cell%5)*5+4-cell/5;
+  m->grid_version=p->grid_version;
+  if(p->grid_version>=4U)cell=RadarGrid_FindCell(&DefaultGrid,x,y,false);
+  else {cell=RadarGrid_FindCell(&DefaultGrid,y,2400.0f-x,false);
+    if(cell>=0)cell=(cell%5)*5+4-cell/5;}
   m->cloud_built=false;m->evidence_mask=0U;
   add_boundary_evidence(m,x,y,cell);
   if(cell<0) {
@@ -237,11 +271,24 @@ void RadarMap_BuildCloud(RadarMap_t *m,const RadarMap_Params_t *p,
   RadarMap_FinishRaw(m,p);
 }
 
+void RadarMap_BuildStable(RadarMap_t *m,const RadarMap_Params_t *p,
+                          const RadarStablePoint *points,uint16_t count)
+{
+  if(!m || !RadarMap_ParamsValid(p) || (count && !points))return;
+  RadarMap_Reset(m);m->grid_version=p->grid_version;
+  for(uint16_t i=0;i<count;i++){
+    int cell=RadarGrid_FindCell(&DefaultGrid,points[i].x_mm,points[i].y_mm,false);
+    if(cell<0){m->outside_points++;continue;}
+    m->counts[cell]++;m->accepted_points++;
+  }
+  m->cloud_built=true;RadarMap_FinishRaw(m,p);
+}
+
 void RadarMap_FinishRaw(RadarMap_t *m,const RadarMap_Params_t *p)
 {
   unsigned i;
   if(m==NULL || !RadarMap_ParamsValid(p)) return;
-  m->mask=RADAR_MAP_FIXED_MASK;
+  m->grid_version=p->grid_version;m->mask=RADAR_MAP_FIXED_MASK;
   m->evidence_mask=0U;
   m->background_points=0U;
   for(i=0U;i<RADAR_MAP_CELL_COUNT;i++)
@@ -268,7 +315,8 @@ void RadarMap_Finish(RadarMap_t *m,const RadarMap_Params_t *p)
   m->background_points=(uint16_t)(background>0xFFFFU?0xFFFFU:background);
   /* Rotate F1 task protection into the vehicle frame, retaining counts and
    * raw evidence. Only the installed corner is protected, not both starts. */
-  sensor_cell=RadarGrid_FindCell(&DefaultGrid,p->lidar_x_mm,p->lidar_y_mm,true);
+  sensor_cell=p->grid_version>=4U?(p->start_id==RADAR_START_UPPER?24:4):
+    RadarGrid_FindCell(&DefaultGrid,p->lidar_x_mm,p->lidar_y_mm,true);
   if(sensor_cell==4 || sensor_cell==24)clear_mask|=1UL<<(unsigned)sensor_cell;
   m->mask=(m->mask&~clear_mask)|RADAR_MAP_FIXED_MASK;
 }
@@ -366,10 +414,11 @@ bool RadarGrid_Path(const RadarGrid_t *grid,uint32_t mask,uint8_t start,uint8_t 
   return true;
 }
 
-static bool cell_path(uint32_t mask,uint8_t start,uint8_t goal,uint8_t path[25],uint8_t *count)
+static bool cell_path(uint8_t version,uint32_t mask,uint8_t start,uint8_t goal,uint8_t path[25],uint8_t *count)
 {
   uint32_t reference_mask=0U;
   unsigned cell;
+  if(version>=4U)return RadarGrid_Path(&WaypointGrid,mask,start,goal,path,count);
   /* Inverse T: formal (row,column) -> reference (4-column,row).
    * Search in F1's frame so equal-cost ties rotate with N/E/S/W, too. */
   for(cell=0U;cell<25U;cell++)if(mask&(1UL<<cell))
@@ -427,7 +476,7 @@ static bool append_leg(const RadarMap_t *m,int16_t sx,int16_t sy,int16_t ex,int1
   uint32_t mask=(m->mask|RADAR_MAP_FIXED_MASK)&RADAR_MAP_ALL_CELLS;
   uint8_t path[25],count,i;
   int16_t x,y;
-  if(start<0 || goal<0 || !cell_path(mask,(uint8_t)start,(uint8_t)goal,path,&count)) return false;
+  if(start<0 || goal<0 || !cell_path(m->grid_version,mask,(uint8_t)start,(uint8_t)goal,path,&count)) return false;
   if(!append_point(p,sx,sy,0U,0U)) return false;
   if(start==goal)
     return append_checked_point(p,mask,ex,sy,0U,0U) &&
