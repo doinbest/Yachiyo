@@ -133,7 +133,7 @@ export function chineseTerminalLine(original){
   }
   if(line==='STM32 mechanical arm console ready')return 'STM32 已启动';
   if(/^Boot: arm auto-home=off\b/.test(line))return '上电自动回零已关闭；保持静止完成 IMU 验证 5 秒；手动三轴回零：grab rehome；遥测默认关闭';
-  if(line.startsWith('Boot: Z/X collision home'))return '上电流程：Z/X 碰撞回零 → Base 就近回零 → IMU 静止验证 5 秒；'+(line.includes('enable_verify=on')?'逐轴确认使能；':'')+'遥测默认关闭';
+  if(line.startsWith('Boot: Z/X collision home'))return (line.includes('in parallel')?'上电流程：Z/X 碰撞回零、Base/ID8 车仓就近回零并行执行 → 全部完成后 IMU 静止验证 5 秒；':'上电流程：Z/X 碰撞回零 → Base 就近回零 → IMU 静止验证 5 秒；')+(line.includes('enable_verify=on')?'逐轴确认使能；':'')+'遥测默认关闭';
   let m=line.match(/^ARM STM32F407 USART1=(\d+) UART5=(\d+)$/);
   if(m)return `主控 STM32F407；控制台 ${m[1]} 波特；电机总线 ${m[2]} 波特`;
   if(line.startsWith('BUILD '))return `固件构建信息：${line.slice(6).replace('motorbus_diag=1','电机总线诊断开启').replace('date=','日期 ').replace('time=','时间 ')}`;

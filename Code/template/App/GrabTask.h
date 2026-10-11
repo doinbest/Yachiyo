@@ -47,9 +47,10 @@ void GrabTask_Init(void);
 bool GrabTask_QrReady(float *scan_y);
 /** After chassis-confirmed arrival: wait, then move Z only until new UART code. */
 bool GrabTask_QrScanStart(uint32_t initial_sequence);
-/** @brief Arm one Z/X collision then Base near homing sequence after bus init or explicit grab rehome.
+/** @brief Launch Z/X collision and Base near HOME without waiting for other axes to finish.
  * Completion requires 0x3B flags and feedback: X/Z zero + reached, Base stable + enabled.
- * Base near-home does not imply numerical zero. Success arms IMU boot verification once.
+ * Base near-home does not imply numerical zero. Boot also waits for ID8's independent HOME
+ * before arming IMU verification; explicit grab rehome only establishes the three arm references.
  */
 void GrabTask_BootHomeStart(void);
 /** @brief 持续主循环调用；align/pick共用短漏检容忍与停稳恢复。

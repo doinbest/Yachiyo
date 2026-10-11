@@ -97,6 +97,9 @@ static float Heading, PreviousVelocity[3];
 static Camera_DataTypeDef Vision;
 static Camera_ColorTypeDef ActiveColor;
 static bool BootActive, BootStopping, BootFailed, BootHomeSent;
+static bool BootLaunching, BootStopUnconfirmed, BootWaitTurntable;
+static uint8_t BootStartedMask, BootVerifiedMask, BootAbortMask, BootAbortSentMask;
+static uint32_t BootHomeTick[3];
 static unsigned BootAxisIndex, BootStep, BootGood;
 static int64_t BootPositionRaw;
 static bool BootPositionValid, BootPositionStable;
@@ -1707,7 +1710,7 @@ void GrabTask_StatusGet(GrabTask_Status_t *out)
 }
 /* Boot homing uses its own time limits: calibration is not required to establish
  * the initial reference. Emm manual pp62-63: 0x3B bit2 running, bit3 failure. */
-void GrabTask_BootHomeStart(void)
+static void boot_home_start(bool wait_turntable)
 {
   if(GrabTask_IsBusy()) return;
   CalibrationTask=false;
@@ -1716,17 +1719,51 @@ void GrabTask_BootHomeStart(void)
   Status.reference_cause="home_verifying";
   Status.missing="home_pending";
   BootActive=true; BootStopping=BootFailed=BootHomeSent=false;
+  BootLaunching=true;BootStopUnconfirmed=false;
+  BootWaitTurntable=wait_turntable;
+  BootStartedMask=BootVerifiedMask=BootAbortMask=BootAbortSentMask=0;
+  memset(BootHomeTick,0,sizeof BootHomeTick);
   BootAxisIndex=BootStep=BootGood=0; BootTick=BootPoll=StartTick=HAL_GetTick();
   BootPositionValid=BootPositionStable=BootHomeFlagsValid=BootMotorFlagsValid=false;
   BootDisabledWaiting=BootEnableRecovery=false;
   Status.reason="home_z"; Status.stop_requested=Status.stop_confirmed=false;
   enter(GRAB_HOMING);
 }
+void GrabTask_BootHomeStart(void) { boot_home_start(true); }
 static void reply(const char *text);
+/* HOME starts a drive-local operation. Launch every axis before waiting for
+ * completion, then retain the existing per-axis feedback verification. */
+static void boot_axis_select(unsigned index,uint32_t now,bool verify)
+{
+  BootAxisIndex=index;BootGood=0;BootStep=verify?2:5;
+  BootHomeSent=(BootStartedMask&(1U<<index))!=0;
+  BootTick=verify?BootHomeTick[index]:now;BootPoll=now-100U;
+  BootPositionValid=BootPositionStable=BootHomeFlagsValid=BootMotorFlagsValid=false;
+  BootDisabledWaiting=BootEnableRecovery=false;
+  Status.reason=index==0?"home_z":index==1?"home_x":"home_base";
+  ReportPending=true;
+}
+static void boot_abort_next(void)
+{
+  uint8_t unsent=BootAbortMask&(uint8_t)~BootAbortSentMask;
+  uint8_t remaining=unsent?unsent:BootAbortMask;
+  if(!remaining) {
+    BootActive=false;
+    if(BootStopUnconfirmed)Status.reason="home_stop_unconfirmed";
+    enter(BootFailed||BootStopUnconfirmed?GRAB_ERROR:GRAB_IDLE);
+    return;
+  }
+  for(unsigned i=0;i<3;i++)if(remaining&(1U<<i)) {
+    BootAxisIndex=i;BootHomeSent=true;BootStep=unsent?12:14;
+    BootPoll=HAL_GetTick()-100U;return;
+  }
+}
 static void boot_stop(const char *reason,bool failed)
 {
   if(BootStopping) return;
   BootStopping=true; BootFailed=failed; BootStep=10; BootTick=HAL_GetTick();
+  BootAbortMask=BootStartedMask&(uint8_t)~BootVerifiedMask;BootAbortSentMask=0;
+  Turntable_Stop(); /* Cancel pending boot HOME as well as an active ID8 HOME. */
   Status.reason=reason; Status.stop_requested=true; Status.stop_confirmed=false;
   if(failed)
   {
@@ -1770,6 +1807,29 @@ static bool boot_request(MechanicalArm_ResultTypeDef result,MechanicalArm_Action
 static void boot_process(uint32_t now)
 {
   MechanicalArm_AxisTypeDef axis=BootAxes[BootAxisIndex];
+  if(!BootStopping) {
+    for(unsigned i=0;i<3;i++)if((BootStartedMask&(1U<<i)) && !(BootVerifiedMask&(1U<<i)) &&
+                              now-BootHomeTick[i]>60000U) {
+      if(PendingAction!=MECHANICAL_ARM_ACTION_NONE || MechanicalArm_IsBusy())return;
+      if(BootAxisIndex!=i) {
+        BootHomeFlags=BootMotorFlags=0;
+        BootPositionValid=BootHomeFlagsValid=BootMotorFlagsValid=false;
+      }
+      BootAxisIndex=i;boot_stop("home_timeout",true);axis=BootAxes[i];break;
+    }
+    if(!BootStopping && BootVerifiedMask==7U) {
+      if(Turntable_IsBusy()) { Status.reason="home_wait_turntable";return; }
+      if(BootWaitTurntable && !Turntable_ReferenceValid()) { boot_stop("home_turntable_failed",true); }
+      else {
+        BootActive=false;Status.reason="home_complete";Status.reference_cause="home_verified";
+        Status.missing=configuration_missing(Status.mode);
+        if(!Status.missing)Status.missing="none";
+        enter(GRAB_IDLE);
+        /* Arm only when all four drives have finished; motion-busy would fail IMU boot verification. */
+        HWT101_Cal_BootVerifyArm();return;
+      }
+    }
+  }
   if(now-BootTick>(BootStopping?5000U:60000U))
   {
     if(!BootStopping) boot_stop("home_timeout",true);
@@ -1810,7 +1870,8 @@ static void boot_process(uint32_t now)
   else if(BootStep==8)
   {
     if(boot_request(MechanicalArm_Home(axis,axis==MECHANICAL_ARM_AXIS_BASE?0:2),MECHANICAL_ARM_ACTION_HOME,axis))
-    { BootHomeSent=true; BootStep=1; }
+    { BootHomeSent=true;BootStartedMask|=(uint8_t)(1U<<BootAxisIndex);
+      BootHomeTick[BootAxisIndex]=now;BootStep=1; }
   }
   else if(BootStep==2 || BootStep==14)
     (void)boot_request(MechanicalArm_HomeStateRead(axis),MECHANICAL_ARM_ACTION_HOME_STATE,axis);
@@ -1831,25 +1892,33 @@ static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
   if(event->Result!=MECHANICAL_ARM_RESULT_OK)
   {
     if(!BootStopping) boot_stop("home_feedback_failed",true);
-    else if(BootStep==10 || BootStep==11) BootStep=BootStep==11?12:10;
-    else { BootActive=false; Status.reason="home_stop_unconfirmed"; enter(GRAB_ERROR); }
+    else if(BootStep==10) BootStep=10;
+    else {
+      BootStopUnconfirmed=true;
+      if(BootStep==13)BootAbortSentMask|=(uint8_t)(1U<<BootAxisIndex);
+      else if(BootStep==14)BootAbortMask&=(uint8_t)~(1U<<BootAxisIndex);
+      boot_abort_next();
+    }
     return 1;
   }
   if(BootStopping)
   {
     if(event->Action==MECHANICAL_ARM_ACTION_STOP)
-    {
-      if(!BootHomeSent) { BootActive=false; enter(BootFailed?GRAB_ERROR:GRAB_IDLE); }
-      else BootStep=12;
+      boot_abort_next();
+    else if(event->Action==MECHANICAL_ARM_ACTION_HOME_ABORT) {
+      BootAbortSentMask|=(uint8_t)(1U<<BootAxisIndex);boot_abort_next();
     }
-    else if(event->Action==MECHANICAL_ARM_ACTION_HOME_ABORT) BootStep=14;
     else if(event->Action==MECHANICAL_ARM_ACTION_HOME_STATE && !(event->StateFlags[axis]&4U))
-    { BootActive=false; enter(BootFailed?GRAB_ERROR:GRAB_IDLE); }
+    { BootAbortMask&=(uint8_t)~(1U<<BootAxisIndex);boot_abort_next(); }
     return 1; /* stop_confirmed stays false: abort flag is not a standstill measurement. */
   }
   if(event->Action==MECHANICAL_ARM_ACTION_ENABLE)
   { BootStep=BootHomeSent?2:7;BootPoll=HAL_GetTick(); }
-  else if(event->Action==MECHANICAL_ARM_ACTION_HOME) { BootStep=2; BootPoll=HAL_GetTick(); }
+  else if(event->Action==MECHANICAL_ARM_ACTION_HOME) {
+    if(BootLaunching && BootAxisIndex<2)boot_axis_select(BootAxisIndex+1,HAL_GetTick(),false);
+    else if(BootLaunching) { BootLaunching=false;boot_axis_select(0,HAL_GetTick(),true); }
+    else { BootStep=2;BootPoll=HAL_GetTick(); }
+  }
   else if(event->Action==MECHANICAL_ARM_ACTION_HOME_STATE)
   {
     uint8_t flags=event->StateFlags[axis];
@@ -1927,18 +1996,10 @@ static uint8_t boot_event(const MechanicalArm_EventTypeDef *event)
         if(MECHANICAL_ARM_BASE_POSITIVE_DIR) RearBase=-RearBase;
         RearReferenceValid=RearPose=true;
       }
-      if(axis==MECHANICAL_ARM_AXIS_BASE) Status.reference_cause="home_verified";
       Status.missing="home_pending";
-      BootAxisIndex++; BootGood=BootStep=0; BootHomeSent=false; BootTick=HAL_GetTick();
-      BootPositionValid=BootPositionStable=BootHomeFlagsValid=BootMotorFlagsValid=false;
-      BootDisabledWaiting=BootEnableRecovery=false;
-      if(BootAxisIndex==3)
-      { BootActive=false; Status.reason="home_complete"; Status.missing=configuration_missing(Status.mode);
-        if(!Status.missing) Status.missing="none";
-        enter(GRAB_IDLE);
-        /* Start the IMU's fresh-data timeout and 5s verification only now. */
-        HWT101_Cal_BootVerifyArm(); }
-      else { Status.reason=BootAxisIndex==1?"home_x":"home_base"; ReportPending=true; }
+      BootVerifiedMask|=(uint8_t)(1U<<BootAxisIndex);
+      if(BootVerifiedMask==7U) { BootStep=15;Status.reason="home_wait_turntable";ReportPending=true; }
+      else boot_axis_select(BootAxisIndex+1,HAL_GetTick(),true);
     }
   }
   return 1;
@@ -2828,9 +2889,10 @@ static void status_write(bool debug)
     if(BootHomeFlagsValid) (void)snprintf(home,sizeof home,"0x%02X",BootHomeFlags);
     if(BootMotorFlagsValid) (void)snprintf(motor,sizeof motor,"0x%02X",BootMotorFlags);
     (void)snprintf(line,sizeof line,
-      "OK grab state=homing mode=%s reason=%s axis=%s step=%u home_flags=%s raw=%s motor_flags=%s stable=%u enable_recovery=%u stop_requested=%u stop_confirmed=0 elapsed=%lu\r\n",
+      "OK grab state=homing mode=%s reason=%s axis=%s step=%u home_flags=%s raw=%s motor_flags=%s stable=%u enable_recovery=%u home_started=%u home_verified=%u stop_requested=%u stop_confirmed=0 elapsed=%lu\r\n",
       s.mode,s.reason,names[BootAxisIndex],BootStep,home,raw,motor,BootGood,
-      BootEnableRecovery?1U:0U,s.stop_requested?1U:0U,(unsigned long)s.elapsed_ms);
+      BootEnableRecovery?1U:0U,(unsigned)BootStartedMask,(unsigned)BootVerifiedMask,
+      s.stop_requested?1U:0U,(unsigned long)s.elapsed_ms);
     if(debug) (void)ConsoleTx_Debug(CONSOLE_DEBUG_VISION,line,(uint16_t)strlen(line));
     else reply(line);
     return;
@@ -3077,7 +3139,7 @@ bool GrabTask_Command(unsigned count,char *tokens[])
        ChassisMotion_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy() ||
        bus.locked || bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)
       reply("ERR grab rehome rejected; stop tasks and inspect bus status\r\n");
-    else { GrabTask_BootHomeStart(); reply("OK grab rehome accepted; Z/X/Base verification pending\r\n"); status_write(false); }
+    else { boot_home_start(false); reply("OK grab rehome accepted; Z/X/Base verification pending\r\n"); status_write(false); }
   }
   else if(count>=3 && count<=5 && !strcmp(tokens[1],"start"))
   {

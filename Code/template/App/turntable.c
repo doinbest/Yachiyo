@@ -116,7 +116,7 @@ void Turntable_Init(void)
   Op = OP_NONE;
   Pending = Stable = MotionStarted = false;
   Token = 0;
-  BootHomePending = false; /* ID8 only homes on an explicit turntable home request. */
+  BootHomePending = true; /* The boot coordinator releases the one-shot near HOME. */
 }
 bool Turntable_IsBusy(void) { return Op != OP_NONE; }
 bool Turntable_ReferenceValid(void) { return Status.reference_valid; }
@@ -212,9 +212,9 @@ bool Turntable_Enable(bool enabled)
   Status.state = enabled ? "enabling" : "disabling";
   return true;
 }
-void Turntable_BootHomeProcess(bool arm_ready)
+void Turntable_BootHomeProcess(bool startup_allowed)
 {
-  if (!BootHomePending || !arm_ready) return;
+  if (!BootHomePending || !startup_allowed) return;
   if (Turntable_Home()) reply("OK turntable boot_home accepted mode=near\r\n");
   else if (MotorBus_IsQuarantined()) {
     BootHomePending = false;

@@ -72,18 +72,16 @@ int main(void)
   char *set[]={"turntable","set","slot2_deg","270"};
   char *empty[]={"turntable","inventory","empty"};
   assert(MotorBus_Init(&uart)==HAL_OK);Turntable_Init();
-  /* An absent ID8 must not be queried or lock the shared bus on boot,
-   * including after the arm becomes ready. */
-  missing=1;
-  for(unsigned i=0;i<600;i++) {
-    Turntable_BootHomeProcess(i>=10);step();
+  /* The coordinator releases startup once; no early traffic before that gate. */
+  for(unsigned i=0;i<10;i++) {
+    Turntable_BootHomeProcess(false);step();
     assert(!sends && !homes && !Turntable_IsBusy() && !MotorBus_IsQuarantined());
   }
-  missing=0;assert(!Turntable_ReferenceValid());
-  /* Explicit home still derives reference from actual multi-turn feedback. */
-  assert(Turntable_Home());assert(Turntable_IsBusy() && !Turntable_ReferenceValid());
+  Turntable_BootHomeProcess(true);
+  assert(Turntable_IsBusy() && !Turntable_ReferenceValid());
   run();Turntable_StatusGet(&s);
   assert(homes==1 && s.reference_valid && s.arrived && s.slot==1);
+  assert(strstr(console,"boot_home accepted mode=near"));
   assert(position_raw==saved_zero+65536 && fabsf(s.angle_deg)<0.01f && zero_commands==0 && saves==0);
   assert(Turntable_InventoryGet(1).state==TURNTABLE_UNKNOWN);
   Turntable_BootHomeProcess(true);step();assert(homes==1);

@@ -69,6 +69,8 @@ const names={
   mechanical_zero_saved:'驱动机械零点已保存',reference_established:'转盘参考已建立',position_timeout:'到位等待超时',
   home_pending:'回零未完成，参考尚未验证',home_z:'Z碰撞回零',home_x:'X碰撞回零',home_base:'Base就近回零',
   home_complete:'回零完成',home_cancelled:'回零已取消',home_failed:'驱动回零失败',home_timeout:'回零超时',
+  home_wait_turntable:'机械臂回零已验证，等待ID8车仓回零完成',
+  home_turntable_failed:'ID8车仓回零未建立参考，请检查转盘状态和电机总线',
   home_stop_unconfirmed:'回零停止未确认',home_request_failed:'回零请求提交失败',home_bus_fault:'回零电机总线故障',
   home_feedback_failed:'回零反馈失败',home_driver_fault:'回零驱动故障',home_axis_fault:'回零轴状态异常',
   home_enable_wait:'回零完成，等待使能状态恢复',home_enable_recovery:'回零完成，正在恢复使能',

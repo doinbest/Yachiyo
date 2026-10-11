@@ -4,6 +4,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {formatTerminalLine,describeReply} from '../protocol.mjs';
 
+test('single ID probe keeps raw replies, current FE and retained motion lock visible',()=>{
+  assert.match(formatTerminalLine('OK bus test start id=4 rounds=10 locked=1 read_only=1'),/ID4.*10 轮.*只读.*运动锁定仍保留/);
+  assert.match(formatTerminalLine('OK bus test reply id=4 round=1 func=0x3A reply_ms=2 hex=04:3A:03:6B'),/状态.*2 ms.*04 3A 03 6B/);
+  assert.match(formatTerminalLine('ERR bus test read id=4 round=1 func=0x36 reason=uart_error uart_error=0x00000004'),/位置.*帧错误/);
+  assert.match(formatTerminalLine('ERR bus test read id=4 round=1 func=0x35 reason=reply_timeout uart_error=0x00000000'),/速度.*应答超时/);
+  assert.match(formatTerminalLine('ERR bus test read id=4 round=1 func=0x35 reason=tx_timeout uart_error=0x00000000'),/速度.*发送超时/);
+  assert.match(formatTerminalLine('ERR bus test read id=4 round=1 func=0x35 reason=transport_error uart_error=0x00000000'),/速度.*传输失败/);
+  const result='OK bus test complete id=4 rounds=10 active=0 attempts=30 sent=30 received=30 timeouts=0 uart_errors=0 rejected=0 max_reply_ms=3 last_uart_error=0x00000000 locked=1 reason=done';
+  assert.match(formatTerminalLine(result),/已完成.*发送 30.*有效回复 30.*3 ms.*运动锁定仍保留/);
+  assert.equal(replyIsFault(result),true);
+});
+
 test('cache recovery distinguishes zeroing, verification and stopped completion',()=>{
   const progress=formatTerminalLine('OK bus recovery active=1 success=0 reason=zeroing_chassis addr=2 checked=0xff locked=1');
   assert.match(progress,/清零四轮同步缓存/);
@@ -11,6 +23,19 @@ test('cache recovery distinguishes zeroing, verification and stopped completion'
   assert.match(done,/同步缓存：已清除/);
   assert.match(done,/四轮停稳确认：1/);
   assert.match(done,/不会自动继续/);
+});
+
+test('recovery settling and persistent motion retain measured RPM and sample time',()=>{
+  const progress=formatTerminalLine('OK bus recovery active=1 success=0 reason=waiting_stopped addr=5 checked=0x00 locked=1 speed_addr=5 speed_rpm=-20 speed_ms=61234');
+  assert.match(progress,/等待新鲜速度确认停稳/);
+  assert.match(progress,/速度采样电机ID：5/);
+  assert.match(progress,/速度\(RPM\)：-20/);
+  assert.match(progress,/速度采样时刻\(ms\)：61234/);
+  const failed=formatTerminalLine('ERR bus recover reason=motor_moving addr=5 locked=1 speed_addr=5 speed_rpm=-20 speed_ms=61234');
+  assert.match(failed,/电机仍在运动/);
+  assert.match(failed,/反馈转速\(RPM\)：-20/);
+  assert.match(failed,/速度采样时刻\(ms\)：61234/);
+  assert.equal(replyIsFault('ERR bus recover reason=motor_moving addr=5 locked=1'),true);
 });
 
 test('common device and recovery replies explain actual completion scope',()=>{
@@ -40,13 +65,49 @@ test('visual invalid means no valid data, not a proven recognition miss',()=>{
 });
 
 test('startup follows homing and actual IMU reports, without premature readiness',()=>{
-  assert.equal(bootProgress('STM32 mechanical arm console ready',''),'正在回零');
+  assert.equal(bootProgress('STM32 mechanical arm console ready',''),'已启动，等待设备状态');
   assert.match(bootProgress('OK grab state=homing reason=home_x','正在回零'),/X.*回零/);
   assert.match(bootProgress('OK grab state=idle reason=home_complete','正在回零'),/等待.*验证/);
   assert.match(bootProgress('[IMU CAL] state=VERIFYING elapsed_s=2','等待验证'),/正在验证/);
   assert.equal(bootProgress('[IMU CAL] result=PASS state=DONE verified=1 control_ready=1','正在验证'),'已就绪');
   assert.match(bootProgress('OK grab state=error reason=home_timeout','正在回零'),/失败.*回零超时/);
   assert.match(bootProgress('OK grab state=homing reason=home_bus_fault stop_requested=1','正在回零'),/失败.*总线.*故障/);
+});
+
+test('disabled boot homing waits for IMU and preserves the manual homing entry',()=>{
+  const banner='Boot: arm auto-home=off; IMU verify=5s; keep still; manual homing: grab rehome; stream=off; imu cal start: 20s native calibration + 30s verification';
+  assert.equal(formatTerminalLine('STM32 mechanical arm console ready'),'STM32 已启动');
+  assert.match(formatTerminalLine(banner),/自动回零已关闭.*IMU.*5 秒.*grab rehome/);
+  assert.equal(bootProgress(banner,'已启动，等待设备状态'),'自动回零已关闭，等待 IMU 静止验证');
+  assert.equal(bootProgress('[IMU CAL] result=PASS state=DONE verified=1 control_ready=1','自动回零已关闭，等待 IMU 静止验证'),'已就绪');
+  assert.equal(bootProgress('Boot: Z/X collision home -> Base near home -> IMU verify=5s','已启动，等待设备状态'),'正在回零');
+});
+
+test('parallel boot homes describe the tray wait and failure in Chinese',()=>{
+  const banner='Boot: Z/X collision home + Base/ID8 near home in parallel -> IMU verify=5s; enable_verify=on';
+  assert.match(formatTerminalLine(banner),/Base\/ID8.*并行执行.*全部完成后.*IMU/);
+  assert.equal(bootProgress(banner,'尚未启动'),'正在回零');
+  const wait='OK grab state=homing mode=fixed reason=home_wait_turntable home_started=7 home_verified=7';
+  assert.equal(replyIsFault(wait),false);
+  assert.match(formatTerminalLine(wait),/等待ID8车仓回零完成/);
+  const fault='ERR grab state=homing reason=home_turntable_failed';
+  assert.equal(replyIsFault(fault),true);
+  assert.match(formatTerminalLine(fault),/ID8车仓.*参考.*转盘状态.*电机总线/);
+});
+
+test('homing enable recovery is progress, while failed verification is a fault',()=>{
+  for(const reason of ['home_enable_wait','home_enable_recovery']) {
+    const line=`OK grab state=homing mode=fixed reason=${reason} axis=z enable_recovery=1`;
+    assert.equal(replyIsFault(line),false);
+    assert.match(formatTerminalLine(line),/使能/);
+    assert.match(bootProgress(line,'正在回零'),/使能/);
+  }
+  for(const reason of ['home_enable_failed','home_position_changed']) {
+    const line=`OK grab state=homing mode=fixed reason=${reason} stop_requested=1`;
+    assert.equal(replyIsFault(line),true);
+    assert.match(bootProgress(line,'正在回零'),/失败/);
+  }
+  assert.match(formatTerminalLine('OK grab home_enable_recovery axis=z home_flags=0x03 motor_flags=0x02 raw=-141'),/补发一次使能.*Z/);
 });
 
 test('disconnect timeout wording follows the actual port state',()=>{

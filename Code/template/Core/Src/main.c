@@ -517,7 +517,7 @@ int main(void)
     Error_Handler();
   }
   ContestScreen_Init();
-  /* Verify Z/X collision home and Base near-home before arming IMU verification. */
+  /* Launch Z/X/Base and ID8 HOME without waiting for another drive to finish. */
   GrabTask_BootHomeStart();
 
   /* USER CODE END 2 */
@@ -571,8 +571,8 @@ int main(void)
     {
       GrabTask_Status_t boot_arm;
       GrabTask_StatusGet(&boot_arm);
-      Turntable_BootHomeProcess(boot_arm.state == GRAB_IDLE &&
-          strcmp(boot_arm.reason, "home_complete") == 0);
+      Turntable_BootHomeProcess(boot_arm.state == GRAB_HOMING &&
+          !boot_arm.stop_requested && boot_arm.elapsed_ms >= 1000U);
     }
     Mecanum_Process(); /* Task planners submit targets; this layer advances the bus. */
     ImuTiming_Mark(IMU_TIME_CHASSIS);
