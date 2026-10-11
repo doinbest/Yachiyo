@@ -18,7 +18,7 @@ typedef enum
   GRAB_X_RETRACT, GRAB_INDEX, GRAB_CAR_EXTEND, GRAB_RETURN_TURN,
   GRAB_EXTERNAL_EXTEND, GRAB_OBSERVE_Z, GRAB_OBSERVE_X, GRAB_COMPLETE,
   GRAB_TRACK_OBSERVE, GRAB_TRACK_MATCH, GRAB_TRACK_FOLLOW, GRAB_TRACK_PAUSE,
-  GRAB_ROUTE_POSE, GRAB_MANUAL_Z, GRAB_CALIBRATION
+  GRAB_ROUTE_POSE, GRAB_MANUAL_Z, GRAB_CALIBRATION, GRAB_QR_SCAN
 } GrabTask_State_t;
 typedef struct
 {
@@ -43,6 +43,10 @@ typedef struct
 
 /** @brief 初始化RAM标定缺项；仅启动时调用，不用于停车。 */
 void GrabTask_Init(void);
+/** QR test readiness/config only; no motion or reference change. */
+bool GrabTask_QrReady(float *scan_y);
+/** After chassis-confirmed arrival: wait, then move Z only until new UART code. */
+bool GrabTask_QrScanStart(uint32_t initial_sequence);
 /** @brief Arm one Z/X collision then Base near homing sequence after bus init or explicit grab rehome.
  * Completion requires 0x3B flags and feedback: X/Z zero + reached, Base stable + enabled.
  * Base near-home does not imply numerical zero. Success arms IMU boot verification once.
