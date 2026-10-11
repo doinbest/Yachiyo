@@ -11,6 +11,9 @@ test('tracking faults use Chinese reasons while tracking protocol remains Englis
   assert.match(trackText('bus_unavailable'),/总线.*不可用/);
   assert.match(trackText('reference_missing'),/参考.*未建立/);
   assert.equal(status.reason,'feedback_stale');assert.equal(status.raw,raw);
+  assert.match(trackText('track_pick_descend'),/50.*下降.*追踪/);
+  assert.match(trackText('track_pick_descend_wait'),/50.*暂停.*Z/);
+  assert.match(trackText('track_pick_close'),/夹取高度.*闭爪/);
 });
 
 test('live diagnostics are passive and do not fill the frozen trace array',()=>{

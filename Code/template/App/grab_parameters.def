@@ -8,6 +8,7 @@
  */
 #define GRAB_BASE_WORK_OFFSET_DEG 128.0f
 #define GRAB_BASE_HOME_STABLE_TOL_DEG 5.0f
+#define GRAB_TRACK_PICK_DESCEND_TOL_PX 50.0f
 /* User measurement: 100 motor degrees -> 28 mm; 3200 command pulses/rev. */
 PARAM(C_X_PPM, "x_ppm", 31.746031746, 0, 100000, 2, 2)
 PARAM(C_Z_PPM, "z_ppm", 480, 0, 100000, 2, 4)

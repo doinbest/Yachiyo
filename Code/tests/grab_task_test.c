@@ -14,6 +14,7 @@ static MechanicalArm_EventTypeDef pending;
 static bool pending_valid, move_arrives = true, camera_valid = true, imu_valid = true;
 static float physical[3], destination[3];
 static unsigned positions, closures, openings, stops, camera_requests, velocity_requests;
+static MechanicalArm_AxisTypeDef last_stop_axis;
 static uint16_t z_position_rpm;
 static uint8_t z_position_acc;
 static uint8_t x_position_acc, configured_x_acc=20, configured_z_acc=120;
@@ -130,9 +131,9 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionRead(MechanicalArm_AxisTypeDef
 MechanicalArm_ResultTypeDef MechanicalArm_StateRead(MechanicalArm_AxisTypeDef axis)
 { return queue(MECHANICAL_ARM_ACTION_STATE, axis); }
 MechanicalArm_ResultTypeDef MechanicalArm_Stop(MechanicalArm_AxisTypeDef axis)
-{ pending_valid = false; stops++; return queue(MECHANICAL_ARM_ACTION_STOP, axis); }
+{ pending_valid = false; stops++;last_stop_axis=axis; return queue(MECHANICAL_ARM_ACTION_STOP, axis); }
 MechanicalArm_ResultTypeDef MechanicalArm_StopScheduled(MechanicalArm_AxisTypeDef axis)
-{ if(pending_valid)return MECHANICAL_ARM_RESULT_BUSY; stops++; return queue(MECHANICAL_ARM_ACTION_STOP,axis); }
+{ if(pending_valid)return MECHANICAL_ARM_RESULT_BUSY; stops++;last_stop_axis=axis; return queue(MECHANICAL_ARM_ACTION_STOP,axis); }
 static uint16_t x_position_rpm;
 static MechanicalArm_PositionModeTypeDef base_position_mode;
 MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef axis, int32_t pulses,
@@ -238,6 +239,7 @@ static void reset(void)
   home_error_log[0]=0;home_submit_result=MECHANICAL_ARM_RESULT_NONE;
   memset(&home_bus_diag,0,sizeof home_bus_diag);home_bus_diag.reason="none";
   clock_ms = 1000; pending_valid = false; positions = closures = openings = stops = 0;
+  last_stop_axis=MECHANICAL_ARM_AXIS_ALL;
   memset(wheel_state_flags,3,sizeof wheel_state_flags);
   z_position_rpm=0; z_position_acc=0; z_position_pulses=0;
   configured_x_acc=20; configured_z_acc=120; x_position_acc=0;

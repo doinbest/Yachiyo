@@ -5,7 +5,7 @@ export const TRACK_PRESET=Object.freeze(Object.fromEntries(Object.entries(TRACK_
 const profileNames={predict:'原预测追踪',visual:'纯视觉追踪',feedback:'纯视觉＋反馈减速'};
 const profileDefaults=profile=>profile==='predict'?TRACK_PARAMETER_DEFAULTS:TRACK_COMPARISON_DEFAULTS;
 const labels={body_speed:'底盘合速度 / mm/s',x_speed:'伸缩速度 / mm/s',accel:'联合加速度 / mm/s²',lambda:'残余误差增益 / s⁻¹',x_weight:'伸缩分配权重',lead_mm:'最大领先 / mm',tol_px:'位置窗口 / px',control_ms:'控制间隔（新视觉包即时修正）/ ms',batch_ms:'额外批次限频（0为应答驱动）/ ms',latency_ms:'延迟联调初值 / ms',fit_ms:'拟合窗口 / ms',horizon_ms:'X位置目标前瞻 / ms',grace_ms:'短漏检宽限 / ms',body_accel:'底盘加减速联调值 / mm/s²',x_accel:'X加减速联调值 / mm/s²'};
-const text={track_observe:'仅观察 · 不运动',track_match:'正在匹配速度',track_follow:'稳定跟随',track_pause:'保持姿态',idle:'空闲',stopping:'停车中',error:'故障停止',settle:'确认停稳',descend:'快速下降夹取',close:'闭爪',lift:'提起物料',complete:'动作完成',track_pick_stopping:'对准后停车确认',track_pick_descend:'目标仍在窗口内 · 下降',track_pick_reacquire:'停车时目标移动 · 继续追踪',track_pick_complete:'已夹取并提起 · 等待下一步',track_observing:'正在观察和估计',track_matching:'位置与速度匹配',track_following:'像素到点后仍持续跟随',track_visual_wait:'视觉暂停 · 新观测恢复后继续',track_window_end:'行程暂不足 · 保持观察，目标返回可追范围后继续',track_window_recovered:'目标已返回可追范围 · 自动续追',track_recovered:'视觉已恢复',cancelled:'人工停止',stop_unconfirmed:'停车尚未取得反馈确认'};
+const text={track_observe:'仅观察 · 不运动',track_match:'正在匹配速度',track_follow:'稳定跟随',track_pause:'保持姿态',idle:'空闲',stopping:'停车中',error:'故障停止',settle:'确认停稳',descend:'下降并持续对准',close:'闭爪',lift:'提起物料',complete:'动作完成',track_pick_stopping:'Z已到夹取高度 · 精确对准后停车确认',track_pick_descend:'进入±50 px · 下降并继续追踪',track_pick_descend_wait:'偏差移出±50 px · 暂停Z，继续追踪',track_pick_close:'Z已到夹取高度且对准 · 停稳后闭爪',track_pick_reacquire:'停车时目标移动 · 继续追踪',track_pick_complete:'已夹取并提起 · 等待下一步',track_observing:'正在观察和估计',track_matching:'位置与速度匹配',track_following:'像素到点后仍持续跟随',track_visual_wait:'视觉暂停 · 新观测恢复后继续',track_window_end:'行程暂不足 · 保持观察，目标返回可追范围后继续',track_window_recovered:'目标已返回可追范围 · 自动续追',track_recovered:'视觉已恢复',cancelled:'人工停止',stop_unconfirmed:'停车尚未取得反馈确认'};
 export const trackText=value=>text[value]??deviceText(value);
 export function trackCrc(line){
   let crc=0xffffffff;
@@ -104,7 +104,7 @@ export function mountTracking({root,send,canSend=()=>false}){
   const el=(tag,value,cls)=>{const e=document.createElement(tag);if(value!==undefined)e.textContent=value;if(cls)e.className=cls;return e;};
   const card=el('section',undefined,'tracking-card');card.id='grab-tracking';
   const header=el('div',undefined,'tracking-header');header.append(el('h3','动态追踪与物料夹取'),el('span','观察与参考自动衔接','tracking-badge'));card.append(header);
-  card.append(el('p','先准备抓取姿态，再选择颜色。一键追踪自动观察并在缺少参考时建立料台参考；已有参考和剩余预算继续沿用。纯追踪持续跟随；追踪并夹取在目标停留且对准后下降、闭爪、提起，保持物料等待下一步。','form-note'));
+  card.append(el('p','先准备抓取姿态，再选择颜色。一键追踪自动观察并在缺少参考时建立料台参考；已有参考和剩余预算继续沿用。追踪并夹取：两轴偏差均进入±50 px开始下降，下降期间继续追踪；到夹取高度且进入精确窗口（默认±5 px）后停车确认、闭爪、提起，保持物料等待下一步。','form-note'));
   const color=el('select');color.setAttribute('aria-label','追踪颜色');
   for(const [value,label]of [[1,'红'],[2,'黄'],[3,'蓝'],[4,'绿'],[5,'黑'],[6,'浅蓝']]){const o=el('option',label);o.value=value;color.append(o);}color.value=3;
   const actions=el('div',undefined,'actions');actions.append(color);
