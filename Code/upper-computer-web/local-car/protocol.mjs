@@ -4,6 +4,9 @@ export {deviceText,reasonText};
 import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from './grab-params.mjs?v=car-transfer-speed-20261007';
 import {GRAB_PARAMETER_METADATA} from './grab-parameter-metadata.mjs';
 export {replyIsFault};
+export function positionDegreeRange(axis) {
+  return axis === 'z' ? [-3600,3600] : [-360,360];
+}
 // Source: Code/template/App/arm_console.c. UI labels never go over the wire.
 /** One relative Z step, using the operator's measured command pulses/mm. */
 export function buildFixedZJog(ppmValue, mmValue) {
@@ -92,7 +95,7 @@ export const commands = [
   command('grab-rehome','vision','重新建立三轴参考','grab rehome',[],'先移走夹持物并确认机械臂周围无障碍；按 Z、X、Base 顺序重新回零并读回验证。各轴确认后恢复对应默认参考，三轴完成后才能开始新任务。'),
   ...grabParameters.map(p=>command(`grab-get-${p.key}`,'vision',`读取 ${p.label}`,`grab get ${p.key}`)),
   ...grabParameters.map(p=>command(`grab-set-${p.key}`,'vision',p.label,`grab set ${p.key} {value}`,[{...number('value',p.label,grabDefaults[p.key]??'',p.min,p.max,p.step??'any'),exclusiveMin:p.exclusiveMin}],p.key in grabDefaults?'预填程序默认值，不是设备读回值；X/Z尺度和位置在上电或 grab rehome 对应轴验证成功后载入，容差和等待时间在启动时载入。单轴手动回零只受理动作，不自动恢复参考参数。修改仅存MCU RAM，运行中拒绝修改。':'仅设置 MCU RAM；复位后需重新配置。运行中拒绝修改，输入值不代表设备已接受。')),
-  command('pos','arm','相对转动','pos {axis} {degree}',[axis(),number('degree','电机轴相对角度 / °',10,-360,360,0.1)],'正负值表示方向；这是相对运动，不是绝对位置。本面板单次输入限 ±360°，固件另有脉冲限制。'),
+  command('pos','arm','相对转动','pos {axis} {degree}',[axis(),number('degree','电机轴相对角度 / °',10,-360,360,0.1)],'正负值表示方向；这是相对运动，不是绝对位置。Z 轴单次输入范围 −3600～3600°，Base/X 为 −360～360°；固件另有脉冲限制。'),
   ...[['enable','使能'],['disable','取消使能'],['state','查询状态'],['stop','停止']].map(([id,label]) => command(id,'arm',label,`${id} {axis}`,[axis(true)])),
   command('position','arm','读取当前位置','position {axis}',[axis()],'返回值为脉冲数。'),
   command('home','arm','执行回零','home {axis} {mode}',[axis(true),choice('mode','回零方式',[['near','就近 · near'],['dir','指定方向 · dir'],['collision','碰撞 · collision'],['limit','限位 · limit']])],'回零会产生运动；方式需要与实际机构匹配。'),
@@ -201,9 +204,11 @@ export function buildCommand(id, values = {}) {
       if (!field.options.some(([v]) => v === raw)) throw new Error(`请选择${field.label}。`);
     } else {
       const value = Number(raw);
+      const [min,max] = id === 'pos' && field.key === 'degree'
+        ? positionDegreeRange(checked.axis) : [field.min,field.max];
       if (!raw || !/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(raw) || !Number.isFinite(value) ||
-          value < field.min || (field.exclusiveMin && value === field.min) || value > field.max || (field.step === 1 && !Number.isInteger(value)))
-        throw new Error(`${field.label}：请输入 ${field.min}～${field.max}${field.step === 1 ? ' 的整数' : ' 的数值'}。`);
+          value < min || (field.exclusiveMin && value === min) || value > max || (field.step === 1 && !Number.isInteger(value)))
+        throw new Error(`${field.label}：请输入 ${min}～${max}${field.step === 1 ? ' 的整数' : ' 的数值'}。`);
     }
     checked[field.key] = raw;
   }

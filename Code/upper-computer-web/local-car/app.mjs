@@ -7,7 +7,7 @@ import {mountStacking} from './stack-panel.mjs?v=stack-20261008';
 let stackingPanel;
 import {createAttemptTracker} from './command-attempt.mjs?v=terminal-3';
 import {mountPreparation} from './route-preparation.mjs?v=chinese-notices-20261009';
-import {commands,buildCommand,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText,deviceText,reasonText} from './protocol.mjs?v=bus-test-20261011';
+import {commands,buildCommand,positionDegreeRange,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText,deviceText,reasonText} from './protocol.mjs?v=z-range-20261011';
 import {BridgeLink,readOnlyCommand,scopedStopCommand} from './bridge.mjs?v=bus-test-20261011';
 import {mountMap} from './map-view.mjs?v=chinese-notices-20261009';
 import {mountQr} from './qr-panel.mjs?v=qr-lower-20261011';
@@ -213,6 +213,10 @@ function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,execut
   let wire='',alternateWire='';
   function update(){
     if(['chassis-route-start','chassis-route-auto'].includes(id))inputs.speed.disabled=routeLocked;
+    if(id==='pos'){
+      const [min,max]=positionDegreeRange(sharedAxis?axis:inputs.axis.value);
+      inputs.degree.min=min;inputs.degree.max=max;
+    }
     try{
       const values={...Object.fromEntries(Object.entries(inputs).map(([k,e])=>[k,e.value])),...(sharedAxis?{axis}: {})};
       wire=buildCommand(id,values);

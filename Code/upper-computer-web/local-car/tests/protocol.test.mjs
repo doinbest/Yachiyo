@@ -41,6 +41,19 @@ test('catalog defaults generate valid old-firmware frames', () => {
     assert.ok(frameCommand(buildCommand(command.id, values)).endsWith('\r\n'), command.id);
   }
 });
+
+test('manual Z accepts ten turns while Base and X retain single-turn limits', () => {
+  for (const degree of [-3600, -1080, 1080, 3600])
+    assert.equal(buildCommand('pos', {axis:'z', degree}), `pos z ${degree}`);
+  for (const degree of [-3600.1, 3600.1, 0])
+    assert.throws(() => buildCommand('pos', {axis:'z', degree}));
+  for (const axis of ['base','x']) {
+    for (const degree of [-360,360])
+      assert.equal(buildCommand('pos', {axis,degree}), `pos ${axis} ${degree}`);
+    for (const degree of [-360.1,360.1,3600])
+      assert.throws(() => buildCommand('pos', {axis,degree}));
+  }
+});
 test('RX handles fragmented CRLF, multiple lines, prompts and bounded unterminated input', () => {
   const decoder = new LineDecoder();
   assert.deepEqual(decoder.push('arm> OK pos base accepted\r'), ['OK pos base accepted']);

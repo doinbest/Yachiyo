@@ -59,12 +59,31 @@ function consoleFixture(){
         if('connected'in p)bridge.connected=p.connected;if('disconnecting'in p)bridge.disconnecting=p.disconnecting;
         if('stopLatched'in p)bridge.stopLatched=p.stopLatched;if('sending'in p)sending=p.sending;
         if('parameterBusy'in p)parameterBusy=p.parameterBusy;if('routeLocked'in p)routeLocked=p.routeLocked;
+        if('axis'in p)axis=p.axis;
         if('preparing'in p)prepView.busy=p.preparing;if('pending'in p)prepView.pending=p.pending;
         updateControls();
       },get sending(){return sending;},get routeLocked(){return routeLocked;}};
   `,ctx);
   return {sim:ctx.sim,bridge,elements,wires,messages,logs,$};
 }
+
+test('relative motion form updates Z bounds and blocks oversized moves after switching axes', async()=>{
+  const f=consoleFixture();f.sim.controlForm('pos',{sharedAxis:true});
+  const input=f.$('pos-degree'),form=f.elements.find(e=>e.tag==='form');
+  f.sim.configure({axis:'z'});
+  assert.equal(Number(input.min),-3600);assert.equal(Number(input.max),3600);
+  input.value='-3600';input.oninput();
+  assert.deepEqual(f.wires,[]);
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['pos z -3600']);
+  f.sim.configure({axis:'x'});
+  assert.equal(Number(input.min),-360);assert.equal(Number(input.max),360);
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['pos z -3600']);
+  f.sim.configure({axis:'z',stopLatched:true});
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['pos z -3600']);
+});
 
 for(const state of ['idle','prepare','acquire','align','vision_grace','vision_pause','hold','error']){
   test(`device ${state} reply cannot permanently disable manual recovery or retry`,async()=>{
