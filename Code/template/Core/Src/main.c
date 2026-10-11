@@ -517,8 +517,8 @@ int main(void)
     Error_Handler();
   }
   ContestScreen_Init();
-  /* IMU boot verification is armed only after successful three-axis homing. */
-  GrabTask_BootHomeStart(); /* Z collision -> X collision -> Base near; once per boot. */
+  /* Verify Z/X collision home and Base near-home before arming IMU verification. */
+  GrabTask_BootHomeStart();
 
   /* USER CODE END 2 */
 

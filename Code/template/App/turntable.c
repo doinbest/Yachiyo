@@ -116,7 +116,7 @@ void Turntable_Init(void)
   Op = OP_NONE;
   Pending = Stable = MotionStarted = false;
   Token = 0;
-  BootHomePending = true;
+  BootHomePending = false; /* ID8 only homes on an explicit turntable home request. */
 }
 bool Turntable_IsBusy(void) { return Op != OP_NONE; }
 bool Turntable_ReferenceValid(void) { return Status.reference_valid; }

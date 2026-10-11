@@ -26,8 +26,8 @@ typedef struct
 
 /** @brief 上电初始化；三仓库存为待核对，第二/三仓角度未设置。 */
 void Turntable_Init(void);
-/** @brief 上电仅一次：机械臂回零完成后启动就近回零，完成后采反馈建立参考；不写机械零点。
- * @param arm_ready 三轴回零已验证。人工转盘操作或停止取消待启动回零。 */
+/** @brief 兼容主循环启动调度；上电自动回零已关闭，不查询或驱动ID8。
+ * @param arm_ready 三轴回零已验证；当前不触发转盘操作。 */
 void Turntable_BootHomeProcess(bool arm_ready);
 /** @brief MotorBus_Process 后调用，读取本模块事件并推进反馈确认。 */
 void Turntable_Process(void);
