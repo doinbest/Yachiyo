@@ -1,15 +1,16 @@
-import {bootProgress,describeStopEvent,visualStateText} from './terminal-format.mjs?v=chinese-notices-20261009';
-import {visibleTerminalLogs,createLogRenderScheduler} from './terminal-log.mjs?v=vision-pause-20260929';
+import {bootProgress,describeStopEvent,visualStateText} from './terminal-format.mjs?v=bus-test-20261011';
+import {recordingPayload,visibleTerminalLogs,createLogRenderScheduler} from './terminal-log.mjs?v=recording-background-20261009';
 import {mountWheelFeedback} from './wheel-feedback.mjs';
 import {mountTracking} from './grab-track.mjs?v=chinese-notices-20261009';
+import {downloadCurrentConsole} from './log-archive.mjs';
 import {mountStacking} from './stack-panel.mjs?v=stack-20261008';
 let stackingPanel;
 import {createAttemptTracker} from './command-attempt.mjs?v=terminal-3';
 import {mountPreparation} from './route-preparation.mjs?v=chinese-notices-20261009';
-import {commands,buildCommand,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText,deviceText,reasonText} from './protocol.mjs?v=chinese-notices-20261009';
-import {BridgeLink,readOnlyCommand,scopedStopCommand} from './bridge.mjs?v=calibration-20261009';
+import {commands,buildCommand,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText,deviceText,reasonText} from './protocol.mjs?v=bus-test-20261011';
+import {BridgeLink,readOnlyCommand,scopedStopCommand} from './bridge.mjs?v=bus-test-20261011';
 import {mountMap} from './map-view.mjs?v=chinese-notices-20261009';
-import {mountQr} from './qr-panel.mjs?v=bridge-1';
+import {mountQr} from './qr-panel.mjs?v=qr-lower-20261011';
 import {mountParameterPage} from './parameter-page.mjs?v=chinese-notices-20261009';
 import {RadarModel,RadarExchange,parseRadar,radarStateText,radarReasonText} from './radar-model.mjs';
 import {mountRadarWorkspace} from './radar-view.mjs';
@@ -38,10 +39,12 @@ const navigationMemory=createNavigationMemory();let previousHash='',pendingParam
 const radarModel=new RadarModel();try{const saved=JSON.parse(localStorage.getItem('local-car-radar-snapshots')||'null');if(saved){radarModel.snapshots=saved.snapshots??{};radarModel.params=saved.params??{};}}catch{}
 const monitorResult=new MonitorResult();
 let savedRadarSnapshot=null;
+function persistRadarSnapshots(force=false){const snapshot=Object.values(radarModel.snapshots).map(s=>s.receivedAt).join(':');if(force||snapshot!==savedRadarSnapshot){localStorage.setItem('local-car-radar-snapshots',JSON.stringify({snapshots:radarModel.snapshots,params:radarModel.params}));savedRadarSnapshot=snapshot;}}
 const radarExchange=new RadarExchange({send:wire=>executeSend(wire,false,true,true)});
 const status=new Map(),forms=[],pages={};
 let grabSnapshot=null,grabRouteSnapshot=null,grabReply=null,grabPanel=null,trackingPanel=null;
 function appendLog(direction,text){
+  if(direction==='RX'&&$('quiet-grab-log').checked&&recordingPayload(text)){rxCount++;return;}
   const entry={time:new Date().toLocaleTimeString('zh-CN',{hour12:false}),direction,text,owner:moduleForWire(text)};
   logs.push(entry);if(logs.length>500)logs.shift();
   if(direction==='TX')txCount++;if(direction==='RX')rxCount++;if(replyIsFault(text))errors++;
@@ -67,7 +70,7 @@ function receive(line){
     return;
   }
   radarView?.receive(line);
-  const snapshot=Object.values(radarModel.snapshots).map(s=>s.receivedAt).join(':');if(snapshot!==savedRadarSnapshot){savedRadarSnapshot=snapshot;try{localStorage.setItem('local-car-radar-snapshots',JSON.stringify({snapshots:radarModel.snapshots,params:radarModel.params}));}catch{}}
+  try{persistRadarSnapshots();}catch{}
   const frame=parseRadar(line);
   if(frame||line.trim().replace(/^(?:arm>\s*)+/,'').startsWith('@RADAR ')){
     if(frame?.k==='params')paramsView?.refreshRadarParameters();
@@ -97,7 +100,7 @@ function receive(line){
     paramsView?.cancel('STM32 已重启，旧读回标为历史值。',true);
     status.clear();routeLocked=false;grabSnapshot=null;grabRouteSnapshot=null;grabReply=null;renderGrabStatus();
     for(const view of [wheelView,mapView,radarView,qrView,prepView]){view?.connection(false);view?.connection(bridge.connected);}
-    appendLog('SYS','已收到 STM32 启动信息；旧状态已清除。先自动完成 Z/X/Base 回零，再保持静止完成 IMU 5 秒验证。');renderStatus();
+    appendLog('SYS','已收到 STM32 启动信息；旧状态已清除。启动流程以设备报告为准，IMU 验证时请保持静止。');renderStatus();
   }
   if(/^OK imu zero started/.test(line)){
     mapView?.connection(bridge.connected);prepView?.connection(false);prepView?.connection(bridge.connected);
@@ -128,7 +131,7 @@ const attempts=createAttemptTracker(showAttempt);
 async function send(wire,fromPreparation=false){
   if(['chassis stop','wheel stop'].includes(wire))return requestStop();
   if(preparationStop(wire)||scopedStopCommand(wire)){stackingPanel?.cancel();radarExchange.cancel();presetCancelled=true;paramsView?.cancel('停止操作已取消参数核对。');}
-  if(/^system\s+reset$/.test(wire.trim())&&!window.confirm('重启 STM32？\n仅在整车静止、任务空闲时操作。主控将重新初始化，外部驱动器不会断电复位。重启后会自动执行三轴回零，再进行 IMU 5 秒静止验证。'))return false;
+  if(/^system\s+reset$/.test(wire.trim())&&!window.confirm('重启 STM32？\n仅在整车静止、任务空闲时操作。主控将重新初始化，外部驱动器不会断电复位。启动流程以设备报告为准，IMU 验证时请保持静止。'))return false;
   return attempts.run(wire,()=>executeSend(wire,fromPreparation));
 }
 
@@ -242,7 +245,7 @@ function tabs(container,items,navigation=container){
 
 function buildGrabPreparation(body){
   const prep=node('details',undefined,'vision-recovery');
-  prep.append(node('summary','回零与通信恢复'),node('p','上电自动完成三轴回零。参考失效时使用“重新建立三轴参考”；通信异常时查看或恢复电机总线。','form-note'));
+  prep.append(node('summary','回零与通信恢复'),node('p','上电自动完成 Z、X、Base 回零，再静止验证 IMU。需要重建参考时使用“重新建立三轴参考”；通信异常时查看或恢复电机总线。','form-note'));
   actions(prep,[['grab-rehome'],['bus-recover','恢复电机总线'],['bus-status','读取总线状态']]);
   const axes=node('details',undefined,'advanced');axes.append(node('summary','单轴手动回零'));
   for(const [axisName,label,mode,homeLabel] of [['base','Base · 底座','near','就近回零'],['x','X · 伸缩轴','collision','碰撞回零'],['z','Z · 升降轴','collision','碰撞回零']]){
@@ -367,7 +370,11 @@ function renderGrabStatus(){
 }
 
 function buildPages(){for(const key of Object.keys(titles).filter(x=>x!=='map')){pages[key]=node('div');pages[key].dataset.page=key;pages[key].hidden=true;$('module-content').append(pages[key]);}
-const arm=pages.arm;arm.append(node('p','先选择电机轴，再使能并执行相对运动。夹爪独立控制。','form-note'));arm.append(node('small','当前对象'));const picker=node('div',undefined,'axis-picker');for(const [value,label] of [['base','底座 Base'],['z','升降 Z'],['x','伸缩 X'],['all','全部轴']]){const b=node('button',label);b.classList.toggle('active',value===axis);b.setAttribute('aria-pressed',String(value===axis));b.onclick=()=>{axis=value;picker.querySelectorAll('button').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b));});updateControls();};picker.append(b);}arm.append(picker);actions(arm,[['enable','使能',{},true],['disable','失能',{},true],['state','读取状态',{},true],['stop','停止所选轴',{},true]]);arm.append(controlForm('pos',{sharedAxis:true}));const grip=node('div',undefined,'grip-row');grip.append(node('h3','夹爪'));actions(grip,[['grip-open','打开 · 2500 µs'],['grip-catch','夹取 · 1920 µs']]);arm.append(grip);arm.append(parameterLink('调整运动参数','motion','base_rpm','机械臂与夹爪'));advanced(arm,'回零与零点',['home','origin','zero']);
+const arm=pages.arm;arm.append(node('p','先选择电机轴，再使能并执行相对运动。夹爪独立控制。','form-note'));arm.append(node('small','当前对象'));const picker=node('div',undefined,'axis-picker');for(const [value,label] of [['base','底座 Base'],['z','升降 Z'],['x','伸缩 X'],['all','全部轴']]){const b=node('button',label);b.classList.toggle('active',value===axis);b.setAttribute('aria-pressed',String(value===axis));b.onclick=()=>{axis=value;picker.querySelectorAll('button').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b));});updateControls();};picker.append(b);}arm.append(picker);
+actions(arm,[['enable','使能',{},true],['disable','失能',{},true],['state','读取状态',{},true],['stop','停止所选轴',{},true]]);
+const armHoming=actions(arm,[['origin','设置机械零点',{},true],['home','就近回零',{mode:'near'},true],['home','碰撞回零',{mode:'collision'},true]]);armHoming.id='arm-homing-controls';
+arm.append(node('p','设置机械零点：将当前机械位置保存到驱动器，不移动电机。Base 通常用就近回零，X、Z 通常用碰撞回零；选择“全部轴”时，同一回零方式应用到三个轴。','form-note'));
+arm.append(controlForm('pos',{sharedAxis:true}));const grip=node('div',undefined,'grip-row');grip.append(node('h3','夹爪'));actions(grip,[['grip-open','打开 · 2500 µs'],['grip-catch','夹取 · 1920 µs']]);arm.append(grip);arm.append(parameterLink('调整运动参数','motion','base_rpm','机械臂与夹爪'));advanced(arm,'回零与零点',['home','origin','zero']);
 const carTray=node('section',undefined,'car-turntable-controls');
 carTray.append(node('h3','车载转盘 · ID 8'),node('p','与机械臂轴选择独立。首次设零：失能 → 手动对齐第一仓 → 使能 → 保存机械零点。以后点击就近回零，完成后自动恢复第一仓参考。','form-note'));
 actions(carTray,[['turntable-enable','使能转盘'],['turntable-disable','失能转盘'],['turntable-status','读取转盘状态'],['turntable-stop','停止转盘'],['turntable-save_zero','保存机械零点'],['turntable-home','就近回零']]);
@@ -406,13 +413,40 @@ actions(recovery,[['feedback-off','停止四轮采集'],['reset-confirmed','确�
 buildVisionWorkspace(pages.vision);
 const sys=pages.system;buildGrabCalibrationPanel(sys);const bootNote=node('p',bootStage||'启动状态：尚未收到本次启动报告','form-note');bootNote.id='boot-status';sys.append(bootNote);actions(sys,[['bus-recover','一键恢复电机总线'],['bus-status','查看恢复结果']]);sys.append(node('p','误操作或通信错误后使用：停止任务、检查全部电机，成功后由你重新启动。不会重启主控、自动归零或续跑；恢复结果见终端。','form-note'));actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','上电先完成 Z/X/Base 回零，再静止验证 5 秒；失败后可手动重新验证。原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','重新验证 5 秒'],['imu-cal-cancel','取消标定/验证']]);sys.append(node('p','Z 轴角度清零：把当前朝向设为 0°，不消除漂移、不标定零偏。保持静止操作；跑图前重新验证 IMU 并设置地图起点。','form-note'));
 actions(sys,[['imu-zero','Z 轴角度清零']]);
+sys.append(controlForm('bus-test',{compact:true,executeLabel:'开始通信测试'}));
+actions(sys,[['bus-test-status','查看测试结果'],['bus-test-stop','结束通信测试']]);
 advanced(sys,'IMU 连续角度输出',['imu-stream-on','imu-stream-off']);
 const routeSpeed=prefs.routeSpeed;
-  const routeSpeeds=bindRouteSpeed({prefs,save,inputs:['chassis-route-start-speed','chassis-route-auto-speed','grab-route-speed','grab-mission-speed','radar-nav-speed','route-preview-speed'].map($).filter(Boolean),onChange:speed=>paramsView?.setRouteSpeed(speed)});
+  const routeSpeeds=bindRouteSpeed({prefs,save,inputs:['chassis-route-start-speed','chassis-route-auto-speed','grab-route-speed','grab-mission-speed','radar-nav-speed'].map($).filter(Boolean),onChange:speed=>paramsView?.setRouteSpeed(speed)});
+  const previewSpeed=$('route-preview-speed');previewSpeed.value=String(prefs.previewSpeed??200);previewSpeed.addEventListener('change',()=>{const value=Number(previewSpeed.value);if(Number.isInteger(value)&&value>=10&&value<=5000){prefs.previewSpeed=value;save();}});
   if(prefs.previousRouteSpeed!==undefined)realRoute.append(node('p',`旧版启动速度 ${prefs.previousRouteSpeed} mm/s 已迁移为 200 mm/s，请核对；之后显式保存的 10～5000 mm/s 仍可使用。`,'form-note'));
   paramsView=mountParameterPage({root:pages.params,send:wire=>executeSend(wire,false,true,true),canSend,radarExchange,radarModel,
     onBusy:busy=>{parameterBusy=busy;updateControls();},routeSpeed,onRouteSpeed:speed=>routeSpeeds.set(speed)});
-  qrView=mountQr({root:pages.qr,send,notify:toast,canSend});}
+  qrView=mountQr({root:pages.qr,send,notify:toast,canSend});
+  const qrTest=node('section',undefined,'control-group');
+  qrTest.append(node('h2','起点到二维码控制测试'));
+  const qrStartLabel=node('label','本次起点'),qrStartChoice=node('select'),qrStartBody=node('div');
+  qrStartChoice.setAttribute('aria-label','扫码测试起点');
+  for(const [value,text] of [['lower','右下起点 · 车头朝左'],['upper','右上起点 · 车头朝下']])
+  { const option=node('option',text);option.value=value;qrStartChoice.append(option); }
+  qrStartChoice.value='lower';qrStartLabel.append(qrStartChoice);qrTest.append(qrStartLabel);
+  const qrRouteHelp=node('p',undefined,'form-note');qrTest.append(qrRouteHelp);
+  actions(qrTest,['imu-verify']);
+  qrTest.append(qrStartBody);
+  const qrCommonHelp=' 到点后原地转180°，确认转向完成并停稳后等1秒，未扫码则以5 mm/s降Z到−50 mm，再返回原高度；扫码一直开启，扫到即停。上电回零完成后，验证IMU、设置所选起点，再启动；任务自动准备四轮反馈。Base和X保持原姿态。';
+  const renderQrStart=()=>{
+    const lower=qrStartChoice.value==='lower';qrStartBody.replaceChildren();
+    qrRouteHelp.textContent=(lower?'右下(2250,150)，车头朝左；斜移到(2100,300)，顺时针转90°朝上，再直行到二维码接近点(2100,1200)。':'右上(2250,2250)，车头朝下；斜移到(2100,2100)，保持朝下直行到二维码接近点(2100,1200)。')+qrCommonHelp;
+    actions(qrStartBody,[lower?'qr-test-lower-origin':'qr-test-origin','qr-test-status','qr-test-stop']);
+    qrStartBody.append(controlForm(lower?'qr-test-lower-start':'qr-test-start'));
+    updateControls();
+  };
+  qrStartChoice.onchange=renderQrStart;renderQrStart();
+  const scanParams=node('details');scanParams.append(node('summary','扫码位置和下降参数'));
+  for(const key of ['qr_scan_y','qr_z_min','qr_z_speed','qr_wait_ms'])
+  { scanParams.append(controlForm(`grab-set-${key}`));actions(scanParams,[`grab-get-${key}`]); }
+  qrTest.append(scanParams);pages.qr.append(qrTest);
+}
 function route(){
   const next=parsePageRoute(location.hash),content=document.querySelector('.page-content');
   if(previousHash)navigationMemory.save(previousHash,content.scrollTop);
@@ -440,10 +474,11 @@ document.addEventListener('click',event=>{
 $('map-log-toggle').onclick=()=>{const open=document.querySelector('.desk').classList.toggle('logs-open');$('map-log-toggle').textContent=open?'收起日志':'展开日志';$('map-log-toggle').setAttribute('aria-expanded',String(open));renderLogs();};
 $('raw-form').onsubmit=async e=>{e.preventDefault();const command=$('raw-command').value.trim();if(await send(command))$('raw-command').value='';};document.querySelectorAll('[data-stop]').forEach(b=>{b.dataset.send='1';b.onclick=()=>void send(b.dataset.stop);});
 $('log-filters').onclick=e=>{const b=e.target.closest('[data-filter]');if(!b)return;filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));renderLogs();};$('log-module').onchange=renderLogs;$('log-format').onchange=()=>{prefs.logFormat=$('log-format').value;save();renderLogs();renderStatus();renderGrabStatus();};$('quiet-grab-log').onchange=()=>{prefs.quietGrabLog=$('quiet-grab-log').checked;save();unseen=0;renderLogs();};$('clear-log').onclick=()=>{logs=[];txCount=rxCount=unseen=errors=0;renderLogs();};$('terminal').onscroll=()=>{if($('terminal').scrollHeight-$('terminal').clientHeight-$('terminal').scrollTop>25)$('autoscroll').checked=false;};$('autoscroll').onchange=()=>{if($('autoscroll').checked)unseen=0;renderLogs();};$('new-logs').onclick=()=>{$('autoscroll').checked=true;unseen=0;renderLogs();};
-$('export-log').onclick=()=>{const content=logs.map(l=>`[${l.time}] ${l.direction} ${l.text}`).join('\r\n');const url=URL.createObjectURL(new Blob(['\ufeff'+content],{type:'text/plain;charset=utf-8'}));const a=node('a');a.href=url;a.download=`yachiyo-${Date.now()}.txt`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+$('export-log').textContent='完整TXT';$('export-log').title='导出本地服务启动以来的全部收发及系统记录，不受500条缓存或显示筛选影响';
+$('export-log').onclick=async()=>{try{await downloadCurrentConsole();}catch(error){toast(error.message);}};
 function applyTheme(){const theme=prefs.theme==='black'||(prefs.theme===undefined&&prefs.dark===false)?'black':'blue';document.body.classList.add('dark');document.body.dataset.theme=theme;$('theme-toggle').textContent=theme==='blue'?'◐ 切换黑色':'◐ 切换蓝色';$('theme-toggle').title=`当前为${theme==='blue'?'蓝色':'黑色'}背景`;}
 $('theme-toggle').onclick=()=>{prefs.theme=document.body.dataset.theme==='blue'?'black':'blue';prefs.dark=true;save();applyTheme();};
-applyTheme();buildPages();mapView=mountMap({send,isPreparing:()=>!!prepView?.busy||stopped(),onStatus:text=>$('subscription-note').textContent=text});radarDirectView=mountRadarDirectHost({root:$('radar-direct-workspace'),hostClient:radarHostClient,connectionController:sharedConnectionController});radarDirectView.connection({state:connectionState,port:bridge.port||$('serial-port').value||'',baudrate:Number($('baud').value)||115200});radarView=mountRadarWorkspace({model:radarModel,exchange:radarExchange,send,canSend,api:(path,body)=>bridge.api(path,body),mapView,monitorResult,onLiveState:receiveRadarLiveState,onBusy:busy=>{parameterBusy=busy;updateControls();},onTabChange:tab=>{const direct=tab==='radar';$('legacy-map-layout').hidden=direct;radarDirectView.setVisible(direct);}});
+applyTheme();buildPages();mapView=mountMap({send,isPreparing:()=>!!prepView?.busy||stopped(),onStatus:text=>$('subscription-note').textContent=text});radarDirectView=mountRadarDirectHost({root:$('radar-direct-workspace'),hostClient:radarHostClient,connectionController:sharedConnectionController});radarDirectView.connection({state:connectionState,port:bridge.port||$('serial-port').value||'',baudrate:Number($('baud').value)||115200});radarView=mountRadarWorkspace({model:radarModel,exchange:radarExchange,send,canSend,api:(path,body)=>bridge.api(path,body),mapView,monitorResult,onResultsCleared:()=>persistRadarSnapshots(true),onLiveState:receiveRadarLiveState,onBusy:busy=>{parameterBusy=busy;updateControls();},onTabChange:tab=>{const direct=tab==='radar';$('legacy-map-layout').hidden=direct;radarDirectView.setVisible(direct);}});
 mountMonitorRadar({model:radarModel,store:monitorResult,workspace:radarView,api:(path,body)=>bridge.api(path,body),backupConfig:()=>radarDirectView.snapshot().config,preparationRoot:$('real-route-panel').querySelector('.route-preparation')});
 window.addEventListener('hashchange',route);route();qrView.connection(false);updateControls();appendLog('SYS','八千代·巡航已就绪，请选择串口后连接；刷新端口列表不会打开设备或发送指令。');
 

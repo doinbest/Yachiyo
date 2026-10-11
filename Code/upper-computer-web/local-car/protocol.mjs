@@ -1,4 +1,4 @@
-import {chineseTerminalLine,replyIsFault} from './terminal-format.mjs?v=chinese-notices-20261009';
+import {chineseTerminalLine,replyIsFault} from './terminal-format.mjs?v=bus-test-20261011';
 import {deviceText,reasonText} from './device-text.mjs';
 export {deviceText,reasonText};
 import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from './grab-params.mjs?v=car-transfer-speed-20261007';
@@ -46,6 +46,7 @@ export const grabParameters = [
   {key:'lambda',label:'视觉收敛增益 / s⁻¹',group:'控制与运动边界'},
   {key:'x_weight',label:'X 分配权重',group:'控制与运动边界'},
   ...['z_proc_grab','z_proc_lift','z_car_lift','z_proc_place','z_temp_place','z_stack_place','x_car','base_car_offset'].map(key=>({key,label:({z_proc_grab:'粗加工夹取Z',z_proc_lift:'粗加工提起Z',z_car_lift:'车载取出提起Z',z_proc_place:'粗加工释放Z',z_temp_place:'暂存第一层释放Z',z_stack_place:'暂存第二层释放Z',x_car:'车载取放口X',base_car_offset:'车载Base偏转角'})[key],group:'取放场景'})),
+  ...[['qr_scan_y','二维码接近点 Y / mm'],['qr_z_min','扫码下降最低 Z / mm'],['qr_z_speed','扫码下降速度 / mm·s⁻¹'],['qr_wait_ms','到位后扫码等待 / ms']].map(([key,label])=>({key,label,group:'二维码测试'})),
 ].map(p=>({...p,...GRAB_PARAMETER_METADATA[p.key]}));
 export const turntableParameters=[
   ...[['slot1_deg','第一仓位 / °'],['slot2_deg','第二仓位 / °'],['slot3_deg','第三仓位 / °']].map(([key,label])=>({key,label,min:-360,max:360,readOnly:key==='slot1_deg'})),
@@ -117,6 +118,11 @@ export const commands = [
   command('info','system','设备信息','info'),
   command('bus-recover','system','一键恢复电机总线','bus recover',[],'停止任务并检查全部 8 台电机（含车载转盘 ID 8）；成功后不会自动续跑。结果见终端，底盘同步缓存未确认时仍保持底盘锁定。'),
   command('bus-status','system','查看总线恢复结果','bus status'),
+  command('bus-test','system','单电机通信测试','bus test {id} {rounds}',[
+    choice('id','电机 ID',[['1','1 · 左前轮'],['2','2 · 左后轮'],['3','3 · 右后轮'],['4','4 · 右前轮'],['5','5 · Base'],['6','6 · Z'],['7','7 · X'],['8','8 · 车载转盘']]),
+    number('rounds','测试轮数',10,1,100)],'每轮只读取所选 ID 的状态、位置和速度，暂停其他普通总线请求；不驱动电机、不解除运动锁定。共享线路上的电气干扰仍会影响测试。'),
+  command('bus-test-status','system','查看单电机测试结果','bus test status'),
+  command('bus-test-stop','system','结束单电机测试','bus test stop',[],'结束通信测试；实际停车使用停车入口。'),
   command('help','system','固件指令帮助','help'),
   command('chassis-run','chassis','平移与转向测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-300,300,0.1),number('vy','左向速度 / mm·s⁻¹',0,-300,300,0.1),number('omega_deg','逆时针角速度 / °·s⁻¹',0,-100,100,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'角速度输入单位为 °/s，上限100；网页自动换算为固件rad/s。角速度为 0 时自动保持起步航向，需要 IMU 验证通过；非 0 时执行给定转向。起步和停车各 500 ms；总时长为保持时间加 1 秒。'),
   command('chassis-heading','chassis','航向保持测试','chassis heading {vx} {vy} {heading} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-300,300,0.1),number('vy','左向速度 / mm·s⁻¹',0,-300,300,0.1),number('heading','HWT101 模块目标角度 / °','',-180,180,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'需本次启动验证通过；目标角度不是地图角度。起步和停车各 500 ms。'),
@@ -133,7 +139,7 @@ export const commands = [
   command('feedback-select','chassis','选择反馈对象','chassis feedback {wheel}',[choice('wheel','反馈对象',[['0','全部车轮'],['1','左前 · 地址 1'],['2','左后 · 地址 2'],['3','右后 · 地址 3'],['4','右前 · 地址 4']])],'选择对象后轮询保持关闭，需显式开启。'),
   command('feedback-on','chassis','开启反馈轮询','chassis feedback on'),
   command('feedback-off','chassis','关闭反馈轮询','chassis feedback off'),
-  command('units','chassis','确认协议位置单位','chassis units {units}',[choice('units','每圈协议位置单位',[['0','尚未确认 · 0'],['65536','实测一圈为 65536 单位']],'')],'先测量一圈反馈；不是命令脉冲数或物理编码器分辨率。'),
+  command('units','chassis','确认协议位置单位','chassis units {units}',[choice('units','每圈协议位置单位',[['0','尚未确认 · 0'],['65536','实测一圈为 65536 单位']],'')],'本车Emm反馈已确认每圈65536单位，固件默认采用；0仅用于诊断撤销，不是3200命令脉冲数。'),
   command('reset-confirmed','chassis','确认驱动已实际复位','chassis reset-confirmed',[],'仅在实物驱动器已复位后执行；此按钮不会复位驱动器。'),
   command('imu-status','system','读取 IMU 状态','imu status'),
   command('imu-cal-start','system','原生零偏标定','imu cal start',[],'整车静止约 20 秒标定 + 30 秒验证；验证通过后请求模块内部保存。'),
@@ -141,6 +147,13 @@ export const commands = [
   command('imu-cal-cancel','system','取消标定或验证','imu cal cancel',[],'尝试恢复正常模式并清除本次航向控制验证资格。'),
   command('imu-stream-on','system','开启模块角度输出','imu stream on'),
   command('imu-stream-off','system','关闭模块角度输出','imu stream off'),
+  command('qr-test-units','qr','确认Emm反馈单位','chassis units 65536',[],'采用已确认的Emm驱动反馈单位；不发送运动。'),
+  command('qr-test-origin','qr','设置右上起点','chassis origin 2250 2250 -90',[],'将车放在右上启停区中心、车头向下，完成IMU验证和四轮反馈准备后，显式设置地图原点。'),
+  command('qr-test-start','qr','驶向二维码并扫码','grab qr begin {speed}',[number('speed','底盘速度 / mm·s⁻¹',50,10,200)],'右上起点到二维码，原地转180°并停稳后Z上下搜码；Base和X保持原姿态，扫到即停。'),
+  command('qr-test-lower-origin','qr','设置右下起点','chassis origin 2250 150 180',[],'车放在右下启停区中心，车头朝左；完成IMU验证后显式设置起点。'),
+  command('qr-test-lower-start','qr','驶向二维码并扫码','grab qr begin lower {speed}',[number('speed','底盘速度 / mm·s⁻¹',50,10,200)],'斜移至(2100,300)，顺时针转90°，直行到二维码，原地转180°并停稳后Z上下搜码；扫到即停。'),
+  command('qr-test-status','qr','读取扫码测试状态','grab qr status'),
+  command('qr-test-stop','qr','停止扫码测试','grab qr stop'),
   command('qr-status','qr','检查支持 / 接收统计','qr status'),
   command('qr-read','qr','读取最新任务码','qr read',[],'只读缓存，不主动触发摄像头扫码。'),
   command('qr-stream-on','qr','跟随新任务码','qr stream on'),
