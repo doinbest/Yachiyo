@@ -22,7 +22,7 @@ const names={
   motor_ack_timeout:'电机应答超时',motor_arrival_timeout:'电机到位超时',motor_request:'电机请求失败',
   motor_feedback:'电机反馈异常',motor_error:'电机动作异常',motor_fault:'电机状态异常',
   motor_busy:'电机请求正忙',motor_param:'电机请求参数无效',motor_tx:'电机命令发送失败',
-  motor_moving:'电机仍在运动',driver_rejected:'驱动器拒绝请求',driver_fault:'驱动器报告故障',
+  motor_moving:'电机仍在运动',waiting_stopped:'等待新鲜速度确认停稳',driver_rejected:'驱动器拒绝请求',driver_fault:'驱动器报告故障',
   transport_error:'电机总线通信错误',submit_failed:'电机请求提交失败',tx_timeout:'发送完成超时',
   rx_overflow:'串口接收溢出',rx_restart_failed:'串口接收重启失败',drain_timeout:'清理旧应答超时',
   stop_drain_timeout:'停车后清理旧应答超时',recovery_timeout:'总线恢复超时',
@@ -71,6 +71,8 @@ const names={
   home_complete:'回零完成',home_cancelled:'回零已取消',home_failed:'驱动回零失败',home_timeout:'回零超时',
   home_stop_unconfirmed:'回零停止未确认',home_request_failed:'回零请求提交失败',home_bus_fault:'回零电机总线故障',
   home_feedback_failed:'回零反馈失败',home_driver_fault:'回零驱动故障',home_axis_fault:'回零轴状态异常',
+  home_enable_wait:'回零完成，等待使能状态恢复',home_enable_recovery:'回零完成，正在恢复使能',
+  home_enable_failed:'回零使能验证失败',home_position_changed:'恢复使能后回零位置发生变化',
   boot_pending:'上电待验证',home_verifying:'三轴正在验证',home_verified:'三轴已验证',
   transfer_off_pose:'Base已转离观察姿态',base_place_turn:'Base已转向放置处',manual_base_move:'Base已手动移动',
   manual_home_all:'手动全部回零后待验证',manual_home_x:'手动X回零后待验证',manual_home_z:'手动Z回零后待验证',
@@ -188,7 +190,8 @@ export function rejectionText(line){
     speed:'速度',accel:'加速度',limit:'脉冲行程限制',degree:'角度',axis:'轴选择无效',mode:'模式无效',};
   return translated.replace(/\b([a-z][a-z0-9_]*)(?:=([^\s;]+))?/g,(token,key,value)=>{
     if(value!==undefined){
-      const fields={reason:'原因',action:'动作',axis:'轴',bus_reason:'总线原因'};
+      const fields={reason:'原因',action:'动作',axis:'轴',bus_reason:'总线原因',
+        speed_addr:'速度采样电机ID',speed_rpm:'反馈转速(RPM)',speed_ms:'速度采样时刻(ms)'};
       return fields[key]?`${fields[key]}：${words[value]??deviceText(value)}`:token;
     }
     return words[key]??names[key]??token;

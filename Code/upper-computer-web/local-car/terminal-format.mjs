@@ -11,8 +11,9 @@ const colors={1:'red',2:'yellow',3:'blue',4:'green',5:'black',6:'light_blue'};
 Object.assign(names,{stack_align:'码垛静态对准与补偿',stack_center_align:'正在对准绿色准心',stack_compensating:'准心已对准，正在执行码垛补偿',stack_aligned_ready:'码垛补偿到位，等待人工装料'});
 const referenceNames={boot_pending:'上电待验证',home_verifying:'三轴正在验证',home_verified:'三轴已验证',base_place_turn:'Base 已转向放置处',manual_home_all:'手动全部回零后待验证',manual_home_x:'手动 X 回零后待验证',manual_home_z:'手动 Z 回零后待验证',manual_home_base:'手动 Base 回零后待验证',manual_zero_all:'手动全部清零后待验证',manual_zero_x:'手动 X 清零后待验证',manual_zero_z:'手动 Z 清零后待验证',manual_zero_base:'手动 Base 清零后待验证',manual_base_move:'Base 已手动移动',x_reference_changed:'X 参考失效',z_reference_changed:'Z 参考失效',base_reference_changed:'Base 参考失效',all_reference_changed:'全部参考失效'};
 const value=v=>referenceNames[v]??names[v]??deviceText(v);
+Object.assign(names,{home_enable_wait:'回零完成，等待使能状态恢复',home_enable_recovery:'回零完成，正在恢复使能',home_enable_failed:'回零使能验证失败',home_position_changed:'恢复使能后回零位置发生变化'});
 export function replyIsFault(line){
-  return /^\s*(?:arm>\s*)?ERR\b/.test(line)||/\b(?:locked|bus_locked)=1\b/.test(line)||/\bstate=(?:error|ERROR|FAULT|FAILED)\b/.test(line)||/\bresult=FAIL\b/.test(line)||/\breason=(?:motor_\w+|home_\w*(?:fail|timeout|unconfirmed)\w*|\w*(?:timeout|failed|fault)|uart_error|config_missing|bus_unavailable|vision_recover_limit|vision_usb_off|vision_request_lost|vision_stale|vision_lost|feedback_stale|chassis_tx)\b/.test(line)||/^OK bus recover complete\b.*\b(?:arm_ready|chassis_ready)=0\b/.test(line);
+  return /^\s*(?:arm>\s*)?ERR\b/.test(line)||/\b(?:locked|bus_locked)=1\b/.test(line)||/\bstate=(?:error|ERROR|FAULT|FAILED)\b/.test(line)||/\bresult=FAIL\b/.test(line)||/\breason=(?:motor_\w+|home_\w*(?:fail|timeout|unconfirmed)\w*|home_position_changed|\w*(?:timeout|failed|fault)|uart_error|config_missing|bus_unavailable|vision_recover_limit|vision_usb_off|vision_request_lost|vision_stale|vision_lost|feedback_stale|chassis_tx)\b/.test(line)||/^OK bus recover complete\b.*\b(?:arm_ready|chassis_ready)=0\b/.test(line);
 }
 function uartErrors(raw){
   const n=Number(raw);if(!Number.isInteger(n)||n<0)return raw;
@@ -23,7 +24,7 @@ function uartErrors(raw){
 Object.assign(names,{home_bus_fault:'回零电机总线故障',home_request_failed:'回零请求提交失败',home_feedback_failed:'回零反馈失败',home_driver_fault:'回零驱动故障',home_axis_fault:'回零轴状态异常',home_timeout:'回零超时',home:'回零',tx_error:'发送失败',param_error:'请求参数错误'});
 Object.assign(fields,{action:'动作',result:'结果',bus_reason:'总线原因'});
 Object.assign(names,{zeroing_chassis:'清零四轮同步缓存',syncing_zero:'执行四轮零速同步',verifying_zero:'验证同步后四轮停稳',zero_ack_failed:'零速缓存写入被驱动拒绝',sync_ack_failed:'零速同步被驱动拒绝',cleared:'已清除'});
-Object.assign(fields,{chassis_cache:'同步缓存'});
+Object.assign(fields,{chassis_cache:'同步缓存',speed_addr:'速度采样电机ID',speed_ms:'速度采样时刻(ms)'});
 Object.assign(fields,{phase:'标定阶段',ref:'参考已确认',calibrated:'已有成功标定',action:'动作',
   moving:'仍在运动',fresh:'反馈新鲜',angle_deg:'实际角度(°)',target_deg:'目标角度(°)',speed_rpm:'速度(RPM)',
   operation:'操作',scene:'场景',slot:'仓位',batch:'批次',item:'本批第几件',stored:'已入仓数量',placed:'已放出数量'});
@@ -67,6 +68,21 @@ function grabStatusSummary(line){
 }
 export function chineseTerminalLine(original){
   const line=original.replace(/^(?:arm>\s*)+/, '');
+  const busTestRejected=line.match(/^ERR bus test (active|tasks_busy|transport_busy)\b/);
+  if(busTestRejected)return ({active:'已有电机通信测试，请查看结果或结束测试。',tasks_busy:'任务仍忙，请先停止当前任务后再测试通信。',transport_busy:'当前电机事务尚未结束，请等待后重新测试。'})[busTestRejected[1]];
+  const busTest=line.match(/^(OK|ERR) bus test (start|reply|read|status|complete)\s+(id=.+)$/);
+  if(busTest){
+    const [,result,action,raw]=busTest;
+    const f=Object.fromEntries(raw.split(/\s+/).map(t=>t.split('=')));
+    const label=f.id==='0'?'单电机通信测试':`电机 ID${f.id} 通信测试`;
+    const lock=f.locked==='1'?'；运动锁定仍保留':'';
+    const query=({'0X3A':'状态','0X36':'位置','0X35':'速度'})[f.func?.toUpperCase()]??f.func;
+    if(action==='start')return `${label}开始：${f.rounds} 轮，每轮只读状态、位置和速度${lock}`;
+    if(action==='reply')return `${label}第 ${f.round} 轮 · ${query}：${result==='ERR'?'驱动拒绝':'收到回复'}，${f.reply_ms} ms；原始应答 ${f.hex?.replaceAll(':',' ')??'无'}`;
+    if(action==='read')return `${label}第 ${f.round} 轮 · ${query}：${({reply_timeout:'应答超时',tx_timeout:'发送超时',uart_error:'串口错误',transport_error:'传输失败'})[f.reason]??f.reason}；${uartErrors(f.uart_error)}`;
+    const reason=({done:'已完成',testing:'测试中',stopped:'已结束测试',line_busy:'线路持续忙或有干扰',idle:'尚未测试'})[f.reason]??f.reason;
+    return `${label}：${reason}；发送 ${f.sent}，有效回复 ${f.received}，超时 ${f.timeouts}，通信错误 ${f.uart_errors}，拒绝 ${f.rejected}；最大回复耗时 ${f.max_reply_ms} ms；最近串口错误 ${uartErrors(f.last_uart_error)}${lock}`;
+  }
   const track=parseTrack(line);
   if(track?.state)return `动态追踪：${trackText(track.state)}；${trackText(track.reason)}；速度 前/左/X ${track.vf}/${track.vl}/${track.vx} mm/s；剩余接近 ${track.room} mm；停车反馈 ${track.stop_confirmed===1?'已确认':track.stop_requested===1?'等待确认':'未请求'}`;
   if(line.startsWith('@RADAR '))try{
@@ -96,6 +112,7 @@ export function chineseTerminalLine(original){
   }catch{}
   const radar=line.match(/^(OK|ERR) radar ([a-z_]+)$/);if(radar)return `雷达${radar[1]==='ERR'?'未受理':'设备回复'}：${radarReasonText(radar[2])}`;
   if(line.startsWith('ERR grab home_request '))return '故障 · 回零请求失败：'+line.slice(22).split(/\s+/).map(translateToken).join('；');
+  if(line.startsWith('OK grab home_enable_recovery '))return '回零位置已稳定，补发一次使能：'+line.slice(29).split(/\s+/).map(translateToken).join('；');
   if(/^ERR\b/.test(line)&&!/^ERR grab (?:state=|route state=)/.test(line))return '设备提示：'+rejectionText(line);
   if(/^(?:OK|ERR|EVT) grab state=/.test(line)){
     const summary=grabStatusSummary(line);
@@ -114,8 +131,9 @@ export function chineseTerminalLine(original){
     const state=line.match(/\bstate=(\w+)/)?.[1],protocol=line.match(/\bprotocol=(\w+)/)?.[1];
     return `相机：${visualStateText(state)}；视觉协议：${protocol??'未报告'}；`+line.split(/\s+/).slice(2).filter(t=>!/^state=|^protocol=/.test(t)).map(translateToken).join('；');
   }
-  if(line==='STM32 mechanical arm console ready')return 'STM32 已启动，正在准备三轴回零';
-  if(line.startsWith('Boot:'))return '上电流程：Z/X 碰撞回零 → Base 就近回零 → IMU 静止验证 5 秒；遥测默认关闭';
+  if(line==='STM32 mechanical arm console ready')return 'STM32 已启动';
+  if(/^Boot: arm auto-home=off\b/.test(line))return '上电自动回零已关闭；保持静止完成 IMU 验证 5 秒；手动三轴回零：grab rehome；遥测默认关闭';
+  if(line.startsWith('Boot: Z/X collision home'))return '上电流程：Z/X 碰撞回零 → Base 就近回零 → IMU 静止验证 5 秒；'+(line.includes('enable_verify=on')?'逐轴确认使能；':'')+'遥测默认关闭';
   let m=line.match(/^ARM STM32F407 USART1=(\d+) UART5=(\d+)$/);
   if(m)return `主控 STM32F407；控制台 ${m[1]} 波特；电机总线 ${m[2]} 波特`;
   if(line.startsWith('BUILD '))return `固件构建信息：${line.slice(6).replace('motorbus_diag=1','电机总线诊断开启').replace('date=','日期 ').replace('time=','时间 ')}`;
@@ -142,7 +160,9 @@ export function chineseTerminalLine(original){
 
 /** Startup progress derives only from MCU reports, never a browser countdown. */
 export function bootProgress(line,current=''){
-  if(line==='STM32 mechanical arm console ready')return '正在回零';
+  if(line==='STM32 mechanical arm console ready')return '已启动，等待设备状态';
+  if(/^Boot: arm auto-home=off\b/.test(line))return '自动回零已关闭，等待 IMU 静止验证';
+  if(line.startsWith('Boot: Z/X collision home'))return '正在回零';
   if(!current)return current;
   if(/\breason=home_/.test(line)&&replyIsFault(line))return '启动失败：'+chineseTerminalLine(line);
   if(/^OK grab state=homing\b/.test(line)){
