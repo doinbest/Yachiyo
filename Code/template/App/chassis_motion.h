@@ -3,7 +3,14 @@
  */
 #ifndef CHASSIS_MOTION_H
 #define CHASSIS_MOTION_H
+#include "chassis_path.h"
 #include "chassis_model.h"
+
+/** Continuous path retains its final target and only stops at that target.
+ * resume_mm is the saved path progress, zero for a new leg. */
+bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn_deg_s,
+                             uint32_t timeout,float resume_mm);
+float ChassisMotion_PathProgress(void);
 
 typedef enum
 {
@@ -42,6 +49,7 @@ typedef struct
   bool heading_valid, map_anchor_valid;
   float current_deg, unwrapped_yaw_deg, map_yaw_rad;
   uint32_t heading_sample_tick;
+  uint32_t heading_revision; /* Map correction only, independent of origin generation. */
 } ChassisMotion_Status_t;
 
 /** @brief 启动时初始化RAM；不得用它终止运行中的电机。 */
@@ -85,6 +93,7 @@ bool ChassisMotion_MoveTo(float x_mm, float y_mm, float map_yaw_deg,
  * @pre 有效地图原点、已验证IMU、四轮新鲜静止反馈；抓取任务空闲。
  */
 bool ChassisMotion_TurnTo(float map_yaw_deg, uint32_t timeout_ms);
+bool ChassisMotion_TurnToSpeed(float map_yaw_deg,float max_deg_s,uint32_t timeout_ms);
 /** @brief Refresh heading before localization sampling, without sending targets. */
 void ChassisMotion_HeadingProcess(void);
 /** @brief 半余弦减速后请求停车；stop_ms=0立即取消并请求异步停车。 */
@@ -118,4 +127,8 @@ void ChassisMotion_StopStatusGet(ChassisStop_Status_t *status);
 bool ChassisMotion_AnchorSet(float map_yaw_rad);
 /** @brief 归零/重校准/重启通知；角度失效也会自动撤销锚点。 */
 void ChassisMotion_AnchorInvalidate(void);
+/** Internal half of ChassisHeading_Apply; preserves raw IMU unwrap. */
+bool ChassisMotion_AnchorCorrect(float map_yaw_rad);
+/** Station-only precision; ordinary turns retain their existing tolerance. */
+bool ChassisMotion_TurnToPrecision(float yaw,float max_deg_s,float tolerance_deg,uint32_t timeout);
 #endif

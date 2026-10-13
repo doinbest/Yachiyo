@@ -14,6 +14,8 @@ void ContestScreen_Init(void);
 uint8_t ContestScreen_TaskCodeSet(const char *TaskCode);
 /** @brief 站点强制重发两行与计数；清除旧发送故障，返回格式校验结果。 */
 uint8_t ContestScreen_TaskCodeRefresh(const char *TaskCode);
+/** Clear the previous run's code without inventing a scan result. */
+void ContestScreen_TaskCodeClear(void);
 /** @brief 所有待刷新字段均完成DMA；不代表屏幕渲染已人工验收。 */
 uint8_t ContestScreen_TaskCodeSent(void);
 /** @brief 本轮刷新有发送错误或超过1秒未完成DMA。 */

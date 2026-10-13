@@ -4,7 +4,8 @@
 #include "mechanical_arm.h"
 #include "motor_bus.h"
 
-static UART_HandleTypeDef uart = {.Instance=UART5};
+static DMA_HandleTypeDef rx_dma;
+static UART_HandleTypeDef uart = {.Instance=UART5,.hdmarx=&rx_dma};
 UART_HandleTypeDef huart5;
 static uint32_t tick;
 static uint8_t *rx_buffer, frame[32];
@@ -33,6 +34,7 @@ HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef *u, uint8_t *p
   rx_buffer = p;
   rx_size = n;
   rx_position = 0;
+  rx_dma.counter=n;
   return HAL_OK;
 }
 HAL_StatusTypeDef HAL_UART_DMAStop(UART_HandleTypeDef *u)
@@ -48,10 +50,14 @@ static void receive_bytes(const uint8_t *data, unsigned length, bool idle)
   for (unsigned i = 0; i < length; i++)
   {
     rx_buffer[rx_position++] = data[i];
+    rx_dma.counter=rx_size-rx_position;
     if (rx_position == rx_size / 2 || rx_position == rx_size)
       MotorBus_RxEventCallback(&uart, rx_position);
     if (rx_position == rx_size)
+    {
       rx_position = 0;
+      rx_dma.counter=rx_size;
+    }
   }
   if (idle)
     MotorBus_RxEventCallback(&uart, rx_position ? rx_position : rx_size);
@@ -141,9 +147,15 @@ int main(void)
   receive_bytes(ack, sizeof(ack), true);
   expect_ok();
   begin(false);
+  /* A late HT followed by TC must not replay old DMA bytes after IDLE.
+   * NDTR is unchanged: this request has received no new reply at all. */
+  MotorBus_RxEventCallback(&uart,rx_size/2);
+  MotorBus_RxEventCallback(&uart,rx_size);
   tick += MOTOR_BUS_TIMEOUT_MS;
   process();
   assert(MechanicalArm_ResultGet(&e) && e.Result == MECHANICAL_ARM_RESULT_ACK_TIMEOUT);
   assert(MotorBus_IsQuarantined());
+  MotorBus_Diagnostic_t fault;MotorBus_DiagnosticGet(&fault);
+  assert(fault.rx_bytes==0);
   puts("motor_bus_circular_rx_test: repeated enable/disable, fragments, duplicate events, wrap, continuous RX, error restart and timeout PASS");
 }

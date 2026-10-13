@@ -2,7 +2,7 @@
   "keil": {
     "project": "Code/template/MDK-ARM/template.uvprojx",
     "target": "template",
-    "log_dir": ".embeddedskills/build/tracking-convergence-defaults-20261012"
+    "log_dir": ".embeddedskills/build/xz-cosine-20261014"
   },
   "eide": {
     "project": "Code/template/MDK-ARM/eide",
@@ -20,7 +20,7 @@
     "log_dir": ".embeddedskills/logs/serial"
   },
   "openocd": {
-    "board": "",
+    "board": ".embeddedskills/mission-integration/mission-dap.cfg",
     "interface": "interface/cmsis-dap.cfg",
     "target": "target/stm32f4x.cfg",
     "adapter_speed": "1000",

@@ -5,8 +5,10 @@
 #include "mechanical_arm_config.h"
 #include "motor_id_config.h"
 #include "Arm.h"
+#include "lidar_servo.h"
 #include "GrabTask.h"
 #include "GrabRoute.h"
+#include "contest_mission.h"
 #include "turntable.h"
 #include "mecanum_chassis.h"
 #include "Camera.h"
@@ -35,7 +37,7 @@
 #define ARM_CONSOLE_LINE_SIZE 64U
 /* 单条终端命令允许占用的最大缓冲区长度。 */
 
-#define ARM_CONSOLE_TOKEN_COUNT 6U
+#define ARM_CONSOLE_TOKEN_COUNT 9U
 /* 一条命令解析时允许的最大字段数量。 */
 
 #define ARM_CONSOLE_TX_SIZE 256U
@@ -86,12 +88,13 @@ static struct {
 } BusTest;
 static uint32_t BusTestToken;
 static void ArmConsole_BusTestStop(const char *reason);
+static void ArmConsole_Write(const char *Text);
 static uint8_t ManualGuardActive, ManualGuardExecuting, ManualGuardAddress, ManualGuardLast, ManualGuardKind;
 static uint32_t ManualGuardStarted;
 static char ManualGuardLine[ARM_CONSOLE_LINE_SIZE];
 static bool ArmConsole_RadarMotionGuard(unsigned n,char *t[])
 {
-  static const char *const moves[]={"run","heading","hold","move","velocity","forward","backward","left","right"};
+  static const char *const moves[]={"run","heading","hold","move","test","velocity","forward","backward","left","right"};
   unsigned i;
   if(!RadarConsole_ScanBusy() || n<2U) return false;
   if(!strcmp(t[0],"wheel") && strcmp(t[1],"status") && strcmp(t[1],"stop")) return true;
@@ -111,7 +114,10 @@ static bool ArmConsole_RadarMotionGuard(unsigned n,char *t[])
 static bool ArmConsole_RingCommandHandle(unsigned count,char *tokens[])
 {
   if(count>=3U && !strcmp(tokens[0],"grab") && !strcmp(tokens[1],"stack"))
+  {
+    if(GrabRoute_IsBusy()){ArmConsole_Write("ERR grab stack route_busy\r\n");return true;}
     return GrabTask_Command(count,tokens);
+  }
   if(count!=4U || strcmp(tokens[0],"grab") || strcmp(tokens[1],"ring") ||
      strcmp(tokens[2],"place") || !GrabTask_RingManualAllowed())return false;
   return GrabTask_Command(count,tokens);
@@ -255,7 +261,9 @@ static void ArmConsole_PixelFrame(const uint8_t *frame,uint32_t received,uint8_t
   int dx=((unsigned)frame[8]<<8)|frame[9],dy=((unsigned)frame[10]<<8)|frame[11];
   if(dx>=32768)dx-=65536;
   if(dy>=32768)dy-=65536;
-  int length=snprintf(line,sizeof line,"PIX id=%lu i=%lu t=%lu c=%u v=%u m=%u x=%u y=%u dx=%d dy=%d",
+  int length=frame[2]==0x0d ? snprintf(line,sizeof line,"POSE id=%lu i=%lu t=%lu v=%u m=%u ex=%d ey=%d ea=%d stop=%d",
+    (unsigned long)PixelLogId,(unsigned long)index,(unsigned long)received,frame[3],matched,(int)(int16_t)cx,(int)(int16_t)cy,dx,dy) :
+    snprintf(line,sizeof line,"PIX id=%lu i=%lu t=%lu c=%u v=%u m=%u x=%u y=%u dx=%d dy=%d",
     (unsigned long)PixelLogId,(unsigned long)index,(unsigned long)received,frame[2],frame[3],matched,cx,cy,dx,dy);
   if(length<=0 || length>=(int)sizeof(line)-16){PixelLogDropped++;return;}
   for(int n=0;n<length;n++){
@@ -515,7 +523,7 @@ static void ArmConsole_HelpShow(void)
   ArmConsole_Write("grab store proc <slot> <color> | grab take <slot> rough|temp1|temp2 | grab return\r\n");
   /* 按命令组入队，由USART1 DMA发送；不占用底盘控制周期等待串口。 */
   ArmConsole_Write("chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n");
-  ArmConsole_Printf("chassis route start|auto [10..5000mm/s, default 200] | next | status | cancel (15 targets, auto dwell %lums)\r\n",
+  ArmConsole_Printf("chassis route start|auto [10..5000mm/s, default 1000] | next | status | cancel (15 targets, auto dwell %lums)\r\n",
                     (unsigned long)CHASSIS_ROUTE_AUTO_DWELL_MS);
   ArmConsole_Write(
       "chassis run <vx_mm_s> <vy_mm_s> <omega_rad_s> <hold_ms>\r\n"
@@ -523,6 +531,7 @@ static void ArmConsole_HelpShow(void)
       "chassis heading <vx_mm_s> <vy_mm_s> <module_heading_deg> <hold_ms>\r\n"
       "chassis turn <map_heading_deg -180..180> (feedback angle and stopped wheels)\r\n"
       "chassis origin <map_x_mm> <map_y_mm> <map_heading_deg> (verified IMU, stationary)\r\n"
+      "chassis test <forward_mm> <left_mm> <speed_mm_s> (body-relative, norm 0..3000, speed 10..5000, route cosine)\r\n"
       "chassis profile receive (compatibility only; Emm42 default)\r\n"
       "chassis feedback <0..4> (0=all, 1..4=single, polling stays off)\r\n"
       "chassis feedback on|off\r\n"
@@ -546,6 +555,7 @@ static void ArmConsole_HelpShow(void)
       "home <base|z|x|all> <near|dir|collision|limit>\r\n"
       "zero <base|z|x|all>    clear current position only\r\n"
       "stop <base|z|x|all>\r\n"
+      "lidarservo out(2450us) | in(1450us) | pulse <500..5000> | status\r\n"
       "grip duty <2.5..12.5>\r\n"
       "grip <idle|open|catch>\r\n");
   ArmConsole_Write(
@@ -575,12 +585,14 @@ static void ArmConsole_HelpShow(void)
       "chassis status  heading test state\r\n"
       "wheel <fl|rl|rr|fr> <-100..100rpm>\r\n"
       "wheel stop\r\n");
-  ArmConsole_Write("grab start fixed|align|pick [color 1..6] | grab route [speed_mm_s, default 200]\r\n"
+  ArmConsole_Write("grab start fixed|align|pick [color 1..6] | grab route [speed_mm_s, default 1000]\r\n"
                    "grab status | grab stop | grab rehome | grab set <key> <value> | grab get <key>\r\n");
   ArmConsole_Write("grab ring align [1|2|3] [z_mm] [stay] | grab ring place <z_mm>\r\n");
-  ArmConsole_Write("grab mission [speed_mm_s, default 200] | grab mission continue | grab pose rear|work | grab place car\r\n");
+  ArmConsole_Write("grab mission qr|fixed [code] [speed] [turn_deg_s] [lower|upper] [fixed|radar] | grab mission pause|stop|continue | grab pose rear|work | grab place car\r\n");
+  ArmConsole_Write("grab take <slot 1..3> work [depth_mm, default 40]; wait 1s, pick, lift, Base +128, hold claw\r\n");
   ArmConsole_Write("grab track observe [color] | reference | start [color] | stop | status | trace [index]\r\n"
                    "grab track begin [color] [remaining_mm] | grab track pick [color] [z_mm] [speed_mm_s]\r\n"
+                   "grab track pickstore <color> <slot 0..3> [predict|visual|feedback] | grab track store <slot 0..3>\r\n"
                    "grab track visual|feedback [color] [remaining_mm] (follow only; stop before switching)\r\n"
                    "grab track log start [50..1000 ms] | stop | status (passive diagnostics, default off)\r\n"
                    "grab track get <key> [predict|visual|feedback] | set <key> <value> [profile] (independent RAM)\r\n");
@@ -940,6 +952,34 @@ static uint8_t ArmConsole_RequestResultShow(MechanicalArm_ResultTypeDef Result)
   * 返 回 值：1表示命令同步结束，0表示已启动异步电机请求
   * 说    明：解析只在主循环运行，中断不调用strtol和字符串函数
   */
+static uint8_t ArmConsole_LidarServoCommandHandle(uint8_t count, char *tokens[])
+{
+  int32_t pulse;
+  if (count == 2U && !strcmp(tokens[1], "status"))
+    goto report;
+  if (count == 2U && !strcmp(tokens[1], "out"))
+    pulse = LIDAR_SERVO_SCAN_PULSE_US;
+  else if (count == 2U && !strcmp(tokens[1], "in"))
+    pulse = LIDAR_SERVO_STOW_PULSE_US;
+  else if (count == 3U && !strcmp(tokens[1], "pulse"))
+  {
+    if (!ArmConsole_IntegerParse(tokens[2], &pulse) || pulse < 500 || pulse > 5000)
+    { ArmConsole_Write("ERR lidarservo range pulse_us=500..5000\r\n"); return 1U; }
+  }
+  else
+  { ArmConsole_Write("ERR lidarservo format: out | in | pulse <500..5000> | status\r\n"); return 1U; }
+  if (ResetPending || GrabTask_IsBusy() || GrabRoute_IsBusy() ||
+      ChassisMotion_IsBusy() || ChassisRoute_IsBusy() || HWT101_Cal_IsBusy() ||
+      RadarConsole_ScanBusy())
+  { ArmConsole_Write("ERR lidarservo task_busy; status allowed\r\n"); return 1U; }
+  if (LidarServo_PulseSet((uint16_t)pulse) != HAL_OK)
+  { ArmConsole_Write("ERR lidarservo unavailable\r\n"); return 1U; }
+report:
+  pulse = LidarServo_PulseGet();
+  ArmConsole_Printf("OK lidarservo enabled=%u pulse_us=%u\r\n", pulse ? 1U : 0U, (unsigned)pulse);
+  return 1U;
+}
+
 static uint8_t ArmConsole_GripCommandHandle(uint8_t TokenCount, char *Tokens[])
 {
   float Duty;
@@ -1667,7 +1707,7 @@ static void ArmConsole_StopRequest(uint32_t token)
       ArmConsole_Printf("ERR stop arm request result=%u physical_stop=unconfirmed\r\n",(unsigned)result);
   }
   Turntable_Stop();
-  (void)ChassisRoute_Cancel();
+  if(!GrabRoute_IsBusy()) (void)ChassisRoute_Cancel();
   OledUi_NoticeSet(NULL);
   (void)ChassisMotion_StopRequest(token);
   ArmConsole_StopStatusShow();
@@ -1804,6 +1844,23 @@ static uint8_t ArmConsole_BusTestCommand(unsigned count,char *tokens[])
   return 1U;
 }
 
+static void ArmConsole_BusRecoveryEvidenceShow(void)
+{
+  MotorBus_Recovery_t s;
+  if(!ContestMission_BusRecoveryEvidenceGet(&s))MotorBus_RecoveryGet(&s);
+  ArmConsole_Printf("OK bus attempt stage=%s reason=%s addr=%u func=0x%02X uart_error=0x%08lX tx_sent=%u elapsed_ms=%lu\r\n",
+    s.stage?s.stage:"idle",s.reason?s.reason:"idle",s.address,s.function,(unsigned long)s.uart_error,s.tx_sent?1U:0U,(unsigned long)s.elapsed_ms);
+  char hex[33];unsigned i;
+  for(i=0;i<s.rx_sample_length;i++)(void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",s.rx_sample[i]);
+  if(!i)strcpy(hex,"none");
+  ArmConsole_Printf("OK bus attempt_rx bytes=%lu pending=%u partial=%u gap_ms=%lu ndtr=%u cursor=%u hex=%s\r\n",
+    (unsigned long)s.rx_bytes,s.rx_pending,s.parse_bytes,(unsigned long)s.process_gap_ms,s.dma_remaining,s.dma_position,hex);
+  MotorBus_Diagnostic_t first;MotorBus_DiagnosticGet(&first);
+  for(i=0;i<first.rx_sample_length;i++)(void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",first.rx_sample[i]);
+  if(!i)strcpy(hex,"none");
+  ArmConsole_Printf("OK bus first reason=%s addr=%u func=0x%02X uart_error=0x%08lX rx_bytes=%lu gap_ms=%lu hex=%s\r\n",
+    first.reason,first.address,first.function,(unsigned long)first.uart_error,(unsigned long)first.rx_bytes,(unsigned long)first.process_gap_ms,hex);
+}
 static void ArmConsole_BusStatusShow(void)
 {
   MotorBus_Recovery_t s;
@@ -1848,7 +1905,7 @@ static void ArmConsole_BusRecoveryProcess(void)
       BusRecoveryPending=0;
       ArmConsole_Write("ERR bus recover tasks_not_idle; inspect grab status and info\r\n");return;
     }
-    if (GrabTask_IsBusy() || GrabRoute_IsBusy() || Turntable_IsBusy() || MechanicalArm_IsBusy() ||
+    if (GrabTask_IsBusy() || (GrabRoute_IsBusy() && !GrabRoute_CanConfigure()) || Turntable_IsBusy() || MechanicalArm_IsBusy() ||
         ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return;
     /* A stopping task may have re-enabled its feedback before exiting. */
     Mecanum_Feedback_Enable(false);
@@ -1949,6 +2006,14 @@ static uint8_t ArmConsole_StopCommandHandle(uint8_t count, char *tokens[])
 {
   uint32_t token = 0;
   const char *p;
+  if(count==3U && !strcmp(tokens[0],"grab") && !strcmp(tokens[1],"mission") &&
+     (!strcmp(tokens[2],"pause") || !strcmp(tokens[2],"stop")))
+  {
+    ArmConsole_ResetCancel();ArmConsole_ManualGuardCancel();ArmConsole_BusTestStop("stopped");
+    BusRecoveryPending=0;
+    if(!strcmp(tokens[2],"stop") || !ContestMission_HasPendingWork())MotorBus_RecoveryCancel();
+    (void)GrabRoute_Command(count,tokens);return 1U;
+  }
   if (count < 2U || (strcmp(tokens[0], "chassis") && strcmp(tokens[0], "wheel"))) return 0;
   if (!strcmp(tokens[0], "chassis") && !strcmp(tokens[1], "stop-status"))
   {
@@ -2052,8 +2117,13 @@ static uint8_t ArmConsole_BusCommandHandle(unsigned count,char *tokens[])
     return ArmConsole_BusTestCommand(count,tokens);
   if (count==2 && !strcmp(tokens[0],"bus")) {
     if (!strcmp(tokens[1],"status")) ArmConsole_BusStatusShow();
+    else if(!strcmp(tokens[1],"recovery"))ArmConsole_BusRecoveryEvidenceShow();
     else if (!strcmp(tokens[1],"recover")) {
       if (BusRecoveryPending) ArmConsole_Write("ERR bus recovery_busy\r\n");
+      else if(ContestMission_RequestBusRecovery(false))
+      {
+        ArmConsole_Write("OK bus recover requested mission_preserved=1 tasks_resumed=0\r\n");
+      }
       else {
         ArmConsole_StopRequest(0);
         Mecanum_Feedback_Enable(false);
@@ -2061,7 +2131,7 @@ static uint8_t ArmConsole_BusCommandHandle(unsigned count,char *tokens[])
         BusRecoveryPending=1;BusRecoveryStarted=HAL_GetTick();
         ArmConsole_Write("OK bus recover requested tasks_resumed=0\r\n");
       }
-    } else ArmConsole_Write("ERR format: bus recover | bus status\r\n");
+    } else ArmConsole_Write("ERR format: bus recover | bus status | bus recovery\r\n");
     return 1;
   }
   return 0U;
@@ -2150,6 +2220,9 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
     ArmConsole_Write("ERR format\r\n");
     return 1U;
   }
+  /* Independent PWM commands; status bypasses bus/task guards. */
+  if (!strcmp(Tokens[0], "lidarservo"))
+    return ArmConsole_LidarServoCommandHandle(TokenCount, Tokens);
   if (!strcmp(Tokens[0],"material"))
   {
     ArmConsole_Write("ERR retired: material commands removed; use grab align color|ring, grab calib ref|status|<1..6>, grab stop\r\n");
@@ -2351,7 +2424,7 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   memset(ArmConsole_LineBuffer, 0, sizeof(ArmConsole_LineBuffer));
   ArmConsole_Write("\r\nSTM32 mechanical arm console ready\r\n");
   ArmConsole_BuildShow();
-  ArmConsole_Write("Boot: Z/X collision home + ID8 near home in parallel -> Base near home -> IMU verify=5s; enable_verify=on; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
+  ArmConsole_Write("Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2500us -> Base negative direction home -> IMU verify=5s; enable_verify=on; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
   ArmConsole_PromptShow();
   return HAL_OK;
 }

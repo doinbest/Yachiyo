@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {commands,buildCommand} from '../protocol.mjs';
 import {Telemetry,DEFAULT_GEOMETRY,routeStatusText} from '../map-model.mjs';
 
-test('real route commands default to 200 and map turn requires explicit map yaw',()=>{
+test('real route commands default to 1000 and map turn requires explicit map yaw',()=>{
   for(const id of ['chassis-route-start','chassis-route-auto','grab-route']){
-    assert.equal(commands.find(c=>c.id===id).fields.find(f=>f.key==='speed').value,200);
+    assert.equal(commands.find(c=>c.id===id).fields.find(f=>f.key==='speed').value,1000);
     assert.match(buildCommand(id,{speed:5000}),/5000$/);
   }
   assert.equal(buildCommand('chassis-turn',{heading:-180}),'chassis turn -180');

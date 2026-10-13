@@ -6,8 +6,8 @@
 #define ROUTE_PI 3.14159265358979323846f
 static const RadarPlan_Point_t FixedPoints[CHASSIS_ROUTE_TARGET_COUNT+1U]={
   {2250,150,1,0},{2100,1200,5,1},{2100,2100,0,0},{1200,2100,4,2},
-  {1200,350,2,3},{1200,1200,0,0},{350,1200,3,4},{1200,1200,0,0},
-  {1200,2100,4,5},{1200,350,2,6},{1200,1200,0,0},{350,1200,3,7},
+  {1200,300,2,3},{1200,1200,0,0},{350,1200,3,4},{1200,1200,0,0},
+  {1200,2100,4,5},{1200,300,2,6},{1200,1200,0,0},{350,1200,3,7},
   {1200,1200,0,0},{2100,1200,0,0},{2100,300,0,0},{2250,150,1,8}};
 static float normalized(float yaw)
 {
@@ -59,6 +59,17 @@ bool ChassisRouteProfile_Build(const RadarPlan_Point_t *from,const RadarPlan_Poi
   memset(out,0,sizeof(*out));
   x=from->x_mm;y=from->y_mm;yaw=normalized(previous_yaw_deg);
   dx=to->x_mm-from->x_mm;dy=to->y_mm-from->y_mm;
+  if(first_scan_leg && fabsf(delta(yaw,-90))<0.01f){
+    if(at(from,2250,2250))add(out,false,"move",&x,&y,&yaw,
+      to->station==5U?2100:to->x_mm,to->station==5U?2100:to->y_mm,yaw,speed_mm_s);
+    add(out,false,"move",&x,&y,&yaw,to->x_mm,to->y_mm,-90,speed_mm_s);
+    out->final_yaw_deg=-90;return true;
+  }
+  if(at(to,2250,2250)){
+    add(out,true,"turn",&x,&y,&yaw,x,y,-90,0);
+    add(out,false,"move",&x,&y,&yaw,to->x_mm,to->y_mm,-90,speed_mm_s);
+    out->final_yaw_deg=-90;return true;
+  }
   travel=yaw;
   if(first_scan_leg || at(to,2100,300) || at(to,2250,150)) travel=90;
   else if(hypotf(dx,dy)>300.0f)
@@ -90,8 +101,8 @@ bool ChassisRouteProfile_Build(const RadarPlan_Point_t *from,const RadarPlan_Poi
    * the lower dock, then turn at the lane entrance. Detour coordinates stay intact. */
   if(first_scan_leg && at(from,2250,150))
   {
-    add(out,false,"move",&x,&y,&yaw,at(to,2100,1200)?2100:to->x_mm,
-        at(to,2100,1200)?300:to->y_mm,yaw,speed_mm_s);
+    add(out,false,"move",&x,&y,&yaw,to->station==5U?2100:to->x_mm,
+        to->station==5U?300:to->y_mm,yaw,speed_mm_s);
     add(out,true,"turn",&x,&y,&yaw,x,y,90,0);
   }
   add(out,true,"turn",&x,&y,&yaw,x,y,travel,0);
@@ -119,6 +130,32 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan
   RadarPlan_Point_t neutral;
   if(!from || !to || !out || !isfinite(previous_yaw_deg) ||
      !isfinite(speed_mm_s) || speed_mm_s<=0) return false;
+  /* Continuous paths remain for the lower entrance and the central raw approach.
+   * The eastern raw approach uses the lateral move + station turn below. */
+  if((first_scan_leg && at(from,2250,150) && to->station==5U && to->x_mm==2100 &&
+      fabsf(delta(previous_yaw_deg,180))<.01f) ||
+     (to->station==4U && at(to,1200,2100) && at(from,1200,1200)))
+  {
+    bool entry=first_scan_leg && at(from,2250,150);
+    memset(out,0,sizeof(*out));out->final_yaw_deg=entry?90:0;
+    x=from->x_mm;y=from->y_mm;yaw=previous_yaw_deg;
+    if(!entry)add(out,true,"turn",&x,&y,&yaw,x,y,90,0);
+    out->phases[out->count++]=(ChassisRoute_Phase_t){false,entry?"entry_curve":"work_curve","curve",
+      to->x_mm,to->y_mm,out->final_yaw_deg,speed_mm_s};
+    out->nominal_time_s=hypotf(to->x_mm-from->x_mm,to->y_mm-from->y_mm)/speed_mm_s+5;
+    return true;
+  }
+  if(from->station==2U && from->x_mm==to->x_mm && from->y_mm<425 && to->y_mm>=425)
+  {
+    RadarPlan_Point_t outer=*from;outer.y_mm=425;outer.station=0;outer.visit=0;
+    if(!ChassisRouteProfile_BuildTask(&outer,to,previous_yaw_deg,speed_mm_s,false,&transit) ||
+       transit.count>=CHASSIS_ROUTE_PROFILE_MAX_PHASES)return false;
+    *out=transit;
+    for(unsigned i=out->count;i>0;i--)out->phases[i]=out->phases[i-1];
+    out->phases[0]=(ChassisRoute_Phase_t){false,"undock",direction(0,425-from->y_mm,previous_yaw_deg),
+      from->x_mm,425,previous_yaw_deg,fminf(speed_mm_s,50)};
+    out->count++;out->nominal_time_s+=(425-from->y_mm)/fminf(speed_mm_s,50);return true;
+  }
   if(to->station!=4U && to->station!=2U && to->station!=3U)
     return ChassisRouteProfile_Build(from,to,previous_yaw_deg,speed_mm_s,first_scan_leg,out);
   memset(out,0,sizeof(*out));
@@ -126,7 +163,9 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan
   dx=to->x_mm-x;dy=to->y_mm-y;length=hypotf(dx,dy);
   work=to->station==4U?0:(to->station==2U?180:90);
   travel=yaw;
-  if(to->station==4U && fabsf(dy)<0.01f) travel=90; /* left translation before raw */
+  /* Retain the QR lane heading for the westward translation; rotate to the
+   * raw-station work heading only after reaching its station point. */
+  if(to->station==4U && fabsf(dy)<0.01f) travel=90;
   else if(to->station==2U && fabsf(dx)<0.01f && dy<0) travel=-90;
   else if(to->station==3U) travel=90;
   else if(length>300)
@@ -135,7 +174,9 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan
     if(!ChassisRouteProfile_Build(from,&neutral,yaw,speed_mm_s,false,&transit)) return false;
     travel=transit.phases[0].yaw_deg;
   }
-  dock=fminf(length,75.0f);
+  /* Raw station: translate all the way at 90 degrees, then turn in place.
+   * Processing/temporary stations retain their outer staging and docking. */
+  dock=(to->station==4U && fabsf(dy)<0.01f && dx<0)?0:fminf(length,to->station==2U && to->y_mm==300?125.0f:75.0f);
   stage_x=length>0?to->x_mm-dx*dock/length:x;
   stage_y=length>0?to->y_mm-dy*dock/length:y;
   add(out,true,"turn",&x,&y,&yaw,x,y,travel,0);

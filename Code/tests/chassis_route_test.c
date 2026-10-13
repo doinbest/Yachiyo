@@ -1,3 +1,4 @@
+#include "GrabTask.h"
 #include "chassis_route.h"
 #include "chassis_route_profile.h"
 #include "chassis_config.h"
@@ -11,11 +12,20 @@
 static ChassisLocalization_Status_t loc;
 static ChassisMotion_Status_t motion;
 static Mecanum_Status_t bus;
-static unsigned starts,stops;
+static unsigned starts,stops,feedback_selections;
 static float last_speed;
 static uint32_t last_timeout,tick;
-static bool accept=true,last_turn;
-bool GrabTask_IsBusy(void){return false;}
+static bool accept=true,last_turn,feedback_enabled;
+static bool independent_stop;
+bool Mecanum_Feedback_Select(uint8_t wheel){assert(wheel==0);feedback_selections++;return true;}
+void Mecanum_Feedback_Enable(bool enabled){feedback_enabled=enabled;}
+static bool grab_busy, clearance;
+bool GrabTask_IsBusy(void){return grab_busy;}
+bool GrabTask_PoseClearanceReady(void){return clearance;}
+static unsigned qr_pose_calls;
+static bool qr_pose_delayed;
+bool GrabTask_QrPoseStart(void){qr_pose_calls++;if(qr_pose_delayed)grab_busy=true;return true;}
+void GrabTask_StatusGet(GrabTask_Status_t *s){memset(s,0,sizeof *s);s->state=grab_busy?GRAB_ROUTE_POSE:GRAB_COMPLETE;s->result=grab_busy?"pending":"qr_pose_ready";}
 static char reply[700];
 uint32_t HAL_GetTick(void){return tick;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *s){*s=loc;}
@@ -27,7 +37,7 @@ static bool action(float x,float y,float yaw,float speed,uint32_t timeout,bool t
   assert(timeout>0 && timeout<=400000);assert(turn || (speed>=10 && speed<=5000));
   assert(isfinite(yaw) && yaw>=-180 && yaw<=180);
   assert((!ChassisRoute_IsBusy() && !ChassisRoute_StationReserved()) || ChassisRoute_IsSubmitting());
-  if(!accept){motion.reason="rejected";return false;}
+  if(!accept){motion.reason="busy";return false;}
   starts++;last_speed=speed;last_timeout=timeout;last_turn=turn;
   motion.action_id++;motion.state=CHASSIS_MOTION_RUNNING;motion.reason="running";
   motion.target_x_mm=x;motion.target_y_mm=y;motion.target_map_yaw_deg=yaw;motion.stop_confirmed=false;
@@ -37,7 +47,21 @@ bool ChassisMotion_MoveTo(float x,float y,float yaw,float speed,uint32_t timeout
 { return action(x,y,yaw,speed,timeout,false); }
 bool ChassisMotion_TurnTo(float yaw,uint32_t timeout)
 { return action(loc.observer.feedback.x_mm,loc.observer.feedback.y_mm,yaw,0,timeout,true); }
+static float turn_limit;
+static float curve_progress,curve_end;
+float ChassisMotion_PathProgress(void){return motion.state==CHASSIS_MOTION_DONE?curve_end+10:curve_progress;}
+bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn,uint32_t timeout,float resume)
+{
+  turn_limit=turn;curve_progress=resume;curve_end=path->turn_end;
+  ChassisPath_Point p=path->point[path->count-1];
+  return action(p.x,p.y,p.yaw,speed,timeout,false);
+}
+bool ChassisMotion_TurnToSpeed(float yaw,float speed,uint32_t timeout)
+{turn_limit=speed;return ChassisMotion_TurnTo(yaw,timeout);}
 bool ChassisMotion_Stop(uint32_t ms){assert(ms==0);stops++;motion.state=CHASSIS_MOTION_STOPPING;return true;}
+bool ChassisMotion_StopRequest(uint32_t token){assert(!token);return true;}
+bool ChassisMotion_StopPending(void){return false;}
+void ChassisMotion_StopStatusGet(ChassisStop_Status_t *s){memset(s,0,sizeof *s);s->tx_complete=s->wheels_stopped=motion.stop_confirmed||independent_stop;s->requested_ms=tick;}
 bool ConsoleTx_Write(const uint8_t*d,uint16_t n){assert(n<sizeof(reply));memcpy(reply,d,n);reply[n]=0;return true;}
 static ChassisRoute_Status_t status(void){ChassisRoute_Status_t s;ChassisRoute_StatusGet(&s);return s;}
 static void advance_clock(uint32_t ms){tick+=ms;loc.feedback_tick=tick;}
@@ -61,8 +85,8 @@ static void setup(void)
   motion.reason="idle";loc.origin_valid=loc.feedback_valid=loc.speed_valid=true;
   loc.origin.x_mm=loc.observer.feedback.x_mm=2250;loc.origin.y_mm=loc.observer.feedback.y_mm=150;
   loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI;
-  loc.generation=4;tick=100;loc.feedback_tick=tick;starts=stops=0;accept=true;last_turn=false;
-  ChassisRoute_Init();
+  loc.generation=4;tick=100;loc.feedback_tick=tick;starts=stops=feedback_selections=0;accept=true;last_turn=false;
+  independent_stop=grab_busy=clearance=qr_pose_delayed=false;ChassisRoute_Init();
 }
 static void feedback_arrival(float dx,float dy,float dyaw)
 {
@@ -215,6 +239,25 @@ int main(void)
   setup();accept=false;assert(!route_command("start") && !ChassisRoute_IsBusy());
   setup();char *move[]={"chassis","move","-150","150"};assert(ChassisRoute_Command(4,move));assert(starts==1 && motion.target_x_mm==2100 && motion.target_y_mm==300 && last_speed==CHASSIS_DISTANCE_SPEED_MM_S);
   setup();char *bad[]={"chassis","move","250","250"};assert(ChassisRoute_Command(4,bad));assert(!starts && strstr(reply,"ERR"));
+  /* Standalone tests use body-relative distances and the production MoveTo controller. */
+  char *single[]={"chassis","test","1000","0","1000"};
+  setup();assert(ChassisRoute_Command(5,single));
+  assert(starts==1 && fabsf(motion.target_x_mm-1250)<0.01f && fabsf(motion.target_y_mm-150)<0.01f);
+  assert(last_speed==1000 && strstr(reply,"k=200") && !last_turn);
+  setup();loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI/2;
+  single[2]="300";single[3]="400";assert(ChassisRoute_Command(5,single));
+  assert(fabsf(motion.target_x_mm-1850)<0.01f && fabsf(motion.target_y_mm-450)<0.01f);
+  assert(fabsf(motion.target_map_yaw_deg-90)<0.01f);
+  setup();single[2]="3000";single[3]="0";single[4]="10";
+  assert(ChassisRoute_Command(5,single));assert(starts==1 && last_timeout>=300000 && last_timeout<=400000);
+  setup();single[3]="1";assert(ChassisRoute_Command(5,single));assert(!starts && strstr(reply,"ERR"));
+  single[2]="0";single[3]="0";assert(ChassisRoute_Command(5,single));assert(!starts);
+  single[2]="1000";single[4]="nan";assert(ChassisRoute_Command(5,single));assert(!starts);
+  single[4]="5001";assert(ChassisRoute_Command(5,single));assert(!starts);
+  single[4]="1000";assert(ChassisRoute_Command(4,single));assert(!starts);
+  setup();assert(route_command("start"));unsigned prior_starts=starts;
+  assert(ChassisRoute_Command(5,single));assert(starts==prior_starts && strstr(reply,"route_reserved"));
+  setup();accept=false;assert(ChassisRoute_Command(5,single));assert(!starts && strstr(reply,"ERR"));
   setup();assert(route_command("start"));char *query[]={"chassis","route","status"};assert(ChassisRoute_Command(3,query));assert(strstr(reply,"segment=1") && strstr(reply,"total=15") && strstr(reply,"phase=move"));
   char *stop[]={"chassis","stop"};assert(ChassisRoute_Command(2,stop));assert(stops==1);
   setup();char *slow[]={"chassis","route","start","10"};assert(ChassisRoute_Command(4,slow));
@@ -248,6 +291,8 @@ int main(void)
   setup();assert(start_fixed_station_plan());assert(ChassisRoute_StationReserved());finish_leg();
   assert(!strcmp(status().state,"station") && status().station==5 && status().visit==1 && status().segment==1);
   assert(!ChassisRoute_IsBusy() && ChassisRoute_StationReserved());
+  unsigned station_starts=starts;assert(ChassisRoute_Command(5,single));
+  assert(starts==station_starts && strstr(reply,"route_reserved") && ChassisRoute_StationReserved());
   advance_clock(1200);ChassisRoute_Process();assert(starts==3 && !route_command("start"));
   assert(ChassisRoute_StationResume());finish_leg();advance_clock(100);ChassisRoute_Process();
   assert(status().segment==3 && ChassisRoute_StationReserved());

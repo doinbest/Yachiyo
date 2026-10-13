@@ -157,6 +157,16 @@ uint8_t ContestScreen_TaskCodeRefresh(const char *TaskCode)
   return 1U;
 }
 
+void ContestScreen_TaskCodeClear(void)
+{
+  memset(ContestScreen_TaskCode,0,sizeof ContestScreen_TaskCode);
+  ContestScreen_PendingMask=0U;
+  ContestScreen_DirtyFlags|=CONTEST_SCREEN_DIRTY_TASK;
+  ContestScreen_TxFailed=0U;
+  TJC_Status_t tx;
+  ContestScreen_ErrorCount=TJC_Status_Get(&tx)?tx.uart_error_count:0U;
+}
+
 uint8_t ContestScreen_HasError(void)
 {
   TJC_Status_t Tx;

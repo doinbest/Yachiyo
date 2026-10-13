@@ -21,6 +21,10 @@ static unsigned camera_calls, motor_calls, stop_calls, notice_clears, manual_arm
 static uint8_t motor_busy;
 static bool calib_ref;
 static bool grab_busy, grab_route_busy;
+static bool mission_pending,mission_recovery_accepted;
+bool ContestMission_HasPendingWork(void){return mission_pending;}
+bool ContestMission_BusRecoveryEvidenceGet(MotorBus_Recovery_t *out){(void)out;return false;}
+bool ContestMission_RequestBusRecovery(bool auto_resume){assert(!auto_resume);return mission_pending && mission_recovery_accepted;}
 static bool turntable_busy;
 static unsigned turntable_stops, turntable_commands;
 bool Turntable_IsBusy(void){return turntable_busy;}
@@ -33,6 +37,10 @@ bool Turntable_Command(unsigned n,char *t[])
 }
 bool RadarConsole_Command(unsigned n,char *t[]){(void)n;(void)t;return false;}
 static bool radar_scan_busy;
+static uint16_t lidar_pulse;
+static unsigned lidar_sets;
+HAL_StatusTypeDef LidarServo_PulseSet(uint16_t pulse){lidar_sets++;lidar_pulse=pulse;return HAL_OK;}
+uint16_t LidarServo_PulseGet(void){return lidar_pulse;}
 bool RadarConsole_ScanBusy(void){return radar_scan_busy;}
 static unsigned grab_stops;
 static bool ring_manual;
@@ -42,7 +50,13 @@ bool GrabRoute_IsBusy(void){return grab_route_busy;}
 bool GrabRoute_CanConfigure(void){return false;}
 void GrabTask_Stop(void){grab_stops++;grab_busy=false;}
 void GrabRoute_Stop(void){grab_route_busy=false;if(grab_busy)GrabTask_Stop();}
-bool GrabRoute_Command(unsigned n,char *t[]){if(n==3&&!strcmp(t[0],"grab")&&
+static unsigned mission_pauses,mission_cancels,mission_fields;
+bool GrabRoute_Command(unsigned n,char *t[]){
+ if(n==9 && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && !strcmp(t[2],"fixed"))
+ {assert(!strcmp(t[8],"lowered"));mission_fields=n;return true;}
+ if(n==3 && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && (!strcmp(t[2],"pause") || !strcmp(t[2],"stop")))
+ {if(!strcmp(t[2],"pause"))mission_pauses++;else mission_cancels++;return true;}
+ if(n==3&&!strcmp(t[0],"grab")&&
  (!strcmp(t[1],"route")||!strcmp(t[1],"mission")||!strcmp(t[1],"qr"))&&!strcmp(t[2],"status"))
  {ArmConsole_Write("OK grab route query\r\n");return true;}return false;}
 void GrabTask_StatusGet(GrabTask_Status_t *s){memset(s,0,sizeof(*s));}
@@ -295,8 +309,46 @@ static void test_qr(void)
 }
 int main(void)
 {
+  {
+    char qr[]="grab mission qr 500 100 lower fixed";
+    char fixed[]="grab mission fixed 156+123+516+231 500 100 upper radar";
+    char raised[]="grab mission fixed 156+123+516+231 500 100 upper radar raised";
+    char extra[]="grab mission fixed 156+123+516+231 500 100 upper radar raised extra";
+    char *tokens[ARM_CONSOLE_TOKEN_COUNT];
+    assert(ArmConsole_Tokenize(qr,tokens)==7);
+    assert(!strcmp(tokens[5],"lower") && !strcmp(tokens[6],"fixed"));
+    assert(ArmConsole_Tokenize(fixed,tokens)==8);
+    assert(!strcmp(tokens[3],"156+123+516+231") && !strcmp(tokens[6],"upper") && !strcmp(tokens[7],"radar"));
+    assert(ArmConsole_Tokenize(raised,tokens)==9 && !strcmp(tokens[8],"raised"));
+    assert(ArmConsole_Tokenize(extra,tokens)==0);
+  }
   UART_HandleTypeDef uart={0};MechanicalArm_EventTypeDef event={0};unsigned before;
   uart.Instance=USART1;ArmConsole_Init(&uart);snapshot.UsbConfigured=1;snapshot.RequestActive=1;
+  command("grab mission fixed 156+123+516+231 5000 100 upper radar lowered\r");
+  assert(mission_fields==9 && !strstr(output,"ERR")); /* Full 63-byte payload plus CR. */
+  command("lidarservo status\r");assert(lidar_sets==0 && strstr(output,"enabled=0 pulse_us=0"));
+  for(unsigned pulse=500;pulse<=5000;pulse+=500) {
+    char wire[40];snprintf(wire,sizeof wire,"lidarservo pulse %u\r",pulse);
+    command(wire);assert(lidar_pulse==pulse && strstr(output,"OK lidarservo enabled=1"));
+  }
+  before=lidar_sets;
+  const char *invalid[]={"499","5001","0","1500.5","nan","1000 extra","9999999999999999999"};
+  for(unsigned i=0;i<sizeof invalid/sizeof invalid[0];i++) {
+    char wire[64];snprintf(wire,sizeof wire,"lidarservo pulse %s\r",invalid[i]);
+    command(wire);assert(lidar_sets==before && lidar_pulse==5000 && strstr(output,"ERR lidarservo"));
+  }
+  command("lidarservo out\r");assert(lidar_pulse==2450 && strstr(output,"pulse_us=2450"));
+  command("lidarservo in\r");assert(lidar_pulse==1450 && strstr(output,"pulse_us=1450"));
+  before=lidar_sets;
+  grab_busy=grab_route_busy=motion_busy=radar_scan_busy=bus_locked=true;
+  command("lidarservo out\r");assert(lidar_sets==before && strstr(output,"task_busy"));
+  command("lidarservo in\r");assert(lidar_sets==before && strstr(output,"task_busy"));
+  command("lidarservo off\r");assert(lidar_sets==before && lidar_pulse==1450 && strstr(output,"format"));
+  assert(grab_busy && grab_route_busy && motion_busy && radar_scan_busy && bus_locked);
+  command("lidarservo status\r");assert(strstr(output,"enabled=1 pulse_us=1450"));
+  grab_busy=grab_route_busy=motion_busy=radar_scan_busy=bus_locked=false;
+  command("lidarservo pulse 1537\r");assert(lidar_pulse==1537 && strstr(output,"pulse_us=1537"));
+  command("lidarservo off\r");assert(lidar_pulse==1537 && strstr(output,"format"));
   {
     const uint8_t frame[]={0xFF,0xB2,3,1,1,0x4E,1,0x52,0xFF,0xDA,0,7,0,0xFE};
     unsigned cameras=camera_calls,motors=motor_calls;
@@ -586,6 +638,7 @@ int main(void)
   command("grab stack align 3\r");assert(strstr(output,"stack routed") && motor_calls==before);
   grab_busy=grab_route_busy=true;command("stop all\r");assert(!grab_busy&&!grab_route_busy&&grab_stops==2);
   grab_route_busy=true;command("grab start fixed\r");assert(strstr(output,"grab_busy"));
+  command("grab stack align 3\r");assert(strstr(output,"route_busy") && !strstr(output,"stack routed"));
   command("grab stop\r");assert(!grab_route_busy);
   motor_result=MECHANICAL_ARM_RESULT_NONE;
   guard_moving=true;before=motor_calls;
@@ -599,10 +652,14 @@ int main(void)
   command("bus recover\r");assert(BusRecoveryPending && recovery_fake.active);
   before=motor_calls;command("pos x 90\r");assert(motor_calls==before && strstr(output,"operation_busy"));
   command("bus status\r");assert(strstr(output,"active=1"));
+  command("bus recovery\r");assert(strstr(output,"OK bus attempt stage=") && strstr(output,"OK bus attempt_rx") && strstr(output,"OK bus first"));
   recovery_fake.active=false;recovery_fake.success=true;recovery_fake.reason="complete";
   output[0]=0;ArmConsole_Process();assert(!BusRecoveryPending && strstr(output,"tasks_resumed=0"));
   command("bus recover\r");ArmConsole_ReceiveData(3);ArmConsole_StopProcess();
   assert(!BusRecoveryPending && !recovery_fake.active);
+  mission_pending=mission_recovery_accepted=true;unsigned saved_stops=grab_stops;
+  command("bus recover\r");assert(!BusRecoveryPending && !recovery_fake.active && grab_stops==saved_stops);
+  assert(strstr(output,"mission_preserved=1"));mission_pending=mission_recovery_accepted=false;
   output[0]=0;stop_status.tx_complete=true;stop_status.reason="monitoring";
   ArmConsole_StopProcess();assert(strstr(output,"tx_complete=1 wheels_stopped=0"));
   output[0]=0;ArmConsole_StopProcess();assert(!output[0]); /* no repeated report */
@@ -675,5 +732,9 @@ int main(void)
   command("bus test 8\r");assert(BusTest.active && BusTest.rounds==10);
   ArmConsole_ReceiveData(3);ArmConsole_StopProcess();assert(!BusTest.active && !probe_active);
   bus_locked=false;
+  grab_busy=grab_route_busy=true;
+  mission_pending=true;recovery_fake.active=true;
+  command("grab mission pause\r");assert(mission_pauses==1 && recovery_fake.active);
+  command("grab mission stop\r");assert(mission_cancels==1 && !recovery_fake.active);mission_pending=false;
   puts("arm_console_host_test: commands, units, busy, status, CRLF and async prompts OK");return 0;
 }

@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 const settings=await import('../route-settings.mjs').catch(()=>({}));
 test('one-time route speed migration retains low speeds and preserves high old value for review',()=>{
   assert.equal(typeof settings.migrateRoutePreferences,'function');
-  assert.equal(settings.migrateRoutePreferences({}).routeSpeed,200);
+  assert.equal(settings.migrateRoutePreferences({}).routeSpeed,1000);
   for(const speed of [10,100,200])assert.equal(settings.migrateRoutePreferences({routeSpeed:speed}).routeSpeed,speed);
   const old={routeSpeed:5000,offlineRows:[{vx:100}],theme:'blue'};
   const migrated=settings.migrateRoutePreferences(old);
-  assert.equal(migrated.routeSpeed,200);assert.equal(migrated.previousRouteSpeed,5000);
+  assert.equal(migrated.routeSpeed,1000);assert.equal(migrated.previousRouteSpeed,5000);
   assert.deepEqual(migrated.offlineRows,old.offlineRows);assert.equal(migrated.theme,'blue');
   assert.equal(settings.migrateRoutePreferences({...migrated,routeSpeed:5000}).routeSpeed,5000);
   assert.equal(old.routeSpeed,5000);

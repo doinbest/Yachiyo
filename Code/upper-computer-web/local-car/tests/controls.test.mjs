@@ -2,17 +2,32 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {commands, buildCommand, moduleForWire, describeReply} from '../protocol.mjs';
 
+test('distance acceleration tests normalize diagonals and leave legacy timed controls separate', () => {
+  const vectors={forward:[1,0],back:[-1,0],left:[0,1],right:[0,-1],fl:[1,1],fr:[1,-1],bl:[-1,1],br:[-1,-1]};
+  for(const [direction,[x,y]] of Object.entries(vectors)){
+    const wire=buildCommand('chassis-test',{direction,distance:3000,speed:1000});
+    const [,verb,f,l,v]=wire.split(' ');
+    assert.equal(verb,'test');assert.equal(Number(v),1000);
+    assert.equal(Math.sign(Number(f)),x);assert.equal(Math.sign(Number(l)),y);
+    assert.ok(Math.hypot(Number(f),Number(l))<=3000);
+    assert.ok(Math.hypot(Number(f),Number(l))>2999.99);
+  }
+  for(const changed of [{distance:0},{distance:3001},{speed:9},{speed:5001},{speed:'NaN'},{direction:'oops'}])
+    assert.throws(()=>buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,...changed}));
+  assert.equal(buildCommand('chassis-test',{direction:'back',distance:500,speed:1000}),'chassis test -500 0 1000');
+});
+
 test('finite velocity controls convert seconds to integer milliseconds once', () => {
-  assert.equal(buildCommand('chassis-run', {vx:60,vy:80,omega_deg:100,seconds:1.25}), 'chassis run 60 80 1.745329 1250');
-  assert.equal(buildCommand('chassis-run', {vx:0,vy:0,omega_deg:-100,seconds:0.1}), 'chassis run 0 0 -1.745329 100');
+  assert.equal(buildCommand('chassis-run', {vx:60,vy:80,omega_deg:500,seconds:1.25}), 'chassis run 60 80 8.726646 1250');
+  assert.equal(buildCommand('chassis-run', {vx:0,vy:0,omega_deg:-500,seconds:0.1}), 'chassis run 0 0 -8.726646 100');
   assert.equal(buildCommand('chassis-heading', {vx:10,vy:0,heading:-90,seconds:59}), 'chassis heading 10 0 -90 59000');
-  for (const changed of [{vx:300,vy:1},{vx:301},{vy:-301},{omega_deg:100.1},{seconds:0.09},{seconds:59.001},{seconds:'NaN'}]) {
+  for (const changed of [{vx:300,vy:1},{vx:301},{vy:-301},{omega_deg:500.1},{omega_deg:-500.1},{seconds:0.09},{seconds:59.001},{seconds:'NaN'}]) {
     assert.throws(() => buildCommand('chassis-run', {vx:0,vy:0,omega_deg:0,seconds:1,...changed}));
   }
   assert.equal(buildCommand('chassis-run',{vx:0,vy:0,omega_deg:30.5,seconds:1}),'chassis run 0 0 0.532325 1000');
   const angleField=commands.find(c=>c.id==='chassis-run').fields.find(f=>f.key==='omega_deg');
   assert.match(angleField.label,/°/);
-  assert.equal(angleField.max,100);
+  assert.equal(angleField.max,500);
   assert.throws(() => buildCommand('chassis-heading',{vx:0,vy:0,heading:'',seconds:1}));
   assert.throws(() => buildCommand('chassis-heading',{vx:300,vy:1,heading:0,seconds:1}));
 });

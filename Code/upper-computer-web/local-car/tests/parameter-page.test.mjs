@@ -22,24 +22,24 @@ test('read all refreshes successful fields and unset, keeps failed input, gets r
   try{
     page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{
       wires.push(wire);queueMicrotask(()=>{
-        if(wire==='grab get x_car')page.receive('ERR grab unknown_key');
+        if(wire==='grab get base_car_offset')page.receive('ERR grab unknown_key');
         else if(wire.startsWith('config '))page.receive(`OK config ${wire.split(' ')[1]} rpm=30 acc=8 limit_pulses=${wire==='config z'?'unlimited':'3200'}`);
-        else{const [kind,,key]=wire.split(' ');page.receive(`OK ${kind} config key=${key} value=${key==='z_proc_grab'||key.startsWith('slot2')?'unset':key==='z_grab'?'-80':key==='z_lift'?'-40':'1'}`);}
+        else{const [kind,,key]=wire.split(' ');page.receive(`OK ${kind} config key=${key} value=${key==='z_temp_align'||key.startsWith('slot2')?'unset':key==='z_grab'?'-80':key==='z_lift'?'-40':'1'}`);}
       });return true;
     },radarExchange:{async get(){radarGets++;return parameterFields.filter(p=>p.kind==='radar').map(p=>({key:p.key,value:5}));},cancel(){}}});
     assert.equal(ui.input('grab','z_grab').value,'');
     assert.ok(ui.all().filter(e=>e.className==='parameter-field-state').every(e=>e.hidden));
-    ui.input('grab','x_car').value='42';ui.input('grab','x_car').oninput();
+    ui.input('grab','base_car_offset').value='42';ui.input('grab','base_car_offset').oninput();
     await page.readAll();
     assert.equal(ui.input('grab','z_grab').value,'80');assert.equal(ui.input('grab','z_lift').value,'40');
-    assert.equal(ui.input('grab','z_proc_grab').value,'');assert.equal(ui.input('grab','x_car').value,'42');
+    assert.equal(ui.input('grab','z_temp_align').value,'');assert.equal(ui.input('grab','base_car_offset').value,'42');
     assert.equal(radarGets,1);assert.equal(wires.some(w=>w.includes('route_speed')),false);
     assert.equal(ui.all().filter(e=>e.tag==='details').length,0);
     assert.ok(ui.all().some(e=>e.textContent==='未支持'&&!e.hidden));
     assert.ok(ui.input('grab','z_grab').title.includes('80 mm'));
     const grabRow=ui.all().find(e=>e.id==='parameter-row-grab-z_grab');
     assert.ok(grabRow.children.find(e=>e.className==='parameter-field-state').hidden);
-    const unsetRow=ui.all().find(e=>e.id==='parameter-row-grab-z_proc_grab');
+    const unsetRow=ui.all().find(e=>e.id==='parameter-row-grab-z_temp_align');
     assert.ok(unsetRow.children.some(e=>e.textContent==='未设置'&&!e.hidden));
   }finally{ui.restore();}
 });
@@ -51,9 +51,9 @@ test('apply current tab writes paired absolute Z and reads each back; other draf
       wires.push(wire);const [,action,key,value]=wire.split(' ');
       queueMicrotask(()=>{if(action==='set'){device[key]=Number(value);page.receive('OK grab set');}else page.receive(`OK grab config key=${key} value=${device[key]}`);});return true;
     }});
-    for(const [key,value]of [['z_grab','70'],['z_lift','40'],['ref_u','334']]){ui.input('grab',key).value=value;ui.input('grab',key).oninput();}
+    for(const [key,value]of [['z_grab','70'],['z_lift','40'],['j00','2']]){ui.input('grab',key).value=value;ui.input('grab',key).oninput();}
     await page.apply();assert.deepEqual(wires,['grab set z_grab -70','grab get z_grab','grab set z_lift -30','grab get z_lift']);
-    page.selectTab('vision');assert.equal(ui.input('grab','ref_u').value,'334');assert.equal(ui.input('grab','z_lift').value,'40');
+    page.selectTab('vision');assert.equal(ui.input('grab','j00').value,'2');assert.equal(ui.input('grab','z_lift').value,'40');
     assert.ok(ui.all().some(e=>e.textContent.includes('已应用并读回一致')));
     const grabRow=ui.all().find(e=>e.id==='parameter-row-grab-z_grab');
     assert.ok(grabRow.children.find(e=>e.className==='parameter-field-state').hidden);
@@ -115,8 +115,8 @@ test('stop cancels remaining requests without clearing drafts and disconnect mar
   const ui=parameterSurface(),wires=[];let page;
   try{
     page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);return true;}});
-    ui.input('grab','x_car').value='42';ui.input('grab','x_car').oninput();const reading=page.readAll();await tick();page.receive('OK grab config key=z_ppm value=480');await tick();page.cancel('停止');await reading;
-    assert.equal(wires.length,2);assert.equal(ui.input('grab','x_car').value,'42');assert.equal(ui.input('grab','z_ppm').value,'480');
+    ui.input('grab','base_car_offset').value='42';ui.input('grab','base_car_offset').oninput();const reading=page.readAll();await tick();page.receive('OK grab config key=z_ppm value=480');await tick();page.cancel('停止');await reading;
+    assert.equal(wires.length,2);assert.equal(ui.input('grab','base_car_offset').value,'42');assert.equal(ui.input('grab','z_ppm').value,'480');
     page.cancel('断线',true);assert.ok(String(ui.input('grab','z_ppm').title??'').includes('历史设备值'));
     assert.ok(ui.all().some(e=>e.className==='parameter-progress'&&e.textContent.includes('历史')));
   }finally{ui.restore();}
@@ -171,21 +171,21 @@ test('a deep link for a shared key scrolls only the requested parameter category
   }finally{ui.restore();}
 });
 
-test('material height fields stay in six aligned scenarios with all parameter inputs intact',()=>{
+test('material height fields stay in four shared-height scenarios with all parameter inputs intact',()=>{
   const ui=parameterSurface();
   try{
     mountParameterPage({root:ui.root,canSend:()=>false,send:async()=>true});
     const all=ui.all(),scenarios=all.filter(e=>e.className==='parameter-height-row');
-    assert.equal(scenarios.length,6);
-    assert.deepEqual(scenarios.map(e=>e.children[0].textContent),['原料夹取','粗加工夹取','车载取放','粗加工释放','暂存第一层','暂存第二层']);
-    assert.equal(all.filter(e=>e.className==='parameter-empty-cell').length,3);
+    assert.equal(scenarios.length,4);
+    assert.deepEqual(scenarios.map(e=>e.children[0].textContent),['原料夹取','车载取放','加工取放 / 第一层暂存','暂存第二层']);
+    assert.equal(all.filter(e=>e.className==='parameter-empty-cell').length,2);
     assert.equal(all.filter(e=>e.dataset.parameterKey).length,parameterFields.length);
     for(const row of all.filter(e=>e.className==='parameter-field')){
       const label=row.children.find(e=>e.tag==='label');
       assert.ok(all.some(e=>e.id===label.htmlFor));
     }
     assert.ok(all.some(e=>e.className==='parameter-unit'&&e.textContent==='ms'));
-    assert.ok(all.some(e=>e.textContent.includes('发出开合指令后')));
+    assert.ok(all.some(e=>e.textContent.includes('闭爪后，到下一步 Z 提起')));
   }finally{ui.restore();}
 });
 

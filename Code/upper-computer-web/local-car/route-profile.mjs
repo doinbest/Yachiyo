@@ -19,7 +19,10 @@ export function profileResultText(r){
 export class RouteProfileRunner{
   constructor(profile,{geometry=DEFAULT_GEOMETRY,integer=false,mask=0,bodySize=DEFAULT_BODY_SIZE,gridPolicy='stop'}={}){
     if(!profile||!Array.isArray(profile.points)||!profile.points.length||!profile.points[0].slice(0,2).every(Number.isFinite)||!Array.isArray(profile.phases)||!profile.phases.length||!validGeometry(geometry))throw new Error('当前固件 C 阶段预览不可用，请先重新规划');
-    for(const p of profile.phases)if(!['move','turn'].includes(p.kind)||!finiteTarget(p.target)||!Number.isFinite(p.speed_mm_s)||p.speed_mm_s<0||typeof p.phase!=='string'||typeof p.direction!=='string'||!Number.isInteger(p.segment))throw new Error('C 阶段记录无效');
+    for(const p of profile.phases){
+      if(!['move','turn','curve'].includes(p.kind)||!finiteTarget(p.target)||!Number.isFinite(p.speed_mm_s)||p.speed_mm_s<0||typeof p.phase!=='string'||typeof p.direction!=='string'||!Number.isInteger(p.segment))throw new Error('C 阶段记录无效');
+      if(p.kind==='curve'&&(!Array.isArray(p.path)||p.path.length<2||p.path.some((q,i)=>!Array.isArray(q)||q.length!==5||!q.every(Number.isFinite)||q[4]<0||(i&&q[3]<=p.path[i-1][3]))))throw new Error('C 连续路径记录无效');
+    }
     if(!Number.isFinite(profile.turn_speed_deg_s)||profile.turn_speed_deg_s<=0)throw new Error('请重新规划以获取当前固件转向速度');
     if(!validBodySize(bodySize))throw new Error('预演车体尺寸必须在 0～300 mm 内');
     this.profile=profile;this.rows=profile.phases;this.geometry={...geometry};this.integer=integer;this.mask=mask;this.bodySize={...bodySize};
@@ -29,7 +32,7 @@ export class RouteProfileRunner{
     this.check(this.pose);
   }
   get phase(){return this.rows[this.index]?.phase??'done';}
-  get armPose(){return this.rows[this.index]?.arm_pose??'rear';}
+  get armPose(){const p=this.rows[this.index];return p?.phase==='work_curve'&&(this.curveProgress??0)>=p.path.at(-2)[3]?'work':p?.arm_pose??'rear';}
   check(p){
     const diagnostic=footprintDiagnostic(p,{mask:this.mask,bodySize:this.bodySize});if(!diagnostic)return true;
     const issue={...diagnostic,segment:this.rows[this.index].segment,phase:this.phase,pose:{...p}};
@@ -43,7 +46,7 @@ export class RouteProfileRunner{
   }
   finishPhase(){
     const p=this.rows[this.index];this.stops.push({index:this.index,name:profilePhaseText(p),pose:{...this.pose},time:this.elapsed});
-    this.speed=0;if(this.index+1===this.rows.length)this.state='done';else this.index++;
+    this.speed=0;this.curveProgress=0;if(this.index+1===this.rows.length)this.state='done';else this.index++;
   }
   swept(next){
     const previous=this.pose,dx=next.x_mm-previous.x_mm,dy=next.y_mm-previous.y_mm,da=next.yaw_rad-previous.yaw_rad;
@@ -60,6 +63,27 @@ export class RouteProfileRunner{
     if(!Number.isFinite(seconds)||seconds<0)throw new Error('模拟时间无效');
     while(seconds>1e-10&&this.state==='running'){
       const p=this.rows[this.index],dt=Math.min(.02,seconds),turn=p.kind==='turn';
+      if(p.kind==='curve'){
+        const path=p.path,total=path.at(-1)[3],s=this.curveProgress??0;
+        if(total-s<1e-8){this.finishPhase();continue;}
+        let limit=p.speed_mm_s;
+        for(let i=1;i<path.length;i++){
+          const a=path[i-1],b=path[i];if(b[3]<s)continue;
+          const gradient=Math.abs(b[2]-a[2])/(b[3]-a[3]);
+          let cap=b[4];if(gradient>.001)cap=Math.min(cap,.65*this.profile.turn_speed_deg_s/gradient);
+          limit=Math.min(limit,Math.sqrt(cap*cap+300*Math.max(0,(i===path.length-1?b[3]:a[3])-s)));
+        }
+        this.speed=Math.min(limit,this.speed+PROFILE_ACCEL_MM_S2*dt);
+        const nextS=Math.min(total,s+this.speed*dt);
+        const index=path.findIndex((q,i)=>i&&q[3]>=nextS),a=path[index-1],b=path[index];
+        const t=(nextS-a[3])/(b[3]-a[3]);
+        const next={x_mm:a[0]+(b[0]-a[0])*t,y_mm:a[1]+(b[1]-a[1])*t,yaw_rad:radians(a[2]+(b[2]-a[2])*t)};
+        const planar=rotate([(next.x_mm-this.pose.x_mm)/dt,(next.y_mm-this.pose.y_mm)/dt],-this.pose.yaw_rad);
+        this.body=[...planar,angle(next.yaw_rad-this.pose.yaw_rad)/dt];
+        this.rpm=inverse(this.body,this.geometry,PROFILE_MAX_RPM);
+        if(!this.swept(next))break;
+        this.curveProgress=nextS;this.elapsed+=dt;seconds-=dt;continue;
+      }
       const dx=p.target[0]-this.pose.x_mm,dy=p.target[1]-this.pose.y_mm,remaining=turn?angle(radians(p.target[2])-this.pose.yaw_rad):Math.hypot(dx,dy);
       if(Math.abs(remaining)<1e-8){this.finishPhase();continue;}
       const limit=turn?radians(this.profile.turn_speed_deg_s):p.speed_mm_s;

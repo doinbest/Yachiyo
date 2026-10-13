@@ -68,6 +68,7 @@ def plan_radar_offline(body):
     headers = [workspace/'Code/template/App/radar_map.h', workspace/'Code/template/App/radar_start.h',
                workspace/'Code/template/App/radar_geometry.h', workspace/'Code/template/App/radar_stability.h',
                workspace/'Code/template/App/chassis_route_profile.h',
+               workspace/'Code/template/App/chassis_path.h',
                workspace/'Code/template/App/chassis_config.h', workspace/'Code/template/App/motor_id_config.h']
     executable = workspace/'.embeddedskills/tests/radar_plan_cli.exe'
     with _planner_lock:

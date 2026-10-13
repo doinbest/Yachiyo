@@ -2,6 +2,10 @@
 
 本文件提供导航，不重复维护参数、操作流程或历史验证结论。工程入口见[项目README](../README.md)，代码位置见[Code索引](../Code/README.md)。
 
+## 当前优先计划
+
+- [开局余弦提速与入弯减速](superpowers/plans/2026-10-14-开局余弦提速与入弯减速计划.md)：先按[右通道路径修改](开发记录/2026-10-14-开局右通道长距离转向.md)验证新几何；接近段余弦与非零入弯余弦制动仍待实施。
+
 ## 现行说明
 
 | 需求 | 入口 |
@@ -10,7 +14,8 @@
 | 接线、单位及已确认条件 | [硬件与运行基线](硬件与运行基线.md) |
 | 构建与源码定位 | [F407主车](../Code/template/README.md)、[代码索引](../Code/README.md) |
 | 控制台启动 | [本地控制台](../Code/upper-computer-web/local-car/README.md) |
-| 视觉、取放、码垛、赛事流程 | [视觉任务操作](../Code/upper-computer-web/local-car/docs/视觉任务.md) |
+| 比赛、取放与路线现行要求 | [比赛与取放约定](比赛与取放约定.md)，相关任务按需读取 |
+| 视觉、取放、码垛、赛事操作 | [视觉任务操作](../Code/upper-computer-web/local-car/docs/视觉任务.md) |
 | 雷达、地图、路线与预演 | [地图与雷达](../Code/upper-computer-web/local-car/docs/地图与雷达.md) |
 | 连接、停车、诊断与恢复 | [连接与恢复](../Code/upper-computer-web/local-car/docs/连接与恢复.md) |
 | 命令与报文 | [协议索引](上位机协议.md)，只读本次涉及的主题 |

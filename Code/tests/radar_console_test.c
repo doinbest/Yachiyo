@@ -482,8 +482,8 @@ int main(void)
   RadarConsole_Init();reply[0]=page[0]=0;
   map_pages=fetch_map(UINT32_MAX);points_pages=fetch_points(UINT32_MAX);path_pages=fetch_path(1,false);
   printf("uint32 identity pages: map=%u path=%u points=%u\n",map_pages,path_pages,points_pages);
-  command("radar nav start");assert(moves==2 && submitted_speed==200);
-  command("radar task start");assert(moves==3 && submitted_speed==200);
+  command("radar nav start");assert(moves==2 && submitted_speed==1000);
+  command("radar task start");assert(moves==3 && submitted_speed==1000);
   route.planned=true;route.state="running";route.reason="dock_approach";
   route.segment=193;route.total=193;route.station=5;route.visit=8;
   command("radar nav status");

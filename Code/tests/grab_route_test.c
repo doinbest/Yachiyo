@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "GrabRoute.h"
+#include "contest_mission.h"
 #include "GrabTask.h"
 #include "chassis_route.h"
 #include "chassis_config.h"
@@ -25,15 +26,23 @@ void Mecanum_Feedback_Enable(bool on){feedback_enabled=on;}
 bool GrabTask_QrReady(float *y){*y=1200;return ready;}
 bool GrabTask_QrScanStart(uint32_t seq){(void)seq;task_busy=1;grab_status.state=GRAB_QR_SCAN;grab_status.reason="qr_wait";return true;}
 bool ChassisRoute_QrTestStart(float speed,float y){assert(y==1200);route_speed=speed;route.state="running";starts++;return true;}
+static unsigned heading_station,heading_calls;
+static float heading_speed,heading_delta;
+bool ContestMission_StartHeadingProbe(unsigned station,float delta,float speed){heading_station=station;heading_delta=delta;heading_speed=speed;heading_calls++;return true;}
+bool ContestMission_StartHeadingTest(unsigned station,float speed){heading_station=station;heading_speed=speed;heading_calls++;return true;}
 static unsigned single_starts;
 static bool single_accept=true;
 bool ContestMission_StartSingle(float speed){single_starts++;route_speed=speed;return single_accept;}
 static bool legacy(void){RadarPlan_t p={0};p.valid=true;return GrabRoute_StartPlanned(&p,50);}
 void ContestMission_Init(void){}
-bool ContestMission_Start(const RadarPlan_t *p,float s){(void)p;(void)s;return false;}
+static unsigned mission_starts;
+static ContestMission_Request_t mission_request;
+bool ContestMission_Start(const RadarPlan_t *p,const ContestMission_Request_t *s){(void)p;mission_request=*s;mission_starts++;return false;}
 void ContestMission_Process(void){}
 void ContestMission_Stop(void){}
+void ContestMission_Cancel(void){}
 bool ContestMission_IsBusy(void){return false;}
+bool ContestMission_HasPendingWork(void){return false;}
 bool ContestMission_HasRun(void){return false;}
 const char *ContestMission_Reason(void){return "first_slot_inventory_unknown";}
 bool ContestMission_Continue(void){return false;}
@@ -59,6 +68,26 @@ uint8_t ContestScreen_HasError(void){return screen_error;}
 static void setup(void){memset(&route,0,sizeof(route));memset(&grab_status,0,sizeof(grab_status));route.state="idle";route.reason="none";grab_status.reason="idle";grab_status.result="none";tick=0;starts=resumes=finishes=picks=cancels=single_starts=0;ready=1;screen_done=screen_error=task_busy=0;QR_Init();GrabRoute_Init();}
 int main(void)
 {
+  setup();
+  char *hp[]={"grab","heading","proc","5"};assert(GrabRoute_Command(4,hp));assert(heading_calls==1 && heading_station==2 && heading_speed==5);
+  char *ht[]={"grab","heading","temp"};assert(GrabRoute_Command(3,ht));assert(heading_calls==2 && heading_station==3 && heading_speed==5);
+  char *trial[]={"grab","heading","angle","temp","-1","5"};assert(GrabRoute_Command(6,trial));assert(heading_calls==3 && heading_station==3 && heading_delta==-1 && heading_speed==5);
+  char *default_trial[]={"grab","heading","angle","proc"};assert(GrabRoute_Command(4,default_trial));assert(heading_calls==4 && heading_station==2 && heading_delta==-1 && heading_speed==5);
+  char *bad[]={"grab","heading","temp","oops"};assert(GrabRoute_Command(4,bad));assert(heading_calls==4 && strstr(reply,"heading_speed_range"));
+
+  setup();
+  char *m[]={"grab","mission","fixed","156+123+516+231","5000","100","upper","radar","raised","extra"};
+  assert(GrabRoute_Command(9,m) && mission_starts==1 && mission_request.align_raised);
+  assert(mission_request.radar_enabled && mission_request.start_id==RADAR_START_UPPER);
+  assert(mission_request.route_speed_mm_s==5000 && mission_request.turn_speed_deg_s==100);
+  m[8]="lowered";assert(GrabRoute_Command(9,m) && mission_starts==2 && !mission_request.align_raised);
+  assert(GrabRoute_Command(8,m) && mission_starts==3 && mission_request.align_raised);
+  m[8]="invalid";assert(GrabRoute_Command(9,m) && mission_starts==3 && strstr(reply,"alignment_mode_required"));
+  assert(GrabRoute_Command(10,m) && mission_starts==3 && strstr(reply,"format"));
+  char *q[]={"grab","mission","qr","200","100","lower","fixed","raised"};
+  assert(GrabRoute_Command(8,q) && mission_starts==4 && mission_request.align_raised);
+  assert(!mission_request.radar_enabled && mission_request.start_id==RADAR_START_LOWER && mission_request.code_source==MISSION_CODE_QR);
+  assert(GrabRoute_Command(3,q) && mission_starts==5 && mission_request.align_raised);
   setup();char *qrstart[]={"grab","qr","begin"};
   localization.origin_valid=true;localization.origin.x_mm=2250;localization.origin.y_mm=2250;
   localization.origin.yaw_rad=-CHASSIS_MODEL_PI/2;
@@ -129,5 +158,10 @@ int main(void)
   GrabRoute_Process();tick=1000;GrabRoute_Process();screen_done=1;GrabRoute_Process();
   assert(resumes==1);route.state="station";route.segment=12;route.station=4;route.visit=2;
   GrabRoute_Process();assert(finishes==1&&picks==1);
+  setup();char *vh[]={"grab","mission","qr","200","100","lower","fixed","vlow"};
+  assert(GrabRoute_Command(8,vh) && mission_request.visual_heading_enabled && !mission_request.align_raised);
+  vh[7]="vhigh";assert(GrabRoute_Command(8,vh) && mission_request.visual_heading_enabled && mission_request.align_raised);
+  vh[7]="lowered";assert(GrabRoute_Command(8,vh) && !mission_request.visual_heading_enabled && !mission_request.align_raised);
+  assert(GrabRoute_Command(3,vh) && !mission_request.visual_heading_enabled);
   puts("grab_route_test: PASS (fixed/planned semantic visits, 1000ms, screen TX, pick, cancel)");
 }

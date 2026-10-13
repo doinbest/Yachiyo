@@ -71,7 +71,7 @@ void GrabRoute_Init(void)
 
 bool GrabRoute_IsBusy(void)
 {
-  return (QrTest && ((QrPhase>=1 && QrPhase<=3) || QrPhase==7)) || ContestMission_IsBusy() || State==GR_DRIVING || State==GR_SCAN_WAIT || State==GR_DISPLAY_WAIT || State==GR_HANDOFF;
+  return (QrTest && ((QrPhase>=1 && QrPhase<=3) || QrPhase==7)) || ContestMission_HasPendingWork() || State==GR_DRIVING || State==GR_SCAN_WAIT || State==GR_DISPLAY_WAIT || State==GR_HANDOFF;
 }
 bool GrabRoute_CanConfigure(void) { return ContestMission_CanConfigure(); }
 
@@ -82,7 +82,7 @@ void GrabRoute_Stop(void)
     (void)ChassisRoute_Cancel();GrabTask_Stop();
     QrFinalPhase=5;QrPhase=3;QrReason="operator_stop";QrReport();return;
   }
-  ContestMission_Stop();
+  if(ContestMission_HasPendingWork()){ContestMission_Stop();return;}
   if(GrabRoute_IsBusy())
   {
     if(State!=GR_HANDOFF) (void)ChassisRoute_Cancel();
@@ -152,7 +152,7 @@ void GrabRoute_Process(void)
     }
     return;
   }
-  if(ContestMission_IsBusy()) { ContestMission_Process();return; }
+  if(ContestMission_HasPendingWork()) { ContestMission_Process();return; }
   if(!GrabRoute_IsBusy()) return;
   if(State==GR_HANDOFF)
   {
@@ -217,6 +217,28 @@ bool GrabRoute_Command(unsigned Count,char *Tokens[])
   char *End;
   float Speed;
   if(Count<2U || strcmp(Tokens[0],"grab")) return false;
+  if(!strcmp(Tokens[1],"heading"))
+  {
+    const char *error=NULL;unsigned station=0;Speed=5;float polarity=-1;
+    bool probe=Count>2 && !strcmp(Tokens[2],"angle");
+    unsigned station_index=probe?3U:2U,speed_index=probe?5U:3U;
+    if(Count<(probe?4U:3U) || Count>speed_index+1)error="format";
+    else {
+      station=!strcmp(Tokens[station_index],"proc")?2:!strcmp(Tokens[station_index],"temp")?3:0;
+      if(!station)error="heading_station_required";
+      if(probe && Count>4){polarity=strtof(Tokens[4],&End);if(End==Tokens[4] || *End)error="heading_probe_polarity";}
+      if(Count>speed_index){Speed=strtof(Tokens[speed_index],&End);if(End==Tokens[speed_index] || *End)error="heading_speed_range";}
+    }
+    if(!error && GrabRoute_IsBusy())error="busy";
+    if(!error){
+      bool accepted=probe?ContestMission_StartHeadingProbe(station,polarity,Speed):ContestMission_StartHeadingTest(station,Speed);
+      if(accepted){QrTest=false;return true;}
+      error=ContestMission_Reason();
+    }
+    char line[160];int n=snprintf(line,sizeof line,"ERR grab heading reason=%s\r\n",error);
+    if(n>0 && n<(int)sizeof line)(void)ConsoleTx_Write((const uint8_t*)line,(uint16_t)n);
+    return true;
+  }
   if(!strcmp(Tokens[1],"qr"))
   {
     if(Count==3 && !strcmp(Tokens[2],"status")) { QrReport();return true; }
@@ -255,24 +277,53 @@ qr_format:
   }
   if(Count==2U && !strcmp(Tokens[1],"status"))
   { if(QrTest)QrReport();else if(ContestMission_HasRun()) ContestMission_Report();else Report(0U);return false; }
-  if(Count==3U && (!strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"mission")) &&
-     !strcmp(Tokens[2],"status"))
+  if(Count==3U && !strcmp(Tokens[1],"mission") && !strcmp(Tokens[2],"status"))
+  {ContestMission_Report();return true;}
+  if(Count==3U && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"status"))
   { if(ContestMission_HasRun()) ContestMission_Report();else Report(0U);return true; }
   if(!strcmp(Tokens[1],"mission"))
   {
+    if(Count==3U && !strcmp(Tokens[2],"pause"))
+    {ContestMission_Stop();ContestMission_Report();return true;}
+    if(Count==3U && !strcmp(Tokens[2],"stop"))
+    {ContestMission_Cancel();ContestMission_Report();return true;}
     if(Count==3U && !strcmp(Tokens[2],"continue"))
     { (void)ContestMission_Continue();ContestMission_Report();return true; }
-    Speed=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
-    if(Count==3U)
-    { Speed=strtof(Tokens[2],&End);if(End==Tokens[2] || *End) Speed=NAN; }
-    QrTest=false;
-    if((Count!=2U && Count!=3U) || !ContestMission_Start(NULL,Speed))
+    ContestMission_Request_t request={MISSION_CODE_QR,"",CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,100,RADAR_START_LOWER,false,true,false};
+    const char *error=NULL;unsigned first=3;
+    if(Count<3 || (strcmp(Tokens[2],"qr") && strcmp(Tokens[2],"fixed")))error="source_required";
+    else if(!strcmp(Tokens[2],"fixed"))
     {
-      char Error[180];
-      int Length=snprintf(Error,sizeof Error,"ERR grab mission reason=%s\r\n",
-        Count!=2U && Count!=3U?"format":ContestMission_Reason());
-      if(Length>0 && Length<(int)sizeof Error) (void)ConsoleTx_Write((const uint8_t*)Error,(uint16_t)Length);
+      request.code_source=MISSION_CODE_FIXED;first=4;
+      if(Count<4 || strlen(Tokens[3])!=15)error="task_code_invalid";
+      else memcpy(request.fixed_code,Tokens[3],16);
     }
+    if(!error && Count>first+5)error="format";
+    if(!error && Count>first){request.route_speed_mm_s=strtof(Tokens[first],&End);if(End==Tokens[first] || *End)error="speed_range";}
+    if(!error && Count>first+1){request.turn_speed_deg_s=strtof(Tokens[first+1],&End);if(End==Tokens[first+1] || *End)error="turn_speed_range";}
+    if(!error && Count>first+2){
+      if(!strcmp(Tokens[first+2],"upper"))request.start_id=RADAR_START_UPPER;
+      else if(strcmp(Tokens[first+2],"lower"))error="start_required";
+    }
+    if(!error && Count>first+3){
+      if(!strcmp(Tokens[first+3],"radar"))request.radar_enabled=true;
+      else if(strcmp(Tokens[first+3],"fixed"))error="route_mode_required";
+    }
+    if(!error && Count>first+4){
+      if(!strcmp(Tokens[first+4],"vhigh")){request.align_raised=true;request.visual_heading_enabled=true;}
+      else if(!strcmp(Tokens[first+4],"vlow")){request.align_raised=false;request.visual_heading_enabled=true;}
+      else if(!strcmp(Tokens[first+4],"raised"))request.align_raised=true;
+      else if(!strcmp(Tokens[first+4],"lowered"))request.align_raised=false;
+      else error="alignment_mode_required";
+    }
+    if(!error && (GrabRoute_IsBusy() || GrabTask_IsBusy()))error="busy";
+    if(!error && !ContestMission_Start(NULL,&request))error=ContestMission_Reason();
+    if(error)
+    {
+      char text[180];int n=snprintf(text,sizeof text,"ERR grab mission reason=%s\r\n",error);
+      if(n>0 && n<(int)sizeof text)(void)ConsoleTx_Write((const uint8_t*)text,(uint16_t)n);
+    }
+    else QrTest=false;
     return true;
   }
   if(strcmp(Tokens[1],"route")) return false;

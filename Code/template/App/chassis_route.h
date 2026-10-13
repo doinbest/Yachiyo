@@ -40,7 +40,15 @@ bool ChassisRoute_StationFinish(void);
 bool ChassisRoute_StationReserved(void);
 #define CHASSIS_TASK_ROUTE 1
 /** @brief 新后向机构任务：NULL为固定路线，否则使用已完成的右下雷达计划；不扫码。 */
+typedef struct { bool scan_qr; float qr_scan_y_mm, turn_speed_deg_s; RadarStart_Id_t start_id; } ChassisRoute_TaskOptions_t;
+bool ChassisRoute_TaskStartEx(const RadarPlan_t *plan,float speed,const ChassisRoute_TaskOptions_t *options);
 bool ChassisRoute_TaskStart(const RadarPlan_t *plan,float speed);
+bool ChassisRoute_TaskPause(void);
+/** Suspend pause-monitor producers while the bus recovery owner verifies motors. */
+void ChassisRoute_TaskRecoveryHold(bool hold);
+bool ChassisRoute_TaskContinue(void);
+/** Prepare/check resume feedback without releasing paused route or issuing motion. */
+bool ChassisRoute_TaskResumeReady(void);
 /** @brief 工位任务接管局部移动与取放；保留路线与下一工位，不要求重设原点。 */
 bool ChassisRoute_WorkBegin(void);
 /** @brief 局部动作反馈完成后，按当前航向继续下一目标。 */

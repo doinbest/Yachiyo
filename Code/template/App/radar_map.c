@@ -30,7 +30,7 @@ static const RadarGrid_t WaypointGrid = {
 static const uint8_t MissionOrder[RADAR_PLAN_MISSION_VISITS] = {1,5,4,2,3,4,2,3,1};
 /* Indexed by station-1: START, ROUGH, STORE, RAW, QR. Vehicle-center targets. */
 static const int16_t Stations[5][2] = {
-  {2250,150},{1200,350},{350,1200},{1200,2100},{2100,1200}
+  {2250,150},{1200,300},{350,1200},{1200,2100},{2100,1200}
 };
 
 void RadarMap_Defaults(RadarMap_Params_t *p)

@@ -115,7 +115,7 @@ void GrabTracking_ResetModel(GrabTracking_t *track);
  * @param input 本次反馈/视觉快照；新测量按sequence及sample_ms去重。
  * @param output 输出预测、速度和暂停原因；本函数不发送硬件命令。
  * @retval 无
- * @note 误差约定(CX-ref_u,ref_v-CY)，共用J；预测延迟/反馈加减速为联调初值。
+ * @note 误差直接使用B2 DX/DY（右/上为正），共用J；预测延迟/反馈加减速为联调初值。
  */
 void GrabTracking_Update(GrabTracking_t *track,const GrabTracking_Config_t *config,
                          const GrabTracking_Input_t *input,GrabTracking_Output_t *output);

@@ -19,6 +19,7 @@ typedef struct
 typedef struct
 {
   bool reference_valid, arrived, moving, feedback_valid;
+  bool reference_degraded; /**< HOME失败但停稳后建立的近似参考。 */
   uint8_t slot;
   const char *state, *reason;
   float angle_deg, target_deg, speed_rpm;
@@ -46,8 +47,19 @@ bool Turntable_ReferenceValid(void);
 bool Turntable_SlotConfigured(uint8_t slot);
 /** @brief 人工对齐第一仓后读取当前位置作为软件偏移；不回零/清零。 */
 bool Turntable_Origin(void);
-/** @brief 最短方向分度；true 仅表示受理，到位检查 StatusGet.arrived。 */
+/** @brief 仓1使用单圈就近回零，仓2/3按最短方向分度；保留库存。
+ * true 仅表示受理，到位检查 StatusGet.arrived。 */
 bool Turntable_Index(uint8_t slot);
+/** Fresh position/speed/state verification only; never HOME, move or disable. */
+bool Turntable_VerifySlot(uint8_t slot);
+/** Snapshot a configured slot angle relative to the established reference. */
+bool Turntable_SlotAngleGet(uint8_t slot,float *out);
+/** Fixed reference-relative target, shortest path; positive_half_turn resolves
+ * the 180-degree tie within arrival tolerance. slot=0 labels a clearance pose.
+ * Accepted only: caller must wait for fresh arrived feedback. Never HOME. */
+bool Turntable_AngleStart(float angle,uint8_t slot,bool positive_half_turn);
+/** Read-only verification of a saved angle, including after pause. */
+bool Turntable_AngleVerify(float angle,uint8_t slot);
 /** @brief 相对当前位置点动，degree 为度；不要求已建立仓位参考。 */
 bool Turntable_Jog(float degree);
 /** @brief 返回最小编号的空仓，0 表示没有已确认的空仓。 */

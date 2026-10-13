@@ -23,7 +23,7 @@ static void two_pieces_return_to_actual_base_anchor(void)
   assert(fabsf(physical[2]-397)<.12f && fabsf(physical[0]-3)<.01f);
   assert(tray_indexes==1 && base_moves==2 && closures==1);
   assert(tray_inventory[0].state==TURNTABLE_OCCUPIED && tray_inventory[0].color==1);
-  assert(isfinite(Config[C_REF_U]) && GrabTask_ConfigReady("pick"));
+  assert(isfinite(Config[C_J00]) && GrabTask_ConfigReady("pick"));
   assert(!strcmp(status().reference_cause,"transfer_return_verified"));
   assert(GrabTask_Command(5,second)); run_to(GRAB_COMPLETE,600,0);
   assert(fabsf(physical[2]-397)<.12f && base_moves==4 && tray_indexes==2 && closures==2);
@@ -38,15 +38,13 @@ static void scene_parameters_only_block_the_requested_scene(void)
   char *rough[]={"grab","take","1","rough"};
   char *temp2[]={"grab","take","1","temp2"};
   reset(); configure(false);
-  assert(isnan(Config[C_Z_PROC_GRAB]) && isnan(Config[C_Z_STACK_PLACE]));
+  assert(isnan(Config[C_Z_PROC_PLACE]) && isnan(Config[C_Z_STACK_PLACE]));
   assert(GrabTask_ConfigReady("fixed"));
   assert(GrabTask_Command(5,proc)); assert(!GrabTask_IsBusy());
-  assert(!strcmp(status().missing,"z_proc_grab"));
-  setting("z_proc_grab","-10"); setting("z_proc_lift","5");
+  assert(!strcmp(status().missing,"z_proc_place"));
+  setting("z_proc_place","-10"); 
   assert(GrabTask_Command(5,proc)); run_to(GRAB_COMPLETE,600,0);
   assert(tray_inventory[0].color==2 && !strcmp(status().scene,"proc"));
-  assert(GrabTask_Command(4,rough)); assert(!GrabTask_IsBusy());
-  assert(!strcmp(status().missing,"z_proc_place"));
   setting("z_proc_place","-12");
   assert(GrabTask_Command(4,rough)); run_to(GRAB_COMPLETE,600,0);
   assert(tray_inventory[0].state==TURNTABLE_EMPTY && !strcmp(status().result,"released"));
@@ -57,7 +55,7 @@ static void scene_parameters_only_block_the_requested_scene(void)
   setting("z_stack_place","-6");
   assert(GrabTask_Command(4,temp2)); run_to(GRAB_COMPLETE,600,0);
   assert(!strcmp(status().scene,"temp2") && tray_inventory[0].state==TURNTABLE_EMPTY);
-  assert(isnan(Config[C_Z_TEMP_PLACE])); /* First-layer calibration was not borrowed. */
+  Scene=SCENE_TEMP1;assert(release_key()==C_Z_PROC_PLACE);
 }
 
 static void unconfirmed_inventory_and_unset_angles_do_not_move(void)
@@ -67,11 +65,12 @@ static void unconfirmed_inventory_and_unset_angles_do_not_move(void)
   for(unsigned i=0;i<3;i++) tray_inventory[i].state=TURNTABLE_UNKNOWN;
   assert(!GrabTask_Start("fixed") && !positions && !stops);
   assert(!strcmp(status().reason,"no_confirmed_empty_slot"));
-  assert(GrabTask_Command(5,fixed)); assert(!GrabTask_IsBusy());
-  assert(!strcmp(status().reason,"inventory_unconfirmed"));
-  tray_inventory[0].state=TURNTABLE_EMPTY; tray_unset_slot=2;
-  assert(GrabTask_Start("fixed")); run_to(GRAB_COMPLETE,600,0);
+  tray_unset_slot=2;
+  assert(GrabTask_Command(5,fixed)); assert(GrabTask_IsBusy());
+  assert(tray_inventory[0].state==TURNTABLE_UNKNOWN);
+  run_to(GRAB_COMPLETE,600,0);
   assert(tray_indexes==1 && status().slot==1); /* Other angles/heights do not block slot one. */
+  assert(tray_inventory[0].state==TURNTABLE_OCCUPIED && tray_inventory[1].state==TURNTABLE_UNKNOWN);
 }
 
 static void cancellation_only_marks_a_touched_slot_and_return_is_local(void)
@@ -86,7 +85,7 @@ static void cancellation_only_marks_a_touched_slot_and_return_is_local(void)
   assert(openings==before && closures==1 && homes==0);
   assert(tray_inventory[0].state==TURNTABLE_UNKNOWN);
   assert(tray_inventory[1].state==TURNTABLE_EMPTY && tray_inventory[2].state==TURNTABLE_EMPTY);
-  assert(isfinite(Config[C_REF_U]) && !GrabTask_ConfigReady("pick"));
+  assert(isfinite(Config[C_J00]) && !GrabTask_ConfigReady("pick"));
   assert(GrabTask_Command(2,back)); run_to(GRAB_COMPLETE,600,0);
   assert(fabsf(physical[2]-37)<.12f && !strcmp(status().result,"returned"));
   assert(GrabTask_ConfigReady("pick") && homes==0 && tray_inventory[0].state==TURNTABLE_UNKNOWN);

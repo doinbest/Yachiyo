@@ -551,8 +551,8 @@ int main(void)
   assert(TrackConfig.lambda_s==2.5f && TrackConfig.horizon_ms==120);
   for(unsigned i=0;i<2;i++)
   {
-    assert(TrackComparison[i].body_speed_mm_s==80 && TrackComparison[i].x_speed_mm_s==30);
-    assert(TrackComparison[i].lambda_s==1 && TrackComparison[i].horizon_ms==60);
+    assert(TrackComparison[i].body_speed_mm_s==160 && TrackComparison[i].x_speed_mm_s==60);
+    assert(TrackComparison[i].lambda_s==2 && TrackComparison[i].horizon_ms==60);
     assert(TrackComparison[i].accel_mm_s2==300 && TrackComparison[i].body_accel_mm_s2==300);
     assert(TrackComparison[i].x_accel_mm_s2==120 && TrackComparison[i].tolerance_px==5);
     assert(TrackComparison[i].lead_mm==12 && TrackComparison[i].grace_ms==250);
@@ -566,7 +566,6 @@ int main(void)
     for(unsigned i=0;i<40;i++)step(true,0,17,-9);
     assert(TrackReady && TrackInput.error_px[0]==17 && TrackInput.error_px[1]==-9);
     assert(status().dx==17 && status().dy==-9 && !velocity_requests);
-    Config[C_REF_U]=123;Config[C_REF_V]=234;
     pixel_center_x=372;pixel_center_y=345;
     step(true,0,0,0);
     assert(TrackInput.error_px[0]==0 && TrackInput.error_px[1]==0);

@@ -24,4 +24,6 @@ void ChassisLocalization_Get(ChassisLocalization_Status_t *status);
 bool ChassisLocalization_Origin(float x_mm, float y_mm, float yaw_rad);
 /** @brief Confirm protocol units (65536), or revoke with zero, while idle. */
 bool ChassisLocalization_ConfirmPositionUnits(uint32_t units_per_rev);
+/** Internal infallible half of ChassisHeading_Apply; main loop only. */
+void ChassisLocalization_HeadingSync(float yaw);
 #endif

@@ -7,6 +7,8 @@ static UART_HandleTypeDef uart;
 static uint8_t sent[32];
 static unsigned sends, handled;
 static int moving, missing, rx_fail, zero_nack, sync_missing, post_moving;
+static bool restart_noise;
+static bool tx_never_completes;
 static unsigned transient_moving, speed_reads;
 static unsigned post_transient;
 static uint8_t speed_sign, stopped_speed;
@@ -19,13 +21,15 @@ uint32_t HAL_GetTick(void) { return tick; }
 HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef *u,uint8_t *p,uint16_t n)
 { (void)u;memcpy(sent,p,n);sends++;return HAL_OK; }
 HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef *u,uint8_t *p,uint16_t n)
-{ (void)u;(void)p;(void)n;return rx_fail?HAL_ERROR:HAL_OK; }
+{ (void)p;(void)n;if(restart_noise){restart_noise=false;u->ErrorCode=HAL_UART_ERROR_NE;MotorBus_ErrorCallback(u);}return rx_fail?HAL_ERROR:HAL_OK; }
 HAL_StatusTypeDef HAL_UART_DMAStop(UART_HandleTypeDef *u) { (void)u;return HAL_OK; }
 static void step(void)
 {
   uint8_t r[8]={sent[0],sent[1],0,0,0,0x6b};
   if(sends!=handled) {
-    handled=sends;MotorBus_TxCpltCallback(&uart);
+    handled=sends;
+    if(tx_never_completes){tick+=10;MotorBus_Process();return;}
+    MotorBus_TxCpltCallback(&uart);
     if(sent[1]==0x35) {
       r[2]=speed_sign;
       r[4]=(moving || (post_moving && sync_mask==15))?20:stopped_speed;
@@ -68,6 +72,12 @@ static MotorBus_Recovery_t run(void)
 int main(void)
 {
   MotorBus_Recovery_t s;uint8_t move[]={5,0xfd,0x6b};
+  MotorBus_Diagnostic_t fault={.locked=true,.reason="uart_error",.uart_error=HAL_UART_ERROR_NE};
+  assert(MotorBus_TransientFault(&fault));
+  fault.locked=false;assert(!MotorBus_TransientFault(&fault)); /* historical evidence only */
+  fault.locked=true;fault.uart_error=HAL_UART_ERROR_DMA;assert(!MotorBus_TransientFault(&fault));
+  fault.reason="reply_timeout";assert(MotorBus_TransientFault(&fault));
+  fault.reason="motor_fault";assert(!MotorBus_TransientFault(&fault));
   assert(MotorBus_Init(&uart)==HAL_OK);
   /* Exercise recovery from a runtime FE, after the startup-only exception ends. */
   {
@@ -138,11 +148,17 @@ int main(void)
   assert(!s.success && !strcmp(s.reason,"rx_restart_failed"));
   rx_fail=0;assert(MotorBus_RecoveryStart());s=run();assert(s.success);
   state_flags=7;assert(MotorBus_RecoveryStart());s=run();assert(!s.success);
+  state_flags=2;assert(MotorBus_RecoveryStart());s=run();assert(!s.success); /* no disabled-axis auto resume */
   state_flags=3;home_flags=7;assert(MotorBus_RecoveryStart());s=run();assert(!s.success);
   home_flags=3;assert(MotorBus_RecoveryStart());
   uart.ErrorCode=4;MotorBus_ErrorCallback(&uart);step();
   MotorBus_RecoveryGet(&s);assert(!s.active && !s.success && MotorBus_IsQuarantined());
   assert(MotorBus_RecoveryStart());MotorBus_RecoveryCancel();
   MotorBus_RecoveryGet(&s);assert(!s.active && !s.success && MotorBus_IsQuarantined());
+  restart_noise=true;assert(MotorBus_RecoveryStart());s=run();
+  assert(!s.success && s.uart_error==HAL_UART_ERROR_NE && s.elapsed_ms>=500 && s.checked_mask==0);
+  assert(!strcmp(s.stage,"rx_restart") && !s.function && !s.tx_sent);
+  tx_never_completes=true;assert(MotorBus_RecoveryStart());s=run();
+  assert(!strcmp(s.reason,"tx_timeout") && !s.tx_sent && !MotorBus_RecoveryRetryable(&s));
   puts("motor_recovery_test: recover, motion rejection, missing driver, RX failure and cancel OK");
 }

@@ -1,5 +1,5 @@
 export const ROUTE_SPEED_VERSION=1;
-export const DEFAULT_ROUTE_SPEED=200;
+export const DEFAULT_ROUTE_SPEED=1000;
 const validSpeed=value=>Number.isInteger(value)&&value>=10&&value<=5000;
 
 /** Migrate browser startup preferences once; offline editor rows are untouched. */

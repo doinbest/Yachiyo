@@ -7,7 +7,7 @@ static float deg_error(float a,float b)
 {
   return fmodf(a-b+540,360)-180;
 }
-static void turn_plant(float initial,float target)
+static void turn_plant(float initial,float target,float limit,float tolerance)
 {
   const unsigned dirs[4]={0,0,1,1};
   const ChassisModel_Geometry_t geometry={210,240,80,1};
@@ -17,7 +17,7 @@ static void turn_plant(float initial,float target)
   unsigned steps=0,batches=0;
   setup();
   assert(ChassisMotion_AnchorSet(initial*CHASSIS_MODEL_PI/180));
-  assert(ChassisMotion_TurnTo(target,60000));
+  assert(tolerance==2?ChassisMotion_TurnToSpeed(target,limit,60000):ChassisMotion_TurnToPrecision(target,limit,tolerance,60000));
   unsigned id=status().action_id;
   for(unsigned now=120;now<59000 && ChassisMotion_IsBusy();now+=20)
   {
@@ -52,7 +52,7 @@ static void turn_plant(float initial,float target)
     if(status().state==CHASSIS_MOTION_STOPPING)
     {
       if(bus.stop_pending || bus.stage==MECANUM_STAGE_STOPPED)
-      {bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;}
+      {if(bus.stop_pending)bus.sent_ms=now;bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;bus.tx_complete=true;}
       else
       {bus.stage=MECANUM_STAGE_SENT;bus.tx_complete=true;bus.sent_velocity_valid=true;
        bus.sent_ms=now;memset(bus.sent_rpm,0,sizeof(bus.sent_rpm));}
@@ -66,15 +66,19 @@ static void turn_plant(float initial,float target)
   }
   printf("turn plant %.0f->%.0f time=%.2fs batches=%u error=%.2f reason=%s\n",
       initial,target,steps*.02f,batches,deg_error(target,yaw),status().reason);
+  fflush(stdout);
   assert(status().state==CHASSIS_MOTION_DONE && status().stop_confirmed);
-  assert(fabsf(deg_error(target,yaw))<=2 && max_omega<=1.745330f);
+  assert(fabsf(deg_error(target,yaw))<=tolerance && max_omega<=limit*CHASSIS_MODEL_PI/180+0.00001f);
   assert(location.observer.feedback.x_mm==1215 && location.observer.feedback.y_mm==1180);
   assert(status().map_anchor_valid);
-  if(fabsf(deg_error(target,initial))>=90) {assert(steps*.02f<6);assert(max_omega>.8f);}
+  if(fabsf(deg_error(target,initial))>=90) {assert(steps*.02f<6);assert(max_omega>fminf(.8f,limit*CHASSIS_MODEL_PI/180*.8f));}
 }
 int main(void)
 {
-  turn_plant(90,180);turn_plant(180,90);turn_plant(170,-170);turn_plant(0,180);turn_plant(90,95);
+  turn_plant(.5f,0,10,.1f);turn_plant(-.5f,0,10,.1f);
+  turn_plant(0,90,30,2);
+  turn_plant(0,-90,50,2);
+  turn_plant(90,180,100,2);turn_plant(180,90,100,2);turn_plant(170,-170,100,2);turn_plant(0,180,100,2);turn_plant(90,95,100,2);
   setup();grab_busy=true;assert(!ChassisMotion_TurnTo(180,60000));
   assert(!strcmp(status().reason,"grab_task_busy"));
   setup();assert(!ChassisMotion_TurnTo(NAN,60000));

@@ -22,17 +22,19 @@ static const char *const Names[PARAM_COUNT] = {
 static float Params[PARAM_COUNT];
 static Turntable_Inventory_t Inventory[TURNTABLE_SLOT_COUNT];
 static Turntable_Status_t Status;
-typedef enum { OP_NONE, OP_ORIGIN, OP_INDEX, OP_JOG, OP_STOP, OP_POWER, OP_SAVE_ZERO, OP_HOME } Operation;
+typedef enum { OP_NONE, OP_ORIGIN, OP_INDEX, OP_JOG, OP_STOP, OP_POWER, OP_SAVE_ZERO, OP_HOME, OP_VERIFY, OP_ANGLE } Operation;
 typedef enum { TT_PHASE_SAMPLE, TT_PHASE_ENABLE, TT_PHASE_MOVE, TT_PHASE_STOP_FRAME, TT_PHASE_SAVE_ZERO, TT_PHASE_HOME, TT_PHASE_ABORT_HOME } Phase;
 static Operation Op;
 static Phase Step;
 static uint8_t SampleKind, Flags, HomeFlags;
+static bool HomeSampleValid, HomeDegraded;
 static int64_t PositionRaw, OriginRaw, HomeLastRaw;
 static double TargetRaw, RequestedJog, DeltaDeg;
 static uint32_t Token, PendingToken, SampleTick[3], LastCycle, StableSince;
 static uint32_t Started, MotionBudget, StopStarted;
 static bool Pending, Stable, MotionStarted, PowerEnabled, BootHomePending;
 static const char *StopReason;
+static bool PositiveHalfTurn;
 
 static float wrap(float degree)
 {
@@ -74,7 +76,8 @@ static void finish(const char *reason, bool arrived)
   Status.reason = reason;
   Status.arrived = arrived;
   Status.feedback_valid = fresh() && !MotorBus_IsQuarantined();
-  Status.moving = Status.feedback_valid && (fabsf(Status.speed_rpm) > 1.0f || !(Flags & 2U));
+  /* HOME confirms standstill using its own completion flag, not position bit1. */
+  Status.moving = Status.feedback_valid && (fabsf(Status.speed_rpm) > 1.0f || (!arrived && !(Flags & 2U)));
   MotorBus_Release(MOTOR_BUS_TURNTABLE);
 }
 static void stop_start(const char *reason)
@@ -111,7 +114,7 @@ static void fail(const char *reason)
 void Turntable_Init(void)
 {
   unsigned i;
-  static const float Defaults[PARAM_COUNT] = {0, NAN, NAN, 30, 8, 1, 200, 2000};
+  static const float Defaults[PARAM_COUNT] = {0, 90, 180, 30, 8, 2.5f, 200, 2000};
   memcpy(Params, Defaults, sizeof(Params));
   memset(&Status, 0, sizeof(Status));
   memset(SampleTick, 0, sizeof(SampleTick));
@@ -186,10 +189,44 @@ bool Turntable_Index(uint8_t slot)
 {
   if (!Status.reference_valid) { Status.reason = "reference_required"; return false; }
   if (!Turntable_SlotConfigured(slot)) { Status.reason = "slot_unset"; return false; }
+  /* Slot 1 is the verified saved mechanical zero. Use HOME completion rather
+   * than a near-zero position command's reached flag; preserve software stock. */
+  if (slot == 1U) {
+    if (!Turntable_Home()) return false;
+    Status.slot = 1;
+    Status.target_deg = 0;
+    return true;
+  }
   if (!start(OP_INDEX)) return false;
   Status.slot = slot;
   Status.target_deg = wrap(Params[slot - 1U]);
   return true;
+}
+bool Turntable_VerifySlot(uint8_t slot)
+{
+  if(!Status.reference_valid){Status.reason="reference_required";return false;}
+  if(!Turntable_SlotConfigured(slot)){Status.reason="slot_unset";return false;}
+  if(!start(OP_VERIFY))return false;
+  Status.slot=slot;Status.target_deg=wrap(Params[slot-1U]);return true;
+}
+bool Turntable_SlotAngleGet(uint8_t slot,float *out)
+{
+  if(!out || !Turntable_SlotConfigured(slot))return false;
+  *out=wrap(Params[slot-1U]);return true;
+}
+bool Turntable_AngleStart(float angle,uint8_t slot,bool positive_half_turn)
+{
+  if(!Status.reference_valid){Status.reason="reference_required";return false;}
+  if(!isfinite(angle) || slot>TURNTABLE_SLOT_COUNT){Status.reason="invalid_degree";return false;}
+  if(!start(OP_ANGLE))return false;
+  Status.slot=slot;Status.target_deg=wrap(angle);PositiveHalfTurn=positive_half_turn;return true;
+}
+bool Turntable_AngleVerify(float angle,uint8_t slot)
+{
+  if(!Status.reference_valid){Status.reason="reference_required";return false;}
+  if(!isfinite(angle) || slot>TURNTABLE_SLOT_COUNT){Status.reason="invalid_degree";return false;}
+  if(!start(OP_VERIFY))return false;
+  Status.slot=slot;Status.target_deg=wrap(angle);return true;
 }
 bool Turntable_Jog(float degree)
 {
@@ -211,6 +248,7 @@ bool Turntable_Home(void)
   if (!start(OP_HOME)) return false;
   Step = TT_PHASE_ENABLE;
   HomeLastRaw = PositionRaw;
+  HomeSampleValid = HomeDegraded = false;
   return true;
 }
 bool Turntable_Enable(bool enabled)
@@ -258,8 +296,17 @@ static void sampled(void)
   if (Flags & 0x0cU) { fail("driver_fault"); return; }
   if (Op == OP_STOP) {
     /* Position/state/speed come from a complete post-stop cycle. */
-    if (Status.feedback_valid && stationary) finish(StopReason, false);
+    if (Status.feedback_valid && stationary) {
+      finish(StopReason, false);
+      /* Fresh post-stop zero speed is authoritative even without position bit1. */
+      Status.moving = false;
+    }
     return;
+  }
+  if (Op == OP_VERIFY) {
+    bool ready=Status.feedback_valid && stationary && (Flags & 1U) &&
+      fabs(shortest((double)Status.target_deg-Status.angle_deg))<=Params[POS_TOL_DEG];
+    finish(ready?"arrived":"position_changed",ready);return;
   }
   if (Op == OP_SAVE_ZERO) {
     if (!stationary) { finish("motor_moving", false); return; }
@@ -267,10 +314,13 @@ static void sampled(void)
     return;
   }
   if (Op == OP_HOME) {
-    if (HomeFlags & 8U) { fail("home_failed"); return; }
-    bool settled = !(HomeFlags & 4U) && stationary && (Flags & 1U) &&
+    if (HomeFlags & 0x30U) { fail("home_driver_fault"); return; }
+    if (HomeFlags & 8U) HomeDegraded = true;
+    bool settled = Status.feedback_valid && HomeSampleValid && !(HomeFlags & 4U) &&
+                   stationary && (!HomeDegraded || Status.speed_rpm == 0.0f) && (Flags & 1U) &&
                    fabs((double)(PositionRaw - HomeLastRaw) * 360.0 / FEEDBACK_UNITS_PER_REV) <= Params[POS_TOL_DEG];
     HomeLastRaw = PositionRaw;
+    HomeSampleValid = Status.feedback_valid;
     if (!settled) Stable = false;
     else if (!Stable) { Stable = true; StableSince = now; }
     else if ((uint32_t)(now - StableSince) >= (uint32_t)Params[STABLE_MS]) {
@@ -278,8 +328,10 @@ static void sampled(void)
       Status.reference_valid = true;
       Status.slot = 1;
       Status.angle_deg = Status.target_deg = 0;
-      finish("home_complete", true);
-      reply("OK turntable home complete ref=1\r\n");
+      Status.reference_degraded = HomeDegraded;
+      finish(HomeDegraded ? "home_approximate" : "home_complete", true);
+      reply("OK turntable home complete ref=1 ref_degraded=%u home_flags=0x%02X reference=%s\r\n",
+            HomeDegraded ? 1U : 0U, (unsigned)HomeFlags, HomeDegraded ? "approximate" : "verified");
       return;
     }
     if ((uint32_t)(now - Started) > 60000U) fail("home_timeout");
@@ -297,6 +349,7 @@ static void sampled(void)
     if (!Status.feedback_valid) { finish("feedback_stale", false); return; }
     if (!stationary) { finish("motor_moving", false); return; }
     OriginRaw = PositionRaw;
+    Status.reference_degraded = false;
     Status.reference_valid = true;
     Status.angle_deg = 0;
     finish("reference_established", false);
@@ -304,22 +357,32 @@ static void sampled(void)
   }
   if (!MotionStarted) {
     double actual = (double)PositionRaw * 360.0 / FEEDBACK_UNITS_PER_REV;
-    if (Op == OP_INDEX) {
+    if (Op == OP_INDEX || Op == OP_ANGLE) {
       double relative = (double)(PositionRaw - OriginRaw) * 360.0 / FEEDBACK_UNITS_PER_REV;
       DeltaDeg = shortest((double)Status.target_deg - relative);
+      /* At the opposite tray, measured arrival error must not flip the
+       * requested positive half-turn. Resume still targets the same angle. */
+      if(Op==OP_ANGLE && PositiveHalfTurn && DeltaDeg<0 &&
+         fabs(fabs(DeltaDeg)-180.0)<=Params[POS_TOL_DEG])DeltaDeg+=360.0;
     } else DeltaDeg = RequestedJog;
     TargetRaw = actual + DeltaDeg;
     if (Op == OP_JOG && Status.reference_valid)
       Status.target_deg = wrap((float)((double)(PositionRaw - OriginRaw) * 360.0 / FEEDBACK_UNITS_PER_REV + DeltaDeg));
-    MotionBudget = (uint32_t)(fabs(DeltaDeg) / ((double)Params[SPEED_RPM] * 6.0) * 1000.0) +
-                   (uint32_t)Params[FEEDBACK_MS] + (uint32_t)Params[STABLE_MS];
+    /* Cruise time alone omits the drive's acceleration/deceleration and the
+     * shared-bus arrival samples. Allow twice cruise time, with a 5 s floor.
+     * This is a wait budget, not a change to the commanded angle or speed. */
+    MotionBudget = (uint32_t)fmax(5000.0,
+      fabs(DeltaDeg) / ((double)Params[SPEED_RPM] * 6.0) * 2000.0 +
+      Params[FEEDBACK_MS] + Params[STABLE_MS]);
     Step = TT_PHASE_ENABLE;
     return;
   }
   {
     double error = (double)PositionRaw * 360.0 / FEEDBACK_UNITS_PER_REV - TargetRaw;
+    /* The host tolerance is the acceptance window. The drive's narrower
+     * reached bit may remain clear; keep its exact position command active. */
     bool at_target = Status.feedback_valid && fabs(error) <= Params[POS_TOL_DEG] &&
-                     stationary && (Flags & 3U) == 3U;
+                     stationary && (Flags & 1U);
     if (!at_target) Stable = false;
     else if (!Stable) { Stable = true; StableSince = now; }
     else if ((uint32_t)(now - StableSince) >= (uint32_t)Params[STABLE_MS]) {
@@ -329,7 +392,13 @@ static void sampled(void)
             (double)Status.speed_rpm,(unsigned)Status.reference_valid);
       return;
     }
-    if ((uint32_t)(now - Started) > MotionBudget) fail("position_timeout");
+    if ((uint32_t)(now - Started) > MotionBudget) {
+      reply("ERR turntable position_timeout angle_deg=%.6g target_deg=%.6g error_deg=%.6g tol_deg=%.6g speed_rpm=%.6g flags=0x%02X fresh=%u elapsed_ms=%lu budget_ms=%lu\r\n",
+        (double)Status.angle_deg,(double)Status.target_deg,error,(double)Params[POS_TOL_DEG],
+        (double)Status.speed_rpm,(unsigned)Flags,(unsigned)Status.feedback_valid,
+        (unsigned long)(now-Started),(unsigned long)MotionBudget);
+      fail("position_timeout");
+    }
   }
 }
 void Turntable_Process(void)
@@ -351,6 +420,7 @@ void Turntable_Process(void)
       } else if (Step == TT_PHASE_SAVE_ZERO) {
         if (event.length != 4 || event.data[2] != 2U) { fail("driver_rejected"); return; }
         OriginRaw = PositionRaw;
+        Status.reference_degraded = false;
         Status.reference_valid = true;
         Status.slot = 1;
         Status.angle_deg = Status.target_deg = 0;
@@ -495,9 +565,9 @@ bool Turntable_Command(unsigned count, char *tokens[])
   } else if (count == 2 && !strcmp(tokens[1], "status")) {
     Turntable_Status_t s;
     Turntable_StatusGet(&s);
-    reply("OK turntable status state=%s ref=%u slot=%u arrived=%u moving=%u fresh=%u angle_deg=%.6g target_deg=%.6g speed_rpm=%.6g reason=%s\r\n",
+    reply("OK turntable status state=%s ref=%u slot=%u arrived=%u moving=%u fresh=%u angle_deg=%.6g target_deg=%.6g speed_rpm=%.6g reason=%s ref_degraded=%u\r\n",
           s.state, s.reference_valid, (unsigned)s.slot, s.arrived, s.moving, s.feedback_valid,
-          (double)s.angle_deg, (double)s.target_deg, (double)s.speed_rpm, s.reason);
+          (double)s.angle_deg, (double)s.target_deg, (double)s.speed_rpm, s.reason, s.reference_degraded ? 1U : 0U);
     for (uint8_t slot = 1; slot <= TURNTABLE_SLOT_COUNT; slot++) inventory_reply(slot);
   } else if (count == 2 && (!strcmp(tokens[1], "save_zero") || !strcmp(tokens[1], "home"))) {
     accepted = !strcmp(tokens[1], "home") ? Turntable_Home() : Turntable_SaveZero();

@@ -17,12 +17,13 @@ static void pose_stop_can_restart_without_homing(void)
     for(unsigned n=0;n<100 && PoseStep!=stages[trial];n++)step(true,0,0,0);
     assert(PoseStep==stages[trial]);
     if(stages[trial]==5)physical[2]=80; /* Stop partway through the owned turn. */
+    assert(!openings); /* The claw stays unchanged until Base arrival is verified. */
     GrabTask_Stop();assert(!GrabTask_PoseStart(true));
     run_to(GRAB_IDLE,150,0);
     assert(Status.stop_confirmed && RearReferenceValid && RearBase==37 && Config[C_J00]==2.25f);
     unsigned before=positions;base_arrives=true;
     assert(GrabTask_PoseStart(true));run_to(GRAB_COMPLETE,150,0);
-    assert(fabsf(physical[2]-165)<.15f && homes==0 && !closures && !openings);
+    assert(fabsf(physical[2]-(37+GRAB_BASE_WORK_OFFSET_DEG))<.15f && homes==0 && !closures && openings==1);
     if(stages[trial]==5)assert(positions==before+1); /* Already lifted/retracted: resume Base only. */
     before=positions;
     assert(GrabTask_PoseStart(true));run_to(GRAB_COMPLETE,150,0);
@@ -54,8 +55,8 @@ static void pose_recovers_manual_base_home_locally(void)
   for(unsigned n=0;n<15;n++)step(true,0,0,0);
   assert(!positions && !homes && !RearReferenceValid); /* ACK and running HOME are not rear proof. */
   home_flags=3;run_to(GRAB_COMPLETE,150,0);
-  assert(RearReferenceValid && fabsf(RearBase-397)<.15f && fabsf(physical[2]-525)<.15f);
-  assert(homes==0 && positions==1 && !boot_verify_calls && !openings && !closures);
+  assert(RearReferenceValid && fabsf(RearBase-397)<.15f && fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f);
+  assert(homes==0 && positions==1 && !boot_verify_calls && openings==1 && !closures);
   assert(Config[C_X_MIN]==x_min && Config[C_Z_GRAB]==z_grab && GrabTask_ConfigReady("pick"));
 
   reset();configure(true);manual_base_home_event(MECHANICAL_ARM_RESULT_ACK_TIMEOUT);
@@ -89,7 +90,7 @@ static void rear_home_direct_car_release(float rear)
   assert(GrabTask_Command(3,cmd));assert(!GrabTask_IsBusy());
   assert(!strcmp(status().reason,"rear_reference_missing"));
   GrabTask_BootHomeStart();run_to(GRAB_IDLE,300,0);configure(true);
-  setting("x_max","120");setting("x_car","100");
+  setting("x_max","120");
   setting("x_transfer_speed","55");
   Config[C_Z_GRAB]=Config[C_Z_LIFT]=Config[C_Z_OBSERVE]=NAN;
   tray_ready=false;tray_unset_slot=2; /* Direct arm test does not need indexing. */
@@ -98,8 +99,8 @@ static void rear_home_direct_car_release(float rear)
   /* A stationary Base within the temporary 2-degree task tolerance must not wait for
    * the driver's tighter position-reached bit. X/Z still require it. */
   base_state_flags=1;
-  run_to(GRAB_CAR_EXTEND,600,0);
-  assert(!openings && !closures && !camera_requests && !tray_indexes);
+  run_to(GRAB_PLACE,600,0);
+  assert(openings==1 && !closures && !camera_requests && !tray_indexes);
   assert(fabsf(physical[2]-rear)<.15f);
   assert(base_position_mode==MECHANICAL_ARM_POSITION_ABSOLUTE);
   /* The relaxed driver bit must not allow stale, moving, faulty or off-target Base. */
@@ -123,12 +124,12 @@ static void rear_home_direct_car_release(float rear)
   }
 
   run_to(GRAB_RELEASE,600,0);
-  assert(x_position_rpm==(uint16_t)floorf(55*Config[C_X_PPM]*60/3200));
-  assert(fabsf(physical[0]-100)<.01f && fabsf(physical[1]+5)<.01f);
+  assert(x_position_rpm>0 && x_position_rpm<=(uint16_t)floorf(55*Config[C_X_PPM]*60/3200) && x_position_acc==0);
+  assert(fabsf(physical[0]-Config[C_X_MIN])<.01f && fabsf(physical[1]+5)<.01f);
   run_to(GRAB_COMPLETE,600,0);
-  assert(openings==1 && !closures && !tray_indexes && homes==3);
+  assert(openings==2 && !closures && !tray_indexes && homes==3);
   assert(!strcmp(status().reason,"car_place_complete") && !strcmp(status().result,"released"));
-  assert(fabsf(physical[2]-rear)<.15f && fabsf(physical[0]-100)<.01f && fabsf(physical[1]+5)<.01f);
+  assert(fabsf(physical[2]-rear)<.15f && fabsf(physical[0]-Config[C_X_MIN])<.01f && fabsf(physical[1]+5)<.01f);
   for(unsigned i=0;i<3;i++)assert(tray_inventory[i].state==TURNTABLE_UNKNOWN);
 }
 static void base_home_stability_configured_window(void)
@@ -160,7 +161,7 @@ static void base_home_degraded_continuation(void)
   char *get[]={"grab","status"};GrabTask_Command(2,get);
   assert(strstr(output,"base_home_degraded=1"));
   configure(true);assert(GrabTask_PoseStart(true));run_to(GRAB_COMPLETE,180,0);
-  assert(fabsf(physical[2]-525)<.15f && status().base_home_degraded);
+  assert(fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f && status().base_home_degraded);
   GrabTask_Stop();assert(status().base_home_degraded);
   home_axis_flags[MECHANICAL_ARM_AXIS_BASE]=3;
   homes=0;test_homed_mask=0;
@@ -233,10 +234,41 @@ static void base_home_degraded_continuation(void)
   reset();configure(true);physical[2]=397;home_flags=11;
   manual_base_home_event(MECHANICAL_ARM_RESULT_OK);
   assert(GrabTask_PoseStart(true));status_write(true);run_to(GRAB_COMPLETE,180,0);
-  assert(status().base_home_degraded && fabsf(physical[2]-525)<.15f && !homes);
+  assert(status().base_home_degraded && fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f && !homes);
+}
+static void heading_accepts_higher_pose_without_rebasing_z(void)
+{
+  reset();configure(true);RearReferenceValid=RearPose=true;RearBase=37;
+  setting("z_min","-150");setting("z_car_lift","-10");
+  setting("head_proc_gain","1");
+  physical[0]=Config[C_X_MIN];physical[1]=0;physical[2]=37;
+  assert(GrabTask_PoseStart(true));run_to(GRAB_COMPLETE,200,0);
+  for(unsigned n=0;n<100;n++){(void)GrabTask_HeadingReady();step(true,0,0,0);}
+  assert(GrabTask_HeadingReady() && fabsf(Axes[1].mm)<.01f);
+  StationHeading_Config_t heading;GrabTask_HeadingConfigGet(2,&heading);
+  assert(heading.observation_z_mm==Axes[1].mm && !heading.height_matches);
+  assert(heading.gain==1 && Config[C_HEAD_PROC_GAIN]==1);
+  /* Fixed descent sends the absolute -130 target, never -120 from an assumed -10 start. */
+  unsigned retries=20;
+  while(!axis_move(1,-130)){assert(retries--);step(true,0,0,0);}
+  assert(Status.z_target_mm==-130 && Axes[1].target==-130);
+  /* Relative tray depth has an explicit z_max reference, saved once; it never uses z_car_lift. */
+  reset();configure(true);RearReferenceValid=RearPose=true;RearBase=37;
+  setting("z_min","-150");setting("z_max","0");setting("z_car_lift","-10");
+  physical[0]=Config[C_X_MIN];physical[1]=0;physical[2]=37;
+  assert(GrabTask_CarPickStart(3));assert(CarPickLiftTarget==0);
+  assert(CarPickTarget==-Config[C_CAR_PICK_DROP_MM]);
 }
 int main(void)
 {
+  heading_accepts_higher_pose_without_rebasing_z();
+  reset();GrabTask_BootHomeStart();
+  while((BootVerifiedMask&3U)!=3U) {
+    assert(!openings && homes<=2);step(true,0,0,0);
+  }
+  assert(openings==1 && homes==2);
+  run_to(GRAB_IDLE,300,0);assert(homes==3 && openings==1);
+
   reset();configure(true);manual_base_home_event(MECHANICAL_ARM_RESULT_OK);
   assert(GrabTask_PoseStart(true));
   BootPositionRaw=-4294967295LL;BootPositionValid=BootHomeFlagsValid=BootMotorFlagsValid=true;
@@ -267,20 +299,28 @@ int main(void)
   configure(true);
   assert(GrabTask_PoseStart(true));run_to(GRAB_COMPLETE,600,0);
   assert(PendingAction==MECHANICAL_ARM_ACTION_NONE && !MechanicalArm_IsBusy());
-  assert(!closures && !openings && !camera_requests && homes==3);
-  assert(fabsf(physical[2]-525)<.15f && !strcmp(status().result,"work_ready"));
+  assert(!closures && openings==2 && !camera_requests && homes==3);
+  assert(fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f && !strcmp(status().result,"work_ready"));
   assert(GrabTask_ConfigReady("pick"));
   assert(Config[C_X_SPEED]==5 && Config[C_X_TRANSFER_SPEED]==60);
   assert(GrabTask_PoseStart(false));run_to(GRAB_COMPLETE,600,0);
   assert(PendingAction==MECHANICAL_ARM_ACTION_NONE && !MechanicalArm_IsBusy());
   assert(fabsf(physical[2]-397)<.15f && !strcmp(status().result,"travel_ready"));
   assert(physical[0]==Config[C_X_MIN] && physical[1]>=Config[C_Z_CAR_LIFT]);
+  unsigned qr_openings=openings;
+  chassis_pose_motion=true; /* QR Base preparation on post-curve straight. */
+  assert(GrabTask_QrPoseStart());run_to(GRAB_COMPLETE,600,0);
+  chassis_pose_motion=false;
+  assert(fabsf(physical[2]-432)<.15f && !strcmp(status().result,"qr_pose_ready"));
+  assert(openings==qr_openings && !RearPose && !OutsidePose);
+  assert(GrabTask_PoseStart(false));run_to(GRAB_COMPLETE,600,0);
+  assert(fabsf(physical[2]-397)<.15f);
   chassis_pose_motion=true;
   unsigned before_positions=positions, before_base=base_moves;
   assert(GrabTask_PoseStart(true));run_to(GRAB_COMPLETE,600,0);
   assert(positions==before_positions+1 && base_moves==before_base+1);
   chassis_pose_motion=false;
-  assert(fabsf(physical[2]-525)<.15f && homes==3);
+  assert(fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f && homes==3);
   /* The chassis turn can finish before the first six arm reads. The route
    * remains running: still use the verified rear pose, without X/Z commands. */
   assert(GrabTask_PoseStart(false));run_to(GRAB_COMPLETE,600,0);
@@ -288,12 +328,12 @@ int main(void)
   assert(GrabTask_PoseStart(true));run_to(GRAB_COMPLETE,600,0);
   assert(positions==before_positions+1 && base_moves==before_base+1);
   chassis_pose_route=false;
-  assert(fabsf(physical[2]-525)<.15f && homes==3);
-  assert(isfinite(Config[C_REF_U]) && isfinite(Config[C_J11]));
+  assert(fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f && homes==3);
+  assert(isfinite(Config[C_J00]) && isfinite(Config[C_J11]));
   /* All ID8 slots share the same Base rear-home loading direction; repeated
-   * store/take cycles must return to the same 128-degree outside anchor. */
-  setting("z_proc_place","-6");setting("z_proc_grab","-8");setting("z_proc_lift","5");
-  setting("z_temp_place","-8");
+   * store/take cycles must return to the same 130-degree outside anchor. */
+  setting("z_proc_place","-6");
+
   for(unsigned pass=0;pass<4;pass++) for(unsigned slot=1;slot<=3;slot++)
   {
     const char *op=(pass==0 || pass==2)?"store":"take";
@@ -301,10 +341,10 @@ int main(void)
     unsigned retry=30;
     while(!GrabTask_TransferStart(op,scene,(uint8_t)slot,(uint8_t[]){1,5,6}[slot-1]))
     { assert(retry-- && !strcmp(status().reason,"busy"));step(true,0,0,0); }
-    run_to(GRAB_CAR_EXTEND,600,0);assert(fabsf(physical[2]-397)<.15f);
+    run_to(GRAB_PLACE,600,0);assert(fabsf(physical[2]-397)<.15f);
     run_to(GRAB_COMPLETE,600,0);
-    assert(x_position_rpm==(uint16_t)floorf(60*Config[C_X_PPM]*60/3200));
-    assert(fabsf(physical[2]-525)<.15f && homes==3 && GrabTask_ConfigReady("pick"));
+    assert(x_position_rpm>0 && x_position_rpm<=(uint16_t)floorf(60*Config[C_X_PPM]*60/3200) && x_position_acc==0);
+    assert(fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f && homes==3 && GrabTask_ConfigReady("pick"));
     assert(tray_inventory[slot-1].state==(!strcmp(op,"store")?TURNTABLE_OCCUPIED:TURNTABLE_EMPTY));
   }
   assert(closures==12 && camera_requests==3);
@@ -313,5 +353,5 @@ int main(void)
   run_to(GRAB_COMPLETE,600,0);assert(fabsf(physical[2]-397)<.15f && homes==3);
   GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_BASE);
   assert(!GrabTask_PoseStart(false));
-  puts("grab_pose_test: PASS (rear-home car direction, +128 work geometry, preserved model)");
+  puts("grab_pose_test: PASS (rear-home car direction, +130 work geometry, preserved model)");
 }

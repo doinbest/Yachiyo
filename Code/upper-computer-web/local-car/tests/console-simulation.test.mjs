@@ -32,7 +32,7 @@ function consoleFixture(){
     renderStatus:empty,displayReply:protocol.formatTerminalLine,visualStateText:t=>t??'—',bootProgress:(_l,s)=>s,
     parseRadar:()=>null,radarModel:{snapshots:{},params:{}},localStorage:{setItem:empty},
     radarExchange:{busy:false,cancel:empty},radarHostClient:null,radarDirectView:null,
-    paramsView:{receive:empty,cancel:empty,update:empty},trackingPanel:null,stackingPanel:null,
+    paramsView:{receive:empty,cancel:empty,update:empty},trackingPanel:null,materialTrackingPanel:null,stackingPanel:null,missionPanel:null,headingPanel:null,
     radarView:{receive:empty,connection:empty,render:empty},mapView:null,wheelView:null,
     qrView:{receive:empty,connection:empty,refreshControls:empty},
     prepView:{busy:false,pending:null,connection(){this.busy=false;this.pending=null;},cancel(){this.busy=false;this.pending=null;},receive:empty},
@@ -67,6 +67,64 @@ function consoleFixture(){
   return {sim:ctx.sim,bridge,elements,wires,messages,logs,$};
 }
 
+test('gripper microsecond edits stay passive and apply once through existing firmware',async()=>{
+  const f=consoleFixture();f.sim.controlForm('grip-pulse',{compact:true});
+  const input=f.$('grip-pulse-pulse'),form=f.elements.find(e=>e.tag==='form');
+  assert.equal(Number(input.value),2120);assert.deepEqual(f.wires,[]);
+  input.value='2300';input.oninput();assert.deepEqual(f.wires,[]);
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['grip duty 11.5']);
+  input.value='2501';input.oninput();form.onsubmit({preventDefault(){}});
+  await new Promise(resolve=>setTimeout(resolve,0));assert.equal(f.wires.length,1);
+  f.sim.configure({stopLatched:true});input.value='2100';input.oninput();
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(f.wires.length,1);
+});
+test('standalone chassis test remains passive until submit and respects stop lock',async()=>{
+  const f=consoleFixture();f.sim.controlForm('chassis-test',{compact:true});
+  const direction=f.$('chassis-test-direction'),distance=f.$('chassis-test-distance');
+  const form=f.elements.find(e=>e.tag==='form');
+  assert.deepEqual(f.wires,[]);direction.value='left';direction.onchange();
+  distance.value='1000';distance.oninput();assert.deepEqual(f.wires,[]);
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['chassis test 0 1000 1000']);
+  f.sim.configure({stopLatched:true});distance.value='500';distance.oninput();
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(f.wires.length,1);
+});
+
+test('ring comparison stays passive and issues one explicit fixed-height alignment',async()=>{
+ const f=consoleFixture();f.sim.controlForm('grab-ring-align-top',{compact:true});
+ const input=f.$('grab-ring-align-top-ring'),form=f.elements.find(e=>e.tag==='form');
+ input.value='2';input.onchange();assert.deepEqual(f.wires,[]);
+ form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+ assert.deepEqual(f.wires,['grab align ring 2 0 stay']);
+ assert.equal(readOnlyCommand('bus recovery'),true);
+});
+
+test('lidar servo manual input stays passive and scan/stow remain explicit motions',async()=>{
+  const f=consoleFixture();f.sim.controlForm('lidar-servo-pulse',{compact:true});
+  const input=f.$('lidar-servo-pulse-pulse'),form=f.elements.find(e=>e.tag==='form');
+  assert.equal(Number(input.value),1450);assert.deepEqual(f.wires,[]);
+  input.value='1537';input.oninput();assert.deepEqual(f.wires,[]);
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['lidarservo pulse 1537']);
+  input.value='5000';input.oninput();
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['lidarservo pulse 1537','lidarservo pulse 5000']);
+  input.value='5001';input.oninput();
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['lidarservo pulse 1537','lidarservo pulse 5000']);
+  f.sim.configure({stopLatched:true,sending:1,parameterBusy:true,preparing:true,pending:'imu status'});
+  assert.equal(f.sim.canSend('lidarservo out'),false);
+  assert.equal(f.sim.canSend('lidarservo in'),false);
+  assert.equal(f.sim.canSend('lidarservo off'),false);
+  assert.equal(f.sim.canSend('lidarservo pulse 500'),false);
+  f.sim.configure({stopLatched:false,sending:0,parameterBusy:false,preparing:false,pending:null});
+  await f.sim.send('lidarservo out');await f.sim.send('lidarservo in');
+  assert.deepEqual(f.wires,['lidarservo pulse 1537','lidarservo pulse 5000','lidarservo out','lidarservo in']);
+});
+
 test('relative motion form updates Z bounds and blocks oversized moves after switching axes', async()=>{
   const f=consoleFixture();f.sim.controlForm('pos',{sharedAxis:true});
   const input=f.$('pos-degree'),form=f.elements.find(e=>e.tag==='form');
@@ -83,6 +141,18 @@ test('relative motion form updates Z bounds and blocks oversized moves after swi
   f.sim.configure({axis:'z',stopLatched:true});
   form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
   assert.deepEqual(f.wires,['pos z -3600']);
+});
+test('car pickup form stays passive and submits the selected tray with a 40mm default',async()=>{
+  const f=consoleFixture();f.sim.controlForm('grab-take-work',{compact:true});
+  const slot=f.$('grab-take-work-slot'),depth=f.$('grab-take-work-depth');
+  assert.equal(Number(depth.value),40);assert.deepEqual(f.wires,[]);
+  slot.value='2';
+  const form=f.elements.find(e=>e.tag==='form');
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['grab take 2 work 40']);
+  f.sim.configure({stopLatched:true});depth.value='50';
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['grab take 2 work 40']);
 });
 
 for(const state of ['idle','prepare','acquire','align','vision_grace','vision_pause','hold','error']){
@@ -149,6 +219,20 @@ test('a rejected send releases the real sending gate and keeps editable height',
   assert.equal(await f.sim.send('grab ring align 3 -60 stay'),false);
   assert.equal(f.sim.sending,0);assert.equal(f.sim.canSend('grab status'),true);
   assert.equal(f.sim.canSend('grab ring align 3 -60 stay'),true);
+});
+test('ring options edit without sending and submit one selected alignment command',async()=>{
+  const f=consoleFixture();const form=f.sim.controlForm('grab-ring-align-options',{compact:true});
+  const height=f.$('grab-ring-align-options-height'),finish=f.$('grab-ring-align-options-finish'),z=f.$('grab-ring-align-options-z');
+  const button=f.elements.find(e=>e.type==='submit');
+  assert.equal(button.title,'grab align ring 1 0 stay');
+  assert.equal(z.disabled,true);
+  height.value='raised';height.onchange();assert.equal(z.disabled,true);
+  finish.value='stay';finish.onchange();assert.equal(button.title,'grab align ring 1 0 stay');
+  assert.deepEqual(f.wires,[]);
+  form.onsubmit({preventDefault(){}});await Promise.resolve();await Promise.resolve();
+  assert.deepEqual(f.wires,['grab align ring 1 0 stay']);
+  height.value='lowered';height.onchange();assert.equal(z.disabled,false);assert.equal(z.value,-100);
+  assert.equal(button.title,'grab align ring 1 -100 stay');
 });
 test('forms still being constructed remain registered for the later connection update',()=>{
   const f=consoleFixture();f.bridge.connected=false;
@@ -268,6 +352,14 @@ test('pose rejection guides an explicit query and the task card displays the ret
   assert.match(feedback,/完整反馈与诊断.*参考状态.*Base.*参考失效/);
   assert.equal(f.sim.grabSnapshot.data.missing,'z_ppm');
   assert.deepEqual(f.wires,['grab status']);
+});
+
+test('manual tray pickup reports unspecified color without asking for stock correction',()=>{
+  const f=consoleFixture();f.sim.mountGrabStatus();
+  f.sim.receive('OK grab state=prepare mode=fixed operation=car_pick color=0 slot=2 reason=car_pick_prepare missing=none');
+  const text=e=>[e.textContent,...e.children.map(text)].join(' ');
+  assert.match(text(f.$('grab-task-status')),/无需指定颜色/);
+  assert.equal(f.sim.grabSnapshot.data.color,0);assert.deepEqual(f.wires,[]);
 });
 
 test('actual task and calibration status cards translate causes without changing snapshots or sending',()=>{

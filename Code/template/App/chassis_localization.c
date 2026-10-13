@@ -124,3 +124,16 @@ void ChassisLocalization_Process(void)
   if (lost || (previously_valid && !status.feedback_valid))
     status.generation++;
 }
+
+void ChassisLocalization_HeadingSync(float yaw)
+{
+  float delta=remainderf(yaw-status.observer.feedback.yaw_rad,2*CHASSIS_MODEL_PI);
+  status.observer.command.yaw_rad=remainderf(status.observer.command.yaw_rad+delta,2*CHASSIS_MODEL_PI);
+  status.observer.feedback.yaw_rad=yaw;
+  status.observer.previous_yaw=yaw;
+  /* Flush wheel baseline at the verified stationary boundary, retaining odometry. */
+  for(unsigned i=0;i<4;i++) {
+    status.observer.previous_position[i]=dirs[i]?-status.wheels[i].position_raw:status.wheels[i].position_raw;
+    status.observer.previous_ms[i]=status.wheels[i].position_ms;
+  }
+}

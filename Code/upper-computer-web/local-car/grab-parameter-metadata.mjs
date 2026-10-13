@@ -109,16 +109,6 @@ export const GRAB_PARAMETER_METADATA = Object.freeze({
     "step": "any",
     "exclusiveMin": true
   },
-  "ref_u": {
-    "min": 0.0,
-    "max": 639.0,
-    "step": 1
-  },
-  "ref_v": {
-    "min": 0.0,
-    "max": 479.0,
-    "step": 1
-  },
   "j00": {
     "min": -10000.0,
     "max": 10000.0,
@@ -202,16 +192,6 @@ export const GRAB_PARAMETER_METADATA = Object.freeze({
     "max": 300.0,
     "step": 1
   },
-  "z_proc_grab": {
-    "min": -10000.0,
-    "max": 10000.0,
-    "step": "any"
-  },
-  "z_proc_lift": {
-    "min": -10000.0,
-    "max": 10000.0,
-    "step": "any"
-  },
   "z_car_lift": {
     "min": -10000.0,
     "max": 10000.0,
@@ -222,17 +202,17 @@ export const GRAB_PARAMETER_METADATA = Object.freeze({
     "max": 10000.0,
     "step": "any"
   },
-  "z_temp_place": {
-    "min": -10000.0,
-    "max": 10000.0,
-    "step": "any"
-  },
   "z_stack_place": {
     "min": -10000.0,
     "max": 10000.0,
     "step": "any"
   },
-  "x_car": {
+  "z_rough_align": {
+    "min": -10000.0,
+    "max": 10000.0,
+    "step": "any"
+  },
+  "z_temp_align": {
     "min": -10000.0,
     "max": 10000.0,
     "step": "any"
@@ -271,7 +251,7 @@ export const GRAB_PARAMETER_METADATA = Object.freeze({
   },
   "qr_z_speed": {
     "min": 0.0,
-    "max": 20.0,
+    "max": 333.333,
     "step": "any",
     "exclusiveMin": true
   },
@@ -284,22 +264,106 @@ export const GRAB_PARAMETER_METADATA = Object.freeze({
     "min": 0.0,
     "max": 1.0,
     "step": 1
+  },
+  "track_pick_tol_px": {
+    "min": 1.0,
+    "max": 100.0,
+    "step": "any"
+  },
+  "track_pick_hold_ms": {
+    "min": 0.0,
+    "max": 10000.0,
+    "step": 1
+  },
+  "track_store_drop_mm": {
+    "min": 0.0,
+    "max": 10000.0,
+    "step": "any",
+    "exclusiveMin": true
+  },
+  "car_pick_drop_mm": {
+    "min": 0.0,
+    "max": 150.0,
+    "step": "any",
+    "exclusiveMin": true
+  },
+  "arrival_hold_ms": {
+    "min": 200.0,
+    "max": 10000.0,
+    "step": 1
+  },
+  "head_proc_zero": {
+    "min": -90.0,
+    "max": 90.0,
+    "step": "any"
+  },
+  "head_proc_gain": {
+    "min": -20.0,
+    "max": 20.0,
+    "step": "any"
+  },
+  "head_temp_zero": {
+    "min": -90.0,
+    "max": 90.0,
+    "step": "any"
+  },
+  "head_temp_gain": {
+    "min": -20.0,
+    "max": 20.0,
+    "step": "any"
+  },
+  "head_tol": {
+    "min": 0.0,
+    "max": 2.0,
+    "step": "any",
+    "exclusiveMin": true
+  },
+  "head_spread": {
+    "min": 0.0,
+    "max": 2.0,
+    "step": "any",
+    "exclusiveMin": true
+  },
+  "head_settle_ms": {
+    "min": 0.0,
+    "max": 10000.0,
+    "step": 1
+  },
+  "head_proc_turn": {
+    "min": 0.0,
+    "max": 10.0,
+    "step": "any"
+  },
+  "head_temp_turn": {
+    "min": 0.0,
+    "max": 10.0,
+    "step": "any"
+  },
+  "release_ms": {
+    "min": 1.0,
+    "max": 120000.0,
+    "step": 1
+  },
+  "car_pick_wait_ms": {
+    "min": 0.0,
+    "max": 10000.0,
+    "step": 1
   }
 });
 export const GRAB_FORM_DEFAULTS = Object.freeze({
   "x_ppm": 31.746031746,
   "z_ppm": 480.0,
   "x_min": 0.0,
-  "x_max": 100.0,
+  "x_max": 130.0,
   "z_min": -150.0,
   "z_max": 0.0,
   "x_pre": 0.0,
   "z_observe": 0.0,
-  "z_grab": -80.0,
-  "z_lift": -40.0,
+  "z_grab": -50.0,
+  "z_lift": 0.0,
   "pos_tol": 1.0,
   "stop_speed": 2.0,
-  "close_ms": 500.0,
+  "close_ms": 300.0,
   "age_ms": 1000.0,
   "feedback_ms": 2000.0,
   "accel": 300.0,
@@ -307,8 +371,6 @@ export const GRAB_FORM_DEFAULTS = Object.freeze({
   "lead_mm": 12.0,
   "dx_tol": 1.0,
   "dy_tol": 1.0,
-  "ref_u": 334.0,
-  "ref_v": 338.0,
   "j00": 2.0,
   "j01": 0.0,
   "j02": 0.0,
@@ -318,24 +380,34 @@ export const GRAB_FORM_DEFAULTS = Object.freeze({
   "lambda": 2.5,
   "body_speed": 160.0,
   "x_speed": 60.0,
-  "z_speed": 55.55555556,
+  "z_speed": 111.11111111,
   "stable_ms": 200.0,
   "frames": 3.0,
   "retries": 2.0,
   "x_weight": 2.333333,
-  "z_place": -60.0,
+  "z_place": -40.0,
   "loss_grace_ms": 250.0,
   "z_car_lift": 0.0,
-  "x_car": 100.0,
-  "base_car_offset": -128.0,
+  "z_proc_place": -130.0,
+  "z_stack_place": -100.0,
+  "z_rough_align": -100.0,
+  "z_temp_align": -100.0,
+  "base_car_offset": -130.0,
   "vision_wait_ms": 12000.0,
   "x_transfer_speed": 60.0,
   "z_pick_speed": 111.11111111,
   "qr_scan_y": 1200.0,
   "qr_z_min": -50.0,
-  "qr_z_speed": 5.0,
+  "qr_z_speed": 111.11111111,
   "qr_wait_ms": 1000.0,
-  "base_home_degrade": 1.0
+  "base_home_degrade": 1.0,
+  "track_pick_tol_px": 100.0,
+  "track_pick_hold_ms": 10.0,
+  "track_store_drop_mm": 40.0,
+  "car_pick_drop_mm": 40.0,
+  "arrival_hold_ms": 500.0,
+  "release_ms": 300.0,
+  "car_pick_wait_ms": 300.0
 });
 export const TRACK_PARAMETER_DEFAULTS = Object.freeze({
   "body_speed": 160.0,
@@ -355,9 +427,9 @@ export const TRACK_PARAMETER_DEFAULTS = Object.freeze({
   "x_accel": 120.0
 });
 export const TRACK_COMPARISON_DEFAULTS = Object.freeze({...TRACK_PARAMETER_DEFAULTS, ...{
-  "body_speed": 80.0,
-  "x_speed": 30.0,
-  "lambda": 1.0,
+  "body_speed": 160.0,
+  "x_speed": 60.0,
+  "lambda": 2.0,
   "horizon_ms": 60.0
 }});
 export const TRACK_PARAMETER_METADATA = Object.freeze({

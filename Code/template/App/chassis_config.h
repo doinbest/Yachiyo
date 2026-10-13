@@ -92,7 +92,7 @@
 
 /* Route speed profile; verify acceleration and stopping distance on the chassis. */
 #define CHASSIS_DISTANCE_SPEED_MM_S       50.0f
-#define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  200.0f
+#define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  1000.0f
 #define CHASSIS_ROUTE_AUTO_DWELL_MS       0U
 #define CHASSIS_DISTANCE_KP               2.5f
 #define CHASSIS_DISTANCE_RESPONSE_S       0.25f
@@ -101,13 +101,16 @@
 #define CHASSIS_DISTANCE_CORRECTION_SPEED_MM_S 20.0f
 #define CHASSIS_DISTANCE_CORRECTION_MM   100.0f
 #define CHASSIS_DISTANCE_CORRECTIONS       2U
-#define CHASSIS_DISTANCE_ACCEL_MM_S2      300.0f
+/* Straight translation: half-cosine, K * 2 ms per acceleration/deceleration.
+ * Curved-path vector tracking retains its separately validated slew limit. */
+#define CHASSIS_DISTANCE_COSINE_K         200U
+#define CHASSIS_PATH_ACCEL_MM_S2          300.0f
 #define CHASSIS_DISTANCE_TOLERANCE_MM     10.0f
 #define CHASSIS_DISTANCE_HEADING_DEG      2.0f
 #define CHASSIS_DISTANCE_TIMEOUT_MS      60000U
 #define CHASSIS_DISTANCE_MAX_TIMEOUT_MS  400000U /* Full route: up to 1750 mm at 10 mm/s plus settling. */
 #define CHASSIS_DISTANCE_STOP_TIMEOUT_MS 3000U
-#define CHASSIS_DISTANCE_STOP_STABLE_MS   500U
+/* Confirm on three new quiet wheel groups; no additional dwell time. */
 #define CHASSIS_DISTANCE_STOP_GROUPS      3U
 #define CHASSIS_DISTANCE_STOP_RPM         1
 #define CHASSIS_DISTANCE_STOP_DELTA_MM    2.0f

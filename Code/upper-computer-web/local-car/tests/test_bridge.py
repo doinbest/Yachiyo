@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from serial_bridge import SerialBridge, READ_COMMAND, PRIORITY_STOP
+from serial_bridge import SerialBridge, READ_COMMAND, PRIORITY_STOP, CANCEL_COMMAND
 from serve import make_server, print_events, console_command
 import serve
 
@@ -190,6 +190,21 @@ class BridgeTests(unittest.TestCase):
         wait_for(lambda: len(port.writes) == 2)
         self.assertEqual([data.decode().strip() for _, data in port.writes], list(commands))
         self.assertTrue(self.bridge.stop_latched)
+
+    def test_mission_pause_and_stop_cancel_queued_starts_and_bypass_latch(self):
+        port = self.connect()
+        for command in ('grab mission pause', 'grab mission stop'):
+            self.assertIsNotNone(PRIORITY_STOP.fullmatch(command))
+            self.assertIsNotNone(CANCEL_COMMAND.fullmatch(command))
+            with self.bridge.cv:
+                self.bridge.stop_latched = False
+                self.bridge.next_command_at = time.monotonic() + .2
+                self.bridge.send('grab mission qr 200 50')
+                self.bridge.stop_latched = True
+                self.bridge.send(command)
+            wait_for(lambda: any(data == (command+'\r\n').encode() for _, data in port.writes))
+        self.assertFalse(any(data == b'grab mission qr 200 50\r\n' for _, data in port.writes))
+        self.assertTrue(self.bridge.stop_latched)
         for command in ('grab route 200', 'grab mission 200', 'grab mission continue',
                         'grab route status extra', 'grab mission status extra'):
             self.assertIsNone(READ_COMMAND.fullmatch(command), command)
@@ -347,6 +362,20 @@ class BridgeTests(unittest.TestCase):
 
     def reply(self, port, token, complete=1, stopped=1):
         port.rx.put(f'OK chassis stop id=7 token={token} requested_ms=20 tx_complete={complete} wheels_stopped={stopped} reason=done\r\n'.encode())
+
+    def test_lidar_servo_scan_stow_are_mutations_and_off_has_no_priority(self):
+        self.assertIsNone(PRIORITY_STOP.fullmatch('lidarservo off'))
+        port = self.connect()
+        self.bridge.send('lidarservo out')
+        self.bridge.send('lidarservo in')
+        wait_for(lambda: len(port.writes) >= 2)
+        self.assertEqual([data for _, data in port.writes[:2]], [b'lidarservo out\r\n', b'lidarservo in\r\n'])
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        self.bridge.send('lidarservo status')
+        for wire in ['lidarservo out','lidarservo in','lidarservo off']:
+            with self.assertRaises(ValueError): self.bridge.send(wire)
+        self.assertTrue(self.bridge.stop_latched)
 
     def test_scoped_cancel_bypasses_normal_queue_without_broadening_stop(self):
         port = self.connect()

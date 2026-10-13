@@ -74,6 +74,13 @@ void Camera_FrameObserverSet(Camera_FrameObserver_t Observer);
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef Color);
 /** @brief 请求数字同心圆定位，Ring为1～3；发送FF B2 0A/0B/0C FF，不产生运动。 */
 HAL_StatusTypeDef Camera_RingStart(uint8_t Ring);
+typedef struct {
+  uint8_t Active, HasFrame, Valid;
+  int16_t EX, EY, AngleCdeg, Stop; /* Stop is diagnostic only, never a motor command. */
+  uint32_t Sequence, ReceivedTick, RequestEpoch;
+} Camera_PoseSnapshot_t;
+HAL_StatusTypeDef Camera_PoseStart(void);
+void Camera_PoseSnapshotGet(Camera_PoseSnapshot_t *snapshot);
 void Camera_RequestStop(void);
 void Camera_Process(void);
 /** @brief 主循环非消费式读取诊断快照；NULL不操作，不推进任务或发送数据。 */

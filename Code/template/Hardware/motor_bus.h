@@ -2,6 +2,7 @@
 #define MOTOR_BUS_H
 #include "main.h"
 #include <stdbool.h>
+#include <string.h>
 
 #define MOTOR_BUS_FRAME_MAX 40U /* Emm configuration read returns 33 bytes. */
 #define MOTOR_BUS_TIMEOUT_MS 100U
@@ -53,6 +54,15 @@ typedef struct
   uint16_t rx_pending;
   uint8_t parse_bytes, rx_sample_length, rx_sample[16];
 } MotorBus_Diagnostic_t;
+/** Current recoverable transport fault; historical diagnostics never trigger motion. */
+static inline bool MotorBus_TransientFault(const MotorBus_Diagnostic_t *fault)
+{
+  if(!fault || !fault->locked || !fault->reason)return false;
+  if(!strcmp(fault->reason,"reply_timeout") || !strcmp(fault->reason,"tx_timeout") ||
+     !strcmp(fault->reason,"rx_overflow") || !strcmp(fault->reason,"drain_timeout"))return true;
+  return !strcmp(fault->reason,"uart_error") && fault->uart_error &&
+    !(fault->uart_error & ~(HAL_UART_ERROR_NE | HAL_UART_ERROR_FE | HAL_UART_ERROR_ORE));
+}
 /** @brief Read first fault without UART traffic, clearing it, or enabling motion.
  * @param out Snapshot destination; NULL is ignored. Call from the main loop.
  * tick_ms is milliseconds since MCU startup; uart_error is HAL_UART_ERROR_* bits. */
@@ -119,7 +129,20 @@ typedef struct
   uint8_t speed_address;
   int32_t speed_rpm;
   uint32_t speed_ms;
+  /* This attempt's failure evidence, independent of the retained first fault. */
+  const char *stage;
+  uint32_t uart_error, elapsed_ms, rx_bytes, last_rx_ms, process_gap_ms;
+  uint16_t rx_pending, dma_remaining, dma_position;
+  uint8_t function, parse_bytes, rx_sample_length, rx_sample[16];
+  bool tx_sent;
 } MotorBus_Recovery_t;
+static inline bool MotorBus_RecoveryRetryable(const MotorBus_Recovery_t *s)
+{
+  if(!s || s->active || s->success || !s->reason)return false;
+  if(!strcmp(s->reason,"reply_timeout"))return true;
+  return (!strcmp(s->reason,"uart_error") || !strcmp(s->reason,"rx_restart_failed")) && s->uart_error &&
+    !(s->uart_error & ~(HAL_UART_ERROR_NE | HAL_UART_ERROR_FE | HAL_UART_ERROR_ORE));
+}
 /** @brief Start explicit recovery after all producers have stopped and drained.
  * Keeps normal traffic locked; stops/aborts IDs 1..8, drains old replies, then
  * checks three rounds of speed/state/home flags, overwrites IDs1..4 sync caches

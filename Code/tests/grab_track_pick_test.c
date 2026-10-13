@@ -5,12 +5,50 @@
 static void command(unsigned n,char *a[])
 { output[0]=0;assert(GrabTask_Command(n,a));assert(!strstr(output,"ERR")); }
 
+static void configurable_pickup_hold(void)
+{
+  char *pick[]={"grab","track","pick","3","-8","110"};
+  reset();configure(true);setting("x_min","0");setting("x_max","100");
+  setting("track_pick_tol_px","5");setting("track_pick_hold_ms","200");
+  physical[0]=35;physical[1]=-8;move_arrives=false;
+  command(6,pick);
+  for(unsigned i=0;i<60;i++)step(true,0,20,20);
+  step(true,0,5,-5);
+  for(unsigned i=0;i<3;i++)step(true,0,5,-5);
+  assert(status().state==GRAB_DESCEND && !closures); /* Configured 200 ms, not immediate. */
+  step(true,0,6,0); /* One out-of-window measurement restarts the hold. */
+  step(true,0,5,5);
+  for(unsigned i=0;i<3;i++)step(true,0,5,5);
+  assert(status().state==GRAB_DESCEND && !closures);
+  camera_valid=false;step(true,0,0,0);camera_valid=true;
+  step(true,0,5,5);
+  for(unsigned i=0;i<4;i++)step(false,0,5,5);
+  assert(status().state==GRAB_DESCEND && !closures); /* Cached pixels do not finish hold. */
+  step(true,0,5,5);
+  assert(status().state==GRAB_SETTLE && !closures);
+  GrabTask_Stop();run_to(GRAB_IDLE,200,0);
+  setting("track_pick_tol_px","10");setting("track_pick_hold_ms","100");
+  command(6,pick);
+  for(unsigned i=0;i<60;i++)step(true,0,20,20);
+  step(true,0,10,-10);step(true,0,10,-10);
+  assert(status().state==GRAB_DESCEND && !closures);
+  step(true,0,10,-10);
+  assert(status().state==GRAB_SETTLE && !closures);
+  for(unsigned i=0;i<80 && !closures;i++)step(true,0,10,-10);
+  assert(closures==1 && status().state==GRAB_CLOSE);
+  GrabTask_Stop();run_to(GRAB_IDLE,200,0);
+  char *bad[]={"grab","set","track_pick_hold_ms","1.5"};
+  output[0]=0;assert(GrabTask_Command(4,bad));assert(strstr(output,"ERR"));
+  puts("pickup: configured 5px/200ms, configurable window/hold, interrupted hold and fresh samples PASS");
+}
+
 /* Catch a descent gated by fine alignment, or a descent which blocks XY tracking.
  * Device replies are fake; the production task and controller remain real. */
 static void coarse_descent_and_fine_close(void)
 {
   char *pick[]={"grab","track","pick","3","-8","110"};
   reset();configure(true);setting("x_min","0");setting("x_max","100");
+  setting("track_pick_hold_ms","0");setting("track_pick_tol_px","5");
   physical[0]=35;physical[1]=10;move_arrives=false;
   command(6,pick);
   for(unsigned i=0;i<50;i++)step(true,0,51,-50);
@@ -18,7 +56,7 @@ static void coarse_descent_and_fine_close(void)
   for(unsigned i=0;i<20;i++)step(true,0,-50,51);
   assert(!z_position_rpm && !closures);
   for(unsigned i=0;i<20;i++)step(true,0,50,-50);
-  assert(z_position_pulses==-800 && z_position_rpm==206);
+  assert(z_position_pulses==-800 && z_position_rpm>0 && z_position_rpm<=206 && z_position_acc==0);
   assert(status().state==GRAB_DESCEND && !status().stop_requested && !closures);
   unsigned requests=velocity_requests;
   for(unsigned i=0;i<20;i++)step(true,0,20,-20);
@@ -78,6 +116,7 @@ static void fresh_coordinate_and_z_fault(void)
 {
   char *pick[]={"grab","track","pick","3","-8","110"};
   reset();configure(true);setting("x_min","0");setting("x_max","100");
+  setting("track_pick_hold_ms","0");setting("track_pick_tol_px","5");
   physical[0]=35;physical[1]=-8;move_arrives=false;
   command(6,pick);
   for(unsigned i=0;i<60;i++)step(true,0,20,20);
@@ -150,6 +189,7 @@ static void pickup_drift_and_cancel(void)
   char *pick[]={"grab","track","pick","3","-8","110"};
   char *begin[]={"grab","track","begin","3","20"};
   reset();configure(true);setting("x_min","0");setting("x_max","100");
+  setting("track_pick_tol_px","5");
   physical[0]=35;physical[1]=10;camera_valid=false;
   command(5,begin);
   for(unsigned i=0;i<50;i++)step(true,0,0,0);
@@ -179,6 +219,7 @@ static void pickup_drift_and_cancel(void)
 
 int main(void)
 {
+  configurable_pickup_hold();
   coarse_descent_and_fine_close();
   descent_pause_recovery_and_stop();
   fresh_coordinate_and_z_fault();
@@ -212,7 +253,7 @@ int main(void)
   run_to(GRAB_DESCEND,200,0);
   assert(!status().stop_requested && !closures);
   run_to(GRAB_CLOSE,100,0);
-  assert(z_position_rpm==(uint16_t)floorf(110*100*60/3200));
+  assert(z_position_rpm>0 && z_position_rpm<=(uint16_t)floorf(110*100*60/3200) && z_position_acc==0);
   assert(closures==1 && fabsf(physical[1]+8)<.01f);
   run_to(GRAB_COMPLETE,150,0);
   assert(fabsf(physical[1]-10)<.01f && !tray_indexes && !base_moves);

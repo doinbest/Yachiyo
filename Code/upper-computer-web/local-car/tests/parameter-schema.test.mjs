@@ -6,10 +6,28 @@ import {grabParameters,buildCommand} from '../protocol.mjs';
 
 test('firmware defaults and physical ranges reach all parameter entry points',()=>{
   assert.equal(GRAB_FORM_DEFAULTS.z_min,-150);
-  assert.equal(GRAB_FORM_DEFAULTS.z_grab,-80);
-  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,undefined);
-  assert.equal(grabParameters.length,54);
-  assert.equal(new Set(grabParameters.map(p=>p.key)).size,54);
+  assert.equal(GRAB_FORM_DEFAULTS.car_pick_drop_mm,40);
+  assert.equal(GRAB_FORM_DEFAULTS.z_grab,-50);
+  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-130);
+  assert.equal(GRAB_FORM_DEFAULTS.z_rough_align,-100);
+  assert.equal(GRAB_FORM_DEFAULTS.z_temp_align,-100);
+  assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-100);
+  assert.equal(grabParameters.length,66);
+  for(const key of ['head_proc_zero','head_proc_gain','head_temp_zero','head_temp_gain','head_tol','head_spread','head_settle_ms','head_proc_turn','head_temp_turn'])assert.ok(!(key in GRAB_FORM_DEFAULTS));
+  assert.ok(!grabParameters.some(p=>['ref_u','ref_v'].includes(p.key)));
+  assert.ok(!('ref_u' in GRAB_FORM_DEFAULTS) && !('ref_v' in GRAB_FORM_DEFAULTS));
+  assert.equal(new Set(grabParameters.map(p=>p.key)).size,66);
+  assert.equal(GRAB_FORM_DEFAULTS.track_pick_tol_px,100);
+  assert.equal(GRAB_FORM_DEFAULTS.track_pick_hold_ms,10);
+  assert.equal(buildCommand('grab-set-track_pick_tol_px',{value:8}),'grab set track_pick_tol_px 8');
+  assert.equal(buildCommand('grab-set-track_pick_tol_px',{value:100}),'grab set track_pick_tol_px 100');
+  assert.equal(buildCommand('grab-set-track_pick_hold_ms',{value:0}),'grab set track_pick_hold_ms 0');
+  for(const [key,values]of [['track_pick_tol_px',[0,101]],['track_pick_hold_ms',[-1,10001,1.5]]]){
+    for(const value of values){
+      assert.throws(()=>buildCommand(`grab-set-${key}`,{value}));
+      assert.throws(()=>fieldWrites(parameterFields.find(p=>p.key===key),{[key]:value}));
+    }
+  }
   assert.equal(GRAB_FORM_DEFAULTS.base_home_degrade,1);
   assert.equal(parameterFields.find(p=>p.key==='base_home_degrade').tab,'motion');
   assert.equal(buildCommand('grab-set-base_home_degrade',{value:0}),'grab set base_home_degrade 0');
@@ -27,7 +45,8 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   }
   assert.throws(()=>fieldWrites(parameterFields.find(p=>p.key==='frames'),{frames:3.5}));
   assert.throws(()=>buildCommand('grab-set-base_car_offset',{value:361}));
-  assert.match(parameterFields.find(p=>p.key==='x_acc').label,/手动与任务共用/);
+  assert.match(parameterFields.find(p=>p.key==='x_acc').label,/驱动加速度档位/);
+  assert.match(parameterFields.find(p=>p.key==='x_acc').note,/固定X\/Z任务使用余弦规划/);
 });
 
 test('material descent speed is shared and separate from ring/lift speed',()=>{
@@ -44,8 +63,8 @@ test('distance fields preserve absolute firmware coordinates and relative cleara
   assert.equal(displayValue(field('z_car_lift'),values),60);
   assert.deepEqual(fieldWrites(field('z_grab'),{z_grab:'70',z_lift:'40'}),[['z_grab',-70],['z_lift',-30]]);
   assert.deepEqual(fieldWrites(field('z_car_lift'),{z_place:'60',z_car_lift:'30'}),[['z_car_lift',-30]]);
-  assert.equal(displayValue(field('z_proc_lift'),{z_proc_grab:null,z_proc_lift:null}),null);
-  assert.throws(()=>fieldWrites(field('z_proc_grab'),{z_proc_grab:'80',z_proc_lift:''}),/抬升/);
+  for(const key of ['z_proc_grab','z_proc_lift','z_temp_place'])assert.equal(field(key),undefined);
+  assert.deepEqual(fieldWrites(field('z_proc_place'),{z_proc_place:'130'}),[['z_proc_place',-130]]);
 });
 
 test('all device requests cover five tabs once and keep browser settings out of reads',()=>{
@@ -59,10 +78,16 @@ test('all device requests cover five tabs once and keep browser settings out of 
 });
 
 test('claw waiting is an optional motion timing field and units are separate from labels',()=>{
+  for(const key of ['close_ms','release_ms','car_pick_wait_ms']){
+    const f=parameterFields.find(f=>f.key===key);
+    assert.equal(f.tab,'motion');assert.equal(f.group,'夹爪动作时序');assert.equal(f.unit,'ms');
+    assert.equal(GRAB_FORM_DEFAULTS[key],300);
+    assert.deepEqual(fieldWrites(f,{[key]:450}),[[key,450]]);
+  }
   const wait=parameterFields.find(f=>f.key==='close_ms');
   assert.equal(wait.tab,'motion');assert.equal(wait.group,'夹爪动作时序');
-  assert.equal(wait.label,'夹爪到位等待');assert.equal(wait.unit,'ms');
-  assert.match(wait.note,/下一步 Z 动作/);
+  assert.equal(wait.label,'闭爪后等待');assert.equal(wait.unit,'ms');
+  assert.match(wait.note,/下一步 Z 提起/);
   for(const field of parameterFields)assert.doesNotMatch(field.label,/ \/ (?:mm|ms|RPM|px|°|0\.1°)/);
   assert.equal(parameterFields.find(f=>f.key==='x_ppm').unit,'脉冲/mm');
   assert.equal(parameterFields.find(f=>f.kind==='arm'&&f.key==='base_rpm').unit,'RPM');

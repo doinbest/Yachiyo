@@ -110,13 +110,13 @@ test('missing parameter reply releases busy and a fresh read can succeed',async(
   let exchange,respond=false;const wires=[];
   exchange=createParameterExchange({timeoutMs:20,send:async wire=>{
     wires.push(wire);
-    if(respond)queueMicrotask(()=>exchange.receive('OK grab config key=x_car value=100'));
+    if(respond)queueMicrotask(()=>exchange.receive('OK grab config key=base_car_offset value=100'));
     return true;
   }});
-  await assert.rejects(exchange.readGrab('x_car'),/读回超时/);
+  await assert.rejects(exchange.readGrab('base_car_offset'),/读回超时/);
   assert.equal(exchange.busy,false);respond=true;
-  assert.equal((await exchange.readGrab('x_car')).value,100);
-  assert.deepEqual(wires,['grab get x_car','grab get x_car']);assert.equal(exchange.busy,false);
+  assert.equal((await exchange.readGrab('base_car_offset')).value,100);
+  assert.deepEqual(wires,['grab get base_car_offset','grab get base_car_offset']);assert.equal(exchange.busy,false);
 });
 
 test('opening the parameter page sends nothing; route speed stays local until route start',()=>{

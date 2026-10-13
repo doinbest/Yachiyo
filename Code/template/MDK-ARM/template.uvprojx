@@ -1871,6 +1871,16 @@
               <FilePath>..\Hardware\Camera.h</FilePath>
             </File>
             <File>
+              <FileName>lidar_servo.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Hardware\lidar_servo.c</FilePath>
+            </File>
+            <File>
+              <FileName>lidar_servo.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Hardware\lidar_servo.h</FilePath>
+            </File>
+            <File>
               <FileName>Steer.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Hardware\Steer.c</FilePath>
@@ -2101,9 +2111,39 @@
               <FilePath>..\App\GrabTask.h</FilePath>
             </File>
             <File>
+              <FileName>arm_cosine_profile.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\arm_cosine_profile.h</FilePath>
+            </File>
+            <File>
               <FileName>GrabRoute.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\GrabRoute.c</FilePath>
+            </File>
+            <File>
+              <FileName>mission_navigation.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\mission_navigation.c</FilePath>
+            </File>
+            <File>
+              <FileName>station_heading.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\station_heading.c</FilePath>
+            </File>
+            <File>
+              <FileName>station_heading.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\station_heading.h</FilePath>
+            </File>
+            <File>
+              <FileName>chassis_heading.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\chassis_heading.c</FilePath>
+            </File>
+            <File>
+              <FileName>chassis_heading.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\chassis_heading.h</FilePath>
             </File>
             <File>
               <FileName>contest_mission.c</FileName>

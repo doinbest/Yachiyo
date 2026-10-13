@@ -24,9 +24,16 @@ def run(args):
 
 def build_test(name, *sources):
     exe = OUT / (name + ".exe")
+    if ("template/App/contest_mission.c" in sources or name in ("contest_choreography_test", "contest_heading_test")) and "template/App/station_heading.c" not in sources and "tests/mission_heading_stub.c" not in sources:
+        sources = (*sources, "tests/mission_heading_stub.c")
     if any(source in sources for source in ("template/App/radar_map.c", "template/App/radar_scan.c")):
         sources = (*sources, "template/App/radar_geometry.c", "template/App/radar_stability.c")
     flags = [BASE[0], "-Itests/radar_stubs", *BASE[1:]] if name in ("test_radar_scan", "test_radar_probe", "test_radar_host", "radar_host_console_test") else BASE
+    if "tests/mission_heading_stub.c" in sources:
+        if name == "mission_grab_integration_test":
+            flags = [*flags, "-DMISSION_TEST_HAS_GRAB_TASK"]
+        if "template/App/chassis_motion.c" in sources or name == "contest_heading_test":
+            flags = [*flags, "-DMISSION_TEST_HAS_MOTION"]
     if name in ("qr_control_test", "grab_pose_test", "grab_task_test", "grab_calibration_task_test", "grab_transfer_test", "grab_grace_test", "grab_command_sim_test", "grab_tuning_sim_test", "grab_track_task_test", "grab_track_pick_test", "grab_stack_test"):
         sources = (*sources, "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     if "template/App/mecanum_chassis.c" in sources and "template/App/chassis_model.c" not in sources:
@@ -47,6 +54,9 @@ if __name__ == "__main__":
         shutil.copy2(OUT / "host-tests.log", OUT / ("host-tests-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log"))
     (OUT / "host-tests.log").write_text("", encoding="utf-8")
     build_test("camera_usb_test", "template/Hardware/Camera.c")
+    build_test("station_heading_test", "template/App/station_heading.c")
+    build_test("chassis_heading_test", "template/App/chassis_motion.c", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c", "template/App/chassis_heading.c")
+    build_test("contest_heading_test", "template/Hardware/QR.c")
     build_test("qr_test", "template/Hardware/QR.c")
     build_test("contest_screen_test", "template/App/contest_screen.c")
     build_test("hwt101_i2c_test", "template/Hardware/hwt101_i2c.c")
@@ -59,14 +69,34 @@ if __name__ == "__main__":
     build_test("chassis_motion_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
     build_test("chassis_stop_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
     build_test("chassis_distance_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
+    build_test("chassis_cosine_distance_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
+    build_test("chassis_curve_motion_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
+    run(["node", "tests/check_curve_footprint.mjs"])
+    build_test("chassis_curve_profile_test", "template/App/chassis_route_profile.c")
     build_test("chassis_turn_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
     build_test("chassis_route_profile_test", "template/App/chassis_route_profile.c")
     build_test("chassis_task_profile_test", "template/App/chassis_route_profile.c")
     build_test("chassis_task_route_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
+    build_test("chassis_route_continuity_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
     build_test("chassis_route_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
     build_test("grab_route_test", "template/App/GrabRoute.c", "template/Hardware/QR.c")
+    build_test("mission_navigation_test", "template/App/mission_navigation.c")
     build_test("contest_mission_test", "template/App/contest_mission.c", "template/Hardware/QR.c")
+    build_test("contest_choreography_test", "template/Hardware/QR.c")
+    build_test("contest_mission_scan_test", "template/App/contest_mission.c", "template/Hardware/QR.c")
+    build_test("contest_mission_prepare_test", "template/App/contest_mission.c", "template/Hardware/QR.c")
+    build_test("contest_mission_cancel_test", "template/App/contest_mission.c", "template/Hardware/QR.c")
+    build_test("contest_mission_recovery_test", "template/App/contest_mission.c", "template/Hardware/QR.c")
+    build_test("mission_stop_feedback_test", "template/App/contest_mission.c", "template/App/chassis_motion.c", "template/App/chassis_model.c", "template/Hardware/QR.c")
+    build_test("chassis_route_pause_feedback_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c", "template/App/chassis_motion.c", "template/App/chassis_model.c")
+    build_test("mission_grab_integration_test", "template/App/contest_mission.c", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_mission_pause_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_choreography_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_bus_recovery_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_pose_test")
+    build_test("grab_time_saving_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_axis_cosine_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_arrival_fallback_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("test_radar_parser", "template/Hardware/lds_parser.c")
     build_test("test_radar_stability", "template/App/radar_geometry.c", "template/App/radar_stability.c")
     build_test("test_radar_map", "template/App/radar_map.c")
@@ -87,11 +117,18 @@ if __name__ == "__main__":
     build_test("grab_tracking_test", "template/App/grab_tracking.c")
     build_test("grab_track_task_test")
     build_test("grab_track_pick_test")
+    build_test("grab_track_store_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_car_pick_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_held_place_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_processed_store_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_processing_continuity_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_station_align_height_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_transfer_test")
     build_test("grab_grace_test")
     build_test("grab_command_sim_test", "template/App/console_tx.c")
     build_test("grab_tuning_sim_test")
     build_test("steer_route_guard_test")
+    build_test("lidar_servo_test", "-Itemplate/Core/Inc")
     build_test("chassis_localization_test", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("chassis_observer_test", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("chassis_telemetry_test", "template/App/chassis_telemetry.c", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")

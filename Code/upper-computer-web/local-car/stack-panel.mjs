@@ -35,8 +35,8 @@ export function mountStacking({root,send,canSend,schedule=setTimeout,cancel=clea
   const colorLabel=make('label','下层物料颜色'),color=make('select');color.id='stack-target-color';
   for(const[value,label]of grabColorOptions){const option=make('option',label);option.value=value;color.append(option);}color.value='3';colorLabel.append(color);fields.append(colorLabel);align.append(fields);
   const alignActions=make('div',undefined,'actions');align.append(alignActions);
-  action(alignActions,'静态对准并补偿',()=>buildCommand('grab-stack-align',{color:color.value}),'primary',()=>wheel.cancel());
-  align.append(make('p','保持Z最高识别；使用视觉 DX、DY 对准绿色准心（视觉默认372,345），再让目标在画面中向右39、向下1像素，补偿到位后等待装料。仅此码垛功能补偿，不写回准心。','form-note'));
+  action(alignActions,'码垛视觉对准',()=>buildCommand('grab-stack-align',{color:color.value}),'primary',()=>wheel.cancel());
+  align.append(make('p','保持Z最高识别；直接使用视觉 DX、DY 对准并停稳后等待装料。码垛补偿已由香橙派完成，STM32不再追加偏移。','form-note'));
   const load=section('2 · 放入物料并夹紧'),loadActions=make('div',undefined,'actions');load.append(loadActions);
   action(loadActions,'打开夹爪','grip open','',()=>wheel.cancel());action(loadActions,'闭合夹爪','grip catch','primary',()=>wheel.cancel());
   const height=section('3 · 调整高度 · 保持夹持');
@@ -71,8 +71,7 @@ export function mountStacking({root,send,canSend,schedule=setTimeout,cancel=clea
   function update(){buttons.forEach(fn=>fn());dial.setAttribute('aria-disabled',String(!connected||!canSend('grab stack lower -100')));input.disabled=!connected;}
   return {update,receive(s){
     if(['error','stopping','idle'].includes(s.state)){wheel.cancel();dial.classList.remove('pending');}
-    if((s.operation==='stack_align'||s.reason==='stack_aligned_ready')&&s.state==='hold')feedback.textContent='准心对准及码垛补偿已完成，可手动装料并夹紧。';
-    else if(s.reason==='stack_compensating')feedback.textContent='绿色准心已对准，正在执行码垛专用补偿；完成前继续等待。';
+    if((s.operation==='stack_align'||s.reason==='stack_aligned_ready')&&s.state==='hold')feedback.textContent='视觉对准已完成，可手动装料并夹紧。';
     else if(s.state==='manual_z')feedback.textContent=`Z实际 ${s.z??'—'} mm → 目标 ${s.zt??'—'} mm；保持夹持。`;
     else if(s.operation==='stack_height'&&s.state==='hold')feedback.textContent=`高度已到位：${s.z??'—'} mm；可单独松爪或继续调整。`;
     else if(s.operation==='stack_release'&&s.result==='released')feedback.textContent=`已松爪，保持当前高度 ${s.z??'—'} mm。`;

@@ -2,19 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {buildCommand} from '../protocol.mjs';
 
-test('stack alignment requests its compensation branch and descent never includes release',()=>{
+test('stack alignment uses camera errors and descent never includes release',()=>{
   assert.equal(buildCommand('grab-stack-align',{color:'3'}),'grab stack align 3');
   assert.equal(buildCommand('grab-stack-lower',{z:-92}),'grab stack lower -92');
   assert.equal(buildCommand('grab-stack-release'),'grab stack release');
   assert.equal(buildCommand('grab-stack-lift'),'grab stack lift');
 });
 
-test('real stacking panel distinguishes green alignment, compensation and ready to load',async()=>{
+test('real stacking panel uses vision-owned compensation and reports ready to load',async()=>{
   const f=await panelFixture();
-  f.elements.find(e=>e.textContent==='静态对准并补偿').onclick();
+  f.elements.find(e=>e.textContent==='码垛视觉对准').onclick();
   assert.deepEqual(f.wires,['grab stack align 3']);
-  f.panel.receive({state:'align',reason:'stack_compensating'});
-  assert.ok(f.elements.some(e=>e.textContent.includes('正在执行码垛专用补偿')));
+  assert.ok(f.elements.some(e=>e.textContent.includes('STM32不再追加偏移')));
+  assert.ok(!f.elements.some(e=>e.textContent.includes('向右39')));
   // Short MCU progress replies may omit operation but always retain reason.
   f.panel.receive({state:'hold',reason:'stack_aligned_ready'});
   assert.ok(f.elements.some(e=>e.textContent.includes('可手动装料并夹紧')));

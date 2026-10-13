@@ -171,8 +171,30 @@ static void timestamp_and_sequence_wrap(void)
   camera_valid=true; step(true,1,-94,0); step(true,1,-93,0); step(true,1,-92,0);
   assert(status().state==GRAB_ALIGN && status().loss_ms==200 && !RecoveryUsed);
 }
+static void near_window_keeps_stream(void)
+{
+ moving_blue();run_to(GRAB_SETTLE,200,1);
+ unsigned requests=camera_requests;
+ camera_valid=false;step(true,1,0,0);
+ assert(status().state==GRAB_VISION_PAUSE && !closures);
+ camera_valid=true;
+ for(unsigned i=0;i<80 && status().state!=GRAB_ALIGN;i++)step(true,1,0,0);
+ assert(status().state==GRAB_ALIGN && camera_requests==requests && !closures && !CaptureCount);
+ /* Each episode stops, but a continuing valid stream is not reset. */
+ for(unsigned n=0;n<4;n++){
+  camera_valid=false;step(true,1,0,0);camera_valid=true;
+  for(unsigned i=0;i<80 && status().state!=GRAB_ALIGN;i++)step(true,1,0,0);
+  assert(camera_requests==requests && !closures);
+ }
+ run_to(GRAB_HOLD,400,1);assert(status().stop_confirmed && !closures);
+ /* A genuinely prolonged absence still uses the established reacquisition. */
+ moving_blue();step(true,1,0,0);requests=camera_requests;camera_valid=false;
+ for(unsigned i=0;i<60 && camera_requests==requests;i++)step(true,1,0,0);
+ assert(camera_requests==requests+1 && status().state==GRAB_VISION_PAUSE && !closures);
+}
 int main(void)
 {
+  near_window_keeps_stream();
   one_missed_sample_does_not_stop();
   frozen_deadline_and_deceleration(); silence_duplicates_and_observation_count();
   short_episodes_preserve_quota(); near_target_reverse_and_pick_gap();

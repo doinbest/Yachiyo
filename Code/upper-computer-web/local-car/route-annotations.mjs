@@ -8,6 +8,10 @@ export function routeSegments(profile){
       let segment=segments.at(-1);
       if(segment?.number!==phase.segment){segment={number:phase.segment,points:[previous],waypoint:false};segments.push(segment);}
       const point=phase.target.slice(0,2);
+      if(phase.kind==='curve')for(const q of phase.path??[]){
+        if(q[0]!==previous[0]||q[1]!==previous[1])segment.points.push(q.slice(0,2));
+        previous=q;
+      }
       if(point[0]!==previous[0]||point[1]!==previous[1])segment.points.push(point);
       segment.target=point;previous=point;
     }

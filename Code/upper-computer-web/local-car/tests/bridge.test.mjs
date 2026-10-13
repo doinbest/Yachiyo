@@ -7,6 +7,10 @@ test('single ID probes remain available through the browser stop latch',()=>{
 });
 import assert from 'node:assert/strict';
 import {BridgeLink,readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
+test('mission pause and terminal stop both use priority cancellation',()=>{
+ for(const wire of ['grab mission pause','grab mission stop'])assert.equal(scopedStopCommand(wire),true);
+ for(const wire of ['grab mission continue','grab mission stop extra'])assert.equal(scopedStopCommand(wire),false);
+});
 test('F407 radar host reads and scoped stops keep the global stop latch',()=>{
   for(const wire of ['radar host status fast','radar host bundle 5 all','radar host bundle 5 0,2,4'])assert.equal(readOnlyCommand(wire),true,wire);
   for(const wire of ['radar host scan fast','radar host live start fast','radar host bundle 5 -1','radar host bundle 5 0,','radar host status fast extra'])assert.equal(readOnlyCommand(wire),false,wire);

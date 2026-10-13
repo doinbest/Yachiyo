@@ -3,6 +3,18 @@ import {visibleTerminalLogs} from '../terminal-log.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {formatTerminalLine,describeReply} from '../protocol.mjs';
+test('processed pickup distinguishes observation alignment and committed descent',()=>{
+ assert.match(formatTerminalLine('OK grab state=align mode=pick reason=processed_alignment'),/在观察高度对准加工物料/);
+ assert.match(formatTerminalLine('OK grab state=descend mode=pick reason=processed_descending'),/保持水平位置下降夹取/);
+ // Historical firmware reports remain readable.
+ const text=formatTerminalLine('OK grab state=descend mode=pick reason=pickup_alignment_reacquire');
+ assert.match(text,/保持夹取高度重新对准/);
+ assert.doesNotMatch(text,/提起/);
+});
+test('recovery evidence separates the current step and original fault in Chinese',()=>{
+ assert.match(formatTerminalLine('OK bus attempt stage=rx_restart reason=uart_error addr=1 func=0x00 uart_error=0x00000002 tx_sent=0 elapsed_ms=500'),/本次恢复.*接收重启/);
+ assert.match(formatTerminalLine('OK bus first reason=reply_timeout addr=7 func=0x36 uart_error=0x00000000'),/首次故障/);
+});
 
 test('Base approximate reference remains visible during later tasks without fault styling',()=>{
   const line='OK grab state=complete mode=fixed reason=work_ready base_home_degraded=1 ref_cause=base_home_degraded missing=none';
@@ -263,4 +275,21 @@ test('rejection instructions explain status queries in Chinese without inventing
   assert.match(formatTerminalLine('ERR grab_busy use grab status or grab stop'),/抓取任务.*忙.*读取.*停止/);
   assert.match(formatTerminalLine('ERR camera usb_unconfigured'),/相机.*USB.*未枚举/);
   assert.doesNotMatch(formatTerminalLine('OK turntable status state=idle reason=home_complete'),/三轴|四轮/);
+});
+
+test('negative Base boot reports opening before direction home',()=>{
+  const banner='Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2500us -> Base negative direction home -> IMU verify=5s; enable_verify=on';
+  assert.match(formatTerminalLine(banner),/X\/Z 完成后开爪2500.*Base负向回零.*逆时针/);
+});
+
+test('turntable degraded reference remains explicit in status',()=>{
+  const line='OK turntable status state=arrived ref=1 slot=1 arrived=1 moving=0 fresh=1 angle_deg=0 target_deg=0 speed_rpm=0 reason=home_approximate ref_degraded=1';
+  assert.match(formatTerminalLine(line),/近似回零/);
+  assert.match(formatTerminalLine(line),/近似参考标志/);
+});
+
+
+test('mission status translates the adopted alignment mode',()=>{
+ assert.match(formatTerminalLine('OK grab route state=paused mode=mission align=raised'),/工位视觉对准.*高位.*Z=0/);
+ assert.match(formatTerminalLine('OK grab route state=paused mode=mission align=lowered'),/工位视觉对准.*下降.*工位高度/);
 });

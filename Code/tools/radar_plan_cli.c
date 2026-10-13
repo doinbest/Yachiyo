@@ -25,6 +25,7 @@
 #include "radar_map.h"
 #include "radar_start.h"
 #include "chassis_route_profile.h"
+#include "chassis_path.h"
 #include "chassis_config.h"
 
 #include <errno.h>
@@ -118,11 +119,22 @@ static void print_profile(const RadarPlan_Point_t *points,unsigned count,float s
       const ChassisRoute_Phase_t *phase=&profile.phases[index];
       printf("%s{\"kind\":\"%s\",\"phase\":\"%s\",\"direction\":\"%s\",\"segment\":%u,"
              "\"station\":%u,\"visit\":%u,\"target\":[%.6g,%.6g,%.6g],\"speed_mm_s\":%.6g",
-             emitted++?",":"",phase->turn?"turn":"move",phase->phase,phase->direction,segment,
+             emitted++?",":"",!strcmp(phase->direction,"curve")?"curve":phase->turn?"turn":"move",phase->phase,phase->direction,segment,
              (unsigned)to->station,(unsigned)to->visit,(double)phase->x_mm,(double)phase->y_mm,
              (double)phase->yaw_deg,(double)phase->speed_mm_s);
+      if(!strcmp(phase->direction,"curve")){
+        ChassisPath path={0};const RadarPlan_Point_t *from=&points[segment-1];
+        unsigned kind=!strcmp(phase->phase,"entry_curve")?1:from->x_mm==2100?2:3;
+        ChassisPath_Build(&path,kind,from->x_mm,from->y_mm,to->x_mm,to->y_mm,speed);
+        printf(",\"path\":[");
+        for(unsigned j=0;j<path.count;j++){
+          ChassisPath_Point p=path.point[j];
+          printf("%s[%.6f,%.6f,%.6f,%.6f,%.6f]",j?",":"",(double)p.x,(double)p.y,(double)p.yaw,(double)p.s,(double)p.limit);
+        }
+        printf("]");
+      }
       if(task) printf(",\"arm_pose\":\"%s\"",
-        !strncmp(phase->phase,"work_",5) && strcmp(phase->phase,"work_approach")?"work":"rear");
+        !strncmp(phase->phase,"work_",5) && strcmp(phase->phase,"work_approach") && strcmp(phase->phase,"work_curve")?"work":"rear");
       putchar('}');
     }
     yaw=profile.final_yaw_deg;

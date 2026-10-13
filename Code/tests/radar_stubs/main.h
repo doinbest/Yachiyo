@@ -8,6 +8,9 @@ typedef struct { void *Instance;DMA_HandleTypeDef *hdmarx;uint32_t ErrorCode; } 
 typedef enum { HAL_UART_RXEVENT_TC,HAL_UART_RXEVENT_HT,HAL_UART_RXEVENT_IDLE } HAL_UART_RxEventTypeTypeDef;
 #define USART2 ((void *)2)
 #define HAL_UART_ERROR_DMA 16U
+#define HAL_UART_ERROR_ORE 8U
+#define HAL_UART_ERROR_FE 4U
+#define HAL_UART_ERROR_NE 2U
 #define __HAL_DMA_GET_COUNTER(p) ((p)->counter)
 static inline uint32_t __get_PRIMASK(void){return 0;}
 static inline void __disable_irq(void){}

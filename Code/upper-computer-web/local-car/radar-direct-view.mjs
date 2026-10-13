@@ -84,7 +84,7 @@ export function mountRadarDirectHost({
 
   root.className = 'radar-direct-host';
   const hero = el('header', {cls: 'radar-direct-hero'});
-  const heroCopy = el('div'); heroCopy.append(el('span', {cls: 'radar-direct-kicker', text: 'F407 · LDS-50C · F1 DIAGNOSTICS'}), el('h1', {text: 'F1 雷达诊断与对照'}), el('p', {text: 'F407 采集15个有效完整圈，输出稳定XY、障碍格和路径；实车执行请使用实车监控入口。'}));
+  const heroCopy = el('div'); heroCopy.append(el('span', {cls: 'radar-direct-kicker', text: 'F407 · LDS-50C · RADAR MAPPING'}), el('h1', {text: '雷达建图与诊断'}), el('p', {text: '由当前F407固件采集15个有效完整圈，输出稳定XY、障碍格和路径；实车执行请使用实车监控入口。'}));
   const heroStatus = el('div', {cls: 'radar-direct-hero-status'}); heroStatus.append(el('span', {cls: 'radar-direct-status-dot'}), el('strong', {id: 'radar-direct-freeze', text: '等待扫描'}), el('small', {id: 'radar-direct-point-summary', text: '0 个显示点 / 0 个接收点'}));
   hero.append(heroCopy, heroStatus);
 

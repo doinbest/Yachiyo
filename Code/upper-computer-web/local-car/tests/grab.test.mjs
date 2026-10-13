@@ -3,6 +3,16 @@ import assert from 'node:assert/strict';
 import * as protocol from '../protocol.mjs';
 import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from '../grab-params.mjs';
 
+test('ring alignment height and finish selections are independent',()=>{
+  for(const height of ['lowered','raised'])for(const finish of ['raise','stay']){
+    const wire=protocol.buildCommand('grab-ring-align-options',{ring:'2',height,finish,z:'-100'});
+    assert.equal(wire,`grab align ring 2 ${height==='raised'?0:-100}${finish==='stay'?' stay':''}`);
+  }
+  assert.equal(protocol.buildCommand('grab-ring-align-options',{ring:'1',height:'raised',finish:'stay',z:''}),'grab align ring 1 0 stay');
+  for(const args of [{height:'bad',finish:'stay',z:'-100'},{height:'lowered',finish:'bad',z:'-100'},{height:'lowered',finish:'stay',z:'-151'}])
+    assert.throws(()=>protocol.buildCommand('grab-ring-align-options',{ring:'1',...args}));
+});
+
 test('Base home acceptance is explicit and degraded feedback is a validated boolean',()=>{
   assert.equal(protocol.buildCommand('grab-home-accept'),'grab home accept');
   const line='OK grab state=complete mode=fixed reason=work_ready base_home_degraded=';
@@ -184,11 +194,11 @@ test('recovery counter is diagnostic and the 12-second wait is readable',()=>{
 });
 
 test('rear-home mission commands and resumable scene configuration have explicit status',()=>{
-  assert.equal(protocol.buildCommand('grab-mission',{speed:200}),'grab mission 200');
+  assert.equal(protocol.buildCommand('grab-mission',{speed:200,turnSpeed:50}),'grab mission qr 200 50');
   assert.equal(protocol.buildCommand('grab-mission-continue'),'grab mission continue');
   assert.equal(protocol.buildCommand('grab-pose-rear'),'grab pose rear');
   assert.equal(protocol.buildCommand('grab-pose-work'),'grab pose work');
-  const r=protocol.parseGrabRouteStatus('OK grab route state=config_wait mode=mission source=simulated code=156+123+516+231 batch=2 item=1 station=3 visit=7 stored=12 placed=9 elapsed_ms=5000 reason=z_temp_layer2');
+  const r=protocol.parseGrabRouteStatus('OK grab route state=config_wait mode=mission source=fixed code_source=fixed scan_code=356+123+536+231 exec_code=156+123+516+231 batch=2 item=1 station=3 visit=7 stored=12 placed=9 elapsed_ms=5000 reason=z_temp_layer2');
   assert.equal(r.batch,2);assert.equal(r.item,1);assert.equal(r.placed,9);
   assert.match(protocol.describeGrabRoute(r),/第二批.*第 1 件/);
   assert.match(protocol.describeGrabRoute(r),/补齐.*z_temp_layer2/);
@@ -220,5 +230,5 @@ test('ring low observation keeps adjustable height and distinct completion',()=>
   for(const ring of ['1','2','3']) for(const z of [-30,-60,-100,-150,0])
     assert.equal(protocol.buildCommand('grab-ring-align-stay',{ring,z}),`grab align ring ${ring} ${z} stay`);
   for(const z of [-151,1,NaN]) assert.throws(()=>protocol.buildCommand('grab-ring-align-stay',{ring:'1',z}));
-  assert.equal(protocol.describeReply('OK grab state=hold mode=align operation=ring_align reason=ring_aligned_low result=aligned'),'色环对准完成 · 保持低位观察');
+  assert.equal(protocol.describeReply('OK grab state=hold mode=align operation=ring_align reason=ring_aligned_low result=aligned'),'色环对准完成 · 保持对准高度观察');
 });

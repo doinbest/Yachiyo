@@ -217,6 +217,20 @@ int main(void)
   }
   assert(Camera_RingStart(0)==HAL_ERROR && Camera_RingStart(4)==HAL_ERROR);
   assert(Camera_MaterialStart((Camera_ColorTypeDef)10)==HAL_ERROR);
+  /* 0D never publishes angles/STOP as ordinary DX/DY. */
+  Camera_Init();
+  assert(Camera_PoseStart()==HAL_OK && tx[2]==0x0d);
+  uint8_t pose_reply[14]={0xff,0xb2,0x0d,1,0xff,0xec,0,10,0xff,0xce,0,1,0,0xfe};
+  for(unsigned j=1;j<=11;j++)pose_reply[12]+=pose_reply[j];
+  tick=250;Camera_UsbRxCallback(pose_reply,7);Camera_Process();
+  tick=260;Camera_UsbRxCallback(pose_reply+7,7);Camera_Process();
+  Camera_PoseSnapshot_t pose;Camera_PoseSnapshotGet(&pose);Camera_SnapshotGet(&snapshot);
+  assert(pose.Valid && pose.EX==-20 && pose.EY==10 && pose.AngleCdeg==-50 && pose.Stop==1);
+  assert(pose.ReceivedTick==260 && pose.Sequence && !snapshot.HasValidData);
+  uint32_t seq=pose.Sequence;
+  pose_reply[3]=0;pose_reply[12]--;Camera_UsbRxCallback(pose_reply,14);Camera_Process();
+  Camera_PoseSnapshotGet(&pose);assert(!pose.Valid && pose.Sequence!=seq);
+  assert(Camera_RingStart(1)==HAL_OK);Camera_PoseSnapshotGet(&pose);assert(!pose.Valid);
   request_cache_test();
   b2_boundaries();
   puts("camera USB snapshot, counters, B2 protocol and visual-state tests passed");

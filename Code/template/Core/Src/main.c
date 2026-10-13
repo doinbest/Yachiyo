@@ -44,8 +44,10 @@
 #include "turntable.h"
 #include "GrabRoute.h"
 #include "Steer.h"
+#include "lidar_servo.h"
 #include "arm_console.h"
 #include "contest_screen.h"
+#include "contest_mission.h"
 #include "hwt101_i2c.h"
 #include "hwt101_calibration.h"
 #include "key.h"
@@ -445,6 +447,7 @@ int main(void)
   MX_I2C2_Init();
   MX_USB_DEVICE_Init();
   MX_SPI1_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 
   /* CS 仍为高电平时提前使能 SPI1，验证首次读取的使能时序。 */
@@ -482,6 +485,11 @@ int main(void)
 
   /* PE9使用TIM1_CH1输出50Hz PWM；CCR为0时夹爪上电不会立即动作。 */
   if (Steer_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* PD12雷达舵机上电保持零脉宽，仅由显式控制台命令动作。 */
+  if (LidarServo_Init() != HAL_OK)
   {
     Error_Handler();
   }
@@ -589,8 +597,8 @@ int main(void)
 
     if (QR_TaskCodeGet(QR_TaskCode) == 1U)
     {
-      (void)ContestScreen_TaskCodeSet(QR_TaskCode);
-      (void)ContestScreen_ProgressSet(0U, 0U);
+      if(!ContestMission_OwnsDisplay())
+        (void)ContestScreen_TaskCodeSet(QR_TaskCode);
       Camera_ColorTaskReady = 1U;
       Camera_ColorDigitIndex = 0U;
       OledUi_TaskCodeSet(QR_TaskCode, Camera_ColorDigitIndex);

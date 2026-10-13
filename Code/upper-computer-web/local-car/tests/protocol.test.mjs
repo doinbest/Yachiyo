@@ -1,12 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { commands, buildCommand, frameCommand, LineDecoder, describeReply, moduleForWire } from '../protocol.mjs';
+import {buildMissionCommand} from '../mission-panel.mjs';
+
+test('mission start frames preserve origin and route mode for both code sources', () => {
+  const cases = [
+    [{source:'qr',speed:500,turnSpeed:500,start:'lower',radar:false}, 'grab mission qr 500 500 lower fixed raised\r\n'],
+    [{source:'fixed',code:'156+123+516+231',speed:500,turnSpeed:100,start:'upper',radar:true,align:'raised'}, 'grab mission fixed 156+123+516+231 500 100 upper radar raised\r\n'],
+  ];
+  cases.push([{source:'fixed',code:'156+123+516+231',speed:5000,turnSpeed:100,start:'upper',radar:true,align:'lowered'}, 'grab mission fixed 156+123+516+231 5000 100 upper radar lowered\r\n']);
+  for (const [request, expected] of cases)
+    assert.equal(frameCommand(buildMissionCommand(request)), expected);
+});
 
 test('bus recovery controls use exact ASCII commands and system log category',()=>{
   assert.equal(buildCommand('bus-recover'),'bus recover');
   assert.equal(buildCommand('bus-status'),'bus status');
   assert.equal(moduleForWire('OK bus recover complete arm_ready=1'),'system');
   assert.equal(moduleForWire('ERR bus recover reason=reply_timeout'),'system');
+});
+test('car tray pickup selects a slot and defaults to 40mm without a release command',()=>{
+  const c=commands.find(c=>c.id==='grab-take-work');
+  assert.ok(c);assert.equal(c.fields.find(f=>f.key==='depth').value,40);
+  assert.match(c.note,/1\/2号盘.*X30mm/);assert.match(c.note,/3号盘保持收回/);
+  assert.doesNotMatch(c.note,/X到取放口/);
+  assert.equal(buildCommand(c.id,{slot:'3',depth:40}),'grab take 3 work 40');
+  assert.equal(buildCommand(c.id,{slot:'2',depth:60}),'grab take 2 work 60');
+  for(const depth of [0,-40,151,'NaN'])assert.throws(()=>buildCommand(c.id,{slot:'1',depth}));
 });
 
 test('old firmware uses ASCII lines with CRLF, never the newer # protocol', () => {
@@ -25,7 +45,7 @@ test('gripper presets show the calibrated pulse widths and keep the wire command
 test('reject missing distance, injection, too-long lines and non-finite values', () => {
   for (const value of ['', 'NaN', 'Infinity', '0', '201', '1.5'])
     assert.throws(() => buildCommand('move', {direction:'backward', distance:value}));
-  for (const value of ['help\nstop all', 'help\rstop all', '中文', 'x'.repeat(64), 'a b c d e f g'])
+  for (const value of ['help\nstop all', 'help\rstop all', '中文', 'x'.repeat(64), 'a b c d e f g h i j'])
     assert.throws(() => frameCommand(value));
   assert.throws(() => buildCommand('pos', {axis:'all', degree:'10'}));
   assert.throws(() => buildCommand('pos', {axis:'x', degree:'361'}));

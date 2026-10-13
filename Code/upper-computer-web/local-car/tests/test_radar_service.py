@@ -241,13 +241,14 @@ class RadarServiceTests(unittest.TestCase):
         profiles=serve.plan_radar_offline({'mask':0})['route_profiles']
         task=profiles['task_fixed']
         raw=[p for p in task['phases'] if p['segment']==3]
-        self.assertEqual([p['phase'] for p in raw],['work_approach','work_turn','work_dock'])
-        self.assertEqual(raw[0]['target'],[1275,2100,90])
+        self.assertEqual([p['phase'] for p in raw],['work_approach','work_turn'])
+        self.assertEqual(raw[0]['target'],[1200,2100,90])
         self.assertEqual(raw[0]['direction'],'lateral')
         self.assertEqual(raw[0]['arm_pose'],'rear')
         self.assertEqual(raw[-1]['target'],[1200,2100,0])
-        self.assertEqual(raw[-1]['arm_pose'],'work')
-        for station,yaw in [(4,0),(2,180),(3,90)]:
+        self.assertEqual(raw[-1]['direction'],'turn')
+        self.assertTrue(all('path' not in p for p in raw))
+        for station,yaw in [(2,180),(3,90)]:
             docks=[p for p in task['phases'] if p['station']==station and p['phase']=='work_dock']
             self.assertEqual(len(docks),2)
             self.assertTrue(all(p['target'][2]==yaw and p['speed_mm_s']==50 for p in docks))
@@ -312,7 +313,7 @@ class RadarServiceTests(unittest.TestCase):
                'Code/template/App/radar_geometry.c','Code/template/App/radar_geometry.h',
                'Code/template/App/radar_stability.c','Code/template/App/radar_stability.h',
                'Code/template/App/radar_start.c','Code/template/App/radar_start.h',
-               'Code/template/App/chassis_route_profile.c','Code/template/App/chassis_route_profile.h',
+               'Code/template/App/chassis_route_profile.c','Code/template/App/chassis_route_profile.h','Code/template/App/chassis_path.h',
                'Code/template/App/chassis_config.h','Code/template/App/motor_id_config.h')
         with tempfile.TemporaryDirectory() as directory:
             clone=Path(directory)
@@ -322,7 +323,7 @@ class RadarServiceTests(unittest.TestCase):
             with patch.object(serve,'__file__',str(clone/'Code/upper-computer-web/local-car/serve.py')):
                 serve.plan_radar_offline({})
                 executable=clone/'.embeddedskills/tests/radar_plan_cli.exe'
-                for name in ('Code/template/App/chassis_route_profile.c','Code/template/App/chassis_route_profile.h',
+                for name in ('Code/template/App/chassis_route_profile.c','Code/template/App/chassis_route_profile.h','Code/template/App/chassis_path.h',
                              'Code/template/App/radar_geometry.c','Code/template/App/radar_stability.h',
                              'Code/template/App/radar_start.c','Code/template/App/radar_start.h'):
                     path=clone/name;stamp=executable.stat().st_mtime+2
