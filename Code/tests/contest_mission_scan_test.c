@@ -26,7 +26,7 @@ static void reach_scanner(void)
 int main(void)
 {
   const char *actual="356+123+536+231",*other="156+123+516+231";
-  ContestMission_Request_t scan={MISSION_CODE_QR,"",200,50,RADAR_START_LOWER,false,false,false};
+  ContestMission_Request_t scan={MISSION_CODE_QR,"",200,50,RADAR_START_LOWER,false,false,false,CHASSIS_PROFILE_LINEAR};
   reset_scan_fixture();uart_code(actual);strcpy(screen_code,other);
   inventory[0]=(Turntable_Inventory_t){TURNTABLE_OCCUPIED,4};
   inventory[1].state=TURNTABLE_UNKNOWN;
@@ -58,7 +58,7 @@ int main(void)
   for(unsigned i=0;i<10 && !resumes;i++)step();
   assert(resumes==1);
 
-  reset_scan_fixture();ContestMission_Request_t bad={MISSION_CODE_FIXED,"113+123+113+231",200,50,RADAR_START_LOWER,false,false,false};
+  reset_scan_fixture();ContestMission_Request_t bad={MISSION_CODE_FIXED,"113+123+113+231",200,50,RADAR_START_LOWER,false,false,false,CHASSIS_PROFILE_LINEAR};
   unsigned poses=pose_calls;assert(!ContestMission_Start(NULL,&bad));
   assert(!strcmp(ContestMission_Reason(),"task_code_invalid") && pose_calls==poses);
   assert(ContestMission_Start(NULL,&request));reach_scanner();

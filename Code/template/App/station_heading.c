@@ -14,6 +14,7 @@ static uint32_t begun,window,sequence,last_rx;
 static bool have_seq,have_rx,debt,calibrated,clock_started;
 static bool observe_only;
 static float nominal,speed,sum,low,high,first_yaw,image_angle,body_error,observation_z;
+static float first_image;
 static StationHeading_Config_t cfg;
 static const char *reason="heading_idle";
 void StationHeading_Reset(void){state=H_DONE;reason="heading_idle";debt=false;clock_started=false;image_angle=body_error=observation_z=NAN;}
@@ -64,6 +65,10 @@ bool StationHeading_Process(void)
     if(motion.state!=CHASSIS_MOTION_DONE || !motion.stop_confirmed)return false;
     state=H_REQUEST;fresh_window();clock_started=false;
   }
+  /* Missing frames/readiness and USB retries share one bounded opportunity.
+   * Once a correction is applied, finish its motion and verification instead. */
+  if(clock_started && !debt && now-begun>=cfg.wait_ms)
+    return finish("heading_no_observation");
   if(!stationary(&motion)){
     if(state==H_SAMPLE || state==H_COMMIT){Camera_RequestStop();state=H_REQUEST;}
     count=0;window=now;reason="heading_pose_wait";return false;
@@ -72,6 +77,7 @@ bool StationHeading_Process(void)
     /* Start once after readiness/resume; USB retries share this bounded window. */
     if(!clock_started){begun=now;clock_started=true;}
     GrabTask_HeadingConfigGet(station,&cfg);
+    if(cfg.wait_ms>STATION_HEADING_WAIT_MS)cfg.wait_ms=STATION_HEADING_WAIT_MS;
     observation_z=cfg.observation_z_mm;
     calibrated=!observe_only && cfg.height_matches && isfinite(cfg.zero_deg) && isfinite(cfg.gain) && fabsf(cfg.gain)>0 &&
       isfinite(cfg.tolerance_deg) && cfg.tolerance_deg>0 && cfg.tolerance_deg<=2 &&
@@ -103,18 +109,33 @@ bool StationHeading_Process(void)
   }
   if(!debt && now-begun>=cfg.wait_ms)return finish("heading_no_observation");
   if(!p.Active || !p.HasFrame || !p.Valid || now-p.ReceivedTick>CAMERA_DATA_STALE_MS){
-    if(p.HasFrame && !p.Valid)count=0;
+    /* Retain samples that were fresh when received. Missing/invalid reports
+     * add no evidence; only new valid samples can complete the group. */
     if(!debt && now-begun>=cfg.wait_ms)return finish("heading_no_observation");
     reason=debt?"heading_reacquire":"heading_observing";return false;
   }
-  if((have_seq && p.Sequence==sequence) || (have_rx && p.ReceivedTick==last_rx))return false;
-  if(have_rx && p.ReceivedTick-last_rx>CAMERA_DATA_STALE_MS)count=0;
+  if((have_seq && (int32_t)(p.Sequence-sequence)<=0) ||
+     (have_rx && (int32_t)(p.ReceivedTick-last_rx)<=0))return false;
   sequence=p.Sequence;have_seq=true;last_rx=p.ReceivedTick;have_rx=true;
   if((uint32_t)(p.ReceivedTick-window)>=0x80000000U ||
      (calibrated && p.ReceivedTick-window<(uint32_t)cfg.settle_ms))return false;
   image_angle=p.AngleCdeg*.01f; /* STOP deliberately never consulted. */
   if(!calibrated && debt){reason="heading_calibration_changed";return false;}
-  if(!calibrated){if(++count>=3)return finish(observe_only?"heading_observed":cfg.height_matches?"heading_uncalibrated":"heading_height_unmatched");return false;}
+  if(!calibrated){
+    /* Image-only observations have no calibrated gain. Compare in image
+     * degrees, unwrapped around the first sample at the +/-90 boundary. */
+    float e=count?first_image+remainderf(image_angle-first_image,180):image_angle;
+    if(!count || fabsf(remainderf(motion.map_yaw_rad-first_yaw,2*CHASSIS_MODEL_PI))*180/CHASSIS_MODEL_PI>STATION_HEADING_IMAGE_SPREAD_DEG ||
+       fmaxf(high,e)-fminf(low,e)>STATION_HEADING_IMAGE_SPREAD_DEG){
+      count=0;sum=0;first_image=e=image_angle;low=high=e;first_yaw=motion.map_yaw_rad;
+    }
+    low=fminf(low,e);high=fmaxf(high,e);sum+=e;
+    if(++count>=3){
+      image_angle=remainderf(sum/count,180);
+      return finish(observe_only?"heading_observed":cfg.height_matches?"heading_uncalibrated":"heading_height_unmatched");
+    }
+    return false;
+  }
   float e=remainderf(image_angle-cfg.zero_deg,180)*cfg.gain;
   if(!count || fabsf(remainderf(motion.map_yaw_rad-first_yaw,2*CHASSIS_MODEL_PI))*180/CHASSIS_MODEL_PI>cfg.tolerance_deg ||
      fmaxf(high,e)-fminf(low,e)>cfg.spread_deg){count=0;sum=0;low=high=e;first_yaw=motion.map_yaw_rad;}
@@ -123,6 +144,5 @@ bool StationHeading_Process(void)
   body_error=sum/count;
   /* Reject a gross branch mismatch, without revoking a previously valid map. */
   if(fabsf(body_error)>=90){count=0;reason="heading_angle_mismatch";return false;}
-  if(fabsf(body_error)>cfg.tolerance_deg)debt=true;
   state=H_COMMIT;return StationHeading_Process();
 }

@@ -14,7 +14,9 @@ test('distance acceleration tests normalize diagonals and leave legacy timed con
   }
   for(const changed of [{distance:0},{distance:3001},{speed:9},{speed:5001},{speed:'NaN'},{direction:'oops'}])
     assert.throws(()=>buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,...changed}));
-  assert.equal(buildCommand('chassis-test',{direction:'back',distance:500,speed:1000}),'chassis test -500 0 1000');
+  assert.equal(buildCommand('chassis-test',{direction:'back',distance:500,speed:1000}),'chassis test -500 0 1000 linear');
+  assert.equal(buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,profile:'cosine'}),'chassis test 500 0 1000 cosine');
+  assert.throws(()=>buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,profile:'unknown'}));
 });
 
 test('finite velocity controls convert seconds to integer milliseconds once', () => {

@@ -289,7 +289,7 @@ qr_format:
     {ContestMission_Cancel();ContestMission_Report();return true;}
     if(Count==3U && !strcmp(Tokens[2],"continue"))
     { (void)ContestMission_Continue();ContestMission_Report();return true; }
-    ContestMission_Request_t request={MISSION_CODE_QR,"",CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,100,RADAR_START_LOWER,false,true,false};
+    ContestMission_Request_t request={MISSION_CODE_QR,"",CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,100,RADAR_START_LOWER,false,true,false,CHASSIS_PROFILE_LINEAR};
     const char *error=NULL;unsigned first=3;
     if(Count<3 || (strcmp(Tokens[2],"qr") && strcmp(Tokens[2],"fixed")))error="source_required";
     else if(!strcmp(Tokens[2],"fixed"))
@@ -298,7 +298,7 @@ qr_format:
       if(Count<4 || strlen(Tokens[3])!=15)error="task_code_invalid";
       else memcpy(request.fixed_code,Tokens[3],16);
     }
-    if(!error && Count>first+5)error="format";
+    if(!error && Count>first+6)error="format";
     if(!error && Count>first){request.route_speed_mm_s=strtof(Tokens[first],&End);if(End==Tokens[first] || *End)error="speed_range";}
     if(!error && Count>first+1){request.turn_speed_deg_s=strtof(Tokens[first+1],&End);if(End==Tokens[first+1] || *End)error="turn_speed_range";}
     if(!error && Count>first+2){
@@ -315,6 +315,10 @@ qr_format:
       else if(!strcmp(Tokens[first+4],"raised"))request.align_raised=true;
       else if(!strcmp(Tokens[first+4],"lowered"))request.align_raised=false;
       else error="alignment_mode_required";
+    }
+    if(!error && Count>first+5){
+      if(!strcmp(Tokens[first+5],"cosine"))request.profile=CHASSIS_PROFILE_COSINE;
+      else if(strcmp(Tokens[first+5],"linear"))error="profile_required";
     }
     if(!error && (GrabRoute_IsBusy() || GrabTask_IsBusy()))error="busy";
     if(!error && !ContestMission_Start(NULL,&request))error=ContestMission_Reason();

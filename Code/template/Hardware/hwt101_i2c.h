@@ -18,12 +18,16 @@ typedef struct
   uint32_t last_update_ms;
 } HWT101_Angle_t;
 
-/** HWT101 I2C 通信统计。 */
+/** HWT101 I2C通信统计及最近失败现场；主控局部初始化保留累计统计与角度编号。 */
 typedef struct
 {
   uint32_t valid_read_count;
   uint32_t i2c_error_count;
   uint32_t last_update_ms;
+  uint32_t probe_fail_count, reinit_count;
+  uint32_t fault_ms, hal_error, hal_state;
+  HAL_StatusTypeDef last_hal, reinit_hal;
+  uint8_t fault_operation, fault_register; /* 0=probe, 1=read, 2=write, 3=reinit */
 } HWT101_Status_t;
 
 /**
@@ -57,6 +61,7 @@ HAL_StatusTypeDef HWT101_WriteRegister(uint8_t reg, uint16_t value);
 /**
   * @brief 在主循环轮询HWT101；负责探测、重试和角度I2C读取。
   * @note 最小读取间隔10ms，未就绪每1000ms探测，I2C超时5ms。
+  * 连续两次重探测HAL_BUSY时局部DeInit/Init当前主控I2C，不发送模块配置命令。
   */
 void HWT101_Process(void);
 

@@ -18,6 +18,7 @@ static bool active_tx_completed;
  * Never reopen this exception after a TX attempt, including explicit recovery. */
 static bool tx_attempted;
 static uint32_t startup_fe_recovered, startup_fe_last_ms;
+static uint32_t rx_warning_count, rx_warning_ms, rx_warning_error;
 static uint32_t started_ms;
 static volatile bool tx_done, io_error;
 static volatile bool io_overflow;
@@ -492,6 +493,20 @@ void MotorBus_Process(void)
     if(probe_active) { probe_ready=false;probe_since=now; }
     startup_fe = !tx_attempted && !running && !quarantined && !recovery.active &&
                  !overflow && error_code == HAL_UART_ERROR_FE;
+    /* HAL has already aborted RX DMA and restored RxState before this callback.
+     * Restart RX only: DMAStop would also abort the in-flight HOME/position TX.
+     * Keep its original deadline and require a complete real reply; never replay motion. */
+    if(!startup_fe && !quarantined && !recovery.active && !probe_active && !overflow && error_code &&
+       !(error_code & ~(HAL_UART_ERROR_NE | HAL_UART_ERROR_FE | HAL_UART_ERROR_ORE)))
+    {
+      rx_read=rx_write;parse_length=0;
+      result=ReceiveStart();
+      if(result==HAL_OK) {
+        rx_warning_count++;rx_warning_ms=error_tick;rx_warning_error=error_code;
+        goto io_processed;
+      }
+      Quarantine("rx_restart_failed",error_tick,error_code);
+    }
     if (recovery.active) {recovery.uart_error=error_code;RecoveryFail("uart_error");}
     if (!startup_fe) Quarantine(overflow ? "rx_overflow" : "uart_error", error_tick, error_code);
     diagnostic_reads = false;
@@ -516,6 +531,7 @@ void MotorBus_Process(void)
     }
     tx_done = false;
   }
+io_processed:
   if (running && tx_done)
   {
     tx_done = false;
@@ -713,6 +729,7 @@ void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out)
     return;
   *out = first_fault;
   out->locked = quarantined;
+  out->rx_warning_count=rx_warning_count;out->rx_warning_ms=rx_warning_ms;out->rx_warning_error=rx_warning_error;
   out->startup_fe_recovered = startup_fe_recovered;
   out->startup_fe_last_ms = startup_fe_last_ms;
   if (!out->reason)
@@ -835,8 +852,13 @@ static void RecoveryProcess(void)
     if((recovery_step==4 || recovery_step==7) && e.length==4 && (e.data[2]==0xe2 || e.data[2]==0xee)) {
       RecoveryFail("driver_rejected");return;
     }
-    if ((recovery_step==5 || recovery_step==6) && e.data[2]!=2U) {
-      RecoveryFail(recovery_step==5?"zero_ack_failed":"sync_ack_failed");return;
+    if(recovery_step==5 && e.data[2]!=2U) {
+      RecoveryFail("zero_ack_failed");return;
+    }
+    if(recovery_step==6 && e.data[2]!=2U) {
+      /* Every wheel already ACKed its zero cache. A refused addressed trigger
+       * cannot execute an old nonzero cache; verify actual rest before release. */
+      recovery.sync_warning_mask|=(uint8_t)(1U<<(recovery.address-1U));
     }
     if (recovery_step==4 || recovery_step==7) {
       if (recovery_kind==0) {

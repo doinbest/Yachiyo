@@ -87,8 +87,8 @@ extern "C"
   MechanicalArm_ResultTypeDef MechanicalArm_Disable(MechanicalArm_AxisTypeDef Axis);
   MechanicalArm_ResultTypeDef MechanicalArm_Position(MechanicalArm_AxisTypeDef Axis,
                                                      int32_t Pulses);
-  /* Explicit Acceleration=0 supports MCU velocity envelopes; saved/manual
-   * axis configuration and homing acceleration are not changed by this call. */
+  /* Explicit speed and driver acceleration gear (1..255) for this request;
+   * saved axis configuration and homing parameters are not changed. */
   MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef Axis,
                                                        int32_t Position, uint16_t SpeedRpm,
                                                        uint8_t Acceleration,

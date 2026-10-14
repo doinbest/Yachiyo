@@ -2111,11 +2111,6 @@
               <FilePath>..\App\GrabTask.h</FilePath>
             </File>
             <File>
-              <FileName>arm_cosine_profile.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\App\arm_cosine_profile.h</FilePath>
-            </File>
-            <File>
               <FileName>GrabRoute.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\GrabRoute.c</FilePath>

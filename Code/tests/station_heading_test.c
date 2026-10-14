@@ -14,10 +14,11 @@ static ChassisMotion_Status_t motion;
 static ChassisStop_Status_t independent_stop;
 static unsigned requests,commits,turns;
 static bool ready=true,accept=true;
+static HAL_StatusTypeDef camera_start_result;
 uint32_t HAL_GetTick(void){return tick;}
 bool GrabTask_HeadingReady(void){return ready;}
 void GrabTask_HeadingConfigGet(unsigned station,StationHeading_Config_t *out){(void)station;*out=config;}
-HAL_StatusTypeDef Camera_PoseStart(void){requests++;memset(&frame,0,sizeof frame);frame.Active=1;return HAL_OK;}
+HAL_StatusTypeDef Camera_PoseStart(void){requests++;if(camera_start_result!=HAL_OK)return camera_start_result;memset(&frame,0,sizeof frame);frame.Active=1;return HAL_OK;}
 void Camera_PoseSnapshotGet(Camera_PoseSnapshot_t *out){*out=frame;}
 void Camera_RequestStop(void){frame.Active=0;}
 void Mecanum_Feedback_Enable(bool enable){(void)enable;}
@@ -28,8 +29,66 @@ void ChassisLocalization_Get(ChassisLocalization_Status_t *out){memset(out,0,siz
 bool ChassisHeading_Apply(float yaw){if(!accept)return false;commits++;motion.map_yaw_rad=yaw;return true;}
 bool ChassisMotion_TurnToPrecision(float yaw,float speed,float tol,uint32_t timeout){assert(yaw==180 && speed==10 && tol==.1f && timeout);turns++;motion.state=CHASSIS_MOTION_RUNNING;return true;}
 static bool sample(int angle,int stop){tick+=100;frame.HasFrame=frame.Valid=1;frame.Sequence++;frame.ReceivedTick=tick;frame.AngleCdeg=angle;frame.Stop=stop;return StationHeading_Process();}
-static void reset(void){memset(&independent_stop,0,sizeof independent_stop);tick=0;requests=commits=turns=0;ready=accept=true;memset(&motion,0,sizeof motion);motion.heading_valid=motion.map_anchor_valid=motion.stop_confirmed=true;motion.map_yaw_rad=CHASSIS_MODEL_PI;config=(StationHeading_Config_t){.zero_deg=0,.gain=1,.tolerance_deg=.1f,.spread_deg=.05f,.settle_ms=0,.turn_limit_deg=1,.wait_ms=1200,.observation_z_mm=0,.height_matches=true};StationHeading_Reset();}
+static void reset(void){memset(&independent_stop,0,sizeof independent_stop);tick=0;requests=commits=turns=0;ready=accept=true;camera_start_result=HAL_OK;memset(&motion,0,sizeof motion);motion.heading_valid=motion.map_anchor_valid=motion.stop_confirmed=true;motion.map_yaw_rad=CHASSIS_MODEL_PI;config=(StationHeading_Config_t){.zero_deg=0,.gain=1,.tolerance_deg=.1f,.spread_deg=.05f,.settle_ms=0,.turn_limit_deg=1,.wait_ms=1200,.observation_z_mm=0,.height_matches=true};StationHeading_Reset();}
+static void intermittent_samples(void)
+{
+  /* Invalid reports and long gaps must not discard consistent new samples. */
+  for(unsigned uncal=0;uncal<2;uncal++) {
+    reset();config.wait_ms=12000;if(uncal)config.gain=NAN;
+    StationHeading_Begin(2,180,10);assert(!StationHeading_Process());
+    assert(!sample(0,0));
+    tick=900;frame.Valid=0;frame.Sequence++;frame.ReceivedTick=tick;
+    assert(!StationHeading_Process());
+    tick=1700;assert(!sample(0,1));
+    tick=3500;assert(!StationHeading_Process()); /* Old snapshot is not a third sample. */
+    tick=4100;assert(sample(0,0));
+    assert(!strcmp(StationHeading_Reason(),uncal?"heading_uncalibrated":"heading_verified"));
+    assert(!commits && !turns);
+  }
+  /* Without calibration, three inconsistent images must not qualify either. */
+  reset();config.gain=NAN;config.wait_ms=12000;
+  StationHeading_Begin(2,180,10);StationHeading_Process();
+  assert(!sample(100,0));assert(!sample(300,0));assert(!sample(500,0));
+  tick=4999;assert(!StationHeading_Process());
+  tick=5000;assert(StationHeading_Process());assert(!strcmp(StationHeading_Reason(),"heading_no_observation"));
+  /* No fresh data, repeated snapshots or temporarily lost readiness cannot extend 5 s. */
+  reset();config.wait_ms=12000;StationHeading_Begin(2,180,10);StationHeading_Process();
+  sample(0,0);sample(0,0);ready=false;tick=5000;assert(StationHeading_Process());
+  assert(!commits && !turns);
+  /* Reordered samples are not new evidence. */
+  reset();config.wait_ms=12000;StationHeading_Begin(2,180,10);StationHeading_Process();
+  assert(!sample(0,0));assert(!sample(0,0));
+  tick+=100;frame.Sequence=1;frame.ReceivedTick=tick;assert(!StationHeading_Process());
+  assert(!commits);frame.Sequence=2;assert(sample(0,0));
+  /* Consistency covers image noise and wrapping, but never mixes moving poses. */
+  reset();config.gain=NAN;config.wait_ms=5000;
+  StationHeading_Begin(2,180,10);StationHeading_Process();
+  assert(!sample(100,0));tick=1800;assert(!sample(110,0));tick=4000;assert(sample(90,0));
+  assert(fabsf(StationHeading_ImageAngle()-1.0f)<.001f && !commits && !turns);
+  reset();config.gain=NAN;StationHeading_Begin(2,180,10);StationHeading_Process();
+  assert(!sample(8995,0));assert(!sample(-8995,0));assert(sample(8995,0));
+  assert(fabsf(fabsf(StationHeading_ImageAngle())-90)<.1f);
+  reset();config.wait_ms=5000;StationHeading_Begin(2,180,10);StationHeading_Process();
+  sample(0,0);sample(0,0);ready=false;assert(!StationHeading_Process());
+  ready=true;assert(!StationHeading_Process());
+  assert(!sample(0,0));assert(!sample(0,0));assert(sample(0,0));
+  reset();config.wait_ms=12000;camera_start_result=HAL_BUSY;
+  StationHeading_Begin(2,180,10);assert(!StationHeading_Process());
+  tick=4999;assert(!StationHeading_Process());tick=5000;assert(StationHeading_Process());
+  assert(!commits && !turns);
+  /* Applied corrections never abandon an in-flight turn at the sampling deadline. */
+  reset();config.wait_ms=5000;StationHeading_Begin(2,180,10);StationHeading_Process();
+  sample(50,0);sample(50,0);sample(50,0);StationHeading_Process();assert(commits==1 && turns==1);
+  tick=6000;assert(!StationHeading_Process());
+  motion.state=CHASSIS_MOTION_DONE;assert(!StationHeading_Process());
+  assert(!sample(0,0));assert(!sample(0,0));assert(sample(0,0));
+  /* Before map application succeeds, a busy commit still obeys the deadline. */
+  reset();config.wait_ms=12000;accept=false;StationHeading_Begin(2,180,10);StationHeading_Process();
+  sample(50,0);sample(50,0);sample(50,0);assert(!commits);
+  tick=5000;assert(StationHeading_Process());assert(!commits && !turns);
+}
 int main(void){
+  intermittent_samples();
   /* Trial observations must not apply an already configured correction. */
   reset();StationHeading_ObserveBegin(2,180,5);StationHeading_Process();
   assert(!sample(951,0));assert(!sample(951,1));assert(sample(951,0));

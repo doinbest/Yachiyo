@@ -19,7 +19,7 @@ static float grip_custom_duty;
 static MechanicalArm_AxisTypeDef last_stop_axis;
 static uint16_t z_position_rpm;
 static uint8_t z_position_acc;
-static uint8_t x_position_acc, configured_x_acc=20, configured_z_acc=120;
+static uint8_t x_position_acc, configured_x_acc=20, configured_z_acc=255;
 static int32_t z_position_pulses;
 static Camera_SnapshotTypeDef camera;
 static Camera_ColorTypeDef requested_color;
@@ -71,8 +71,10 @@ bool Turntable_SlotConfigured(uint8_t slot) { return slot>=1 && slot<=3 && slot!
 bool Turntable_Index(uint8_t slot)
 {
   if((TrackPickArmed && TrackStoreSlot && tracking_mode()) ||
-     (Status.state!=GRAB_INDEX && (Operation==OP_CAR_PICK || ProcessedStoreActive))){
-    assert(fabsf(physical[2]-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))<2.01f);
+     (Status.state!=GRAB_INDEX && (Operation==OP_CAR_PICK || ProcessedStoreActive || TrackStoreActive))){
+    if(TrackStoreActive || (TrackPickArmed && TrackStoreSlot && tracking_mode()))
+      assert(OutsidePose && !RearPose && axis_quiet(2,clock_ms,0) && (Axes[2].flags&0x0dU)==1U);
+    else assert(fabsf(physical[2]-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))<2.01f);
   }else{
     assert(fabsf(physical[0]-Config[C_X_MIN])<.11f);
     assert(physical[1]>=Config[Operation==OP_STORE?lift_key():C_Z_CAR_LIFT]-.11f);
@@ -273,7 +275,7 @@ static void reset(void)
   last_stop_axis=MECHANICAL_ARM_AXIS_ALL;
   memset(wheel_state_flags,3,sizeof wheel_state_flags);
   z_position_rpm=0; z_position_acc=0; z_position_pulses=0;
-  configured_x_acc=20; configured_z_acc=120; x_position_acc=0;
+  configured_x_acc=20; configured_z_acc=255; x_position_acc=0;
   requested_color=CAMERA_COLOR_RED; camera_requests = velocity_requests = 0; wheel_moving = false;
   camera_tx_result=HAL_OK; camera_attempts=camera_stops=0;
   wheel_stale = false; base_arrives=true; base_stale=false; base_mode2_absolute=false; base_moves=0; homes=aborts=0; test_homed_mask=0; home_flags=3; base_state_flags=3; boot_verify_calls=0; camera_logs=0; camera_log[0]=0;
@@ -380,7 +382,7 @@ static void car_x_default_survives_reset_and_verified_home(void)
   assert(GrabTask_Command(3,read));assert(strstr(output,"ERR grab config"));
   GrabTask_BootHomeStart();run_to(GRAB_IDLE,250,0);
   assert(GrabTask_ConfigReady("fixed"));
-  assert(Config[C_Z_PROC_PLACE]==-130 && Config[C_Z_ROUGH_ALIGN]==-100);
+  assert(Config[C_Z_PROC_PLACE]==-140 && Config[C_Z_ROUGH_ALIGN]==-100);
 }
 static void missing_and_fixed(void)
 {
@@ -700,7 +702,7 @@ static void boot_homing(void)
   for(i=0;i<20;i++) step(false,0,0,0);
   assert(homes==2 && !boot_verify_calls); /* Idle HOME flags alone are not verified origins. */
   physical[1]=0; run_to(GRAB_IDLE,250,0);
-  assert(boot_verify_calls==1 && homes==3 && !strcmp(status().reason,"home_complete") && Config[C_Z_GRAB]==-50 && Config[C_Z_PLACE]==-40 && Config[C_Z_TEMP_ALIGN]==-100 && Config[C_Z_STACK_PLACE]==-100);
+  assert(boot_verify_calls==1 && homes==3 && !strcmp(status().reason,"home_complete") && Config[C_Z_GRAB]==-50 && Config[C_Z_PLACE]==-40 && Config[C_Z_TEMP_ALIGN]==-100 && Config[C_Z_STACK_PLACE]==-110);
   assert(GrabTask_ConfigReady("fixed") && GrabTask_ConfigReady("align"));
   assert(!strcmp(status().missing,"none"));
   for(i=0;i<50;i++) step(false,0,0,0);
@@ -1269,20 +1271,18 @@ static void grab_z_speed_matches_transfer_defaults(void)
   reset(); GrabTask_BootHomeStart(); run_to(GRAB_IDLE,250,0);
   assert(GrabTask_Start("fixed")); run_to(GRAB_DESCEND,100,0);
   for(i=0;i<10 && !Axes[1].commanded;i++) step(true,0,0,0);
-  /* 1000 RPM is the ceiling; fixed moves now start below it with a MCU ramp. */
-  assert(z_position_rpm>0 && z_position_rpm<1000 && z_position_pulses==-24000 && z_position_acc==0);
+  /* The scene speed is sent once; the drive applies its configured ramp. */
+  assert(z_position_rpm==1000 && z_position_pulses==-24000 && z_position_acc==configured_z_acc);
   assert(!closures); /* A submitted descent is not arrival. */
   pending_valid=false; PendingAction=MECHANICAL_ARM_ACTION_NONE;
   enter(GRAB_LIFT);
   assert(axis_move(1,-40));
-  assert(z_position_rpm>0 && z_position_rpm<1000 && z_position_pulses==-19200 && z_position_acc==0);
+  assert(z_position_rpm==1000 && z_position_pulses==-19200 && z_position_acc==configured_z_acc);
   /* Preserve the existing mm/s setting, including the value sent by the UI. */
   reset(); configure(false); setting("z_ppm","480"); setting("z_speed","27.777778");
-  assert(axis_move(1,-10)); assert(z_position_rpm<250 && z_position_pulses==-4800);
-  assert(Axes[1].profile.peak<=27.777778f);
+  assert(axis_move(1,-10)); assert(z_position_rpm==250 && z_position_pulses==-4800);
   reset(); configure(false); setting("z_ppm","480"); setting("z_speed","5");
-  assert(axis_move(1,-10)); assert(z_position_rpm<45 && z_position_pulses==-4800);
-  assert(Axes[1].profile.peak==5);
+  assert(axis_move(1,-10)); assert(z_position_rpm==45 && z_position_pulses==-4800);
 }
 
 static void long_color_wait_and_timeout(void)
@@ -1553,7 +1553,7 @@ int main(void)
   assert(axis_move(0,1)); assert(x_position_acc==37); /* Continuous correction unchanged. */
   pending_valid=false; PendingAction=MECHANICAL_ARM_ACTION_NONE;
   Status.state=GRAB_LIFT;
-  assert(axis_move(1,1)); assert(z_position_acc==0);
+  assert(axis_move(1,1)); assert(z_position_acc==configured_z_acc);
   ring_reference_is_independent_of_material();
   ring_tracking_parameters();
   ring_approach_before_progressive_descent();

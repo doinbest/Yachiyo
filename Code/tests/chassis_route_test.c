@@ -16,7 +16,11 @@ static unsigned starts,stops,feedback_selections;
 static float last_speed;
 static uint32_t last_timeout,tick;
 static bool accept=true,last_turn,feedback_enabled;
-static bool independent_stop;
+static bool independent_stop, mission_pending;
+static ChassisMotion_Profile_t selected_profile;
+bool ContestMission_HasPendingWork(void){return mission_pending;}
+ChassisMotion_Profile_t ChassisMotion_ProfileGet(void){return selected_profile;}
+bool ChassisMotion_ProfileSet(ChassisMotion_Profile_t p){selected_profile=p;return true;}
 bool Mecanum_Feedback_Select(uint8_t wheel){assert(wheel==0);feedback_selections++;return true;}
 void Mecanum_Feedback_Enable(bool enabled){feedback_enabled=enabled;}
 static bool grab_busy, clearance;
@@ -39,7 +43,7 @@ static bool action(float x,float y,float yaw,float speed,uint32_t timeout,bool t
   assert((!ChassisRoute_IsBusy() && !ChassisRoute_StationReserved()) || ChassisRoute_IsSubmitting());
   if(!accept){motion.reason="busy";return false;}
   starts++;last_speed=speed;last_timeout=timeout;last_turn=turn;
-  motion.action_id++;motion.state=CHASSIS_MOTION_RUNNING;motion.reason="running";
+  motion.profile=selected_profile;motion.action_id++;motion.state=CHASSIS_MOTION_RUNNING;motion.reason="running";
   motion.target_x_mm=x;motion.target_y_mm=y;motion.target_map_yaw_deg=yaw;motion.stop_confirmed=false;
   return true;
 }
@@ -86,7 +90,7 @@ static void setup(void)
   loc.origin.x_mm=loc.observer.feedback.x_mm=2250;loc.origin.y_mm=loc.observer.feedback.y_mm=150;
   loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI;
   loc.generation=4;tick=100;loc.feedback_tick=tick;starts=stops=feedback_selections=0;accept=true;last_turn=false;
-  independent_stop=grab_busy=clearance=qr_pose_delayed=false;ChassisRoute_Init();
+  independent_stop=grab_busy=clearance=qr_pose_delayed=mission_pending=false;selected_profile=CHASSIS_PROFILE_LINEAR;ChassisRoute_Init();
 }
 static void feedback_arrival(float dx,float dy,float dyaw)
 {
@@ -243,7 +247,12 @@ int main(void)
   char *single[]={"chassis","test","1000","0","1000"};
   setup();assert(ChassisRoute_Command(5,single));
   assert(starts==1 && fabsf(motion.target_x_mm-1250)<0.01f && fabsf(motion.target_y_mm-150)<0.01f);
-  assert(last_speed==1000 && strstr(reply,"k=200") && !last_turn);
+  assert(last_speed==1000 && strstr(reply,"profile=linear") && !last_turn);
+  char *cosine[]={"chassis","test","1000","0","1000","cosine"};
+  setup();assert(ChassisRoute_Command(6,cosine));assert(starts==1 && motion.profile==CHASSIS_PROFILE_COSINE && strstr(reply,"profile=cosine"));
+  setup();mission_pending=true;assert(ChassisRoute_Command(6,cosine));assert(!starts && selected_profile==CHASSIS_PROFILE_LINEAR && strstr(reply,"mission_reserved"));
+  setup();accept=false;assert(ChassisRoute_Command(6,cosine));assert(!starts && selected_profile==CHASSIS_PROFILE_LINEAR);
+  setup();cosine[5]="invalid";assert(ChassisRoute_Command(6,cosine));assert(!starts && strstr(reply,"profile_required"));
   setup();loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI/2;
   single[2]="300";single[3]="400";assert(ChassisRoute_Command(5,single));
   assert(fabsf(motion.target_x_mm-1850)<0.01f && fabsf(motion.target_y_mm-450)<0.01f);

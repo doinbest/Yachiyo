@@ -7,7 +7,7 @@ static UART_HandleTypeDef uart;
 static uint8_t sent[32];
 static unsigned sends, handled;
 static int moving, missing, rx_fail, zero_nack, sync_missing, post_moving;
-static bool restart_noise;
+static bool restart_noise, sync_nack;
 static bool tx_never_completes;
 static unsigned transient_moving, speed_reads;
 static unsigned post_transient;
@@ -51,7 +51,7 @@ static void step(void)
       assert(sent[0]>=1 && sent[0]<=4); /* Never broadcast to IDs5..8. */
       assert(zero_mask==15 && cached[sent[0]-1]==0);
       assert(sent[2]==0x66 && sent[3]==0x6b);
-      sync_mask|=1U<<(sent[0]-1);r[2]=2;r[3]=0x6b;
+      sync_mask|=1U<<(sent[0]-1);r[2]=sync_nack?0xe2:2;r[3]=0x6b;
       if(!sync_missing)MotorBus_RxBytes(r,4);
     } else {
       assert(sent[0]>=1 && sent[0]<=8);
@@ -86,7 +86,7 @@ int main(void)
     MotorBus_Process(); step();
     assert(MotorBus_EventGet(MOTOR_BUS_ARM,&event) && event.result==MOTOR_BUS_REPLY);
   }
-  uart.ErrorCode=4;MotorBus_ErrorCallback(&uart);MotorBus_Process();
+  uart.ErrorCode=HAL_UART_ERROR_DMA;MotorBus_ErrorCallback(&uart);MotorBus_Process();
   assert(MotorBus_IsQuarantined());
   assert(MotorBus_RecoveryStart());
   assert(!MotorBus_Submit(MOTOR_BUS_ARM,move,3,4,0,false));
@@ -107,6 +107,12 @@ int main(void)
   stopped_speed=1;speed_sign=1;assert(MotorBus_RecoveryStart());s=run();
   assert(s.success && s.speed_rpm==-1 && s.speed_address==4 && s.speed_ms<=tick);
   stopped_speed=0;speed_sign=0;
+  sync_nack=true;assert(MotorBus_RecoveryStart());s=run();
+  assert(s.success && !MotorBus_IsQuarantined() && zero_mask==15 && post_mask==15 && s.sync_warning_mask==15);
+  post_moving=1;assert(MotorBus_RecoveryStart());s=run();
+  assert(!s.success && MotorBus_IsQuarantined() && !strcmp(s.reason,"motor_moving"));
+  post_moving=0;
+  sync_nack=false;
   zero_nack=1;sync_mask=0;assert(MotorBus_RecoveryStart());s=run();
   assert(!s.success && MotorBus_IsQuarantined() && sync_mask==0);
   assert(!strcmp(s.reason,"zero_ack_failed"));

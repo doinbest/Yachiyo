@@ -11,10 +11,6 @@
 #define GRAB_TRACK_PICK_DESCEND_TOL_PX 50.0f
 #define GRAB_CAR_PICK_CLEARANCE_MM 30.0f
 #define GRAB_CAR_PICK_OPEN_PULSE_US 2120U
-/* Fixed X/Z motion: half-cosine ramp duration = 2*K milliseconds. */
-#define GRAB_Z_LIFT_COSINE_K 150U
-#define GRAB_Z_LOWER_COSINE_K 200U
-#define GRAB_X_COSINE_K 200U
 /* User measurement: 100 motor degrees -> 28 mm; 3200 command pulses/rev. */
 PARAM(C_X_PPM, "x_ppm", 31.746031746, 0, 100000, 2, 2)
 PARAM(C_Z_PPM, "z_ppm", 480, 0, 100000, 2, 4)
@@ -53,8 +49,8 @@ PARAM(C_X_WEIGHT, "x_weight", 2.333333, 0.01, 100, 0, 1)
 PARAM(C_Z_PLACE, "z_place", -40, -10000, 10000, 0, 4)
 PARAM(C_LOSS_GRACE_MS, "loss_grace_ms", 250, 0, 300, 1, 1)
 PARAM(C_Z_CAR_LIFT, "z_car_lift", 0, -10000, 10000, 0, 5)
-PARAM(C_Z_PROC_PLACE, "z_proc_place", -130, -10000, 10000, 0, 4)
-PARAM(C_Z_STACK_PLACE, "z_stack_place", -100, -10000, 10000, 0, 4)
+PARAM(C_Z_PROC_PLACE, "z_proc_place", -140, -10000, 10000, 0, 4)
+PARAM(C_Z_STACK_PLACE, "z_stack_place", -110, -10000, 10000, 0, 4)
 /* User-confirmed station alignment and second-layer release heights. */
 PARAM(C_Z_ROUGH_ALIGN, "z_rough_align", -100, -10000, 10000, 0, 4)
 PARAM(C_Z_TEMP_ALIGN, "z_temp_align", -100, -10000, 10000, 0, 4)

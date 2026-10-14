@@ -8,7 +8,7 @@ import {footprintDiagnostic} from '../route-model.mjs';
 const cwd=fileURLToPath(new URL('..',import.meta.url));
 const result=spawnSync('python',['-X','utf8','-c','import json;from serve import plan_radar_offline;print(json.dumps(plan_radar_offline({"mask":0,"speed_mm_s":1000})))'],{cwd,encoding:'utf8'});
 assert.equal(result.status,0,result.stderr);
-const profile=JSON.parse(result.stdout).route_profiles.task_fixed;
+const profile=JSON.parse(result.stdout).route_profiles.task_fixed_cosine;
 
 test('opening joins corridor centre, spreads yaw and exits parallel to QR lane',()=>{
   const p=profile.phases.find(p=>p.phase==='entry_curve')??profile.phases.find(p=>p.kind==='curve');

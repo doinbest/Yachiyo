@@ -40,12 +40,12 @@ int main(void)
     assert(!d.locked && !strcmp(d.reason,"none"));
   }
   /* An idle UART fault must survive ReceiveStart clearing HAL ErrorCode. */
-  tick=1000; uart.ErrorCode=HAL_UART_ERROR_FE;
+  tick=1000; uart.ErrorCode=HAL_UART_ERROR_DMA;
   MotorBus_ErrorCallback(&uart);
   tick=1003; MotorBus_Process();
   MotorBus_DiagnosticGet(&d);
   assert(d.locked && !strcmp(d.reason,"uart_error") && d.tick_ms==1000);
-  assert(d.uart_error==HAL_UART_ERROR_FE && !d.active && !d.waiting_reply);
+  assert(d.uart_error==HAL_UART_ERROR_DMA && !d.active && !d.waiting_reply);
   assert(d.owner==MOTOR_BUS_ARM && d.address==7 && d.function==0x3a);
   assert(uart.ErrorCode==0);
   unsigned previous=tx_count;
@@ -53,7 +53,7 @@ int main(void)
   MotorBus_Process(); assert(tx_count==previous);
   uart.ErrorCode=HAL_UART_ERROR_ORE; MotorBus_ErrorCallback(&uart); MotorBus_Process();
   MotorBus_DiagnosticGet(&d);
-  assert(d.uart_error==HAL_UART_ERROR_FE && d.tick_ms==1000); /* first cause */
+  assert(d.uart_error==HAL_UART_ERROR_DMA && d.tick_ms==1000); /* first cause */
   assert(MotorBus_RecoverAfterReset());
   MotorBus_DiagnosticGet(&d); assert(!d.locked && !strcmp(d.reason,"none"));
 

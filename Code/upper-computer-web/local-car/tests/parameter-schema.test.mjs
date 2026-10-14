@@ -8,10 +8,10 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.equal(GRAB_FORM_DEFAULTS.z_min,-150);
   assert.equal(GRAB_FORM_DEFAULTS.car_pick_drop_mm,40);
   assert.equal(GRAB_FORM_DEFAULTS.z_grab,-50);
-  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-130);
+  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-140);
   assert.equal(GRAB_FORM_DEFAULTS.z_rough_align,-100);
   assert.equal(GRAB_FORM_DEFAULTS.z_temp_align,-100);
-  assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-100);
+  assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-110);
   assert.equal(grabParameters.length,66);
   for(const key of ['head_proc_zero','head_proc_gain','head_temp_zero','head_temp_gain','head_tol','head_spread','head_settle_ms','head_proc_turn','head_temp_turn'])assert.ok(!(key in GRAB_FORM_DEFAULTS));
   assert.ok(!grabParameters.some(p=>['ref_u','ref_v'].includes(p.key)));
@@ -46,7 +46,7 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.throws(()=>fieldWrites(parameterFields.find(p=>p.key==='frames'),{frames:3.5}));
   assert.throws(()=>buildCommand('grab-set-base_car_offset',{value:361}));
   assert.match(parameterFields.find(p=>p.key==='x_acc').label,/驱动加速度档位/);
-  assert.match(parameterFields.find(p=>p.key==='x_acc').note,/固定X\/Z任务使用余弦规划/);
+  assert.match(parameterFields.find(p=>p.key==='x_acc').note,/默认X20、Z255/);
 });
 
 test('material descent speed is shared and separate from ring/lift speed',()=>{

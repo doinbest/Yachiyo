@@ -87,7 +87,7 @@ int main(void)
   for(unsigned i=0;i<4;i++){location.wheels[i]=(Mecanum_Feedback_t){0};location.wheels[i].speed_valid=location.wheels[i].position_valid=location.wheels[i].state_valid=true;
    location.wheels[i].speed_ms=location.wheels[i].position_ms=location.wheels[i].state_ms=tick;location.wheels[i].state_flags=3;location.wheels[i].speed_rpm=prep?3:0;}
   memset(&child,0,sizeof child);child.reason="idle";travel.state=travel.phase=travel.reason="idle";
-  QR_Init();ContestMission_Init();ContestMission_Request_t r={MISSION_CODE_QR,"",200,50,RADAR_START_LOWER,false,false,false};assert(ContestMission_Start(NULL,&r));ContestMission_Process();
+  QR_Init();ContestMission_Init();ContestMission_Request_t r={MISSION_CODE_QR,"",200,50,RADAR_START_LOWER,false,false,false,CHASSIS_PROFILE_LINEAR};assert(ContestMission_Start(NULL,&r));ContestMission_Process();
   if(prep)assert(!strcmp(ContestMission_Reason(),"start_wheels_moving"));else assert(ChassisMotion_IsBusy());
   ContestMission_Cancel();ContestMission_Process();assert(ChassisMotion_StopPending());
   sample(110,true);assert(!status().stop_confirmed && ContestMission_HasPendingWork());

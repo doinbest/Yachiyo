@@ -243,9 +243,11 @@ int main(void)
   assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 8,
            MECHANICAL_ARM_POSITION_RELATIVE_CURRENT) == MECHANICAL_ARM_RESULT_PARAM_ERROR);
   assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 0,
+           MECHANICAL_ARM_POSITION_ABSOLUTE) == MECHANICAL_ARM_RESULT_PARAM_ERROR);
+  assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 255,
            MECHANICAL_ARM_POSITION_ABSOLUTE) == MECHANICAL_ARM_RESULT_NONE);
   tick += 10; MotorBus_Process();
-  assert(frame[0] == 7 && frame[1] == 0xfd && frame[10] == 1 && frame[5] == 0);
+  assert(frame[0] == 7 && frame[1] == 0xfd && frame[10] == 1 && frame[5] == 255);
   assert(frame[6] == 0 && frame[7] == 0 && frame[8] == 0 && frame[9] == 0);
   MotorBus_TxCpltCallback(&uart);
   const uint32_t x_tx_tick=tick;

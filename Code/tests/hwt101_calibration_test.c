@@ -203,6 +203,30 @@ int main(void)
 
   setup(100);assert(HWT101_Cal_Start());advance(1000,0);HWT101_Cal_Cancel();finish();
   assert(regs[0x48]==0 && exits==1 && saves==0 && !snapshot().verified);
+  /* Abort recovery waits for the driver's one-second reprobe/local BUSY recovery. */
+  setup(100);assert(HWT101_Cal_Start());advance(1000,0);
+  comm.i2c_error_count++;comm.last_hal=HAL_TIMEOUT;comm.hal_error=0x20U;
+  comm.hal_state=0x24U;comm.fault_operation=1;comm.fault_register=0x3f;
+  comm.fault_ms=tick;ready=false;sample(10,0);
+  advance(1500,0);
+  assert(snapshot().busy && snapshot().state==HWT101_CAL_RESTORING && exits==0);
+  ready=true;finish();
+  assert(snapshot().state==HWT101_CAL_FAILED && snapshot().normal_mode_confirmed);
+  assert(!strcmp(snapshot().reason,"i2c") && !saves && !snapshot().verified);
+  assert(!strcmp(snapshot().first_reason,"i2c") && snapshot().first_hal==HAL_TIMEOUT);
+  assert(snapshot().first_hal_error==0x20U && snapshot().first_hal_state==0x24U);
+  assert(snapshot().first_operation==1 && snapshot().first_register==0x3f);
+  setup(100);assert(HWT101_Cal_Start());advance(1000,0);
+  comm.i2c_error_count++;comm.last_hal=HAL_TIMEOUT;ready=false;sample(10,0);
+  advance(5100,0);
+  assert(!snapshot().busy && !snapshot().normal_mode_confirmed && !saves);
+  assert(!strcmp(snapshot().reason,"normal_mode_unconfirmed"));
+  assert(!strcmp(snapshot().first_reason,"i2c") && snapshot().first_hal==HAL_TIMEOUT);
+  /* The same failure after tick wrap must still allow local recovery. */
+  setup(UINT32_MAX-1500);assert(HWT101_Cal_Start());advance(1000,0);
+  comm.i2c_error_count++;ready=false;sample(10,0);advance(2000,0);
+  assert(snapshot().busy);ready=true;finish();
+  assert(snapshot().normal_mode_confirmed && !snapshot().verified && !saves);
   setup(100);fail_write_reg=0x48;assert(HWT101_Cal_Start());finish();
   assert(starts==1 && exits==3 && !strcmp(snapshot().reason,"normal_mode_unconfirmed"));
   fail_write_reg=-1;HWT101_Cal_Cancel();finish();assert(regs[0x48]==0 && snapshot().normal_mode_confirmed);

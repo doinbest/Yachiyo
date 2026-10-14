@@ -5,6 +5,10 @@ void NVIC_SystemReset(void);
 #include <stddef.h>
 typedef enum { HAL_OK, HAL_ERROR, HAL_BUSY, HAL_TIMEOUT } HAL_StatusTypeDef;
 typedef struct { unsigned int instance; } I2C_HandleTypeDef;
+HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *);
+HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *);
+uint32_t HAL_I2C_GetError(I2C_HandleTypeDef *);
+uint32_t HAL_I2C_GetState(I2C_HandleTypeDef *);
 typedef struct { unsigned int instance; } SPI_HandleTypeDef;
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *, uint8_t *, uint8_t *, uint16_t, uint32_t);
 typedef struct { uint32_t counter; } DMA_HandleTypeDef;

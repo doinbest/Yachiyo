@@ -6,6 +6,13 @@
 #include "chassis_path.h"
 #include "chassis_model.h"
 
+typedef enum { CHASSIS_PROFILE_LINEAR, CHASSIS_PROFILE_COSINE } ChassisMotion_Profile_t;
+/** Select the next distance task while idle. The accepted action snapshots it. */
+bool ChassisMotion_ProfileSet(ChassisMotion_Profile_t profile);
+ChassisMotion_Profile_t ChassisMotion_ProfileGet(void);
+static inline const char *ChassisMotion_ProfileName(ChassisMotion_Profile_t profile)
+{ return profile==CHASSIS_PROFILE_COSINE?"cosine":"linear"; }
+
 /** Continuous path retains its final target and only stops at that target.
  * resume_mm is the saved path progress, zero for a new leg. */
 bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn_deg_s,
@@ -50,6 +57,9 @@ typedef struct
   float current_deg, unwrapped_yaw_deg, map_yaw_rad;
   uint32_t heading_sample_tick;
   uint32_t heading_revision; /* Map correction only, independent of origin generation. */
+  ChassisMotion_Profile_t profile;
+  float peak_mm_s; /* Fresh wheel-feedback planar speed, never commanded speed. */
+  uint32_t stop_ms; /* Final stop request to fresh standstill confirmation. */
 } ChassisMotion_Status_t;
 
 /** @brief 启动时初始化RAM；不得用它终止运行中的电机。 */

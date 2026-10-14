@@ -118,16 +118,17 @@ bool GrabTask_TrackedStoreStart(uint8_t color,uint8_t slot,GrabTracking_Mode_t m
 bool GrabTask_StoreFinishTravel(void);
 bool GrabTask_CarPickStart(uint8_t slot);
 bool GrabTask_HeldPlaceStart(const char *scene,uint8_t target,uint8_t material_color);
-/** rough/temp1: empty-claw ring alignment, capture actual X/Z and release target,
+/** rough/temp1 use ring 1..3; temp2 uses first-layer material color 1..6.
+ * Empty-claw alignment captures actual X/Z and the scene release target,
  * then pick from the tray and place without another vision request. */
-bool GrabTask_AlignPlaceStart(const char *scene,uint8_t ring);
+bool GrabTask_AlignPlaceStart(const char *scene,uint8_t target);
 bool GrabTask_AlignPlaceCapture(void);
-bool GrabTask_AlignedPlaceStart(const char *scene,uint8_t ring,uint8_t material_color);
+bool GrabTask_AlignedPlaceStart(const char *scene,uint8_t target,uint8_t material_color);
 bool GrabTask_ProcessedStoreStart(uint8_t color,uint8_t ring,uint8_t slot);
 /** Per-task station alignment choice: raised uses absolute Z=0 before final
  * vertical pickup/release. Standalone station entry points also default to raised alignment. */
 bool GrabTask_HeldPlaceStartEx(const char *scene,uint8_t target,uint8_t material_color,bool raised);
-bool GrabTask_AlignPlaceStartEx(const char *scene,uint8_t ring,bool raised);
+bool GrabTask_AlignPlaceStartEx(const char *scene,uint8_t target,bool raised);
 bool GrabTask_ProcessedStoreStartEx(uint8_t color,uint8_t ring,uint8_t slot,bool raised);
 /** @brief 消费本任务发起的机械臂事件；非本任务返回0。 */
 uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event);

@@ -15,6 +15,10 @@ static void mission_before_grab(void);
 #include "chassis_localization.h"
 static ChassisRoute_Status_t route;
 static ChassisMotion_Status_t motion;
+static ChassisMotion_Profile_t selected_profile;
+ChassisMotion_Profile_t ChassisMotion_ProfileGet(void){return selected_profile;}
+bool ChassisMotion_ProfileSet(ChassisMotion_Profile_t p)
+{if(ChassisMotion_IsBusy() || (p!=CHASSIS_PROFILE_LINEAR && p!=CHASSIS_PROFILE_COSINE))return false;selected_profile=p;return true;}
 static char displayed[16];
 static unsigned resumed,stored,placed,pause_count;
 static unsigned overlapping_moves,busy_moves,last_base_moves;
@@ -23,7 +27,7 @@ static bool overlap_in_flight;
 static uint32_t base_due,motion_due;
 static bool integration_mission_enabled;
 static bool expected_raised;
-static unsigned raised_ring,raised_pick,raised_stack;
+static unsigned raised_ring,raised_pick,raised_stack,stack_camera_requests;
 static const char *paused_route;
 static const GrabTask_State_t pause_stages[]={GRAB_TRACK_OBSERVE,GRAB_DESCEND,GRAB_RELEASE,GRAB_CLOSE,GRAB_ALIGN,GRAB_RETRACT};
 bool ChassisRoute_StationReserved(void){return !strcmp(route.state,"work") || !strcmp(route.state,"station");}
@@ -77,12 +81,17 @@ static void cycle(void){
   if(route.station==3 && route.visit==4 && !strcmp(status().operation,"car_pick")){
     assert(AlignedPlace.valid && AlignedPlace.scene==SCENE_TEMP1);
   }
+ if(route.station==3 && route.visit==7 && !strcmp(status().operation,"car_pick")){
+   assert(AlignedPlace.valid && AlignedPlace.scene==SCENE_TEMP2 && AlignedPlace.ring==(uint8_t)ActiveColor);
+   stack_camera_requests=camera_requests;
+ }
+ if(route.station==3 && route.visit==7 && PrealignedPlaceActive)assert(camera_requests==stack_camera_requests);
  if(status().state==GRAB_ALIGN && (EmptyPlaceAlignActive || ProcessedStoreActive || HeldPlaceActive)){
    assert(StationAlignRaised==expected_raised);
    if(expected_raised){assert(fabsf(physical[1])<0.01f);
      if(EmptyPlaceAlignActive)raised_ring++;
      if(ProcessedStoreActive)raised_pick++;
-     if(HeldPlaceActive)raised_stack++;
+     if(EmptyPlaceAlignActive && Scene==SCENE_TEMP2){assert(!TrackHeld);raised_stack++;}
    }
  }
  if(overlap_in_flight && overlap_pauses<3 &&
@@ -123,7 +132,7 @@ static void run_match(bool raised)
  route.state="idle";route.phase="idle";route.reason="idle";
  motion.state=CHASSIS_MOTION_DONE;motion.stop_confirmed=true;motion.reason="feedback_arrived";
  motion.heading_valid=true;
- ContestMission_Init();ContestMission_Request_t request={MISSION_CODE_FIXED,"156+123+516+231",200,50,RADAR_START_LOWER,false,false,false};
+ ContestMission_Init();ContestMission_Request_t request={MISSION_CODE_FIXED,"156+123+516+231",200,50,RADAR_START_LOWER,false,false,false,CHASSIS_PROFILE_LINEAR};
  request.align_raised=raised;
  assert(ContestMission_Start(NULL,&request));
  request.align_raised=!raised; /* Caller edits cannot change this accepted match. */

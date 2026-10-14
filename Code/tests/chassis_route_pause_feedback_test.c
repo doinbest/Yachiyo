@@ -7,6 +7,7 @@
 #undef main
 #include "chassis_route.h"
 #include "GrabTask.h"
+bool ContestMission_HasPendingWork(void){return false;}
 bool GrabTask_PoseClearanceReady(void){return false;}
 bool GrabTask_QrPoseStart(void){return true;}
 void GrabTask_StatusGet(GrabTask_Status_t *s){memset(s,0,sizeof *s);s->state=GRAB_COMPLETE;s->result="qr_pose_ready";}

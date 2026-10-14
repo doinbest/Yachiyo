@@ -332,6 +332,18 @@ static void HWT101_Upload_Process(void)
       return;
     }
     if (Cal.state == HWT101_CAL_FAILED) ImuTiming_Report(&Cal);
+    if (Cal.first_reason && strcmp(Cal.first_reason, "none"))
+    {
+      UploadLength = snprintf(UploadText, sizeof(UploadText),
+          "[IMU FAULT] first_reason=%s first_HAL=%u error=0x%08lX state=0x%02lX "
+          "op=%u reg=0x%02X tick=%lu reinit_count=%lu\r\n",
+          Cal.first_reason, (unsigned)Cal.first_hal, (unsigned long)Cal.first_hal_error,
+          (unsigned long)Cal.first_hal_state, (unsigned)Cal.first_operation,
+          (unsigned)Cal.first_register, (unsigned long)Cal.first_fault_ms,
+          (unsigned long)Comm.reinit_count);
+      if ((UploadLength > 0) && (UploadLength < (int)sizeof(UploadText)))
+        (void)ConsoleTx_Write((uint8_t *)UploadText, (uint16_t)UploadLength);
+    }
     UploadLength = snprintf(UploadText, sizeof(UploadText),
         "\r\n[IMU CAL] result=%s state=%s reason=%s HAL=%u run_id=%lu verified=%u control_ready=%u\r\n",
         Cal.result, Cal.state_name, Cal.reason, (unsigned)Cal.hal,

@@ -676,7 +676,7 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef A
 {
   if ((MechanicalArm_AxisConfigGet(Axis) == NULL) ||
       ((Position == 0) && (Mode != MECHANICAL_ARM_POSITION_ABSOLUTE)) || (SpeedRpm < 1U) ||
-      (SpeedRpm > 3000U) ||
+      (SpeedRpm > 3000U) || (Acceleration < 1U) ||
       ((Mode != MECHANICAL_ARM_POSITION_ABSOLUTE) &&
        (Mode != MECHANICAL_ARM_POSITION_RELATIVE_CURRENT)))
   {

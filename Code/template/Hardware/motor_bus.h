@@ -48,6 +48,7 @@ typedef struct
   /** Pre-first-TX framing faults successfully recovered without locking the bus.
    * Counters survive manual recovery; last_ms is MCU uptime of the last FE. */
   uint32_t startup_fe_recovered, startup_fe_last_ms;
+  uint32_t rx_warning_count, rx_warning_ms, rx_warning_error; /* RX restarted without motion replay. */
   /* First-fault receive evidence, retained through manual recovery. Bytes are
    * from the request dispatch; sample is its last up to 16 received bytes. */
   uint32_t rx_bytes, last_rx_ms, process_gap_ms;
@@ -125,6 +126,7 @@ typedef struct
 {
   bool active, success;
   uint8_t address, checked_mask;
+  uint8_t sync_warning_mask; /* Addressed zero sync refused; zero caches and fresh rest still verified. */
   const char *reason;
   uint8_t speed_address;
   int32_t speed_rpm;
@@ -147,7 +149,8 @@ static inline bool MotorBus_RecoveryRetryable(const MotorBus_Recovery_t *s)
  * Keeps normal traffic locked; stops/aborts IDs 1..8, drains old replies, then
  * checks three rounds of speed/state/home flags, overwrites IDs1..4 sync caches
  * with 0 RPM (Receive ACK each), triggers addressed sync, then verifies fresh
- * wheel speed/state/home flags. success means caches cleared and stopped.
+ * wheel speed/state/home flags. Refused addressed sync is a warning only after
+ * all zero-cache ACKs; success still requires fresh stopped wheel feedback.
  * Rechecks residual speed every 100 ms within the existing 8 s limit; any
  * moving sample restarts stopped validation, persistent motion stays locked.
  * Never enables, resets position, homes, broadcasts sync or resumes a task.

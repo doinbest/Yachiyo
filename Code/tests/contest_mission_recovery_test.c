@@ -18,6 +18,23 @@ static void finish_recovery(bool success)
 }
 int main(void)
 {
+  request.profile=CHASSIS_PROFILE_COSINE;fixture();
+  assert(selected_profile==CHASSIS_PROFILE_COSINE);
+  request.profile=CHASSIS_PROFILE_LINEAR;
+  ContestMission_Stop();step();assert(ContestMission_HasPendingWork());
+  assert(!ContestMission_Start(NULL,&request) && selected_profile==CHASSIS_PROFILE_COSINE);
+  selected_profile=CHASSIS_PROFILE_LINEAR; /* Simulated controller reinitialization. */
+  assert(ContestMission_Continue());step();
+  assert(selected_profile==CHASSIS_PROFILE_COSINE);ContestMission_Report();assert(strstr(report,"profile=cosine"));
+  assert(ContestMission_RequestBusRecovery(true));
+  for(unsigned i=0;i<5 && !recovery_starts;i++)step();
+  selected_profile=CHASSIS_PROFILE_LINEAR;
+  finish_recovery(true);assert(selected_profile==CHASSIS_PROFILE_COSINE && ContestMission_IsBusy());
+  assert(ContestMission_RequestBusRecovery(false));
+  for(unsigned i=0;i<5 && !mission_recovery.active;i++)step();
+  selected_profile=CHASSIS_PROFILE_LINEAR;finish_recovery(true);
+  ContestMission_Report();assert(strstr(report,"state=paused") && strstr(report,"profile=cosine"));
+  assert(ContestMission_Continue());step();assert(selected_profile==CHASSIS_PROFILE_COSINE);
   fixture();unsigned origin=origin_calls,start_count=starts;
   recovery_diagnostic=(MotorBus_Diagnostic_t){.locked=true,.reason="uart_error",.uart_error=HAL_UART_ERROR_NE};
   for(unsigned i=0;i<5 && !recovery_starts;i++)step();

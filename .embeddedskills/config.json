@@ -2,7 +2,7 @@
   "keil": {
     "project": "Code/template/MDK-ARM/template.uvprojx",
     "target": "template",
-    "log_dir": ".embeddedskills/build/xz-cosine-20261014"
+    "log_dir": ".embeddedskills/imu-native-recovery-20261015/build"
   },
   "eide": {
     "project": "Code/template/MDK-ARM/eide",

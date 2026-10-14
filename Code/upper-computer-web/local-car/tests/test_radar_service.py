@@ -240,6 +240,14 @@ class RadarServiceTests(unittest.TestCase):
     def test_rear_arm_task_profiles_use_shared_work_headings(self):
         profiles=serve.plan_radar_offline({'mask':0})['route_profiles']
         task=profiles['task_fixed']
+        self.assertEqual([p['target'] for p in task['phases'][:3]],
+                         [[2100,300,180],[2100,300,90],[2100,1200,90]])
+        self.assertEqual([p['kind'] for p in task['phases'][:3]],['move','turn','move'])
+        cosine=profiles['task_fixed_cosine']
+        self.assertEqual(cosine['phases'][0]['phase'],'entry_curve')
+        self.assertEqual(cosine['phases'][0]['path'][8][:3],[2125,350,180])
+        self.assertEqual(cosine['phases'][1:],task['phases'][3:])
+        self.assertTrue(profiles['task_planned_cosine']['phases'])
         raw=[p for p in task['phases'] if p['segment']==3]
         self.assertEqual([p['phase'] for p in raw],['work_approach','work_turn'])
         self.assertEqual(raw[0]['target'],[1200,2100,90])
@@ -250,8 +258,13 @@ class RadarServiceTests(unittest.TestCase):
         self.assertTrue(all('path' not in p for p in raw))
         for station,yaw in [(2,180),(3,90)]:
             docks=[p for p in task['phases'] if p['station']==station and p['phase']=='work_dock']
-            self.assertEqual(len(docks),2)
+            self.assertEqual(len(docks),0 if station==2 else 2)
             self.assertTrue(all(p['target'][2]==yaw and p['speed_mm_s']==50 for p in docks))
+        processing=[p for p in task['phases'] if p['station']==2 and p['phase']=='work_turn']
+        self.assertEqual([p['target'] for p in processing],[[1200,380,180]]*2)
+        temporary=[p for p in task['phases'] if p['segment']==6]
+        self.assertEqual([p['target'] for p in temporary],[[1200,1200,0],[425,1200,0],[425,1200,90],[350,1200,90]])
+        self.assertEqual(temporary[1]['direction'],'reverse')
         self.assertEqual(task['phases'][-1]['target'],[2250,150,90])
         self.assertEqual(task['phases'][-1]['arm_pose'],'rear')
         self.assertTrue(profiles['task_planned']['phases'])
@@ -296,7 +309,9 @@ class RadarServiceTests(unittest.TestCase):
         serve.plan_radar_offline({}) # Build the production CLI through its normal consumer.
         executable=ROOT.parents[2]/'.embeddedskills/tests/radar_plan_cli.exe'
         request='RADAR1 0 0\n2170 230 180 100 40000 0 3600 3 0 255\n'
-        for args,speed in (([],200),(['--speed','37.5'],37.5)):
+        # Direct CLI defaults follow firmware; the offline HTTP service passes
+        # its independent 200 mm/s preview default explicitly via --speed.
+        for args,speed in (([],1000),(['--speed','37.5'],37.5)):
             result=subprocess.run([str(executable),*args],input=request,capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             output=json.loads(result.stdout);self.assertIn('route_profiles',output)

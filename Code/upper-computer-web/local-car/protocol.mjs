@@ -147,7 +147,7 @@ export const commands = [
     '任务空闲时单次读取，不运动、不改参数。当前车使用Emm布局与65536反馈单位/圈；停止锁定期间可读。'),
   command('bus-test-stop','system','结束单电机测试','bus test stop',[],'结束通信测试；实际停车使用停车入口。'),
   command('help','system','固件指令帮助','help'),
-  command('chassis-test','chassis','路线加速度 · 单段位移','chassis test {forward} {left} {speed}',[choice('direction','相对车头方向',[['forward','↑ 前进'],['back','↓ 后退'],['left','← 左移'],['right','→ 右移'],['fl','↖ 左前'],['fr','↗ 右前'],['bl','↙ 左后'],['br','↘ 右后']],'forward'),number('distance','合位移 / mm',500,1,3000,1),number('speed','目标合速度 / mm/s',1000,10,5000,1)],'复用当前普通直线路段的余弦加减速（K=200），短距离自动降低峰值速度。保持起步朝向，斜移距离为合距离；运行到目标并确认停稳后结束。'),
+  command('chassis-test','chassis','路线加速度 · 单段位移','chassis test {forward} {left} {speed} {profile}',[choice('direction','相对车头方向',[['forward','↑ 前进'],['back','↓ 后退'],['left','← 左移'],['right','→ 右移'],['fl','↖ 左前'],['fr','↗ 右前'],['bl','↙ 左后'],['br','↘ 右后']],'forward'),number('distance','合位移 / mm',500,1,3000,1),number('speed','目标合速度 / mm/s',1000,10,5000,1),choice('profile','底盘加减速',[['linear','线性 · 300 mm/s²'],['cosine','余弦 · K200 / 400 ms']],'linear')],'选择直线加减速方式，短距离自动降低峰值速度。保持起步朝向，斜移距离为合距离；运行到目标并确认停稳后结束。'),
   command('chassis-run','chassis','平移与转向测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-300,300,0.1),number('vy','左向速度 / mm·s⁻¹',0,-300,300,0.1),number('omega_deg','逆时针角速度 / °·s⁻¹',0,-500,500,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'角速度输入单位为 °/s，网页上限500；网页自动换算为固件rad/s。角速度为 0 时自动保持起步航向，需要 IMU 验证通过；非 0 时执行给定转向。起步和停车各 500 ms；总时长为保持时间加 1 秒。'),
   command('chassis-heading','chassis','航向保持测试','chassis heading {vx} {vy} {heading} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-300,300,0.1),number('vy','左向速度 / mm·s⁻¹',0,-300,300,0.1),number('heading','HWT101 模块目标角度 / °','',-180,180,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'需本次启动验证通过；目标角度不是地图角度。起步和停车各 500 ms。'),
   command('chassis-turn','chassis','原地转到地图航向','chassis turn {heading}',[number('heading','地图绝对航向 / °','',-180,180,0.1)],'地图从 +X 逆时针，范围 -180～180°；显式执行后原地转向，按新鲜航向反馈完成。与模块航向保持测试分别使用。'),
@@ -210,12 +210,13 @@ export function moduleForWire(text) {
 export function frameCommand(text) {
   if (typeof text !== 'string' || /[^\x20-\x7e\t]/.test(text)) throw new Error('仅允许单行 ASCII 命令，不能包含换行。');
   const line = text.trim();
-  if (!line || line.length > 63) throw new Error('命令长度必须为 1～63 字节。');
-  if (line.split(/\s+/).length > 9) throw new Error('固件最多接受 9 个字段。');
+  if (!line || line.length > 95) throw new Error('命令长度必须为 1～95 字节。');
+  if (line.split(/\s+/).length > 10) throw new Error('固件最多接受 10 个字段。');
   return line + '\r\n';
 }
 
 export function buildCommand(id, values = {}) {
+  if(id==='chassis-test')values={profile:'linear',...values};
   // A high alignment uses absolute Z=0; the inactive lower-height draft is ignored.
   if(id==='grab-ring-align-options' && values.height==='raised')values={...values,z:'0'};
   const definition = commands.find(c => c.id === id);
@@ -387,7 +388,7 @@ export function describeGrabRoute(r) {
   if(r?.mode==='heading')return `独立航向测试 · ${reasonText(r.reason||r.heading_result||r.state)}`;
   if(r?.mode==='single'){const stage=({stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',car_pick:'车仓取出并保持',held_place:'持料视觉对准',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向姿态',driving:'行驶中',prepare_transfer:'准备抓取',transfer:'抓取入仓',prepare_departure:'准备收回',leaving:'收回朝后',config_wait:`等待补齐 ${describeGrabMissing(r.reason)} 后继续本件`,done:'入仓及收回完成',error:'任务故障',cancelled:'已取消'})[r.state]||r.state;return `蓝色首件 · 第一仓 · ${stage}`;}
   if(r?.mode!=='mission')return `组合路线：${({idle:'空闲',driving:'行驶中',scan_wait:'扫码等待 1 秒',display_wait:'等待屏幕发送',handoff:'物料台已交接',error:'路线故障',cancelled:'已取消',done:'首件任务完成'})[r?.state]||r?.state||'未报告'}`;
-  const stage=({cancelling:'正在结束本轮',cancel_wait:'结束中 · 停车尚未确认',stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',empty_ring_align:'空爪对准目标编号环',car_pick:'车仓取出并保持',held_place:'放置所取物料',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向行驶姿态',driving:'行驶中',ring_clear:'抬升收回',ring_move:'移动到指定环',transfer:'单件取放',leaving:'恢复后向姿态',return_center:'返回工位中心',config_wait:'等待补齐参数',done:'两批任务结束',error:'任务故障',cancelled:'已取消',prepare_ring:'准备换环',prepare_departure:'准备离站',prepare_transfer:'准备下一件取放'})[r.state]||r.state;
+  const stage=({cancelling:'正在结束本轮',cancel_wait:'结束中 · 停车尚未确认',stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',empty_ring_align:'空爪对准目标编号环',empty_material_align:'空爪对准第一层同色物料',car_pick:'车仓取出并保持',held_place:'放置所取物料',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向行驶姿态',driving:'行驶中',ring_clear:'抬升收回',ring_move:'移动到指定环',transfer:'单件取放',leaving:'恢复后向姿态',return_center:'返回工位中心',config_wait:'等待补齐参数',done:'两批任务结束',error:'任务故障',cancelled:'已取消',prepare_ring:'准备换环',prepare_departure:'准备离站',prepare_transfer:'准备下一件取放'})[r.state]||r.state;
   const recoveryStage=({bus_recovery_stopping:'通信异常 · 保留进度停车',bus_recovering:'恢复电机总线',bus_recovery_verify:'恢复后确认停稳',bus_recovery_wait:'总线恢复待处理',bus_recovery_retry:'通信恢复重试'})[r.state];
   return `${r.batch===2?'第二批':'第一批'} · 第 ${r.item??'—'} 件 · ${recoveryStage||stage}${r.state==='config_wait'?`：补齐 ${describeGrabMissing(r.reason)} 后继续本件`:''}`;
 }

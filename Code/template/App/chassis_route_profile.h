@@ -45,4 +45,12 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,
                                  float previous_yaw_deg, float speed_mm_s,
                                  bool first_scan_leg, ChassisRoute_Profile_t *out);
 
+/** Select only the standard lower-start entrance. Other stations/detours retain
+ * their existing task phases. false restores translation, stopped turn, straight. */
+bool ChassisRouteProfile_BuildTaskEntry(const RadarPlan_Point_t *from,
+                                      const RadarPlan_Point_t *to,
+                                      float previous_yaw_deg,float speed_mm_s,
+                                      bool first_scan_leg,bool continuous_entry,
+                                      ChassisRoute_Profile_t *out);
+
 #endif

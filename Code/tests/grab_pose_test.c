@@ -124,7 +124,7 @@ static void rear_home_direct_car_release(float rear)
   }
 
   run_to(GRAB_RELEASE,600,0);
-  assert(x_position_rpm>0 && x_position_rpm<=(uint16_t)floorf(55*Config[C_X_PPM]*60/3200) && x_position_acc==0);
+  assert(x_position_rpm==103 && x_position_acc==configured_x_acc);
   assert(fabsf(physical[0]-Config[C_X_MIN])<.01f && fabsf(physical[1]+5)<.01f);
   run_to(GRAB_COMPLETE,600,0);
   assert(openings==2 && !closures && !tray_indexes && homes==3);
@@ -248,6 +248,7 @@ static void heading_accepts_higher_pose_without_rebasing_z(void)
   StationHeading_Config_t heading;GrabTask_HeadingConfigGet(2,&heading);
   assert(heading.observation_z_mm==Axes[1].mm && !heading.height_matches);
   assert(heading.gain==1 && Config[C_HEAD_PROC_GAIN]==1);
+  assert(heading.wait_ms==5000);
   /* Fixed descent sends the absolute -130 target, never -120 from an assumed -10 start. */
   unsigned retries=20;
   while(!axis_move(1,-130)){assert(retries--);step(true,0,0,0);}
@@ -343,7 +344,7 @@ int main(void)
     { assert(retry-- && !strcmp(status().reason,"busy"));step(true,0,0,0); }
     run_to(GRAB_PLACE,600,0);assert(fabsf(physical[2]-397)<.15f);
     run_to(GRAB_COMPLETE,600,0);
-    assert(x_position_rpm>0 && x_position_rpm<=(uint16_t)floorf(60*Config[C_X_PPM]*60/3200) && x_position_acc==0);
+    assert(x_position_rpm==112 && x_position_acc==configured_x_acc);
     assert(fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f && homes==3 && GrabTask_ConfigReady("pick"));
     assert(tray_inventory[slot-1].state==(!strcmp(op,"store")?TURNTABLE_OCCUPIED:TURNTABLE_EMPTY));
   }

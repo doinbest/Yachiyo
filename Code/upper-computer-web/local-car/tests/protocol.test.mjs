@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { commands, buildCommand, frameCommand, LineDecoder, describeReply, moduleForWire } from '../protocol.mjs';
+import { commands, buildCommand, frameCommand, LineDecoder, describeReply, moduleForWire, formatTerminalLine, describeGrabRoute, parseGrabRouteStatus } from '../protocol.mjs';
 import {buildMissionCommand} from '../mission-panel.mjs';
 
 test('mission start frames preserve origin and route mode for both code sources', () => {
   const cases = [
-    [{source:'qr',speed:500,turnSpeed:500,start:'lower',radar:false}, 'grab mission qr 500 500 lower fixed raised\r\n'],
-    [{source:'fixed',code:'156+123+516+231',speed:500,turnSpeed:100,start:'upper',radar:true,align:'raised'}, 'grab mission fixed 156+123+516+231 500 100 upper radar raised\r\n'],
+    [{source:'qr',speed:500,turnSpeed:500,start:'lower',radar:false}, 'grab mission qr 500 500 lower fixed raised linear\r\n'],
+    [{source:'fixed',code:'156+123+516+231',speed:500,turnSpeed:100,start:'upper',radar:true,align:'raised'}, 'grab mission fixed 156+123+516+231 500 100 upper radar raised linear\r\n'],
   ];
-  cases.push([{source:'fixed',code:'156+123+516+231',speed:5000,turnSpeed:100,start:'upper',radar:true,align:'lowered'}, 'grab mission fixed 156+123+516+231 5000 100 upper radar lowered\r\n']);
+  cases.push([{source:'fixed',code:'156+123+516+231',speed:5000,turnSpeed:100,start:'upper',radar:true,align:'lowered'}, 'grab mission fixed 156+123+516+231 5000 100 upper radar lowered linear\r\n']);
   for (const [request, expected] of cases)
     assert.equal(frameCommand(buildMissionCommand(request)), expected);
 });
@@ -45,7 +45,7 @@ test('gripper presets show the calibrated pulse widths and keep the wire command
 test('reject missing distance, injection, too-long lines and non-finite values', () => {
   for (const value of ['', 'NaN', 'Infinity', '0', '201', '1.5'])
     assert.throws(() => buildCommand('move', {direction:'backward', distance:value}));
-  for (const value of ['help\nstop all', 'help\rstop all', '中文', 'x'.repeat(64), 'a b c d e f g h i j'])
+  for (const value of ['help\nstop all', 'help\rstop all', '中文', 'x'.repeat(96), 'a b c d e f g h i j k'])
     assert.throws(() => frameCommand(value));
   assert.throws(() => buildCommand('pos', {axis:'all', degree:'10'}));
   assert.throws(() => buildCommand('pos', {axis:'x', degree:'361'}));
@@ -96,4 +96,11 @@ test('accepted is not completion and state is reported only from explicit feedba
     assert.equal(moduleForWire(`OK ${wire} pending`),'system');
     assert.equal(readOnlyCommand(wire),false);
   }
+ });
+
+ test('stacking prealignment is described as empty-claw first-layer material alignment',()=>{
+  const line='OK grab route state=empty_material_align mode=mission station=3 reason=empty_material_align';
+  assert.match(formatTerminalLine(line),/第一层同色物料/);
+  assert.match(describeGrabRoute(parseGrabRouteStatus(line)),/第一层同色物料/);
+  assert.doesNotMatch(formatTerminalLine(line),/未识别/);
  });

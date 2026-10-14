@@ -423,6 +423,13 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
         (double)status.error_x_mm,(double)status.error_y_mm,(double)status.error_heading_deg,
         localization.feedback_valid?1:0,status.stop_confirmed?1:0);
       reply(text);
+      (void)snprintf(text,sizeof(text),
+        "OK chassis test_result id=%lu state=%u profile=%s elapsed_ms=%lu peak_mm_s=%.3f error_mm=%.3f stop_ms=%lu stop_confirmed=%u\r\n",
+        (unsigned long)status.action_id,(unsigned)status.state,ChassisMotion_ProfileName(status.profile),
+        (unsigned long)status.elapsed_ms,(double)status.peak_mm_s,
+        (double)hypotf(status.error_x_mm,status.error_y_mm),(unsigned long)status.stop_ms,
+        status.stop_confirmed?1:0);
+      reply(text);
     }
     return true;
   }

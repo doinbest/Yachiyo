@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include "radar_map.h"
 #include "motor_bus.h"
+#include "chassis_motion.h"
 /** Cached failure from the current episode, including post-recovery stop checks. */
 bool ContestMission_BusRecoveryEvidenceGet(MotorBus_Recovery_t *out);
 void ContestMission_Init(void);
@@ -16,6 +17,7 @@ typedef struct {
   bool radar_enabled;
   bool align_raised; /* Station vision at absolute Z=0; false uses configured alignment heights. */
   bool visual_heading_enabled; /* Locked per match; default false. */
+  ChassisMotion_Profile_t profile; /* Locked per match; zero defaults to linear. */
 } ContestMission_Request_t;
 bool ContestMission_Start(const RadarPlan_t *plan,const ContestMission_Request_t *request);
 /** @brief 右下至原料台，蓝色入第一仓并后向收回；不改二维码。 */

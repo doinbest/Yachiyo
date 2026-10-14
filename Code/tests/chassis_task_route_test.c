@@ -3,7 +3,7 @@
 #undef main
 static void expect_qr_heading_retained(bool planned,float scan_y)
 {
-  setup();
+  setup();selected_profile=CHASSIS_PROFILE_COSINE;
   unsigned poses_before=qr_pose_calls;
   ChassisRoute_TaskOptions_t options={true,scan_y,50,RADAR_START_LOWER};
   RadarPlan_t plan={0};
@@ -34,9 +34,36 @@ static void expect_qr_heading_retained(bool planned,float scan_y)
   arrive();
   assert(starts==4 && !strcmp(status().state,"station") && status().target_yaw_deg==0);
 }
+static void linear_entry(void)
+{
+  for(unsigned paused_phase=0;paused_phase<3;paused_phase++){
+    setup();unsigned calls=qr_pose_calls;
+    ChassisRoute_TaskOptions_t options={true,1250,50,RADAR_START_LOWER};
+    assert(ChassisRoute_TaskStartEx(NULL,1000,&options));
+    assert(!last_turn && motion.target_x_mm==2100 && motion.target_y_mm==300 && motion.target_map_yaw_deg==180);
+    assert(last_speed==1000 && qr_pose_calls==calls);
+    for(unsigned phase=0;phase<3;phase++){
+      if(phase==paused_phase){
+        float x=motion.target_x_mm,y=motion.target_y_mm,yaw=motion.target_map_yaw_deg;
+        assert(ChassisRoute_TaskPause());motion.state=CHASSIS_MOTION_DONE;motion.stop_confirmed=true;
+        motion.reason="cancelled";ChassisRoute_Process();ChassisRoute_Process();
+        assert(!strcmp(status().state,"paused"));assert(ChassisRoute_TaskContinue());
+        ChassisRoute_Process();
+        assert(motion.target_x_mm==x && motion.target_y_mm==y && motion.target_map_yaw_deg==yaw);
+        assert(selected_profile==CHASSIS_PROFILE_LINEAR);
+      }
+      arrive();ChassisRoute_Process();
+      if(phase==0)assert(last_turn && motion.target_map_yaw_deg==90 && qr_pose_calls==calls);
+      if(phase==1)assert(!last_turn && motion.target_y_mm==1250 && qr_pose_calls==calls+1 && last_speed==1000);
+    }
+    assert(!strcmp(status().state,"station") && status().station==5 && status().stop_confirmed);
+    assert(qr_pose_calls==calls+1);
+  }
+}
 int main(void)
 {
-  setup();loc.origin.y_mm=loc.observer.feedback.y_mm=2250;
+  linear_entry();qr_pose_calls=0;
+  setup();selected_profile=CHASSIS_PROFILE_COSINE;loc.origin.y_mm=loc.observer.feedback.y_mm=2250;
   loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=-CHASSIS_MODEL_PI/2;
   ChassisRoute_TaskOptions_t upper={true,1200,30,RADAR_START_UPPER};
   assert(ChassisRoute_TaskStartEx(NULL,300,&upper));
@@ -45,7 +72,7 @@ int main(void)
   arrive();assert(!strcmp(status().state,"station") && status().target_yaw_deg==-90);
   expect_cancel();
 
-  setup();ChassisRoute_TaskOptions_t options={true,1250,50,RADAR_START_LOWER};
+  setup();selected_profile=CHASSIS_PROFILE_COSINE;ChassisRoute_TaskOptions_t options={true,1250,50,RADAR_START_LOWER};
   assert(ChassisRoute_TaskStartEx(NULL,200,&options));
   assert(motion.target_y_mm==1250 && motion.target_map_yaw_deg==90 && status().phase_speed_mm_s==200);
   finish_leg();assert(status().station==5 && status().target_y_mm==1250);
@@ -69,12 +96,12 @@ int main(void)
   for(unsigned planned=0;planned<2;planned++)
     for(unsigned scan_y=1100;scan_y<=1300;scan_y+=100)
       expect_qr_heading_retained(planned!=0,(float)scan_y);
-  setup();char *automatic[]={"chassis","route","auto"};
+  setup();selected_profile=CHASSIS_PROFILE_COSINE;char *automatic[]={"chassis","route","auto"};
   assert(ChassisRoute_Command(3,automatic));finish_leg();
   unsigned before=starts;ChassisRoute_Process();
   assert(status().segment==2 && starts>before); /* no artificial dwell */
 #ifdef CHASSIS_TASK_ROUTE
-  setup();assert(ChassisRoute_TaskStart(NULL,200));
+  setup();selected_profile=CHASSIS_PROFILE_COSINE;assert(ChassisRoute_TaskStart(NULL,200));
   for(unsigned i=0;i<3;i++) { finish_leg(); if(i<2) ChassisRoute_Process(); }
   assert(status().station==4 && status().visit==2 && status().target_yaw_deg==0);
   assert(ChassisRoute_WorkBegin());assert(ChassisRoute_StationReserved());
@@ -83,7 +110,7 @@ int main(void)
   loc.generation++; /* brief stationary wheel gap recovered; origin is retained */
   assert(ChassisRoute_WorkResume());assert(last_turn && motion.target_map_yaw_deg==-90);
   expect_cancel();
-  setup();assert(ChassisRoute_TaskStart(NULL,200));
+  setup();selected_profile=CHASSIS_PROFILE_COSINE;assert(ChassisRoute_TaskStart(NULL,200));
   for(unsigned i=0;i<3;i++) { finish_leg();if(i<2)ChassisRoute_Process(); }
   assert(ChassisRoute_WorkBegin());loc.generation++;loc.origin.x_mm++;
   assert(!ChassisRoute_WorkResume() && !strcmp(status().reason,"station_reference_changed"));

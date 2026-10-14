@@ -23,6 +23,10 @@ typedef struct
   float relative_deg, drift_dps, rms_deg;
   bool zero_requested, zero_sample_received;
   float zero_before_deg, zero_after_deg;
+  const char *first_reason;
+  HAL_StatusTypeDef first_hal;
+  uint32_t first_fault_ms, first_hal_error, first_hal_state;
+  uint8_t first_operation, first_register;
 } HWT101_CalStatus_t;
 
 /** @brief 初始化本次启动的状态，不写模块或外部Flash。主循环初始化时调用。 */

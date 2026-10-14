@@ -55,11 +55,20 @@ static unsigned ProbePhase;
 static float ProbeSign,ProbeDelta,ProbeTarget,ProbeBefore,ProbeAfter,ProbeYawBefore,ProbeYawDelta;
 static bool StartFeedbackSelected,StartOriginPrepared;
 static bool RingAlignmentSaved;
+/* One measured station anchor per visit; pause/recovery retain it. */
+static bool RingAnchorValid;
+static float RingAnchorX,RingAnchorY;
+static unsigned RingAnchorNumber;
 static bool NavigationReady,UpperQrPreparing;
 static uint32_t NavigationGeneration;
 static ChassisLocalization_Status_t StartPosition;
 
 static RadarPlan_t Plan;
+static bool restore_profile(void)
+{
+  if(ChassisMotion_ProfileGet()==Request.profile || ChassisMotion_ProfileSet(Request.profile))return true;
+  Reason="profile_busy";return false;
+}
 bool ContestMission_BusRecoveryEvidenceGet(MotorBus_Recovery_t *out)
 {
   if(!out || !BusFailureValid || Single || !ContestMission_HasPendingWork())return false;
@@ -67,7 +76,7 @@ bool ContestMission_BusRecoveryEvidenceGet(MotorBus_Recovery_t *out)
 }
 
 void ContestMission_Init(void)
-{ StationHeading_Reset();memset(&Request,0,sizeof Request);State=M_IDLE;Reason="idle";HasRun=false;Single=HeadingTest=HeadingProbe=false;Stored=Placed=Batch=Item=Pass=0;ChildPaused=RoutePaused=BusAutoResume=false;BusRecoveries=0;BusFailureValid=false;Code[0]=ScannedCode[0]=0; }
+{ StationHeading_Reset();memset(&Request,0,sizeof Request);State=M_IDLE;Reason="idle";HasRun=false;RingAnchorValid=false;Single=HeadingTest=HeadingProbe=false;Stored=Placed=Batch=Item=Pass=0;ChildPaused=RoutePaused=BusAutoResume=false;BusRecoveries=0;BusFailureValid=false;Code[0]=ScannedCode[0]=0; }
 bool ContestMission_IsBusy(void)
 { return State!=M_IDLE && State!=M_DONE && State!=M_ERROR && State!=M_CANCELLED && State!=M_PAUSED; }
 bool ContestMission_HasRun(void) { return HasRun; }
@@ -139,9 +148,9 @@ void ContestMission_Report(void)
   unsigned item=Item<3U?Item:2U,color=HasRun?(Single?CAMERA_COLOR_BLUE:Colors[Batch][item]):0U;
   unsigned ring=Station==3U && Batch?FirstRing[color]:Rings[Batch][item];
   const char *source=Single?"test":Request.code_source==MISSION_CODE_FIXED?"fixed":"qr";
-  int n=snprintf(line,sizeof line,"%s grab route state=%s mode=%s source=%s code=%s code_source=%s scan_code=%s exec_code=%s color=%u slot=%u ring=%u batch=%u item=%u station=%u visit=%u stored=%u placed=%u stop_confirmed=%u elapsed_ms=%lu reason=%s bus_recoveries=%lu auto_resume=%u start=%s radar=%u route_speed=%.1f turn_speed=%.1f align=%s visual_heading=%s heading_result=%s heading_image=%.2f heading_error=%.2f heading_z=%.2f\r\n",
-    State==M_ERROR?"ERR":"OK",names[State],HeadingTest?"heading":Single?"single":"mission",source,Code[0]?Code:"none",source,ScannedCode[0]?ScannedCode:"none",Code[0]?Code:"none",color,Single?1U:item+1,ring,
-    Batch+1,item+1,Station,Visit,Stored,Placed,(State==M_PAUSED || (State==M_CANCELLED && !Single) || (grab.stop_confirmed && route.stop_confirmed))?1U:0U,(unsigned long)(HAL_GetTick()-StartTick),Reason,(unsigned long)BusRecoveries,BusAutoResume?1U:0U,RouteOptions.start_id==RADAR_START_UPPER?"upper":"lower",Request.radar_enabled?1U:0U,Speed,RouteOptions.turn_speed_deg_s,(!Single && Request.align_raised)?"raised":"lowered",(!Single && Request.visual_heading_enabled)?"on":"off",StationHeading_Reason(),(double)StationHeading_ImageAngle(),(double)StationHeading_BodyError(),(double)StationHeading_ObservationZ());
+  int n=snprintf(line,sizeof line,"%s grab route state=%s mode=%s source=%s code=%s code_source=%s scan_code=%s exec_code=%s color=%u slot=%u ring=%u batch=%u item=%u station=%u visit=%u stored=%u placed=%u stop_confirmed=%u elapsed_ms=%lu reason=%s bus_recoveries=%lu auto_resume=%u start=%s radar=%u route_speed=%.1f turn_speed=%.1f align=%s profile=%s visual_heading=%s heading_result=%s heading_image=%.2f heading_error=%.2f heading_z=%.2f\r\n",
+    State==M_ERROR?"ERR":"OK",State==M_EMPTY_ALIGN && Station==3U && Batch?"empty_material_align":names[State],HeadingTest?"heading":Single?"single":"mission",source,Code[0]?Code:"none",source,ScannedCode[0]?ScannedCode:"none",Code[0]?Code:"none",color,Single?1U:item+1,ring,
+    Batch+1,item+1,Station,Visit,Stored,Placed,(State==M_PAUSED || (State==M_CANCELLED && !Single) || (grab.stop_confirmed && route.stop_confirmed))?1U:0U,(unsigned long)(HAL_GetTick()-StartTick),Reason,(unsigned long)BusRecoveries,BusAutoResume?1U:0U,RouteOptions.start_id==RADAR_START_UPPER?"upper":"lower",Request.radar_enabled?1U:0U,Speed,RouteOptions.turn_speed_deg_s,(!Single && Request.align_raised)?"raised":"lowered",ChassisMotion_ProfileName(Request.profile),(!Single && Request.visual_heading_enabled)?"on":"off",StationHeading_Reason(),(double)StationHeading_ImageAngle(),(double)StationHeading_BodyError(),(double)StationHeading_ObservationZ());
   if(n>0 && n<(int)sizeof line) (void)ConsoleTx_Write((const uint8_t*)line,(uint16_t)n);
 }
 static bool decode(const char *code)
@@ -168,6 +177,8 @@ static bool start(const RadarPlan_t *plan,const ContestMission_Request_t *reques
   QR_SnapshotTypeDef qr;
   unsigned i;
   float speed=request?request->route_speed_mm_s:NAN;
+  if(request && request->profile!=CHASSIS_PROFILE_LINEAR && request->profile!=CHASSIS_PROFILE_COSINE)
+  { Reason="profile_required";return false; }
   if(ContestMission_HasPendingWork() || GrabTask_IsBusy() || ChassisRoute_IsBusy() ||
      ChassisRoute_StationReserved() || ChassisMotion_IsBusy())
   { Reason="busy";return false; }
@@ -203,14 +214,18 @@ static bool start(const RadarPlan_t *plan,const ContestMission_Request_t *reques
   if(plan && (!plan->valid || plan->count<2 || plan->count>RADAR_PLAN_MAX_POINTS ||
               plan->points[0].x_mm!=2250 || plan->points[0].y_mm!=(request->start_id==RADAR_START_UPPER?2250:150)))
   { Reason="lower_plan_required";return false; }
-  if(!GrabTask_PoseStart(false)) { GrabTask_Status_t s;GrabTask_StatusGet(&s);Reason=s.reason;return false; }
+  ChassisMotion_Profile_t previous_profile=ChassisMotion_ProfileGet();
+  if(!ChassisMotion_ProfileSet(request->profile)){Reason="profile_busy";return false;}
+  if(!GrabTask_PoseStart(false))
+  { GrabTask_Status_t s;GrabTask_StatusGet(&s);Reason=s.reason;(void)ChassisMotion_ProfileSet(previous_profile);return false; }
   /* Starting a new match declares the physical trays empty; resume never enters here. */
   if(!single) for(i=1;i<=3;i++)
     (void)Turntable_InventorySet((uint8_t)i,TURNTABLE_EMPTY,0);
   Planned=plan!=NULL;if(plan) Plan=*plan;
   Single=single;HeadingTest=false;
+  Request=*request;
   if(single) { Colors[0][0]=CAMERA_COLOR_BLUE;memset(Code,0,sizeof Code);strcpy(Code,"none"); }
-  else {Code[0]=0;ScannedCode[0]=0;Request=*request;QrBaseline=qr.Sequence;}
+  else {Code[0]=0;ScannedCode[0]=0;QrBaseline=qr.Sequence;}
   RouteOptions.start_id=request->start_id==RADAR_START_UPPER?RADAR_START_UPPER:RADAR_START_LOWER;
   NavigationReady=false;UpperQrPreparing=false;MissionNavigation_Reset();
   RouteOptions.scan_qr=!single;RouteOptions.turn_speed_deg_s=request->turn_speed_deg_s;
@@ -228,7 +243,7 @@ static bool start(const RadarPlan_t *plan,const ContestMission_Request_t *reques
 bool ContestMission_Start(const RadarPlan_t *plan,const ContestMission_Request_t *request)
 { return start(plan,request,false); }
 bool ContestMission_StartSingle(float speed)
-{ const ContestMission_Request_t request={MISSION_CODE_QR,"",speed,100,RADAR_START_LOWER,false,false,false};return start(NULL,&request,true); }
+{ const ContestMission_Request_t request={MISSION_CODE_QR,"",speed,100,RADAR_START_LOWER,false,false,false,CHASSIS_PROFILE_LINEAR};return start(NULL,&request,true); }
 bool ContestMission_StartHeadingTest(unsigned station,float speed_deg_s)
 {
   GrabTask_Status_t grab;
@@ -261,9 +276,28 @@ bool ContestMission_StartHeadingProbe(unsigned station,float polarity,float spee
   HeadingProbe=true;ProbePhase=0;ProbeSign=polarity;
   ContestMission_Report();return true;
 }
+static unsigned target_ring(void)
+{ return Station==3U && Batch?FirstRing[Colors[Batch][Item]]:Rings[Batch][Item]; }
+static bool station_anchor_capture(void)
+{
+  ChassisLocalization_Status_t p;
+  if(RingAnchorValid)return true;
+  ChassisLocalization_Get(&p);
+  if(!p.origin_valid || !p.feedback_valid || HAL_GetTick()-p.feedback_tick>600U ||
+     !isfinite(p.observer.feedback.x_mm) || !isfinite(p.observer.feedback.y_mm))
+  {Reason="feedback_invalid";return false;}
+  RingAnchorX=p.observer.feedback.x_mm;RingAnchorY=p.observer.feedback.y_mm;
+  RingAnchorNumber=target_ring();RingAnchorValid=true;return true;
+}
 static void ring_target(float *x,float *y)
 {
-  unsigned ring=Station==3U && Batch?FirstRing[Colors[Batch][Item]]:Rings[Batch][Item];
+  unsigned ring=target_ring();
+  if(RingAnchorValid) {
+    *x=RingAnchorX;*y=RingAnchorY;
+    if(Station==2U)*x+=((int)RingAnchorNumber-(int)ring)*150.0f;
+    else *y+=((int)ring-(int)RingAnchorNumber)*150.0f;
+    return;
+  }
   *x=CenterX;*y=CenterY;
   /* Official Figure1/3: rough1 right,3 left; temporary1 below,3 above. */
   if(Station==2U) *x=1200.0f+(2-(int)ring)*150.0f;
@@ -286,10 +320,11 @@ static bool transfer_start(void)
   if(Single)accepted=GrabTask_TransferStart("store","raw",slot,color);
   else if(Station==4U)accepted=GrabTask_TrackedStoreStart(color,slot,GRAB_TRACK_FEEDBACK);
   else if(Station==2U && Pass)accepted=GrabTask_ProcessedStoreStartEx(color,Rings[Batch][Item],slot,Request.align_raised);
-  else if((Station==2U || (Station==3U && !Batch)) && !RingAlignmentSaved)
+  else if((Station==2U || Station==3U) && !RingAlignmentSaved)
   {
-    if(!GrabTask_AlignPlaceStartEx(Station==2U?"rough":"temp1",Rings[Batch][Item],Request.align_raised))return child_rejected(M_TRANSFER_REQUEST);
-    State=M_EMPTY_ALIGN;Reason="empty_ring_align";ContestMission_Report();return true;
+    if(!GrabTask_AlignPlaceStartEx(Station==2U?"rough":Batch?"temp2":"temp1",
+        Station==3U && Batch?color:Rings[Batch][Item],Request.align_raised))return child_rejected(M_TRANSFER_REQUEST);
+    State=M_EMPTY_ALIGN;Reason=Station==3U && Batch?"empty_material_align":"empty_ring_align";ContestMission_Report();return true;
   }
   else
   {
@@ -306,7 +341,7 @@ static bool place_start(void)
   const char *scene=Station==2U?"rough":Batch?"temp2":"temp1";
   uint8_t color=Colors[Batch][Item];
   uint8_t target=Station==3U && Batch?color:Rings[Batch][Item];
-  bool accepted=(Station==2U || (Station==3U && !Batch))?GrabTask_AlignedPlaceStart(scene,target,color):GrabTask_HeldPlaceStartEx(scene,target,color,Request.align_raised);
+  bool accepted=GrabTask_AlignedPlaceStart(scene,target,color);
   if(!accepted)return child_rejected(M_PLACE_REQUEST);
   State=M_TRANSFER;Reason=scene;ContestMission_Report();return true;
 }
@@ -314,7 +349,7 @@ bool ContestMission_Continue(void)
 {
   if(State==M_BUS_WAIT)return ContestMission_RequestBusRecovery(true);
   if(State==M_WAIT_CONFIG && !GrabTask_IsBusy())
-  {if(WaitState==M_PREPARE && !NavigationReady)MissionNavigation_Reset();State=WaitState;Reason="configuration_updated";return true;}
+  {if(!restore_profile())return false;if(WaitState==M_PREPARE && !NavigationReady)MissionNavigation_Reset();State=WaitState;Reason="configuration_updated";return true;}
   if(State==M_STOP_WAIT)
   {
     if(ChildPaused)(void)GrabTask_Pause();
@@ -606,6 +641,7 @@ void ContestMission_Process(void)
     if(RoutePaused && !strcmp(route.state,"error"))
     {if(GrabTask_Pause())ChildPaused=true;State=M_STOP_WAIT;Reason=route.reason;ContestMission_Report();return;}
     if(RoutePaused && !ChassisRoute_TaskResumeReady())return;
+    if(!restore_profile())return;
     if(ChildPaused){if(!GrabTask_Continue())return;ChildPaused=false;}
     if(RoutePaused){if(!ChassisRoute_TaskContinue())return;RoutePaused=false;}
     State=PausedState;Reason="resumed";
@@ -716,7 +752,8 @@ void ContestMission_Process(void)
       /* Once admitted, the pose belongs to this station even if position
        * correction changes the route phase to move before Base finishes. */
       if(WorkStarted) { if(pose_complete(&grab,"work_ready")) WorkReady=true; }
-      else if(!strcmp(route.phase,"work_turn") || !strcmp(route.phase,"work_dock"))
+      else if(!strcmp(route.phase,"work_turn") || !strcmp(route.phase,"work_dock") ||
+              (!strcmp(route.state,"station") && route.station==2U && route.stop_confirmed))
       { if(!pose_start(true)) return;WorkStarted=true; }
     }
     if(!strcmp(route.state,"done"))
@@ -727,7 +764,7 @@ void ContestMission_Process(void)
     if(strcmp(route.state,"station") || !route.stop_confirmed || !WorkReady) return;
     Station=(unsigned)route.station;Visit=(unsigned)route.visit;
     Batch=Visit>=5U?1U:0U;Item=Pass=0;
-    CenterX=route.target_x_mm;CenterY=route.target_y_mm;
+    CenterX=route.target_x_mm;CenterY=route.target_y_mm;RingAnchorValid=false;
     WorkYaw=Station==4U?0:Station==2U?180:90;
     if(Single)
     {
@@ -784,7 +821,9 @@ void ContestMission_Process(void)
   if(State==M_EMPTY_ALIGN)
   {
     if(grab.state!=GRAB_HOLD || strcmp(grab.result,"aligned"))return;
-    if(!GrabTask_AlignPlaceCapture())return;
+    bool had_anchor=RingAnchorValid;
+    if(!station_anchor_capture())return;
+    if(!GrabTask_AlignPlaceCapture()){if(!had_anchor)RingAnchorValid=false;return;}
     RingAlignmentSaved=true;State=M_TRANSFER_REQUEST;Reason="aligned_position_saved";
     ContestMission_Report();return;
   }
@@ -827,7 +866,8 @@ void ContestMission_Process(void)
       }
       WorkReady=WorkStarted=false;State=M_DRIVING;Reason="next_station";ContestMission_Report();
     }
-    else if(!Single && Request.visual_heading_enabled)heading_begin(M_TRANSFER_REQUEST);
+    /* Heading is observed once on station arrival. Ring changes and the
+     * processing takeback pass retain it; per-item visual alignment follows. */
     else State=M_TRANSFER_REQUEST;
     return;
   }
@@ -836,6 +876,8 @@ void ContestMission_Process(void)
     bool storing=Station==4U || (Station==2U && Pass);
     if(grab.state!=GRAB_COMPLETE) return;
     if((storing && grab.slot!=Item+1) || strcmp(grab.result,storing?"stored":"released")) { fail("transfer_result_mismatch");return; }
+    /* All station placements retain the first successful prealignment anchor. */
+    if(Station!=4U && !station_anchor_capture())return;
     if(storing) Stored++;else Placed++;
     (void)ContestScreen_ProgressSet((uint8_t)Stored,(uint8_t)Placed);
     Item++;

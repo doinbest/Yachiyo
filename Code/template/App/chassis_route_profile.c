@@ -6,8 +6,8 @@
 #define ROUTE_PI 3.14159265358979323846f
 static const RadarPlan_Point_t FixedPoints[CHASSIS_ROUTE_TARGET_COUNT+1U]={
   {2250,150,1,0},{2100,1200,5,1},{2100,2100,0,0},{1200,2100,4,2},
-  {1200,300,2,3},{1200,1200,0,0},{350,1200,3,4},{1200,1200,0,0},
-  {1200,2100,4,5},{1200,300,2,6},{1200,1200,0,0},{350,1200,3,7},
+  {1200,380,2,3},{1200,1200,0,0},{350,1200,3,4},{1200,1200,0,0},
+  {1200,2100,4,5},{1200,380,2,6},{1200,1200,0,0},{350,1200,3,7},
   {1200,1200,0,0},{2100,1200,0,0},{2100,300,0,0},{2250,150,1,8}};
 static float normalized(float yaw)
 {
@@ -121,6 +121,16 @@ bool ChassisRouteProfile_Build(const RadarPlan_Point_t *from,const RadarPlan_Poi
   return true;
 }
 
+bool ChassisRouteProfile_BuildTaskEntry(const RadarPlan_Point_t *from,const RadarPlan_Point_t *to,
+                                      float yaw,float speed,bool first,bool continuous,
+                                      ChassisRoute_Profile_t *out)
+{
+  if(!continuous && from && to && first && at(from,2250,150) &&
+     to->station==5U && to->x_mm==2100 && fabsf(delta(yaw,180))<.01f)
+    return ChassisRouteProfile_Build(from,to,yaw,speed,first,out);
+  return ChassisRouteProfile_BuildTask(from,to,yaw,speed,first,out);
+}
+
 bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan_Point_t *to,
                                  float previous_yaw_deg,float speed_mm_s,bool first_scan_leg,
                                  ChassisRoute_Profile_t *out)
@@ -167,6 +177,8 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan
    * raw-station work heading only after reaching its station point. */
   if(to->station==4U && fabsf(dy)<0.01f) travel=90;
   else if(to->station==2U && fabsf(dx)<0.01f && dy<0) travel=-90;
+  else if(to->station==3U && fabsf(dy)<0.01f)
+    travel=fabsf(delta(0,yaw))<=fabsf(delta(180,yaw))?0:180; /* Forward/reverse are equivalent. */
   else if(to->station==3U) travel=90;
   else if(length>300)
   {
@@ -175,8 +187,8 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan
     travel=transit.phases[0].yaw_deg;
   }
   /* Raw station: translate all the way at 90 degrees, then turn in place.
-   * Processing/temporary stations retain their outer staging and docking. */
-  dock=(to->station==4U && fabsf(dy)<0.01f && dx<0)?0:fminf(length,to->station==2U && to->y_mm==300?125.0f:75.0f);
+   * Processing stops at its observation point; temporary retains its outer dock. */
+  dock=(to->station==2U && to->y_mm==380)?0:(to->station==4U && fabsf(dy)<0.01f && dx<0)?0:fminf(length,to->station==2U && to->y_mm==300?125.0f:75.0f);
   stage_x=length>0?to->x_mm-dx*dock/length:x;
   stage_y=length>0?to->y_mm-dy*dock/length:y;
   add(out,true,"turn",&x,&y,&yaw,x,y,travel,0);

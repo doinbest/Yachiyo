@@ -185,8 +185,8 @@ class SerialBridge:
         return self.status()
 
     def send(self, command, owner=None, *, command_epoch=None, require_epoch=False):
-        if not isinstance(command, str) or not command or len(command) > 63 or any(ord(c) < 32 or ord(c) > 126 for c in command):
-            raise ValueError('Use one ASCII command, 1-63 printable characters, without CR/LF')
+        if not isinstance(command, str) or not command or len(command) > 95 or any(ord(c) < 32 or ord(c) > 126 for c in command):
+            raise ValueError('Use one ASCII command, 1-95 printable characters, without CR/LF')
         command = command.strip()
         if not command:
             raise ValueError('Empty command')

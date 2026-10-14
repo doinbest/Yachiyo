@@ -18,10 +18,11 @@ int main(void)
   for(unsigned i=0;i<15;i++)step(false,0,0,0);
   assert(!positions && !base_moves && !closures && !openings);
   for(unsigned i=0;i<50 && !positions;i++)step(false,0,0,0);
-  assert(positions==1 && z_position_pulses==-5000 && z_position_rpm>0 && z_position_rpm<=9 && z_position_acc==0);
+  /* 5 mm/s at 100 pulses/mm yields floor(9.375) RPM in both scan directions. */
+  assert(positions==1 && z_position_pulses==-5000 && z_position_rpm==9 && z_position_acc==configured_z_acc);
   assert(!base_moves && destination[0]==0 && !closures && !openings);
   for(unsigned i=0;i<80 && QrZStep<3;i++)step(false,0,0,0);
-  assert(QrZStep==3 && z_position_pulses==0 && z_position_rpm>0 && z_position_rpm<=9);
+  assert(QrZStep==3 && z_position_pulses==0 && z_position_rpm==9 && z_position_acc==configured_z_acc);
   for(unsigned i=0;i<80;i++)step(false,0,0,0);
   assert(QrZStep==4 && fabsf(physical[1])<.1f && !base_moves);
   assert(status().state==GRAB_QR_SCAN && !strcmp(Status.reason,"qr_not_found"));

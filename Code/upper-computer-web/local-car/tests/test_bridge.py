@@ -579,9 +579,17 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(new.writes, [])
         self.assertTrue(self.bridge.status()['stop_latched'])
 
+    def test_long_mission_profile_command_is_written_once(self):
+        port = self.connect()
+        command = 'grab mission fixed 156+123+516+231 5000 500 upper radar lowered cosine'
+        self.assertGreater(len(command), 63)
+        self.bridge.send(command)
+        wait_for(lambda: len(port.writes) == 1)
+        self.assertEqual(port.writes[0][1], (command + '\r\n').encode('ascii'))
+
     def test_validation_and_config_persistence_do_not_send(self):
         port = self.connect()
-        for value in ['', 'info\nchassis run 1 0 0 10', '你好', 'x' * 64, 'info\x03']:
+        for value in ['', 'info\nchassis run 1 0 0 10', '你好', 'x' * 96, 'info\x03']:
             with self.assertRaises(ValueError):
                 self.bridge.send(value)
         self.assertEqual(self.bridge.status()['config']['profile'], '')

@@ -34,10 +34,10 @@
 #define ARM_CONSOLE_RING_SIZE 512U
 /* USART1 DMA回调写入的软件环形缓冲区长度。 */
 
-#define ARM_CONSOLE_LINE_SIZE 64U
+#define ARM_CONSOLE_LINE_SIZE 96U
 /* 单条终端命令允许占用的最大缓冲区长度。 */
 
-#define ARM_CONSOLE_TOKEN_COUNT 9U
+#define ARM_CONSOLE_TOKEN_COUNT 10U
 /* 一条命令解析时允许的最大字段数量。 */
 
 #define ARM_CONSOLE_TX_SIZE 256U
@@ -77,6 +77,8 @@ static uint32_t ArmConsole_QrLastEventTick;
 static uint32_t ArmConsole_QrSkipped;
 static uint8_t BusRecoveryPending;
 static uint32_t BusRecoveryStarted;
+static bool BusRecoveryAutomatic, BusAutoFaultSeen;
+static uint32_t BusAutoFaultTick, BusRxWarningShown, BusRxWarningTick, BusSyncWarningTick;
 static struct {
   bool active, pending;
   uint8_t address;
@@ -531,7 +533,7 @@ static void ArmConsole_HelpShow(void)
       "chassis heading <vx_mm_s> <vy_mm_s> <module_heading_deg> <hold_ms>\r\n"
       "chassis turn <map_heading_deg -180..180> (feedback angle and stopped wheels)\r\n"
       "chassis origin <map_x_mm> <map_y_mm> <map_heading_deg> (verified IMU, stationary)\r\n"
-      "chassis test <forward_mm> <left_mm> <speed_mm_s> (body-relative, norm 0..3000, speed 10..5000, route cosine)\r\n"
+      "chassis test <forward_mm> <left_mm> <speed_mm_s> [linear|cosine] (default linear300; cosine K200)\r\n"
       "chassis profile receive (compatibility only; Emm42 default)\r\n"
       "chassis feedback <0..4> (0=all, 1..4=single, polling stays off)\r\n"
       "chassis feedback on|off\r\n"
@@ -1527,7 +1529,16 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
                       (unsigned long)Status.valid_read_count,
                       (unsigned long)Status.i2c_error_count);
     if (!HWT101_Cal_IsBusy()) (void)HWT101_Cal_RefreshRegisters();
+    (void)HWT101_Status_Get(&Status);
+    ArmConsole_Printf("OK imu bus last_HAL=%u error=0x%08lX state=0x%02lX op=%u reg=0x%02X fault_ms=%lu probe_failures=%lu reinit_count=%lu reinit_HAL=%u\r\n",
+      (unsigned)Status.last_hal, (unsigned long)Status.hal_error, (unsigned long)Status.hal_state,
+      (unsigned)Status.fault_operation, (unsigned)Status.fault_register, (unsigned long)Status.fault_ms,
+      (unsigned long)Status.probe_fail_count, (unsigned long)Status.reinit_count, (unsigned)Status.reinit_hal);
     if (!HWT101_Cal_GetStatus(&Cal)) return 1U;
+    if (Cal.first_reason && strcmp(Cal.first_reason, "none"))
+      ArmConsole_Printf("OK imu first_reason=%s first_HAL=%u first_error=0x%08lX first_state=0x%02lX first_op=%u first_reg=0x%02X\r\n",
+        Cal.first_reason, (unsigned)Cal.first_hal, (unsigned long)Cal.first_hal_error,
+        (unsigned long)Cal.first_hal_state, (unsigned)Cal.first_operation, (unsigned)Cal.first_register);
     ArmConsole_Printf("OK imu stream=%s result=%s save_state=%s persistent=UNTESTED\r\n",
                       ArmConsole_ImuStream ? "on" : "off", Cal.result, Cal.save_state);
     ArmConsole_Printf("OK imu cal_state=%s reason=%s HAL=%u run_id=%lu busy=%u verified=%u control_ready=%u normal_mode=%u\r\n",
@@ -1694,7 +1705,9 @@ static void ArmConsole_StopRequest(uint32_t token)
   bool arm_owned=GrabTask_IsBusy();
   ArmConsole_BusTestStop("stopped");
   ArmConsole_ManualGuardCancel();
-  BusRecoveryPending=0U;
+  BusRecoveryPending=0U;BusRecoveryAutomatic=false;
+  MotorBus_Diagnostic_t stopped_fault;MotorBus_DiagnosticGet(&stopped_fault);
+  if(stopped_fault.locked){BusAutoFaultSeen=true;BusAutoFaultTick=stopped_fault.tick_ms;}
   MotorBus_RecoveryCancel();
   ArmConsole_ResetCancel();
   /* Cancel every automatic producer before requesting the shared UART5 stop. */
@@ -1899,7 +1912,32 @@ static void ArmConsole_BusStatusShow(void)
 static void ArmConsole_BusRecoveryProcess(void)
 {
   MotorBus_Recovery_t s;
-  if (!BusRecoveryPending) return;
+  MotorBus_Diagnostic_t fault;MotorBus_DiagnosticGet(&fault);
+  uint32_t now=HAL_GetTick();
+  MotorBus_RecoveryGet(&s);
+  if(!s.active && s.success && s.sync_warning_mask && s.speed_ms!=BusSyncWarningTick) {
+    BusSyncWarningTick=s.speed_ms;
+    ArmConsole_Printf("WARN bus sync_ack_ignored mask=0x%02X zero_cache_acked=1 wheels_stopped=1\r\n",s.sync_warning_mask);
+  }
+  if(fault.rx_warning_count!=BusRxWarningShown && now-BusRxWarningTick>=500U) {
+    BusRxWarningShown=fault.rx_warning_count;BusRxWarningTick=now;
+    ArmConsole_Printf("WARN bus rx_restarted count=%lu uart_error=0x%08lX tasks_interrupted=0\r\n",
+      (unsigned long)fault.rx_warning_count,(unsigned long)fault.rx_warning_error);
+  }
+  if(!BusRecoveryPending) {
+    /* Mission recovery owns its saved task. Outside a mission repair only the
+     * channel; interrupted HOME/reference and tasks are never declared done. */
+    if(ContestMission_HasPendingWork() || !MotorBus_TransientFault(&fault) ||
+       (BusAutoFaultSeen && BusAutoFaultTick==fault.tick_ms))return;
+    BusAutoFaultSeen=true;BusAutoFaultTick=fault.tick_ms;
+    ArmConsole_StopRequest(0);Mecanum_Feedback_Enable(false);
+    BusRecoveryAutomatic=true;BusRecoveryPending=1;BusRecoveryStarted=now;
+    ArmConsole_Write("WARN bus auto_recover requested tasks_resumed=0\r\n");
+  }
+  if(BusRecoveryPending==3) {
+    if(now-BusRecoveryStarted<2000U)return;
+    BusRecoveryPending=1;BusRecoveryStarted=now;
+  }
   if (BusRecoveryPending==1) {
     if ((uint32_t)(HAL_GetTick()-BusRecoveryStarted)>10000U) {
       BusRecoveryPending=0;
@@ -1919,8 +1957,13 @@ static void ArmConsole_BusRecoveryProcess(void)
     bool chassis_ready=Mecanum_RecoveryAfterBusCheck();
     ArmConsole_Printf("OK bus recover complete arm_ready=1 chassis_ready=%u reason=%s tasks_resumed=0 home_reference=check chassis_cache=cleared wheels_stopped=1\r\n",
       (unsigned)chassis_ready,chassis_ready?"complete":"chassis_cache_or_state_requires_reset");
-  } else ArmConsole_Printf("ERR bus recover reason=%s addr=%u locked=1 speed_addr=%u speed_rpm=%ld speed_ms=%lu\r\n",
-    s.reason,(unsigned)s.address,(unsigned)s.speed_address,(long)s.speed_rpm,(unsigned long)s.speed_ms);
+  } else {
+    bool retry=BusRecoveryAutomatic && MotorBus_RecoveryRetryable(&s);
+    ArmConsole_Printf("WARN bus recover reason=%s addr=%u locked=%u retry=%u speed_addr=%u speed_rpm=%ld speed_ms=%lu\r\n",
+      s.reason,(unsigned)s.address,(unsigned)MotorBus_IsQuarantined(),retry?1U:0U,
+      (unsigned)s.speed_address,(long)s.speed_rpm,(unsigned long)s.speed_ms);
+    if(retry){BusRecoveryPending=3;BusRecoveryStarted=now;}
+  }
 }
 
 /* Manual commands are checked before dispatch; automatic tasks own their own
@@ -2401,6 +2444,7 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   ConsoleTx_Init(huart);
   ResetPending = ResetAckDrained = 0U;
   BusRecoveryPending=ManualGuardActive=ManualGuardExecuting=0U;
+  BusRecoveryAutomatic=BusAutoFaultSeen=false;BusRxWarningShown=BusRxWarningTick=BusSyncWarningTick=0;
   memset(&BusTest,0,sizeof BusTest);BusTestToken=0U;
   ArmConsole_ImuStream = 0U;
   ArmConsole_QrStream = 0U;

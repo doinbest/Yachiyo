@@ -2,6 +2,9 @@
 #define STATION_HEADING_H
 #include <stdbool.h>
 #include <stdint.h>
+/* Independent of material acquisition/recovery waits. */
+#define STATION_HEADING_WAIT_MS 5000U
+#define STATION_HEADING_IMAGE_SPREAD_DEG 0.3f
 typedef struct {
   float zero_deg,gain,tolerance_deg,spread_deg,settle_ms,turn_limit_deg;
   uint32_t wait_ms;

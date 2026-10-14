@@ -56,7 +56,7 @@ static void coarse_descent_and_fine_close(void)
   for(unsigned i=0;i<20;i++)step(true,0,-50,51);
   assert(!z_position_rpm && !closures);
   for(unsigned i=0;i<20;i++)step(true,0,50,-50);
-  assert(z_position_pulses==-800 && z_position_rpm>0 && z_position_rpm<=206 && z_position_acc==0);
+  assert(z_position_pulses==-800 && z_position_rpm==206 && z_position_acc==configured_z_acc);
   assert(status().state==GRAB_DESCEND && !status().stop_requested && !closures);
   unsigned requests=velocity_requests;
   for(unsigned i=0;i<20;i++)step(true,0,20,-20);
@@ -253,7 +253,7 @@ int main(void)
   run_to(GRAB_DESCEND,200,0);
   assert(!status().stop_requested && !closures);
   run_to(GRAB_CLOSE,100,0);
-  assert(z_position_rpm>0 && z_position_rpm<=(uint16_t)floorf(110*100*60/3200) && z_position_acc==0);
+  assert(z_position_rpm==206 && z_position_acc==configured_z_acc);
   assert(closures==1 && fabsf(physical[1]+8)<.01f);
   run_to(GRAB_COMPLETE,150,0);
   assert(fabsf(physical[1]-10)<.01f && !tray_indexes && !base_moves);

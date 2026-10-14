@@ -69,6 +69,14 @@ static void setup(void){memset(&route,0,sizeof(route));memset(&grab_status,0,siz
 int main(void)
 {
   setup();
+  char *profile_qr[]={"grab","mission","qr","1000","100","lower","fixed","raised","cosine"};
+  assert(GrabRoute_Command(9,profile_qr) && mission_starts==1);
+  assert(mission_request.profile==CHASSIS_PROFILE_COSINE);
+  profile_qr[8]="linear";assert(GrabRoute_Command(9,profile_qr) && mission_starts==2);
+  assert(mission_request.profile==CHASSIS_PROFILE_LINEAR);
+  profile_qr[8]="unknown";assert(GrabRoute_Command(9,profile_qr) && mission_starts==2 && strstr(reply,"profile_required"));
+  mission_starts=0;
+  setup();
   char *hp[]={"grab","heading","proc","5"};assert(GrabRoute_Command(4,hp));assert(heading_calls==1 && heading_station==2 && heading_speed==5);
   char *ht[]={"grab","heading","temp"};assert(GrabRoute_Command(3,ht));assert(heading_calls==2 && heading_station==3 && heading_speed==5);
   char *trial[]={"grab","heading","angle","temp","-1","5"};assert(GrabRoute_Command(6,trial));assert(heading_calls==3 && heading_station==3 && heading_delta==-1 && heading_speed==5);
@@ -78,16 +86,21 @@ int main(void)
   setup();
   char *m[]={"grab","mission","fixed","156+123+516+231","5000","100","upper","radar","raised","extra"};
   assert(GrabRoute_Command(9,m) && mission_starts==1 && mission_request.align_raised);
+  assert(mission_request.profile==CHASSIS_PROFILE_LINEAR);
   assert(mission_request.radar_enabled && mission_request.start_id==RADAR_START_UPPER);
   assert(mission_request.route_speed_mm_s==5000 && mission_request.turn_speed_deg_s==100);
   m[8]="lowered";assert(GrabRoute_Command(9,m) && mission_starts==2 && !mission_request.align_raised);
   assert(GrabRoute_Command(8,m) && mission_starts==3 && mission_request.align_raised);
   m[8]="invalid";assert(GrabRoute_Command(9,m) && mission_starts==3 && strstr(reply,"alignment_mode_required"));
-  assert(GrabRoute_Command(10,m) && mission_starts==3 && strstr(reply,"format"));
+  m[8]="raised";assert(GrabRoute_Command(10,m) && mission_starts==3 && strstr(reply,"profile_required"));
   char *q[]={"grab","mission","qr","200","100","lower","fixed","raised"};
   assert(GrabRoute_Command(8,q) && mission_starts==4 && mission_request.align_raised);
   assert(!mission_request.radar_enabled && mission_request.start_id==RADAR_START_LOWER && mission_request.code_source==MISSION_CODE_QR);
   assert(GrabRoute_Command(3,q) && mission_starts==5 && mission_request.align_raised);
+  assert(mission_request.profile==CHASSIS_PROFILE_LINEAR);
+  m[9]="cosine";assert(GrabRoute_Command(10,m) && mission_starts==6 && mission_request.profile==CHASSIS_PROFILE_COSINE);
+  char *extra[]={"grab","mission","qr","1000","100","lower","fixed","raised","cosine","extra"};
+  assert(GrabRoute_Command(10,extra) && mission_starts==6 && strstr(reply,"format"));
   setup();char *qrstart[]={"grab","qr","begin"};
   localization.origin_valid=true;localization.origin.x_mm=2250;localization.origin.y_mm=2250;
   localization.origin.yaw_rad=-CHASSIS_MODEL_PI/2;

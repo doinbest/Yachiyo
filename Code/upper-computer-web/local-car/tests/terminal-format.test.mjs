@@ -293,3 +293,8 @@ test('mission status translates the adopted alignment mode',()=>{
  assert.match(formatTerminalLine('OK grab route state=paused mode=mission align=raised'),/工位视觉对准.*高位.*Z=0/);
  assert.match(formatTerminalLine('OK grab route state=paused mode=mission align=lowered'),/工位视觉对准.*下降.*工位高度/);
 });
+
+test('recoverable bus conditions display warnings',()=>{
+ assert.match(formatTerminalLine('WARN bus rx_restarted count=2 uart_error=0x00000002 tasks_interrupted=0'),/警告.*接收已恢复/);
+ assert.match(formatTerminalLine('WARN bus sync_ack_ignored mask=0x01 zero_cache_acked=1 wheels_stopped=1'),/警告.*同步应答异常/);
+});

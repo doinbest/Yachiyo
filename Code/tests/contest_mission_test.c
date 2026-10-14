@@ -22,9 +22,13 @@ static char screen_code[16];
 static bool screen_sent=true,screen_error;
 static unsigned screen_refreshes;
 static bool qr_scanning;
-static ContestMission_Request_t request={MISSION_CODE_FIXED,"156+123+516+231",200,50,RADAR_START_LOWER,false,false,false};
+static ContestMission_Request_t request={MISSION_CODE_FIXED,"156+123+516+231",200,50,RADAR_START_LOWER,false,false,false,CHASSIS_PROFILE_LINEAR};
 static ChassisRoute_Status_t route;
 static ChassisMotion_Status_t motion;
+static ChassisMotion_Profile_t selected_profile;
+ChassisMotion_Profile_t ChassisMotion_ProfileGet(void){return selected_profile;}
+bool ChassisMotion_ProfileSet(ChassisMotion_Profile_t p)
+{if(ChassisMotion_IsBusy() || (p!=CHASSIS_PROFILE_LINEAR && p!=CHASSIS_PROFILE_COSINE))return false;selected_profile=p;return true;}
 static GrabTask_Status_t grab;
 static Turntable_Inventory_t inventory[3];
 static unsigned transfers,raw,place,proc,resumes,starts,pose_calls,cancels;
@@ -72,6 +76,9 @@ void ChassisLocalization_Get(ChassisLocalization_Status_t *out)
 {if(!start_fixture_custom){memset(&localization,0,sizeof localization);localization.origin_valid=localization.feedback_valid=localization.speed_valid=true;
  localization.origin.x_mm=localization.observer.feedback.x_mm=2250;localization.origin.y_mm=localization.observer.feedback.y_mm=150;
  localization.origin.yaw_rad=localization.observer.feedback.yaw_rad=CHASSIS_MODEL_PI;}
+ if(!start_fixture_custom && !strcmp(route.state,"work")) {
+   localization.observer.feedback.x_mm=tx;localization.observer.feedback.y_mm=ty;
+ }
  localization.feedback_tick=tick;*out=localization;}
 bool ChassisLocalization_Origin(float x,float y,float yaw)
 {origin_calls++;assert(x==2250 && y==150 && yaw==CHASSIS_MODEL_PI);if(origin_rejected)return false;
@@ -143,17 +150,17 @@ bool GrabTask_TrackedStoreStart(uint8_t color,uint8_t slot,GrabTracking_Mode_t m
 bool GrabTask_ProcessedStoreStart(uint8_t color,uint8_t ring,uint8_t slot)
 {assert(ring>=1 && ring<=3);return GrabTask_TransferStart("store","proc",slot,color);}
 bool GrabTask_CarPickStart(uint8_t slot)
-{if(route.station==2 || (route.station==3 && route.visit==4)){assert(ring_captured);if(route.station==2)rough_picks++;}
+{if(route.station==2 || route.station==3){assert(ring_captured);if(route.station==2)rough_picks++;}
  grab.state=GRAB_COMPLETE;grab.slot=slot;grab.result="picked";return true;}
 bool GrabTask_AlignPlaceStart(const char *scene,uint8_t ring)
-{assert((!strcmp(scene,"rough") || !strcmp(scene,"temp1")) && ring>=1 && ring<=3);
+{assert((!strcmp(scene,"rough") || !strcmp(scene,"temp1") || !strcmp(scene,"temp2")) && ring>=1 && ring<=(!strcmp(scene,"temp2")?6:3));
  if(reject_transfer){grab.reason="config_missing";grab.missing="z_proc_place";return false;}
- ring_captured=false;ring_aligns++;grab.state=GRAB_PREPARE;grab.operation="empty_ring_align";grab.result="pending";return true;}
+ ring_captured=false;ring_aligns++;grab.state=GRAB_PREPARE;grab.operation=!strcmp(scene,"temp2")?"empty_material_align":"empty_ring_align";grab.result="pending";return true;}
 bool GrabTask_AlignPlaceCapture(void)
 {assert(grab.state==GRAB_HOLD && !strcmp(grab.result,"aligned"));if(alignment_blocked)return false;
  ring_captured=true;ring_captures++;grab.state=GRAB_COMPLETE;return true;}
 bool GrabTask_AlignedPlaceStart(const char *scene,uint8_t ring,uint8_t color)
-{assert(ring_captured && ring>=1 && ring<=3);return GrabTask_TransferStart("take",scene,grab.slot,color);}
+{assert(ring_captured && ring>=1 && ring<=(!strcmp(scene,"temp2")?6:3));return GrabTask_TransferStart("take",scene,grab.slot,color);}
 bool GrabTask_HeldPlaceStart(const char *scene,uint8_t target,uint8_t color)
 {assert(target>=1 && target<=6);return GrabTask_TransferStart("take",scene,grab.slot,color);}
 bool GrabTask_ProcessedStoreStartEx(uint8_t color,uint8_t ring,uint8_t slot,bool raised)
@@ -169,7 +176,7 @@ static void step(void)
   if(qr_scanning){QR_SnapshotTypeDef q;QR_SnapshotGet(&q);if(q.Source==QR_SOURCE_UART && q.Sequence!=qr_baseline){qr_scanning=false;grab.state=GRAB_IDLE;grab.result="qr_scanned";grab.stop_confirmed=true;}}
   if(grab.state==GRAB_ROUTE_POSE){grab.state=GRAB_COMPLETE;grab.result=pose_work?"work_ready":"travel_ready";}
   else if(grab.state==GRAB_PREPARE){
-    if(!strcmp(grab.operation,"empty_ring_align")){grab.state=GRAB_HOLD;grab.result="aligned";grab.stop_confirmed=true;}
+    if(!strcmp(grab.operation,"empty_ring_align") || !strcmp(grab.operation,"empty_material_align")){grab.state=GRAB_HOLD;grab.result="aligned";grab.stop_confirmed=true;}
     else {grab.state=GRAB_COMPLETE;grab.result=!strcmp(grab.operation,"store")?"stored":"released";inventory[grab.slot-1].state=!strcmp(grab.operation,"store")?TURNTABLE_OCCUPIED:TURNTABLE_EMPTY;}
   }
   motion.state=CHASSIS_MOTION_DONE;motion.stop_confirmed=true;motion.reason="feedback_arrived";
@@ -199,7 +206,14 @@ int main(void)
 {
   route.state="idle";route.phase="idle";route.reason="idle";grab.reason="idle";grab.result="none";
   for(unsigned i=0;i<3;i++)inventory[i].state=TURNTABLE_EMPTY;
-  QR_Init();ContestMission_Init();assert(ContestMission_Start(NULL,&request));assert(!starts);step();assert(starts==1);scan_station();
+  ContestMission_Init();request.profile=(ChassisMotion_Profile_t)2;
+  unsigned poses_before=pose_calls;
+  assert(!ContestMission_Start(NULL,&request) && !strcmp(ContestMission_Reason(),"profile_required") && pose_calls==poses_before);
+  request.profile=CHASSIS_PROFILE_COSINE;
+  QR_Init();ContestMission_Init();assert(ContestMission_Start(NULL,&request));assert(!starts);
+  assert(selected_profile==CHASSIS_PROFILE_COSINE && strstr(report,"profile=cosine"));
+  request.profile=CHASSIS_PROFILE_LINEAR;ContestMission_Report();assert(strstr(report,"profile=cosine"));
+  step();assert(starts==1);scan_station();
   station(4,2);assert(raw==3 && transfers==3);
   /* Missing scene height waits at the same item. Transient reads/feedback gaps
    * retry without consuming a transfer or repeating an already stored piece. */
@@ -213,7 +227,8 @@ int main(void)
   for(unsigned i=0;i<10 && !ContestMission_CanConfigure();i++)step();
   assert(ContestMission_CanConfigure() && transfers==3);
   ContestMission_Report();assert(strstr(report,"item=1") && strstr(report,"reason=z_proc_place"));
-  reject_transfer=false;assert(ContestMission_Continue());
+  reject_transfer=false;selected_profile=CHASSIS_PROFILE_LINEAR;
+  assert(ContestMission_Continue() && selected_profile==CHASSIS_PROFILE_COSINE);
   alignment_blocked=true;
   for(unsigned i=0;i<12;i++)step();
   assert(ring_aligns==1 && !ring_captures && !rough_picks && !place && transfers==3);
@@ -227,8 +242,10 @@ int main(void)
   station(2,6);assert(proc==6);
   assert(ring_aligns==9 && ring_captures==9 && rough_picks==6);
   station(3,7);assert(place==12 && transfers==24);
+  assert(ring_aligns==12 && ring_captures==12 && rough_picks==6);
   route.state="done";ContestMission_Process();assert(!ContestMission_IsBusy());
   ContestMission_Report();assert(strstr(report,"mission_complete") && strstr(report,"stored=12") && strstr(report,"placed=12"));
+  request.profile=CHASSIS_PROFILE_COSINE;
   ContestMission_Init();route.state="idle";assert(ContestMission_Start(NULL,&request));
   ContestMission_Stop();grab.state=GRAB_ERROR;grab.reason="stop_unconfirmed";step();
   assert(ContestMission_CanConfigure());assert(ContestMission_HasPendingWork());assert(ContestMission_Continue());ContestMission_Stop();step();
@@ -243,6 +260,7 @@ int main(void)
   single_test=true;raw=transfers=0;unsigned old_resumes=resumes;
   assert(QR_SimulatedSet("356+123+536+231"));
   assert(ContestMission_StartSingle(200));step();
+  ContestMission_Report();assert(selected_profile==CHASSIS_PROFILE_LINEAR && strstr(report,"profile=linear"));
   route.phase="work_turn";ContestMission_Process();step();
   route.state="station";route.station=4;route.visit=2;route.stop_confirmed=true;
   route.target_x_mm=1200;route.target_y_mm=2100;

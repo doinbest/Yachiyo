@@ -61,6 +61,7 @@ if __name__ == "__main__":
     build_test("contest_screen_test", "template/App/contest_screen.c")
     build_test("hwt101_i2c_test", "template/Hardware/hwt101_i2c.c")
     build_test("hwt101_calibration_test", "template/App/hwt101_calibration.c")
+    build_test("hwt101_recovery_integration_test", "template/Hardware/hwt101_i2c.c", "template/App/hwt101_calibration.c")
     build_test("console_rx_test", "template/App/console_rx.c")
     build_test("console_priority_test", "template/App/console_tx.c")
     build_test("console_tx_test", "template/App/console_tx.c")
@@ -95,7 +96,7 @@ if __name__ == "__main__":
     build_test("grab_bus_recovery_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_pose_test")
     build_test("grab_time_saving_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
-    build_test("grab_axis_cosine_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_axis_acceleration_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_arrival_fallback_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("test_radar_parser", "template/Hardware/lds_parser.c")
     build_test("test_radar_stability", "template/App/radar_geometry.c", "template/App/radar_stability.c")
@@ -143,7 +144,7 @@ if __name__ == "__main__":
     build_test("motor_recovery_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_diagnostic_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_startup_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
-    for scenario in ("restart_fail", "stop_fail", "dma_fail", "overflow", "active_error"):
+    for scenario in ("restart_fail", "stop_fail", "dma_fail", "overflow", "active_error", "active_ne", "active_ore", "active_missing"):
         run([OUT / "motor_bus_startup_test.exe", scenario])
     build_test("mecanum_bus_test", "template/App/mecanum_chassis.c", "template/Hardware/motor_bus.c")
     build_test("mecanum_feedback_test", "template/App/mecanum_chassis.c", "template/Hardware/motor_bus.c", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")

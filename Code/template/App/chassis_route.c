@@ -6,6 +6,7 @@
 #include "console_tx.h"
 #include "mecanum_chassis.h"
 #include "GrabTask.h"
+#include "contest_mission.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -168,7 +169,8 @@ static bool submit(unsigned index)
       Profile.nominal_time_s+=180.0f/CHASSIS_MOTION_MAX_OMEGA_DEG_S;
     }
   }
-  else if(!(TaskRoute?ChassisRouteProfile_BuildTask(&from,&to,AcceptedYaw,RouteSpeed,FirstScanLeg,&Profile):
+  else if(!(TaskRoute?ChassisRouteProfile_BuildTaskEntry(&from,&to,AcceptedYaw,RouteSpeed,FirstScanLeg,
+      ChassisMotion_ProfileGet()==CHASSIS_PROFILE_COSINE,&Profile):
       ChassisRouteProfile_Build(&from,&to,AcceptedYaw,RouteSpeed,FirstScanLeg,&Profile)))
   { Route.state="error";Route.reason="route_profile_invalid";return false; }
   /* Only remove a neutral stop when both generated legs are single plain
@@ -184,7 +186,8 @@ static bool submit(unsigned index)
     float ax=to.x_mm-from.x_mm,ay=to.y_mm-from.y_mm;
     float bx=next.x_mm-to.x_mm,by=next.y_mm-to.y_mm;
     if(fabsf(ax*by-ay*bx)>0.01f || ax*bx+ay*by<=0 ||
-       !ChassisRouteProfile_BuildTask(&to,&next,Profile.final_yaw_deg,RouteSpeed,FirstScanLeg,&extension) ||
+       !ChassisRouteProfile_BuildTaskEntry(&to,&next,Profile.final_yaw_deg,RouteSpeed,FirstScanLeg,
+         ChassisMotion_ProfileGet()==CHASSIS_PROFILE_COSINE,&extension) ||
        extension.count!=1U || extension.phases[0].turn || strcmp(extension.phases[0].phase,"move") ||
        fabsf(angle_error(Profile.phases[0].yaw_deg,extension.phases[0].yaw_deg))>0.01f)break;
     float speed=fminf(Profile.phases[0].speed_mm_s,extension.phases[0].speed_mm_s);
@@ -585,10 +588,14 @@ bool ChassisRoute_Command(unsigned n,char *t[])
   else if(!strcmp(t[1],"test"))
   {
     float speed=0.0f,distance=0.0f;
+    ChassisMotion_Profile_t profile=CHASSIS_PROFILE_LINEAR,previous=ChassisMotion_ProfileGet();
     reject="invalid_displacement";
-    if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved()) reject="route_reserved";
+    if(n==6 && !strcmp(t[5],"cosine"))profile=CHASSIS_PROFILE_COSINE;
+    if(ContestMission_HasPendingWork())reject="mission_reserved";
+    else if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved()) reject="route_reserved";
     else if(ChassisMotion_IsBusy()) reject="motion_busy";
-    else if(n==5 && number(t[2],&dx) && number(t[3],&dy) && number(t[4],&speed) &&
+    else if(n==6 && strcmp(t[5],"linear") && strcmp(t[5],"cosine"))reject="profile_required";
+    else if((n==5 || n==6) && number(t[2],&dx) && number(t[3],&dy) && number(t[4],&speed) &&
             (distance=hypotf(dx,dy))>0.0f && distance<=3000.0f)
     {
       reject="speed_range";
@@ -599,18 +606,19 @@ bool ChassisRoute_Command(unsigned n,char *t[])
         if(timeout<CHASSIS_DISTANCE_TIMEOUT_MS) timeout=CHASSIS_DISTANCE_TIMEOUT_MS;
         ChassisLocalization_Get(&Position);
         yaw=Position.observer.feedback.yaw_rad;c=cosf(yaw);s=sinf(yaw);
-        /* Same cosine controller as an ordinary route leg; retain the map anchor. */
-        ok=ChassisMotion_MoveTo(Position.observer.feedback.x_mm+c*dx-s*dy,
+        /* Same selected straight-line controller as a route leg; retain anchor. */
+        ok=ChassisMotion_ProfileSet(profile) && ChassisMotion_MoveTo(Position.observer.feedback.x_mm+c*dx-s*dy,
                                Position.observer.feedback.y_mm+s*dx+c*dy,
                                yaw*180.0f/CHASSIS_MODEL_PI,speed,timeout);
         ChassisMotion_StatusGet(&Motion);reject=Motion.reason;
         if(ok) ChassisRoute_Init();
+        else (void)ChassisMotion_ProfileSet(previous);
       }
     }
     ChassisMotion_StatusGet(&Motion);
-    length=snprintf(text,sizeof(text),"%s chassis test reason=%s id=%lu profile=cosine k=%u distance_mm=%.3f speed_mm_s=%.1f; request only, arrival requires feedback\r\n",
+    length=snprintf(text,sizeof(text),"%s chassis test reason=%s id=%lu profile=%s distance_mm=%.3f speed_mm_s=%.1f; request only, arrival requires feedback\r\n",
                     ok?"OK":"ERR",ok?"accepted":reject,(unsigned long)Motion.action_id,
-                    (unsigned)CHASSIS_DISTANCE_COSINE_K,(double)distance,(double)speed);
+                    ChassisMotion_ProfileName(profile),(double)distance,(double)speed);
     if(length>0 && (size_t)length<sizeof(text)) (void)ConsoleTx_Write((const uint8_t*)text,(uint16_t)length);
     return true;
   }

@@ -1,24 +1,25 @@
 import {describeGrabRoute,describeGrabMissing,reasonText,deviceText} from './protocol.mjs';
 
-export function buildMissionCommand({source,code='',speed=1000,turnSpeed=100,start='lower',radar=false,align='raised',visualHeading=false}){
+export function buildMissionCommand({source,code='',speed=1000,turnSpeed=100,start='lower',radar=false,align='raised',visualHeading=false,profile='linear'}){
   if(!['qr','fixed'].includes(source))throw Error('请选择本轮执行码来源');
   if(!String(speed).trim()||!Number.isFinite(Number(speed))||speed<10||speed>5000||!String(turnSpeed).trim()||!Number.isFinite(Number(turnSpeed))||turnSpeed<5||turnSpeed>500)throw Error('路线速度10–5000，转向速度5–500 °/s');
   if(!['lower','upper'].includes(start)||typeof radar!=='boolean')throw Error('请选择起点和雷达模式');
   if(!['lowered','raised'].includes(align))throw Error('请选择工位视觉对准方式');
   if(typeof visualHeading!=='boolean')throw Error('请选择视觉航向矫正');
+  if(!['linear','cosine'].includes(profile))throw Error('请选择底盘加减速方式');
   code=code.trim();
   if(source==='fixed'){
     const groups=code.split('+');
     if(!/^[1-6]{3}\+[1-3]{3}\+[1-6]{3}\+[1-3]{3}$/.test(code)||groups.some(g=>new Set(g).size!==3)||[...groups[0]].sort().join('')!==[...groups[2]].sort().join(''))throw Error('任务码须为两批同色、各三件，例如156+123+516+231');
   }
-  const wire=`grab mission ${source}${source==='fixed'?' '+code:''} ${Number(speed)} ${Number(turnSpeed)} ${start} ${radar?'radar':'fixed'} ${visualHeading?(align==='raised'?'vhigh':'vlow'):align}`;
-  if(wire.length>63)throw Error('指令过长');
+  const wire=`grab mission ${source}${source==='fixed'?' '+code:''} ${Number(speed)} ${Number(turnSpeed)} ${start} ${radar?'radar':'fixed'} ${visualHeading?(align==='raised'?'vhigh':'vlow'):align} ${profile}`;
+  if(wire.length>95)throw Error('指令过长');
   return wire;
 }
 
 export function mountMission({root,send,canSend}){
   const make=(tag,text,cls,id)=>{const e=root.ownerDocument.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;if(id)e.id=id;return e;};
-  let snapshot=null,live=false,connected=false,pending=false;
+  let snapshot=null,live=false,connected=false,pending=false,profilePending=false;
   const hero=make('header',undefined,'mission-hero');
   const headline=make('div');headline.append(make('span','MATCH CONTROL','mission-eyebrow'),make('h2','两批比赛 · 连贯执行'),make('p','扫码 → 原料入仓 → 粗加工 → 暂存 / 码垛 → 返回起点','form-note'));
   const badge=make('span','待开始','mission-badge');hero.append(headline,badge);root.append(hero);
@@ -39,9 +40,11 @@ export function mountMission({root,send,canSend}){
   alignment.setAttribute('aria-describedby','mission-align-note');alignmentField.append(alignment,alignmentNote);fields.append(alignmentField);
   const visualHeading=field('视觉航向矫正',make('select',undefined,undefined,'mission-visual-heading'));
   for(const [value,text] of [['off','关闭 · 原流程'],['on','开启 · 测试']]){const o=make('option',text);o.value=value;visualHeading.append(o);}visualHeading.value='off';
-  setup.append(make('p','开启后在加工、暂存进站及换环时核验航向。尚未标定时只观测，不自动改角或转车；暂停继续保留本轮选择。','form-note'));
+  setup.append(make('p','开启后每次进入加工区、暂存区时仅核验一次航向，区内换环及加工取回不重复；每件位置对准照常执行。观测最多5秒，接受间断但一致的3帧，证据不足跳过。尚未标定时只观测，不自动改角或转车；暂停继续保留本轮选择。','form-note'));
   const speed=field('路线速度 / mm/s',make('input'));speed.type='number';speed.value='1000';speed.min='10';speed.max='5000';
   const turnSpeed=field('转向速度 / °/s',make('input'));turnSpeed.type='number';turnSpeed.value='100';turnSpeed.min='5';turnSpeed.max='500';
+  const profile=field('底盘加减速',make('select',undefined,undefined,'mission-profile'));
+  for(const [value,text] of [['linear','线性 · 300 mm/s²'],['cosine','余弦 · K200 / 400 ms']]){const o=make('option',text);o.value=value;profile.append(o);}profile.value='linear';
   setup.append(fields,make('p','开启雷达：展开扫描→规划→收回雷达→出发；关闭雷达：直接走固定路线。最终返回所选起点。路线速度包含起点至扫码点；转向速度为原地转向上限，到角自动减速。两种方式都会前往二维码工位实际扫码。串口屏仅显示本轮扫描结果，固定码只决定后续搬运顺序。','form-note'));
   const note=make('p','开始表示小车已在所选起点、按选项朝向摆放，三个料盘已清空且机构已回零。设备自动检查IMU及四轮反馈，复用有效起点定位或建立本轮定位，通过后出发；无需另行确认或准备跑图。','form-note');setup.append(note);
   const actions=make('div',undefined,'actions mission-actions');setup.append(actions);root.append(setup);
@@ -49,11 +52,11 @@ export function mountMission({root,send,canSend}){
   const button=(label,wire,id,cls,allowed=()=>true)=>{
     const b=make('button',label,cls,id);b.type='button';
     const update=()=>{try{b.title=typeof wire==='function'?wire():wire;b.disabled=(pending&&!['grab stop','grab mission pause','grab mission stop'].includes(b.title))||!connected||!canSend(b.title)||!allowed();}catch{b.disabled=true;b.title='请检查任务设置';}};
-    b.onclick=async()=>{update();if(b.disabled)return;pending=true;updateAll();try{await send(b.title);}finally{pending=false;updateAll();}};
+    b.onclick=async()=>{update();if(b.disabled)return;pending=true;updateAll();try{if(id==='mission-start')profilePending=true;updateAll();const sent=await send(b.title);if(id==='mission-start'&&sent===false)profilePending=false;}catch(error){if(id==='mission-start')profilePending=false;reason.textContent=`指令发送失败 · ${error.message}`;}finally{pending=false;updateAll();}};
     actions.append(b);controls.push(update);return b;
   };
   const startAllowed=()=>!live||!snapshot||['idle','done','error','cancelled'].includes(snapshot.state);
-  button('开始本轮比赛',()=>buildMissionCommand({source:source.value,code:code.value,speed:speed.value,turnSpeed:turnSpeed.value,start:start.value,radar:radar.value==='on',align:alignment.value,visualHeading:visualHeading.value==='on'}),'mission-start','primary',startAllowed);
+  button('开始本轮比赛',()=>buildMissionCommand({source:source.value,code:code.value,speed:speed.value,turnSpeed:turnSpeed.value,start:start.value,radar:radar.value==='on',align:alignment.value,visualHeading:visualHeading.value==='on',profile:profile.value}),'mission-start','primary',startAllowed);
   button('暂停比赛','grab mission pause','mission-pause');
   button('停止比赛','grab mission stop','mission-stop','task-stop');
   button('继续当前阶段','grab mission continue','mission-continue','',()=>live&&['paused','config_wait','stop_wait','bus_recovery_wait'].includes(snapshot?.state));
@@ -67,6 +70,7 @@ export function mountMission({root,send,canSend}){
   const scanned=make('strong','—',undefined,'mission-scanned'),adopted=make('strong','—',undefined,'mission-adopted');
   for(const[label,value]of [['实际扫码 · 串口屏显示',scanned],['本轮采用 · 搬运执行依据',adopted]]){const box=make('div');box.append(make('span',label),value);codes.append(box);}progress.append(codes);
   const adoptedAlignment=make('strong','设备未报告',undefined,'mission-adopted-align'),alignmentReadback=make('p',undefined,'mission-alignment-readback');alignmentReadback.append(make('span','本轮采用 · 工位视觉对准'),adoptedAlignment);progress.append(alignmentReadback);
+  const adoptedProfile=make('strong','设备未报告',undefined,'mission-adopted-profile'),profileReadback=make('p',undefined,'mission-alignment-readback');profileReadback.append(make('span','本轮采用 · 底盘加减速'),adoptedProfile);progress.append(profileReadback);
   const adoptedHeading=make('strong','设备未报告',undefined,'mission-adopted-heading');
   const headingResult=make('p','尚无航向核验结果','form-note','mission-heading-result');
   const headingReadback=make('p');headingReadback.append(make('span','本轮采用 · 视觉航向矫正 '),adoptedHeading);progress.append(headingReadback,headingResult);
@@ -75,9 +79,10 @@ export function mountMission({root,send,canSend}){
   const reason=make('p','状态以设备报告为准。暂停保留进度，明确点击继续才恢复；停止结束本轮。','form-note');progress.append(reason);root.append(progress);
   const prep=make('details',undefined,'vision-card mission-preflight');prep.append(make('summary','工位高度配置'));
   const link=make('a','配置工位高度 →');link.href='#params/material/z_rough_align';prep.append(link,make('p','粗加工先空爪对准编号环并停稳，再保存X/Z回仓取料。1/2号盘夹取后提起并伸X30mm，3号盘保持收回；转回128°、恢复对准位置后下降放置。各工位高度按实物设置，缺项到该阶段填写后继续。','form-note'));root.append(prep);
-  function updateAll(){code.disabled=source.value!=='fixed';controls.forEach(fn=>fn());}
-  for(const e of [source,code,speed,turnSpeed,start,radar,alignment,visualHeading]){e.addEventListener('input',updateAll);e.addEventListener('change',updateAll);}
+  function updateAll(){code.disabled=source.value!=='fixed';profile.disabled=pending||profilePending||!!snapshot&&!['idle','done','error','cancelled'].includes(snapshot.state);controls.forEach(fn=>fn());}
+  for(const e of [source,code,speed,turnSpeed,start,radar,alignment,visualHeading,profile]){e.addEventListener('input',updateAll);e.addEventListener('change',updateAll);}
   function render(){
+    adoptedProfile.textContent=({linear:'线性 · 300 mm/s²',cosine:'余弦 · K200 / 400 ms'})[snapshot?.profile]||'设备未报告';
     adoptedHeading.textContent=snapshot?.visual_heading==='on'?'开启 · 测试':snapshot?.visual_heading==='off'?'关闭':'设备未报告';
     const imageAngle=Number(snapshot?.heading_image),observationZ=Number(snapshot?.heading_z);
     headingResult.textContent=snapshot?.heading_result?`${reasonText(snapshot.heading_result)}${Number.isFinite(imageAngle)?` · 图像角 ${imageAngle.toFixed(2)}°`:''}${Number.isFinite(observationZ)?` · 观察Z ${observationZ.toFixed(2)} mm`:''}`:'尚无航向核验结果';
@@ -92,5 +97,5 @@ export function mountMission({root,send,canSend}){
     }
     freshness.textContent=live?'设备最近读回':snapshot?'历史状态 · 请读取比赛状态':'尚无设备读回';updateAll();
   }
-  render();return {reset(){snapshot=null;live=false;heading.textContent='等待开始';badge.textContent='待开始';scanned.textContent=adopted.textContent='—';counts.textContent='入仓 0 / 12 · 放置 0 / 12';position.textContent='批次 — · 件 — · 仓 — · 目标环 —';steps.forEach(e=>{e.className='';});reason.textContent='设备已重启，完成回零并放好小车后开始；底盘定位由设备自动准备。';render();},update:updateAll,receive(s){if(s?.mode!=='mission')return;snapshot=s;live=connected;render();},connection(value){connected=value;live=false;render();}};
+  render();return {reset(){profilePending=false;snapshot=null;live=false;heading.textContent='等待开始';badge.textContent='待开始';scanned.textContent=adopted.textContent='—';counts.textContent='入仓 0 / 12 · 放置 0 / 12';position.textContent='批次 — · 件 — · 仓 — · 目标环 —';steps.forEach(e=>{e.className='';});reason.textContent='设备已重启，完成回零并放好小车后开始；底盘定位由设备自动准备。';render();},update:updateAll,receiveReply(line){const rejected=String(line).trim().replace(/^(?:arm>\s*)+/,'').match(/^ERR grab mission reason=([a-z_]+)(?:\s|$)/);if(rejected){profilePending=false;reason.textContent=`比赛指令未受理 · ${reasonText(rejected[1])}`;updateAll();}},receive(s){if(s?.mode!=='mission')return;snapshot=s;profilePending=false;live=connected;render();},connection(value){connected=value;live=false;render();}};
 }

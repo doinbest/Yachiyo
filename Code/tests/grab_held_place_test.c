@@ -10,9 +10,10 @@ static void setup_place(void)
 static void align_then_pick_and_place_continuously(const char *scene,bool raised,const char *release_height)
 {
  setup_place();TrackHeld=false;physical[0]=42;
- setting("z_rough_align","-100");setting("z_temp_align","-80");setting("z_proc_place",release_height);
- float release_z=Config[C_Z_PROC_PLACE];
- assert(GrabTask_AlignPlaceStartEx(scene,2,raised));
+ bool stack=!strcmp(scene,"temp2");uint8_t target=stack?5:2;
+ setting("z_rough_align","-100");setting("z_temp_align","-80");setting(stack?"z_stack_place":"z_proc_place",release_height);
+ float release_z=Config[stack?C_Z_STACK_PLACE:C_Z_PROC_PLACE];
+ assert(GrabTask_AlignPlaceStartEx(scene,target,raised));
  assert(!GrabTask_AlignPlaceCapture() && !AlignedPlace.valid && !closures);
  run_to(GRAB_HOLD,500,0);
  /* Alignment alone cannot skip the fresh stopped capture contract. */
@@ -22,9 +23,11 @@ static void align_then_pick_and_place_continuously(const char *scene,bool raised
  for(unsigned i=0;i<80 && !AlignedPlace.valid;i++){step(true,0,0,0);(void)GrabTask_AlignPlaceCapture();}
  assert(AlignedPlace.valid && !AlignedPlace.picked && status().state==GRAB_COMPLETE);
  float aligned_x=AlignedPlace.x,aligned_z=AlignedPlace.z;
- assert(fabsf(aligned_x-42)<.1f && fabsf(aligned_z-(raised?0:!strcmp(scene,"temp1")?-80:-100))<.1f);
- assert(!GrabTask_AlignedPlaceStart(scene,2,5));
+ if(stack)assert(requested_color==5 && !TrackHeld && AlignedPlace.scene==SCENE_TEMP2 && AlignedPlace.ring==5);
+ assert(fabsf(aligned_x-42)<.1f && fabsf(aligned_z-(raised?0:(!strcmp(scene,"temp1") || stack)?-80:-100))<.1f);
+ assert(!GrabTask_AlignedPlaceStart(scene,target,5));
  if(!strcmp(scene,"temp1"))setting("z_proc_place","-140"); /* Preserve this item's captured release target. */
+ if(stack)setting("z_stack_place","-120"); /* The saved stacking target also survives RAM edits. */
  bool accepted=false;
  for(unsigned i=0;i<20 && !accepted;i++)
  {
@@ -32,7 +35,7 @@ static void align_then_pick_and_place_continuously(const char *scene,bool raised
   if(!accepted){assert(!strcmp(status().reason,"busy"));step(true,0,0,0);}
  }
  assert(accepted);
- if(!strcmp(scene,"temp1")){
+ if(!strcmp(scene,"temp1") || stack){
   run_to(GRAB_CLOSE,400,0);assert(GrabTask_Pause());run_to(GRAB_IDLE,200,0);
   assert(AlignedPlace.valid && AlignedPlace.x==aligned_x);assert(GrabTask_Continue());
  }
@@ -41,7 +44,7 @@ static void align_then_pick_and_place_continuously(const char *scene,bool raised
  unsigned opened=openings;
  unsigned saved_requests=camera_requests;
  assert(!GrabTask_AlignedPlaceStart(!strcmp(scene,"temp1")?"rough":"temp1",2,5));
- assert(GrabTask_AlignedPlaceStart(scene,2,5));
+ assert(GrabTask_AlignedPlaceStart(scene,target,5));
  camera_valid=false;run_to(GRAB_EXTERNAL_EXTEND,300,0);move_arrives=false;
  for(unsigned i=0;i<20;i++)step(true,0,0,0);
  assert(status().state==GRAB_EXTERNAL_EXTEND && physical[0]==30);
@@ -106,5 +109,7 @@ int main(void)
  align_then_pick_and_place_continuously("temp1",false,"-130");
  align_then_pick_and_place_continuously("temp1",true,"-130");
  align_then_pick_and_place_continuously("rough",false,"-120");
+ align_then_pick_and_place_continuously("temp2",false,"-110");
+ align_then_pick_and_place_continuously("temp2",true,"-110");
  puts("held placement: align before pickup, restore X then continuous Z release, pause without duplicate release PASS");
 }

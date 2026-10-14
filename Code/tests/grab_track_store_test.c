@@ -161,7 +161,7 @@ static void early_index_pause_and_fresh_verification(void)
 {
   setup();tray_arrives=false;
   assert(GrabTask_TrackedStoreStart(2,2,GRAB_TRACK_FEEDBACK));
-  for(unsigned i=0;i<80 && !tray_indexes;i++)step(true,0,30,0);
+  for(unsigned i=0;i<80 && !tray_indexes;i++)step(true,0,101,0);
   assert(tray_indexes==1 && !closures && !base_moves);
   assert(GrabTask_Pause());run_to(GRAB_IDLE,200,0);
   unsigned indexes=tray_indexes;
@@ -180,8 +180,63 @@ static void early_index_pause_and_fresh_verification(void)
   assert(tray_verifies==1 && tray_indexes==1); /* No second HOME/move. */
   run_to(GRAB_COMPLETE,400,0);
 }
+static void outside_preindex_and_fixed_return(void)
+{
+  setup();
+  for(unsigned slot=1;slot<=3;slot++)
+  {
+    /* Real run: each accepted return undershot; the third start was 127.67
+     * against nominal 130.4. Its external pose remains valid. */
+    physical[2]=RearBase+GRAB_BASE_WORK_OFFSET_DEG-3;
+    unsigned before=tray_indexes;
+    assert(GrabTask_TrackedStoreStart(slot,slot,GRAB_TRACK_FEEDBACK));
+    run_to(GRAB_CLOSE,300,0);
+    assert(tray_indexes==before+1);
+    run_to(GRAB_COMPLETE,600,0);
+    assert(fabsf(destination[2]-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))<.15f);
+    assert(!strcmp(status().result,"stored"));
+  }
+}
+static void preindex_requires_outside_and_fresh_stop(void)
+{
+  setup();TrackPickArmed=TrackReady=true;TrackStoreSlot=3;
+  Status.mode="track";Status.state=GRAB_TRACK_MATCH;
+  Axes[2].position_valid=Axes[2].state_valid=true;
+  Axes[2].position_tick=Axes[2].state_tick=clock_ms;
+  Axes[2].quiet_since=clock_ms-(uint32_t)Config[C_STABLE_MS];
+  Axes[2].mm=physical[2]=RearBase+GRAB_BASE_WORK_OFFSET_DEG-3;
+  Axes[2].flags=3;Axes[2].quiet=false;
+  track_preindex(clock_ms);assert(!tray_indexes);
+  Axes[2].quiet=true;OutsidePose=false;
+  track_preindex(clock_ms);assert(!tray_indexes);
+  OutsidePose=true;RearPose=true;
+  track_preindex(clock_ms);assert(!tray_indexes);
+  RearPose=false;Axes[2].flags=9;
+  track_preindex(clock_ms);assert(!tray_indexes);
+  Axes[2].flags=3;
+  track_preindex(clock_ms+(uint32_t)Config[C_FEEDBACK_MS]+1);assert(!tray_indexes);
+  track_preindex(clock_ms);assert(tray_indexes==1);
+}
+static void missed_tracking_index_retries_during_retract(void)
+{
+  setup();assert(GrabTask_TrackedStoreStart(3,3,GRAB_TRACK_FEEDBACK));
+  /* No valid external-pose evidence until lift has completed. */
+  RearPose=true;
+  run_to(GRAB_X_RETRACT,400,0);assert(!tray_indexes);
+  RearPose=false;tray_arrives=false;unsigned turns=base_moves;
+  for(unsigned i=0;i<30 && !tray_indexes;i++)step(true,0,0,0);
+  assert(tray_indexes==1 && status().state==GRAB_X_RETRACT);
+  run_to(GRAB_INDEX,200,0);
+  for(unsigned i=0;i<10;i++)step(true,0,0,0);
+  assert(base_moves==turns && tray_indexes==1);
+  tray_arrives=true;run_to(GRAB_COMPLETE,600,0);
+  assert(closures==1 && !strcmp(status().result,"stored"));
+}
 int main(void)
 {
+  outside_preindex_and_fixed_return();
+  preindex_requires_outside_and_fresh_stop();
+  missed_tracking_index_retries_during_retract();
   early_index_pause_and_fresh_verification();
   observation_boundary_return();
   next_color_after_released_stop();

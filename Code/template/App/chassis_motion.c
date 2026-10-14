@@ -10,6 +10,13 @@
 #include <string.h>
 
 static ChassisMotion_Status_t Motion;
+static ChassisMotion_Profile_t SelectedProfile;
+bool ChassisMotion_ProfileSet(ChassisMotion_Profile_t profile)
+{
+  if(ChassisMotion_IsBusy() || (profile!=CHASSIS_PROFILE_LINEAR && profile!=CHASSIS_PROFILE_COSINE))return false;
+  SelectedProfile=profile;return true;
+}
+ChassisMotion_Profile_t ChassisMotion_ProfileGet(void){return SelectedProfile;}
 /* Every heading task uses the same proportional law (deg -> rad/s).
  * The old public generic PID had no integral/derivative consumers. */
 static struct { float target_yaw_deg, output_limit, output_rad_s; } HeadingPid;
@@ -152,6 +159,7 @@ void ChassisMotion_HeadingProcess(void)
 void ChassisMotion_Init(void)
 {
   memset(&Motion, 0, sizeof(Motion));
+  SelectedProfile=CHASSIS_PROFILE_LINEAR;
   memset(&StopStatus, 0, sizeof(StopStatus));
   StopStatus.reason = "idle";
   StopMonitoring = StopHaveGroup = false;
@@ -263,6 +271,7 @@ static bool start(const ChassisMotion_Target_t *t, bool indefinite)
   Motion.action_id++;
   Motion.start_tick = Motion.sample_tick = LastControlTick = now;
   Motion.elapsed_ms = Motion.control_dt_ms = 0;
+  Motion.profile=SelectedProfile;Motion.peak_mm_s=0;Motion.stop_ms=0;
   memset(&Motion.body_target, 0, sizeof(Motion.body_target));
   memset(Motion.rpm_unquantized, 0, sizeof(Motion.rpm_unquantized));
   memset(Motion.rpm_command, 0, sizeof(Motion.rpm_command));
@@ -444,6 +453,7 @@ static bool request_stop(const char *reason, bool error)
   Motion.state = CHASSIS_MOTION_STOPPING;
   WaitingForStop = true;
   DistanceStopTick = HAL_GetTick();
+  Motion.stop_ms=0;
   StableGroups = 0;
   if (Motion.distance_mode)
   {
@@ -822,17 +832,28 @@ static bool distance_command(uint32_t dt, ChassisModel_Velocity_t *command)
    * reserve the cosine braking integral plus fresh-feedback response travel. */
   available=fmaxf(0,distance-CHASSIS_DISTANCE_TOLERANCE_MM*0.5f-
       fmaxf(0,measured-hypotf(MapVx,MapVy))*delay);
-  brake_speed=distance_brake_speed(available,delay);
-  float ramp=DistanceRampFrom+(DistancePeakSpeed-DistanceRampFrom)*
-      half_cosine((uint32_t)(now-DistanceRampTick)/(distance_ramp_seconds()*1000));
-  limit=fminf(DistanceMaxSpeed,fminf(ramp,brake_speed));
+  if(Motion.profile==CHASSIS_PROFILE_COSINE){
+    brake_speed=distance_brake_speed(available,delay);
+    float ramp=DistanceRampFrom+(DistancePeakSpeed-DistanceRampFrom)*
+        half_cosine((uint32_t)(now-DistanceRampTick)/(distance_ramp_seconds()*1000));
+    limit=fminf(DistanceMaxSpeed,fminf(ramp,brake_speed));
+  }else{
+    float a=CHASSIS_DISTANCE_ACCEL_MM_S2;
+    brake_speed=sqrtf(a*a*delay*delay+2*a*available)-a*delay;
+    limit=fminf(DistanceMaxSpeed,brake_speed);
+  }
   if(DistanceCorrections)
     limit=fminf(limit,CHASSIS_DISTANCE_CORRECTION_SPEED_MM_S);
   else if(distance<=CHASSIS_DISTANCE_CREEP_MM)
     limit=fminf(limit,CHASSIS_DISTANCE_CREEP_MM_S);
   if(norm>limit) { vx*=limit/norm; vy*=limit/norm; }
   if(hypotf(Motion.error_x_mm,Motion.error_y_mm)<=CHASSIS_DISTANCE_TOLERANCE_MM) vx=vy=0;
-  MapVx=vx;MapVy=vy;
+  if(Motion.profile==CHASSIS_PROFILE_LINEAR){
+    float dx=vx-MapVx,dy=vy-MapVy,change=hypotf(dx,dy);
+    float step=CHASSIS_DISTANCE_ACCEL_MM_S2*dt/1000.0f;
+    if(change>step){dx*=step/change;dy*=step/change;}
+    MapVx+=dx;MapVy+=dy;
+  }else{MapVx=vx;MapVy=vy;}
   command->vx_mm_s=cosf(Motion.map_yaw_rad)*MapVx+sinf(Motion.map_yaw_rad)*MapVy;
   command->vy_mm_s=-sinf(Motion.map_yaw_rad)*MapVx+cosf(Motion.map_yaw_rad)*MapVy;
   return distance_heading_command(command);
@@ -849,6 +870,8 @@ void ChassisMotion_Process(void)
   stop_monitor_process(); /* Runs while idle too; independent of at-target checks. */
   if (!ChassisMotion_IsBusy())
     return;
+  Motion.elapsed_ms=now-Motion.start_tick;
+  if(WaitingForStop)Motion.stop_ms=now-DistanceStopTick;
   Mecanum_StatusGet(&bus);
   /* A bus-level emergency stop cancels the owning task as well. It must never
    * be followed by another refresh of the previous indefinite target. */
@@ -869,6 +892,18 @@ void ChassisMotion_Process(void)
   if (Motion.distance_mode)
   {
     bool feedback_ok = distance_feedback_check(now);
+    if(feedback_ok && Position.speed_valid){
+      static const uint8_t dirs[4]={CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR,
+        CHASSIS_MOTOR_REAR_LEFT_FORWARD_DIR,CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR,
+        CHASSIS_MOTOR_FRONT_RIGHT_FORWARD_DIR};
+      float rpm[4];bool fresh=true;ChassisModel_Velocity_t measured;
+      for(unsigned w=0;w<4;w++){
+        if(!Position.wheels[w].speed_valid || now-Position.wheels[w].speed_ms>600U)fresh=false;
+        rpm[w]=(dirs[w]?-1.0f:1.0f)*Position.wheels[w].speed_rpm;
+      }
+      if(fresh && ChassisModel_Forward(&Geometry,rpm,&measured))
+        Motion.peak_mm_s=fmaxf(Motion.peak_mm_s,hypotf(measured.vx_mm_s,measured.vy_mm_s));
+    }
     if (!feedback_ok && !FinishAsError)
     {
       if (!WaitingForStop) { request_stop("feedback_invalid", true); return; }

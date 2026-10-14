@@ -471,3 +471,5 @@ body.dark[data-theme=black]{--paper:#111312;--card:#1a1d1b;--input:#242825;--ter
 .material-manual>summary{cursor:pointer;font-weight:600;color:var(--text)}
 .material-manual[open]>summary{margin-bottom:14px}
 .material-tracking-tools,.material-records{border-top:1px solid var(--line);padding-top:14px;margin-top:16px}
+
+.chassis-test-result{border-top:1px solid var(--line);margin-top:14px;padding-top:4px}.chassis-test-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:10px;margin:12px 0 4px}.chassis-test-metrics>div{padding:10px 12px;border-radius:8px;background:var(--input)}.chassis-test-metrics dt{font-size:11px;color:var(--muted)}.chassis-test-metrics dd{margin:5px 0 0;font-size:14px;font-variant-numeric:tabular-nums;color:var(--ink)}

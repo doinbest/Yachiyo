@@ -333,7 +333,7 @@ static void check_clear_path(const RadarPlan_t *p,uint32_t mask,bool mission)
 static void test_mission_and_detour(void)
 {
   const int expected[9][3]={{2250,150,1},{2100,1200,5},{1200,2100,4},
-    {1200,300,2},{350,1200,3},{1200,2100,4},{1200,300,2},{350,1200,3},{2250,150,1}};
+    {1200,380,2},{350,1200,3},{1200,2100,4},{1200,380,2},{350,1200,3},{2250,150,1}};
   RadarMap_t m;RadarPlan_t p,q;
   legacy_reset(&m);CHECK(RadarPlan_Build(&m,&p));CHECK(p.valid && p.count<193);
   unsigned visit=0;

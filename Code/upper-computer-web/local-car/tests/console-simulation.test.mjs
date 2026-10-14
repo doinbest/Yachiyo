@@ -32,7 +32,7 @@ function consoleFixture(){
     renderStatus:empty,displayReply:protocol.formatTerminalLine,visualStateText:t=>t??'—',bootProgress:(_l,s)=>s,
     parseRadar:()=>null,radarModel:{snapshots:{},params:{}},localStorage:{setItem:empty},
     radarExchange:{busy:false,cancel:empty},radarHostClient:null,radarDirectView:null,
-    paramsView:{receive:empty,cancel:empty,update:empty},trackingPanel:null,materialTrackingPanel:null,stackingPanel:null,missionPanel:null,headingPanel:null,
+    paramsView:{receive:empty,cancel:empty,update:empty},trackingPanel:null,materialTrackingPanel:null,stackingPanel:null,missionPanel:null,headingPanel:null,chassisTestResult:null,
     radarView:{receive:empty,connection:empty,render:empty},mapView:null,wheelView:null,
     qrView:{receive:empty,connection:empty,refreshControls:empty},
     prepView:{busy:false,pending:null,connection(){this.busy=false;this.pending=null;},cancel(){this.busy=false;this.pending=null;},receive:empty},
@@ -83,11 +83,13 @@ test('gripper microsecond edits stay passive and apply once through existing fir
 test('standalone chassis test remains passive until submit and respects stop lock',async()=>{
   const f=consoleFixture();f.sim.controlForm('chassis-test',{compact:true});
   const direction=f.$('chassis-test-direction'),distance=f.$('chassis-test-distance');
+  const profile=f.$('chassis-test-profile');assert.equal(profile.value,'linear');
   const form=f.elements.find(e=>e.tag==='form');
   assert.deepEqual(f.wires,[]);direction.value='left';direction.onchange();
   distance.value='1000';distance.oninput();assert.deepEqual(f.wires,[]);
+  profile.value='cosine';profile.onchange();assert.deepEqual(f.wires,[]);
   form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
-  assert.deepEqual(f.wires,['chassis test 0 1000 1000']);
+  assert.deepEqual(f.wires,['chassis test 0 1000 1000 cosine']);
   f.sim.configure({stopLatched:true});distance.value='500';distance.oninput();
   form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(f.wires.length,1);

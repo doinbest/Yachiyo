@@ -192,11 +192,11 @@ export function chineseTerminalLine(original){
     if(/\bunavailable\b/.test(line))return '雷达舵机：PWM 未初始化成功';
     return '雷达舵机：命令格式错误；使用 lidarservo out、in、pulse <500..5000> 或 status';
   }
-  const group=line.match(/^(OK|ERR|EVT) (bus|console|state|position|enable|disable|zero|origin|grip|camera|vision|material|grab|chassis|imu|qr|system|turntable)\b\s*(.*)$/);
+  const group=line.match(/^(OK|ERR|EVT|WARN) (bus|console|state|position|enable|disable|zero|origin|grip|camera|vision|material|grab|chassis|imu|qr|system|turntable)\b\s*(.*)$/);
   if(group){
     const labels={bus:'总线',console:'控制台诊断',state:'轴状态',position:'轴位置',enable:'使能',disable:'关闭使能',zero:'位置清零',origin:'回零点',grip:'夹爪',camera:'相机',vision:'Base/X 对准',material:'物料任务',grab:'抓取任务',chassis:'底盘',imu:'IMU',qr:'二维码',system:'系统',turntable:'转盘'};
-    const words={status:'状态',route:'路线',recover:'恢复',rehome:'重新建立三轴参考',get:'参数读取',set:'参数设置',accepted:'请求已受理，未确认到位',sent:'已发送，未确认动作完成',stop:'停止请求已处理',start:'启动',rejected:'请求被拒绝',stats:'统计',last:'最近数据',saved:'已保存',stream:'连续输出',on:'开启',off:'关闭',pending:'等待执行',partial:'部分完成'};
-    return `${replyIsFault(line)?'故障 · ':''}${labels[group[2]]}：`+group[3].split(/\s+/).map(t=>words[t]??translateToken(t,group[2])).join('；');
+    const words={rx_restarted:'串口接收已恢复，继续等待真实应答',auto_recover:'自动恢复通信',sync_ack_ignored:'同步应答异常，零速缓存及实际停稳已验证',status:'状态',route:'路线',recover:'恢复',rehome:'重新建立三轴参考',get:'参数读取',set:'参数设置',accepted:'请求已受理，未确认到位',sent:'已发送，未确认动作完成',stop:'停止请求已处理',start:'启动',rejected:'请求被拒绝',stats:'统计',last:'最近数据',saved:'已保存',stream:'连续输出',on:'开启',off:'关闭',pending:'等待执行',partial:'部分完成'};
+    return `${group[1]==='WARN'?'警告 · ':replyIsFault(line)?'故障 · ':''}${labels[group[2]]}：`+group[3].split(/\s+/).map(t=>words[t]??translateToken(t,group[2])).join('；');
   }
   if(/^\[IMU (?:CAL|SAVE|VERIFY)\]/.test(line))return line.replace(/^\[IMU (CAL|SAVE|VERIFY)\]/,(_,k)=>({CAL:'IMU 标定/验证',SAVE:'IMU 保存状态',VERIFY:'IMU 验证数据'})[k]).split(/\s+/).map(translateToken).join('；');
   return original;

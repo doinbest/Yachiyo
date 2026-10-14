@@ -141,10 +141,10 @@ test('position-derived pose is independent of RPM validity; trace reanchor start
   const b=state(210);b.trace_seq=2;send(m,b,210);assert.equal(m.paths.feedback.at(-2),null);assert.equal(m.paths.command.at(-2),null);
   const c=state(610);c.trace_seq=2;send(m,c,610);assert.equal(m.paths.command.at(-2),null);
 });
-test('fragmented 2 KB telemetry reception retains CRLF; outgoing remains 63 byte limit; B3 removed',()=>{
+test('fragmented 2 KB telemetry reception retains CRLF; outgoing remains 95 byte limit; B3 removed',()=>{
   const line='@CHASSIS '+JSON.stringify({...state(200),extra:'x'.repeat(1400)});assert.ok(line.length>1800);
   const d=new LineDecoder();assert.deepEqual(d.push(line.slice(0,1000)),[]);assert.deepEqual(d.push(line.slice(1000)+'\r\n'),[line]);
-  assert.throws(()=>frameCommand('x'.repeat(64)));assert.equal(frameCommand('chassis stream on 4294967295'),'chassis stream on 4294967295\r\n');
+  assert.throws(()=>frameCommand('x'.repeat(96)));assert.equal(frameCommand('chassis stream on 4294967295'),'chassis stream on 4294967295\r\n');
   assert.equal(commands.some(c=>c.id==='vision-ring'||c.id==='vision-calib'),false);
 });
 

@@ -52,8 +52,8 @@ void GrabTask_Stop(void){grab_stops++;grab_busy=false;}
 void GrabRoute_Stop(void){grab_route_busy=false;if(grab_busy)GrabTask_Stop();}
 static unsigned mission_pauses,mission_cancels,mission_fields;
 bool GrabRoute_Command(unsigned n,char *t[]){
- if(n==9 && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && !strcmp(t[2],"fixed"))
- {assert(!strcmp(t[8],"lowered"));mission_fields=n;return true;}
+ if((n==9 || n==10) && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && !strcmp(t[2],"fixed"))
+ {assert(!strcmp(t[8],"lowered"));if(n==10)assert(!strcmp(t[9],"cosine"));mission_fields=n;return true;}
  if(n==3 && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && (!strcmp(t[2],"pause") || !strcmp(t[2],"stop")))
  {if(!strcmp(t[2],"pause"))mission_pauses++;else mission_cancels++;return true;}
  if(n==3&&!strcmp(t[0],"grab")&&
@@ -313,7 +313,7 @@ int main(void)
     char qr[]="grab mission qr 500 100 lower fixed";
     char fixed[]="grab mission fixed 156+123+516+231 500 100 upper radar";
     char raised[]="grab mission fixed 156+123+516+231 500 100 upper radar raised";
-    char extra[]="grab mission fixed 156+123+516+231 500 100 upper radar raised extra";
+    char extra[]="grab mission fixed 156+123+516+231 500 100 upper radar raised cosine extra";
     char *tokens[ARM_CONSOLE_TOKEN_COUNT];
     assert(ArmConsole_Tokenize(qr,tokens)==7);
     assert(!strcmp(tokens[5],"lower") && !strcmp(tokens[6],"fixed"));
@@ -323,9 +323,12 @@ int main(void)
     assert(ArmConsole_Tokenize(extra,tokens)==0);
   }
   UART_HandleTypeDef uart={0};MechanicalArm_EventTypeDef event={0};unsigned before;
-  uart.Instance=USART1;ArmConsole_Init(&uart);snapshot.UsbConfigured=1;snapshot.RequestActive=1;
+  uart.Instance=USART1;ArmConsole_Init(&uart);BusAutoFaultSeen=true;BusAutoFaultTick=12345; /* Existing guards use an already acknowledged fault. */
+  snapshot.UsbConfigured=1;snapshot.RequestActive=1;
   command("grab mission fixed 156+123+516+231 5000 100 upper radar lowered\r");
   assert(mission_fields==9 && !strstr(output,"ERR")); /* Full 63-byte payload plus CR. */
+  command("grab mission fixed 156+123+516+231 1000 100 upper fixed lowered cosine\r");
+  assert(mission_fields==10 && !strstr(output,"ERR"));
   command("lidarservo status\r");assert(lidar_sets==0 && strstr(output,"enabled=0 pulse_us=0"));
   for(unsigned pulse=500;pulse<=5000;pulse+=500) {
     char wire[40];snprintf(wire,sizeof wire,"lidarservo pulse %u\r",pulse);
@@ -736,5 +739,17 @@ int main(void)
   mission_pending=true;recovery_fake.active=true;
   command("grab mission pause\r");assert(mission_pauses==1 && recovery_fake.active);
   command("grab mission stop\r");assert(mission_cancels==1 && !recovery_fake.active);mission_pending=false;
+  /* A runtime transport fault starts recovery without a console command. */
+  bus_locked=true;BusAutoFaultSeen=false;recovery_fake.active=false;recovery_fake.success=false;
+  tick+=3000;output[0]=0;ArmConsole_Process();
+  assert(BusRecoveryPending && recovery_fake.active);
+  recovery_fake.active=false;recovery_fake.reason="reply_timeout";
+  ArmConsole_Process();assert(BusRecoveryPending==3);
+  tick+=1999;ArmConsole_Process();assert(BusRecoveryPending==3 && !recovery_fake.active);
+  tick++;ArmConsole_Process();assert(BusRecoveryPending==2 && recovery_fake.active);
+  /* Stop cancels retry ownership and the same old fault must not restart it. */
+  ArmConsole_ReceiveData(3);ArmConsole_StopProcess();
+  tick+=3000;ArmConsole_Process();assert(!BusRecoveryPending && !recovery_fake.active);
+  bus_locked=false;
   puts("arm_console_host_test: commands, units, busy, status, CRLF and async prompts OK");return 0;
 }

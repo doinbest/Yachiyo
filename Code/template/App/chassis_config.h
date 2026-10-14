@@ -101,9 +101,10 @@
 #define CHASSIS_DISTANCE_CORRECTION_SPEED_MM_S 20.0f
 #define CHASSIS_DISTANCE_CORRECTION_MM   100.0f
 #define CHASSIS_DISTANCE_CORRECTIONS       2U
-/* Straight translation: half-cosine, K * 2 ms per acceleration/deceleration.
+/* Straight translation: linear by default, optional cosine K * 2 ms.
  * Curved-path vector tracking retains its separately validated slew limit. */
 #define CHASSIS_DISTANCE_COSINE_K         200U
+#define CHASSIS_DISTANCE_ACCEL_MM_S2     300.0f
 #define CHASSIS_PATH_ACCEL_MM_S2          300.0f
 #define CHASSIS_DISTANCE_TOLERANCE_MM     10.0f
 #define CHASSIS_DISTANCE_HEADING_DEG      2.0f

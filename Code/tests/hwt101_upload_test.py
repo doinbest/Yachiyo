@@ -98,6 +98,13 @@ int main(void)
   reset_output();status.run_id=0;unsigned finals_before=final_count;HWT101_Upload_Process();
   assert(final_count==finals_before+1 && strstr(output,"result=CANCELLED"));
   HWT101_Upload_Process();assert(final_count==finals_before+1);
+  reset_output();status.run_id=9;status.first_reason="i2c";status.first_hal=HAL_TIMEOUT;
+  status.first_hal_error=0x20;status.first_hal_state=0x24;
+  status.first_operation=1;status.first_register=0x3f;status.reason="normal_mode_unconfirmed";
+  state(HWT101_CAL_FAILED,"FAILED",false);comm.reinit_count=2;HWT101_Upload_Process();
+  assert(strstr(output,"[IMU FAULT]") && strstr(output,"first_reason=i2c first_HAL=3"));
+  assert(strstr(output,"error=0x00000020 state=0x24 op=1 reg=0x3F"));
+  assert(strstr(output,"reinit_count=2"));
   puts("hwt101_upload_test: native progress, final deduplication, raw telemetry and frozen timing OK");return 0;
 }
 '''

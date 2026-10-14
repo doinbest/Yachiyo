@@ -980,3 +980,27 @@ test('an imported bare complete cloud can be rebuilt through the same C request'
     ui.get('radar-offline-input').value='cloud';await ui.get('radar-offline-plan').onclick();assert.equal(requests.length,1);assert.equal(requests[0].cloud_complete,true);assert.equal(requests[0].points.length,2);
   }finally{ui.restore();}
 });
+
+test('offline task profile modes select supplied phases and survive snapshot export/import without TX',async()=>{
+  const ui=surface(),wires=[],previews=[];let exported;
+  const originalCreate=URL.createObjectURL;
+  try{
+    URL.createObjectURL=blob=>{exported=blob;return 'blob:task-mode';};
+    const profile={points:[[2250,150,1,0],[2100,300,0,0]],phases:[{kind:'move',phase:'move',direction:'diagonal',segment:1,station:0,visit:0,target:[2100,300,180],speed_mm_s:200}],speed_mm_s:200,turn_speed_deg_s:100};
+    const choices=['task_fixed','task_planned','task_fixed_cosine','task_planned_cosine'];
+    const profiles=Object.fromEntries(choices.map(choice=>[choice,{...profile}]));
+    const workspace=mountRadarWorkspace({model:new RadarModel(),exchange:new RadarExchange({send:wire=>{wires.push(wire);return true;}}),send:wire=>wires.push(wire),canSend:()=>false,mapView:{setSource(){},startProfile:profile=>previews.push(profile)},api:async()=>({valid:true,mask:0,points:profile.points,route_profiles:profiles})});
+    workspace.selectTab('offline');await ui.get('radar-offline-plan').onclick();
+    for(const choice of choices){
+      ui.get('route-profile-choice').value=choice;ui.get('route-profile-choice').onchange();
+      ui.get('route-profile-start').onclick();assert.equal(previews.at(-1),profiles[choice]);
+      ui.get('radar-export').onclick();const saved=await exported.text();
+      assert.equal(JSON.parse(saved).offline_settings.choice,choice);
+      ui.get('route-profile-choice').value='fixed';ui.get('route-profile-choice').onchange();
+      ui.get('radar-import-frame').value='current';ui.get('radar-import').files=[{text:async()=>saved}];
+      await ui.get('radar-import').onchange();assert.equal(ui.get('route-profile-choice').value,choice);
+      await ui.get('radar-offline-plan').onclick();ui.get('route-profile-start').onclick();
+      assert.equal(previews.at(-1),profiles[choice]);assert.deepEqual(wires,[]);
+    }
+  }finally{URL.createObjectURL=originalCreate;ui.restore();}
+});

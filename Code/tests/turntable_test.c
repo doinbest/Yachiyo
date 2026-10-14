@@ -254,10 +254,10 @@ int main(void)
       if(position_commands>before && sends!=handled && sent[1]==0x3a)break;
       assert(i<499);
     }
-    uart.ErrorCode=HAL_UART_ERROR_FE;MotorBus_ErrorCallback(&uart);
+    uart.ErrorCode=HAL_UART_ERROR_DMA;MotorBus_ErrorCallback(&uart);
     MotorBus_Process();Turntable_Process();run();
     assert(strstr(console,"ERR turntable fault reason=transport_error"));
-    assert(strstr(console,"bus_reason=uart_error addr=8 func=0x3A uart_error=0x00000004"));
+    assert(strstr(console,"bus_reason=uart_error addr=8 func=0x3A uart_error=0x00000010"));
     assert(MotorBus_IsQuarantined() && Turntable_ReferenceValid());
     assert(MotorBus_RecoverAfterReset());console[0]=0;
   }

@@ -51,7 +51,7 @@ static void car_index_during_lift(bool pause)
 static void processed_pick_open_and_index(void)
 {
  setup();assert(GrabTask_ProcessedStoreStartEx(4,2,2,false));
- assert(grip_custom_calls==1 && fabsf(grip_custom_duty-10.6f)<.001f);
+ assert(grip_custom_calls==1 && fabsf(grip_custom_duty-12.5f)<.001f);
  run_to(GRAB_CLOSE,500,0);assert(!openings);
  move_arrives=false;tray_arrives=false;run_to(GRAB_LIFT,200,0);
  for(unsigned i=0;i<20;i++)step(true,0,0,0);
@@ -142,5 +142,5 @@ int main(void)
  third_processed_clearance(false,false);third_processed_clearance(true,false);third_processed_clearance(false,true);
  continuous_empty_ring_descent();car_index_during_lift(false);car_index_during_lift(true);
  processed_pick_open_and_index();no_early_index_under_claw();processed_pause_keeps_claw_and_target();
- puts("processing continuity: continuous Z, parallel tray index and 2120us pickup PASS");
+ puts("processing continuity: continuous Z, parallel tray index and full-open station pickup PASS");
 }

@@ -2,55 +2,32 @@
 #include "grab_task_test.c"
 #undef main
 
-static void math_envelope(void)
-{
-  ArmCosineProfile p;
-  ArmCosine_Start(&p,1000,100,5,150,0);
-  float previous=p.speed;
-  for(unsigned t=20;t<=300;t+=20) {
-    float v=ArmCosine_Step(&p,1000,previous,0,t);
-    assert(v>=previous && v<=100);previous=v;
-  }
-  assert(fabsf(p.speed-100)<.001f);
-  for(unsigned n=0;n<30;n++) {
-    float v=ArmCosine_Step(&p,15.f-.5f*n,previous,0,320+20*n);
-    assert(v<=previous && v>=5);previous=v;
-  }
-  assert(p.speed==5 && p.active); /* Timing must never declare physical arrival. */
-  ArmCosine_Start(&p,10,100,5,200,0);
-  assert(p.peak<16 && p.ramp_ms==400);
-  ArmCosine_Step(&p,10,0,0,1000);assert(p.phase_ms==40);
-  ArmCosine_Start(&p,1000,100,5,200,UINT32_MAX-19);
-  ArmCosine_Step(&p,1000,0,0,20);assert(p.phase_ms==40);
-}
 static void seed(unsigned i,float mm)
 {
   Axes[i].mm=mm;Axes[i].position_valid=Axes[i].state_valid=true;
   Axes[i].raw=(int64_t)llroundf(mm*Config[i?C_Z_PPM:C_X_PPM]*65536/3200);
   Axes[i].position_tick=Axes[i].state_tick=clock_ms;Axes[i].flags=1;
 }
-static void conservative_start_and_cancel(void)
+static void configured_speed_and_acceleration(void)
 {
-  reset();configure(false);clock_ms=1000;
-  Status.state=GRAB_LIFT;
+  reset();configure(false);clock_ms=1000;Status.state=GRAB_LIFT;
+  configured_x_acc=37;configured_z_acc=149;
+  Config[C_X_TRANSFER_SPEED]=32;Config[C_Z_SPEED]=64;
   seed(1,-50);
   assert(axis_move(1,0));
-  assert(z_position_acc==0); /* The MCU curve must not stack a drive ramp. */
-  assert(z_position_rpm<100); /* A lift starts below its cruise speed. */
-  assert(Axes[1].profile.ramp_ms==300);
-  clock_ms+=40;uint32_t phase=Axes[1].profile.phase_ms;
-  assert(!axis_profile_io(clock_ms) && Axes[1].profile.phase_ms==phase); /* Busy. */
+  assert(z_position_acc==149 && z_position_rpm==120 && z_position_pulses==0);
+  assert(!arrived(1,clock_ms)); /* Submission is not physical arrival. */
   pending_valid=false;PendingAction=MECHANICAL_ARM_ACTION_NONE;
-  clock_ms+=300;assert(!axis_profile_io(clock_ms)); /* Stale feedback cannot accelerate. */
-  seed(1,-50);clock_ms+=40;assert(axis_profile_io(clock_ms));
-  assert(z_position_pulses==0 && z_position_acc==0 && z_position_rpm<100);
+  seed(0,0);
+  assert(axis_move(0,.5f)); /* Short moves retain the same driver-owned ramp. */
+  assert(x_position_acc==37 && x_position_rpm==60 && destination[0]==.5f);
   pending_valid=false;PendingAction=MECHANICAL_ARM_ACTION_NONE;
-  assert(!axis_profile_io(clock_ms+40)); /* Must leave a turn for feedback. */
-  stop_begin();unsigned before=positions;
-  ProfileNeedsRead=false;clock_ms+=1000;seed(1,-50);
-  assert(!Axes[1].profile.active && !axis_profile_io(clock_ms) && positions==before);
-  reset();configure(false);clock_ms=1000;Status.state=GRAB_DESCEND;seed(1,10);
-  assert(axis_move(1,0) && Axes[1].profile.ramp_ms==400);
+  Status.state=GRAB_ALIGN;Config[C_X_SPEED]=16;
+  assert(axis_move(0,1));
+  assert(x_position_acc==37 && x_position_rpm==30);
+  pending_valid=false;PendingAction=MECHANICAL_ARM_ACTION_NONE;
+  assert(axis_move(1,-10)); /* Progressive visual Z remains a finite target. */
+  assert(z_position_acc==149 && z_position_rpm==120 && z_position_pulses==-1000);
 }
 /* Integrate finite absolute drive commands, then deliver independently sampled
  * encoder/state replies. Unlike the legacy fixture, ACK does not move an axis. */
@@ -88,12 +65,23 @@ static void simultaneous_moves(void)
   assert(done && peak[0]>3 && peak[1]>5);
   assert(peak[0]<=Config[C_X_TRANSFER_SPEED] && peak[1]<=Config[C_Z_SPEED]);
   assert(fabsf(physical[0]-15)<.1f && fabsf(physical[1]-10)<.1f);
-  assert(x_position_acc==0 && z_position_acc==0);
+  assert(x_position_acc==20 && z_position_acc==255);
+  assert(positions==2); /* Polling must not reissue position commands. */
   printf("simultaneous X/Z finite moves completed in %lu ms, peak %.2f/%.2f mm/s\n",(unsigned long)(clock_ms-1000),peak[0],peak[1]);
+}
+static void cancel_pending_motion(void)
+{
+  reset();configure(false);clock_ms=1000;Status.state=GRAB_LIFT;
+  seed(1,-50);physical[1]=-50;move_arrives=false;
+  assert(axis_move(1,10));
+  assert(!arrived(1,clock_ms));
+  GrabTask_Stop();unsigned before=positions;
+  for(unsigned i=0;i<20;i++)step(true,0,0,0);
+  assert(positions==before && !Axes[1].commanded);
 }
 int main(void)
 {
-  math_envelope();conservative_start_and_cancel();simultaneous_moves();
-  puts("grab axis cosine tests passed");
+  configured_speed_and_acceleration();simultaneous_moves();cancel_pending_motion();
+  puts("grab axis driver acceleration tests passed");
   return 0;
 }

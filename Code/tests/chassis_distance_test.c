@@ -28,15 +28,16 @@ static void zero_dispatched(uint32_t now)
 }
 #ifndef CHASSIS_DISTANCE_TEST_HELPERS_ONLY
 /* Delayed wheel feedback and first-order motor response, no endpoint snapping. */
+static ChassisMotion_Profile_t plant_profile;
 static void delayed_plant(float length, float speed, unsigned delay_steps, bool disturb)
 {
   const unsigned directions[4]={CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR,
       CHASSIS_MOTOR_REAR_LEFT_FORWARD_DIR,CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR,
       CHASSIS_MOTOR_FRONT_RIGHT_FORWARD_DIR};
   float positions[32]={0}, velocities[32]={0};
-  float position=0, velocity=0, peak=0, overshoot=0, reverse=0;
+  float position=0, velocity=0, peak=0, sampled_peak=0, overshoot=0, reverse=0;
   unsigned step_index=0;bool pushed=false;
-  setup();location.observer.feedback.y_mm=-4000;
+  setup();assert(ChassisMotion_ProfileSet(plant_profile));location.observer.feedback.y_mm=-4000;
   assert(ChassisMotion_MoveTo(1200,-4000+length,90,speed,200000));
   for(unsigned now=120;now<190000 && ChassisMotion_IsBusy();now+=20)
   {
@@ -54,6 +55,7 @@ static void delayed_plant(float length, float speed, unsigned delay_steps, bool 
     {
       unsigned old=step_index>=delay_steps?(step_index-delay_steps)%32:0;
       sample(now);location.observer.feedback.y_mm=-4000+positions[old];
+      sampled_peak=fmaxf(sampled_peak,fabsf(lroundf(velocities[old]*60/(CHASSIS_MODEL_PI*80))*(CHASSIS_MODEL_PI*80)/60));
       for(unsigned w=0;w<4;w++)
       {
         location.wheels[w].speed_ms=location.wheels[w].position_ms=now-delay_steps*20;
@@ -79,6 +81,8 @@ static void delayed_plant(float length, float speed, unsigned delay_steps, bool 
   assert(status().state==CHASSIS_MOTION_DONE && status().stop_confirmed);
   assert(fabsf(position-length)<=10 && overshoot<=(disturb?30:10) && reverse<=20);
   assert(peak<=speed+.01f);
+  assert(status().peak_mm_s>0 && fabsf(status().peak_mm_s-sampled_peak)<.01f);
+  assert(status().elapsed_ms==step_index*20 && status().stop_ms>0);
   if(disturb)assert(pushed && stops>=2);
   if(length>10000)assert(peak>=990); /* actual modeled speed, not just command acceptance */
 }
@@ -93,6 +97,8 @@ int main(void)
   sample(180);ChassisMotion_Process();assert(!status().stop_confirmed);
   sample(200);ChassisMotion_Process();
   assert(status().stop_confirmed && status().state==CHASSIS_MOTION_DONE);
+  assert(status().elapsed_ms==100 && status().stop_ms==80);
+  sample(250);ChassisMotion_Process();assert(status().elapsed_ms==100 && status().stop_ms==80);
 
   /* A zero snapshot can predate the stop request: the repeated target was
    * deduplicated by the bus. Retry the normal request until a fresh TX exists. */
@@ -105,6 +111,8 @@ int main(void)
   zero_dispatched(160);sample(200);ChassisMotion_Process();sample(500);ChassisMotion_Process();
   sample(800);ChassisMotion_Process();assert(status().stop_confirmed);
 
+  for(unsigned mode=0;mode<2;mode++){
+  plant_profile=(ChassisMotion_Profile_t)mode;
   delayed_plant(14000,1000,5,false);
   delayed_plant(1750,1000,10,false);
   delayed_plant(1750,5000,10,false);
@@ -113,12 +121,13 @@ int main(void)
   delayed_plant(212,1000,10,true);
   delayed_plant(1750,200,10,false);
   delayed_plant(75,50,10,false);
+  }
 
   setup();assert(ChassisMotion_MoveTo(1100,1300,90,50,60000));
   assert(fabsf(status().requested.heading_deg-30)<.01f); /* map90 = currentmodule30 */
   sample(120);ChassisMotion_Process();
-  assert(fabsf(status().body_target.vx_mm_s-.217642f)<.001f);
-  assert(fabsf(status().body_target.vy_mm_s-.217642f)<.001f); /* 50 mm/s, 20/400 ms cosine */
+  assert(fabsf(status().body_target.vx_mm_s-4.242641f)<.001f);
+  assert(fabsf(status().body_target.vy_mm_s-4.242641f)<.001f); /* 300 mm/s2 vector ramp, first 20 ms */
   assert(fabsf(status().body_target.omega_rad_s)<.001f);
   assert(!status().stop_confirmed); /* numerical position never implies physical stop */
   route_busy=true;ChassisMotion_Stop(0);complete_stop();assert(!ChassisMotion_MoveTo(1100,1300,90,50,60000));

@@ -59,9 +59,9 @@ int main(void)
   /* Never start diagnostic isolation around queued or active motion. */
   assert(MotorBus_Submit(MOTOR_BUS_CHASSIS,motion,sizeof motion,4,6,false));
   assert(!MotorBus_ProbeStart(4));advance(3);tx_done();assert(!MotorBus_ProbeStart(4));
-  uart.ErrorCode=HAL_UART_ERROR_FE;MotorBus_ErrorCallback(&uart);MotorBus_Process();
+  uart.ErrorCode=HAL_UART_ERROR_DMA;MotorBus_ErrorCallback(&uart);MotorBus_Process();
   event(MOTOR_BUS_CHASSIS,MOTOR_BUS_IO_ERROR);MotorBus_DiagnosticGet(&first);
-  assert(first.locked && first.uart_error==HAL_UART_ERROR_FE && first.address==1);
+  assert(first.locked && first.uart_error==HAL_UART_ERROR_DMA && first.address==1);
   /* A diagnostic can read one healthy ID while motion remains locked. */
   start(4);assert(!MotorBus_RecoverAfterReset());query(4,7);state_reply(4);
   event(MOTOR_BUS_PROBE,MOTOR_BUS_REPLY);assert(MotorBus_IsQuarantined());
