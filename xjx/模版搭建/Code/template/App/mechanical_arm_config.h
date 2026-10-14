@@ -1,6 +1,6 @@
 /**
  * @file    mechanical_arm_config.h
- * @brief   机械臂三轴安装方向配置。
+ * @brief   机械臂三轴安装方向与取放位置默认配置。
  */
 #ifndef __MECHANICAL_ARM_CONFIG_H
 #define __MECHANICAL_ARM_CONFIG_H

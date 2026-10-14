@@ -1,5 +1,7 @@
 import {parseGrabStatus} from './protocol.mjs?v=vision-pause-20260929';
 
+export const recordingPayload=text=>/^(?:PIX\b|TRACK (?:live|row)\b)/.test(text.replace(/^(?:arm>\s*)+/,''));
+
 /** Display-only reduction. Raw entries remain available to export and diagnostics. */
 export function visibleTerminalLogs(entries,hideRepeated=true,chinese=false) {
   const sent=new Set();
@@ -10,6 +12,7 @@ export function visibleTerminalLogs(entries,hideRepeated=true,chinese=false) {
     if(chinese&&entry.direction==='RX'&&(!text.trim()||sent.has(text.trim())))return false;
     if(text==='STM32 mechanical arm console ready'){previous=null;sent.clear();}
     if(!hideRepeated)return true;
+    if(entry.direction==='RX'&&recordingPayload(entry.text))return false;
     if(entry.direction!=='RX'||!text.startsWith('OK grab state='))return true;
     const status=parseGrabStatus(text);
     if(!status)return true;

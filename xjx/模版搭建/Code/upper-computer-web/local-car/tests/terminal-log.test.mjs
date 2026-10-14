@@ -63,3 +63,10 @@ test('recovery transitions survive filtering but observation counters do not spa
     rx('OK grab state=align reason=vision_recovered recovery_used=2')];
   assert.deepEqual(visibleTerminalLogs(rows,true),rows.filter((_,i)=>i!==2));
 });
+
+test('quiet terminal keeps recording markers and faults while payloads stay in export source',()=>{
+  const rows=[rx('OK camera log_begin id=1 next=0'),rx('PIX id=1 i=0 t=12 c=3 v=1 m=1 x=334 y=338 crc=00000000'),rx('arm> PIX id=1 i=1 broken'),rx('TRACK live id=1 i=0 data=...'),rx('TRACK row i=0 data=...'),rx('OK grab track state=error reason=wheel_disabled_or_stall'),rx('OK camera log_end id=1 count=2')];
+  assert.deepEqual(visibleTerminalLogs(rows,true),[rows[0],rows[5],rows[6]]);
+  assert.deepEqual(visibleTerminalLogs(rows,false),rows);
+  assert.equal(rows.length,7);
+});

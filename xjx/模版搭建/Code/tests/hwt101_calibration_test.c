@@ -188,7 +188,7 @@ int main(void)
   {unsigned dt=i%2?170:130;sample(dt,-0.005f*dt/1000.0f);}
   assert(snapshot().verified && fabsf(snapshot().drift_dps+0.005f)<0.0001f && writes==2 && zeros==1 && saves==0);
   sample(301,0);assert(!snapshot().control_ready);
-  sample(10,0);assert(!snapshot().control_ready); /* 新鲜数据不自动恢复验证资格。 */
+  sample(10,0);assert(snapshot().control_ready); /* 间隔异常后连续两帧新数据恢复。 */
   setup(100);assert(HWT101_Cal_Start());until_verify();advance(30500,0.1f);finish();
   assert(!snapshot().verified && saves==0 && regs[0x48]==0);
 
@@ -203,6 +203,30 @@ int main(void)
 
   setup(100);assert(HWT101_Cal_Start());advance(1000,0);HWT101_Cal_Cancel();finish();
   assert(regs[0x48]==0 && exits==1 && saves==0 && !snapshot().verified);
+  /* Abort recovery waits for the driver's one-second reprobe/local BUSY recovery. */
+  setup(100);assert(HWT101_Cal_Start());advance(1000,0);
+  comm.i2c_error_count++;comm.last_hal=HAL_TIMEOUT;comm.hal_error=0x20U;
+  comm.hal_state=0x24U;comm.fault_operation=1;comm.fault_register=0x3f;
+  comm.fault_ms=tick;ready=false;sample(10,0);
+  advance(1500,0);
+  assert(snapshot().busy && snapshot().state==HWT101_CAL_RESTORING && exits==0);
+  ready=true;finish();
+  assert(snapshot().state==HWT101_CAL_FAILED && snapshot().normal_mode_confirmed);
+  assert(!strcmp(snapshot().reason,"i2c") && !saves && !snapshot().verified);
+  assert(!strcmp(snapshot().first_reason,"i2c") && snapshot().first_hal==HAL_TIMEOUT);
+  assert(snapshot().first_hal_error==0x20U && snapshot().first_hal_state==0x24U);
+  assert(snapshot().first_operation==1 && snapshot().first_register==0x3f);
+  setup(100);assert(HWT101_Cal_Start());advance(1000,0);
+  comm.i2c_error_count++;comm.last_hal=HAL_TIMEOUT;ready=false;sample(10,0);
+  advance(5100,0);
+  assert(!snapshot().busy && !snapshot().normal_mode_confirmed && !saves);
+  assert(!strcmp(snapshot().reason,"normal_mode_unconfirmed"));
+  assert(!strcmp(snapshot().first_reason,"i2c") && snapshot().first_hal==HAL_TIMEOUT);
+  /* The same failure after tick wrap must still allow local recovery. */
+  setup(UINT32_MAX-1500);assert(HWT101_Cal_Start());advance(1000,0);
+  comm.i2c_error_count++;ready=false;sample(10,0);advance(2000,0);
+  assert(snapshot().busy);ready=true;finish();
+  assert(snapshot().normal_mode_confirmed && !snapshot().verified && !saves);
   setup(100);fail_write_reg=0x48;assert(HWT101_Cal_Start());finish();
   assert(starts==1 && exits==3 && !strcmp(snapshot().reason,"normal_mode_unconfirmed"));
   fail_write_reg=-1;HWT101_Cal_Cancel();finish();assert(regs[0x48]==0 && snapshot().normal_mode_confirmed);
@@ -225,6 +249,56 @@ int main(void)
   tick+=301;assert(!HWT101_Cal_Start());
   assert(!snapshot().save_requested && !snapshot().save_readback_ok && snapshot().samples==0);
   assert(snapshot().verify_elapsed_ms==0 && !strcmp(snapshot().save_state,"NOT_REQUESTED"));
-  puts("hwt101_calibration_test: native sequence, validation, no subtraction, cancel/recovery and save faults PASS");
+  /* Runtime outages must not permanently revoke a completed verification. */
+  for(unsigned run=0;run<2;run++)
+  {
+    setup(run?UINT32_MAX-3000:100);
+    assert(HWT101_Cal_VerifyStart(5000));finish();
+    unsigned saved_writes=writes;
+    assert(HWT101_Cal_ControlAngleGet(&output));
+    comm.i2c_error_count++;
+    if(run) HWT101_Cal_Process(); /* Both Process and getter detect the outage. */
+    output.yaw=42;
+    assert(!HWT101_Cal_ControlAngleGet(&output) && output.yaw==42);
+    sample(10,0);assert(!snapshot().control_ready);
+    for(unsigned i=0;i<10;i++) assert(!snapshot().control_ready); /* Cached reads are not new frames. */
+    sample(10,0);assert(snapshot().control_ready);
+    assert(snapshot().verified && writes==saved_writes && output.yaw==42);
+    comm.i2c_error_count++;sample(10,0);assert(!snapshot().control_ready);
+    sample(10,0);assert(!snapshot().control_ready);
+    comm.i2c_error_count++;sample(10,0);assert(!snapshot().control_ready);
+    sample(10,0);assert(!snapshot().control_ready);
+    sample(10,0);assert(snapshot().control_ready && writes==saved_writes);
+  }
+  setup(100);assert(HWT101_Cal_VerifyStart(5000));finish();
+  tick+=301;HWT101_Cal_Process();assert(!snapshot().control_ready);
+  advance(1000,0);assert(snapshot().control_ready); /* New frames recover stale data. */
+  available=false;advance(1000,0);assert(!snapshot().control_ready);
+  available=true;sample(10,0);assert(!snapshot().control_ready);
+  sample(10,0);assert(snapshot().control_ready);
+  ready=false;advance(1000,0);assert(!snapshot().control_ready);
+  ready=true;sample(10,0);assert(!snapshot().control_ready);
+  sample(10,0);assert(snapshot().control_ready);
+  angle.yaw=NAN;sample(10,0);assert(!snapshot().control_ready);
+  angle.yaw=0;sample(10,0);assert(!snapshot().control_ready);
+  sample(10,0);assert(snapshot().control_ready);
+  /* A still-fresh frame after an overlong gap starts, but does not complete, recovery. */
+  sample(301,0);assert(!snapshot().control_ready);
+  sample(10,0);assert(snapshot().control_ready);
+  HWT101_Cal_Cancel();advance(1000,0);assert(!snapshot().control_ready);
+  setup(100);assert(HWT101_Cal_ZeroStart());finish();
+  advance(1000,0);assert(!snapshot().control_ready);
+  setup(100);assert(HWT101_Cal_VerifyStart(5000));advance(5500,0.1f);
+  advance(1000,0);assert(!snapshot().control_ready);
+  setup(100);assert(HWT101_Cal_Start());until_verify();fail_save=true;finish();
+  advance(1000,0);assert(!snapshot().control_ready);
+  /* Frequent control reads also keep the last accepted timestamp current. */
+  setup(100);assert(HWT101_Cal_VerifyStart(5000));finish();
+  for(unsigned i=0;i<50;i++)
+  {
+    tick+=10;angle.update_count++;angle.last_update_ms=tick;
+    assert(HWT101_Cal_ControlAngleGet(&output));
+  }
+  puts("hwt101_calibration_test: native sequence, validation, runtime recovery and save faults PASS");
   return 0;
 }

@@ -78,7 +78,7 @@ test('arm configuration reads back all fields after set',async()=>{
 test('device rejection ends write without querying or reporting success',async()=>{
   const wires=[];let exchange;
   exchange=createParameterExchange({send:async wire=>{wires.push(wire);queueMicrotask(()=>exchange.receive('ERR grab busy task_running'));return true;},timeoutMs:25});
-  await assert.rejects(exchange.setGrab('body_speed',20),/busy task_running/);
+  await assert.rejects(exchange.setGrab('body_speed',20),/任务忙.*抓取任务.*任务正在运行/);
   assert.deepEqual(wires,['grab set body_speed 20']);
 });
 
@@ -106,6 +106,19 @@ test('disconnect cancels a pending read and ignores late replies',async()=>{
   assert.equal(exchange.busy,false);
 });
 
+test('missing parameter reply releases busy and a fresh read can succeed',async()=>{
+  let exchange,respond=false;const wires=[];
+  exchange=createParameterExchange({timeoutMs:20,send:async wire=>{
+    wires.push(wire);
+    if(respond)queueMicrotask(()=>exchange.receive('OK grab config key=base_car_offset value=100'));
+    return true;
+  }});
+  await assert.rejects(exchange.readGrab('base_car_offset'),/读回超时/);
+  assert.equal(exchange.busy,false);respond=true;
+  assert.equal((await exchange.readGrab('base_car_offset')).value,100);
+  assert.deepEqual(wires,['grab get base_car_offset','grab get base_car_offset']);assert.equal(exchange.busy,false);
+});
+
 test('opening the parameter page sends nothing; route speed stays local until route start',()=>{
   const ui=parameterSurface();
   try{
@@ -114,7 +127,7 @@ test('opening the parameter page sends nothing; route speed stays local until ro
       canSend:()=>false,onBusy:()=>{},onRouteSpeed:speed=>saved.push(speed)});
     assert.deepEqual(wires,[]);
     const input=ui.input('local','route_speed');
-    assert.equal(input.value,'5000');input.value='250';input.oninput();page.selectTab('radar');
+    assert.equal(input.value,'200');page.setRouteSpeed(100);assert.equal(input.value,'100');input.value='250';input.oninput();page.setRouteSpeed(200);assert.equal(input.value,'250');page.selectTab('radar');
     page.apply();
     assert.deepEqual(wires,[]);
     page.cancel('串口已断开');

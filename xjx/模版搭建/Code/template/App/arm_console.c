@@ -3,11 +3,12 @@
 #include "mechanical_arm.h"
 #include "motor_bus.h"
 #include "mechanical_arm_config.h"
+#include "motor_id_config.h"
 #include "Arm.h"
-#include "ArmVision.h"
-#include "MaterialVision.h"
+#include "lidar_servo.h"
 #include "GrabTask.h"
 #include "GrabRoute.h"
+#include "contest_mission.h"
 #include "turntable.h"
 #include "mecanum_chassis.h"
 #include "Camera.h"
@@ -19,6 +20,7 @@
 #include "console_tx.h"
 #include "console_rx.h"
 #include "chassis_motion.h"
+#include "chassis_config.h"
 #include "chassis_route.h"
 #include "chassis_telemetry.h"
 #include "radar_console.h"
@@ -32,10 +34,10 @@
 #define ARM_CONSOLE_RING_SIZE 512U
 /* USART1 DMA回调写入的软件环形缓冲区长度。 */
 
-#define ARM_CONSOLE_LINE_SIZE 64U
+#define ARM_CONSOLE_LINE_SIZE 96U
 /* 单条终端命令允许占用的最大缓冲区长度。 */
 
-#define ARM_CONSOLE_TOKEN_COUNT 6U
+#define ARM_CONSOLE_TOKEN_COUNT 10U
 /* 一条命令解析时允许的最大字段数量。 */
 
 #define ARM_CONSOLE_TX_SIZE 256U
@@ -45,7 +47,7 @@
 /* 视觉调试数据的最小输出间隔，避免串口打印拖慢主循环。 */
 
 #define ARM_CONSOLE_BACKWARD_TEST_SPEED_MM_S 30.0f
-/* 单独测试material auto后退方向时使用的底盘后退速度。 */
+/* 独立底盘后退方向测试速度。 */
 
 static UART_HandleTypeDef *ArmConsole_Uart;
 static uint8_t ArmConsole_ImuStream;
@@ -63,13 +65,11 @@ static char ArmConsole_LineBuffer[ARM_CONSOLE_LINE_SIZE];
 static uint8_t ArmConsole_LineLength;
 static uint8_t ArmConsole_LineOverflow;
 static uint8_t ArmConsole_LastWasCr;
-static uint32_t ArmConsole_LastVisionStatusSequence;
-static MaterialVision_StateTypeDef ArmConsole_LastMaterialState;
-static MaterialVision_ErrorTypeDef ArmConsole_LastMaterialError;
 static uint8_t ArmConsole_CameraTrace;
-static uint8_t ArmConsole_CameraTraceDirect;
 static uint32_t ArmConsole_CameraTraceSequence;
 static uint32_t ArmConsole_CameraTraceLastTick;
+static uint8_t PixelLogEnabled;
+static uint32_t PixelLogId, PixelLogCount, PixelLogQueued, PixelLogDropped;
 static uint8_t ArmConsole_QrStream;
 static QR_SnapshotTypeDef ArmConsole_QrPending;
 static uint32_t ArmConsole_QrSeenSequence;
@@ -77,21 +77,53 @@ static uint32_t ArmConsole_QrLastEventTick;
 static uint32_t ArmConsole_QrSkipped;
 static uint8_t BusRecoveryPending;
 static uint32_t BusRecoveryStarted;
+static bool BusRecoveryAutomatic, BusAutoFaultSeen;
+static uint32_t BusAutoFaultTick, BusRxWarningShown, BusRxWarningTick, BusSyncWarningTick;
+static struct {
+  bool active, pending;
+  uint8_t address;
+  uint8_t read_function, read_length; /* Zero retains the three-query bus test. */
+  uint16_t rounds;
+  uint32_t attempted, sent, received, timeouts, uart_errors, rejected;
+  uint32_t token, started, elapsed, next_tick, wait_since, reply_max, last_uart_error;
+  const char *reason;
+} BusTest;
+static uint32_t BusTestToken;
+static void ArmConsole_BusTestStop(const char *reason);
+static void ArmConsole_Write(const char *Text);
 static uint8_t ManualGuardActive, ManualGuardExecuting, ManualGuardAddress, ManualGuardLast, ManualGuardKind;
 static uint32_t ManualGuardStarted;
 static char ManualGuardLine[ARM_CONSOLE_LINE_SIZE];
 static bool ArmConsole_RadarMotionGuard(unsigned n,char *t[])
 {
-  static const char *const moves[]={"run","heading","hold","move","velocity","forward","backward","left","right"};
+  static const char *const moves[]={"run","heading","hold","move","test","velocity","forward","backward","left","right"};
   unsigned i;
   if(!RadarConsole_ScanBusy() || n<2U) return false;
   if(!strcmp(t[0],"wheel") && strcmp(t[1],"status") && strcmp(t[1],"stop")) return true;
-  if(!strcmp(t[0],"grab") && (!strcmp(t[1],"start") || !strcmp(t[1],"route") || !strcmp(t[1],"store") || !strcmp(t[1],"take") || !strcmp(t[1],"return"))) return true;
+  if(!strcmp(t[0],"grab") && (!strcmp(t[1],"start") || !strcmp(t[1],"route") ||
+     !strcmp(t[1],"mission") || !strcmp(t[1],"place") || !strcmp(t[1],"pose") || !strcmp(t[1],"store") ||
+     !strcmp(t[1],"take") || !strcmp(t[1],"return") || !strcmp(t[1],"align") ||
+     !strcmp(t[1],"stack") || !strcmp(t[1],"ring"))) return true;
+  if(n>=3U && !strcmp(t[0],"grab") && !strcmp(t[1],"track") && !strcmp(t[2],"start")) return true;
+  if(n==3U && !strcmp(t[0],"grab") && !strcmp(t[1],"calib") &&
+     strcmp(t[2],"status") && strcmp(t[2],"ref")) return true;
   if(strcmp(t[0],"chassis")) return false;
   for(i=0;i<sizeof(moves)/sizeof(moves[0]);i++) if(!strcmp(t[1],moves[i])) return true;
   return n>=3U && !strcmp(t[1],"route") && (!strcmp(t[2],"start") || !strcmp(t[2],"auto") || !strcmp(t[2],"next"));
 }
 
+/* Held static operations retain their owned feedback token; no manual motion producer. */
+static bool ArmConsole_RingCommandHandle(unsigned count,char *tokens[])
+{
+  if(count>=3U && !strcmp(tokens[0],"grab") && !strcmp(tokens[1],"stack"))
+  {
+    if(GrabRoute_IsBusy()){ArmConsole_Write("ERR grab stack route_busy\r\n");return true;}
+    return GrabTask_Command(count,tokens);
+  }
+  if(count!=4U || strcmp(tokens[0],"grab") || strcmp(tokens[1],"ring") ||
+     strcmp(tokens[2],"place") || !GrabTask_RingManualAllowed())return false;
+  return GrabTask_Command(count,tokens);
+}
 static uint8_t ArmConsole_CommandExecute(char *Line);
 
 static void ArmConsole_ManualGuardCancel(void)
@@ -144,35 +176,16 @@ static void ArmConsole_PromptShow(void)
 }
 
 /**
-  * 函    数：开始视觉调试数据输出
-  * 参    数：无
-  * 返 回 值：无
-  * 说    明：标定和自动对准均允许观察最新坐标，首帧立即允许输出
-  */
-static void ArmConsole_CameraTraceStart(void)
-{
-  Camera_SnapshotTypeDef Snapshot;
-
-  ArmConsole_CameraTrace = 1U;
-  ArmConsole_CameraTraceDirect = 0U;
-  ArmConsole_CameraTraceLastTick = HAL_GetTick() -
-                                   ARM_CONSOLE_CAMERA_TRACE_INTERVAL_MS;
-  Camera_SnapshotGet(&Snapshot);
-  ArmConsole_CameraTraceSequence = Snapshot.Data.Sequence;
-}
-
-/**
   * 函    数：开始独立摄像头测试数据输出
   * 参    数：无
   * 返 回 值：无
-  * 说    明：不依赖ArmVision或MaterialVision状态，直到camera stop才停止
+  * 说    明：独立识别输出，直到camera stop或任务接管才停止
   */
 static void ArmConsole_CameraTraceDirectStart(void)
 {
   Camera_SnapshotTypeDef Snapshot;
 
   ArmConsole_CameraTrace = 1U;
-  ArmConsole_CameraTraceDirect = 1U;
   ArmConsole_CameraTraceLastTick = HAL_GetTick() -
                                    ARM_CONSOLE_CAMERA_TRACE_INTERVAL_MS;
   Camera_SnapshotGet(&Snapshot);
@@ -189,81 +202,12 @@ static void ArmConsole_CameraTraceStop(void)
 {
   ConsoleTx_DebugCancel(CONSOLE_DEBUG_VISION);
   ArmConsole_CameraTrace = 0U;
-  ArmConsole_CameraTraceDirect = 0U;
   ArmConsole_CameraTraceSequence = 0U;
   ArmConsole_CameraTraceLastTick = 0U;
 }
 
 /**
-  * 函    数：显示一次视觉任务的具体错误原因
-  * 参    数：无
-  * 返 回 值：无
-  * 说    明：视觉状态异步进入ERROR时主动输出，避免只能再次查询status
-  */
-static void ArmConsole_VisionErrorShow(void)
-{
-  uint32_t Sequence;
-  ArmVision_ErrorInfoTypeDef ErrorInfo;
-  ArmVision_CalibrationDebugDataTypeDef CalibrationDebug;
-
-  Sequence = ArmVision_StatusSequenceGet();
-  if (Sequence == ArmConsole_LastVisionStatusSequence)
-  {
-    return;
-  }
-  ArmConsole_LastVisionStatusSequence = Sequence;
-  if ((ArmVision_IsBusy() == 0U) &&
-      (strcmp(ArmVision_StateNameGet(), "ERROR") == 0) &&
-      (ArmVision_ErrorGet() != ARM_VISION_ERROR_NONE))
-  {
-    ArmConsole_Printf("ERR vision reason=%s\r\n",
-                      ArmVision_ErrorNameGet());
-    if (ArmVision_ErrorGet() == ARM_VISION_ERROR_MATRIX_INVALID)
-    {
-      if (ArmVision_CalibrationDebugGet(&CalibrationDebug) != 0U)
-      {
-        ArmConsole_Printf("ERR vision matrix base_delta_dx=%d "
-                          "base_delta_dy=%d x_delta_dx=%d "
-                          "x_delta_dy=%d det=%.4f\r\n",
-                          (int)CalibrationDebug.BaseDx,
-                          (int)CalibrationDebug.BaseDy,
-                          (int)CalibrationDebug.XDx,
-                          (int)CalibrationDebug.XDy,
-                          (double)CalibrationDebug.Determinant);
-      }
-    }
-    else if (ArmVision_ErrorInfoGet(&ErrorInfo) != 0U)
-    {
-      if (ErrorInfo.Axis != MECHANICAL_ARM_AXIS_INVALID)
-      {
-        ArmConsole_Printf("ERR vision motor axis=%s raw=0x%02X code=0x%02X\r\n",
-                          MechanicalArm_AxisNameGet(ErrorInfo.Axis),
-                          (unsigned int)ErrorInfo.StateFlags,
-                          (unsigned int)ErrorInfo.MotorCode);
-      }
-    }
-    ArmConsole_PromptShow();
-  }
-}
-
-/** 物料任务失败时输出一次真实原因，避免跟踪静默停止。 */
-static void ArmConsole_MaterialErrorShow(void)
-{
-  MaterialVision_StateTypeDef State = MaterialVision_StateGet();
-  MaterialVision_ErrorTypeDef Error = MaterialVision_ErrorGet();
-
-  if (State == MATERIAL_VISION_STATE_ERROR &&
-      (State != ArmConsole_LastMaterialState || Error != ArmConsole_LastMaterialError))
-  {
-    ArmConsole_Printf("ERR material reason=%s\r\n", MaterialVision_ErrorNameGet());
-    ArmConsole_PromptShow();
-  }
-  ArmConsole_LastMaterialState = State;
-  ArmConsole_LastMaterialError = Error;
-}
-
-/**
-  * 函    数：输出视觉标定期间收到的新坐标
+  * 函    数：输出独立相机识别期间收到的新坐标
   * 参    数：无
   * 返 回 值：无
   * 说    明：在标定和自动对准期间限频输出，不清除OLED待刷新数据
@@ -278,13 +222,6 @@ static void ArmConsole_CameraTraceShow(void)
 
   if (ArmConsole_CameraTrace == 0U)
   {
-    return;
-  }
-  if ((ArmConsole_CameraTraceDirect == 0U) &&
-      (ArmVision_IsBusy() == 0U) &&
-      (MaterialVision_IsBusy() == 0U))
-  {
-    ArmConsole_CameraTraceStop();
     return;
   }
   Camera_SnapshotGet(&Snapshot);
@@ -315,26 +252,49 @@ static void ArmConsole_CameraTraceShow(void)
     (void)ConsoleTx_Debug(CONSOLE_DEBUG_VISION, text, (uint16_t)length);
 }
 
-/**
-  * 函    数：显示一次视觉修正运动记录
-  * 参    数：无
-  * 返 回 值：无
-  * 说    明：每次成功启动单轴修正后输出实际轴、脉冲和当前误差
-  */
-static void ArmConsole_VisionMoveShow(void)
+/* Each parsed frame is copied into the existing console FIFO, never sampled
+ * from the latest-only camera snapshot. Stop replies keep their reserved queue.
+ * Limit pixel backlog to half the FIFO; overflow is explicit, never a control wait. */
+static void ArmConsole_PixelFrame(const uint8_t *frame,uint32_t received,uint8_t matched)
 {
-  ArmVision_MoveDebugDataTypeDef Data;
-
-  if (ArmVision_MoveDebugGet(&Data) == 0U)
-  {
-    return;
+  char line[160];ConsoleTx_Stats_t stats;uint32_t crc=0xFFFFFFFFUL;
+  uint32_t index=PixelLogCount++;
+  unsigned cx=((unsigned)frame[4]<<8)|frame[5],cy=((unsigned)frame[6]<<8)|frame[7];
+  int dx=((unsigned)frame[8]<<8)|frame[9],dy=((unsigned)frame[10]<<8)|frame[11];
+  if(dx>=32768)dx-=65536;
+  if(dy>=32768)dy-=65536;
+  int length=frame[2]==0x0d ? snprintf(line,sizeof line,"POSE id=%lu i=%lu t=%lu v=%u m=%u ex=%d ey=%d ea=%d stop=%d",
+    (unsigned long)PixelLogId,(unsigned long)index,(unsigned long)received,frame[3],matched,(int)(int16_t)cx,(int)(int16_t)cy,dx,dy) :
+    snprintf(line,sizeof line,"PIX id=%lu i=%lu t=%lu c=%u v=%u m=%u x=%u y=%u dx=%d dy=%d",
+    (unsigned long)PixelLogId,(unsigned long)index,(unsigned long)received,frame[2],frame[3],matched,cx,cy,dx,dy);
+  if(length<=0 || length>=(int)sizeof(line)-16){PixelLogDropped++;return;}
+  for(int n=0;n<length;n++){
+    crc^=(uint8_t)line[n];for(unsigned bit=0;bit<8;bit++)crc=(crc>>1)^((crc&1U)?0xEDB88320UL:0U);
   }
-  ArmConsole_Printf("VISION MOVE axis=%s pulses=%ld dx=%d dy=%d count=%u\r\n",
-                    MechanicalArm_AxisNameGet(Data.Axis),
-                    (long)Data.Pulses,
-                    (int)Data.Dx,
-                    (int)Data.Dy,
-                    (unsigned int)Data.CorrectionCount);
+  int tail=snprintf(line+length,sizeof(line)-(unsigned)length," crc=%08lX\r\n",(unsigned long)~crc);
+  ConsoleTx_GetStats(&stats);
+  if(tail<=0 || stats.reply_pending>4096U ||
+     !ConsoleTx_Write((const uint8_t *)line,(uint16_t)(length+tail)))PixelLogDropped++;
+  else PixelLogQueued++;
+}
+
+static uint8_t ArmConsole_PixelLogCommand(unsigned count,char *tokens[])
+{
+  if(count<2 || strcmp(tokens[0],"camera") || strcmp(tokens[1],"log"))return 0U;
+  if(count!=3 || (strcmp(tokens[2],"start") && strcmp(tokens[2],"stop") && strcmp(tokens[2],"status")))
+  {ArmConsole_Write("ERR camera log start|stop|status\r\n");return 1U;}
+  if(!strcmp(tokens[2],"start")){
+    if(!PixelLogEnabled){if(++PixelLogId==0)PixelLogId=1;PixelLogCount=PixelLogQueued=PixelLogDropped=0;}
+    PixelLogEnabled=1;Camera_FrameObserverSet(ArmConsole_PixelFrame);
+    ArmConsole_Printf("OK camera log_begin id=%lu next=%lu mode=per_frame fields=rx,target,valid,matched,cx,cy,dx,dy\r\n",
+      (unsigned long)PixelLogId,(unsigned long)PixelLogCount);
+  }else if(!strcmp(tokens[2],"stop")){
+    PixelLogEnabled=0;Camera_FrameObserverSet(NULL);
+    ArmConsole_Printf("OK camera log_end id=%lu count=%lu queued=%lu dropped=%lu\r\n",
+      (unsigned long)PixelLogId,(unsigned long)PixelLogCount,(unsigned long)PixelLogQueued,(unsigned long)PixelLogDropped);
+  }else ArmConsole_Printf("OK camera log_status enabled=%u id=%lu count=%lu queued=%lu dropped=%lu\r\n",
+    PixelLogEnabled,(unsigned long)PixelLogId,(unsigned long)PixelLogCount,(unsigned long)PixelLogQueued,(unsigned long)PixelLogDropped);
+  return 1U;
 }
 
 /**
@@ -557,23 +517,28 @@ static const char *ArmConsole_HomeModeNameGet(uint8_t HomeMode)
   */
 static void ArmConsole_HelpShow(void)
 {
-  ArmConsole_Write("console status | chassis snapshot (read-only diagnostics)\r\n");
+  ArmConsole_Write("console status | chassis snapshot (read-only diagnostics)\r\n"
+      "bus read <id 1..8> current|voltage|error|home|driver (Base=id5, readonly)\r\n");
   ArmConsole_Write("bus recover (stop tasks, verify motors, never resume) | bus status\r\n");
-  ArmConsole_Write("turntable get/set <key> [value] | origin | index <slot> | jog <degree> | stop | status\r\n");
+  ArmConsole_Write("bus test <id 1..8> [rounds 1..100] | bus test status | bus test stop (read only)\r\n");
+  ArmConsole_Write("turntable get/set <key> [value] | enable | disable | save_zero | home | origin | index <slot> | jog <degree> | stop | status\r\n");
   ArmConsole_Write("grab store proc <slot> <color> | grab take <slot> rough|temp1|temp2 | grab return\r\n");
   /* 按命令组入队，由USART1 DMA发送；不占用底盘控制周期等待串口。 */
+  ArmConsole_Write("chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n");
+  ArmConsole_Printf("chassis route start|auto [10..5000mm/s, default 1000] | next | status | cancel (15 targets, auto dwell %lums)\r\n",
+                    (unsigned long)CHASSIS_ROUTE_AUTO_DWELL_MS);
   ArmConsole_Write(
-      "chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n"
-      "chassis route start|auto [10..5000mm/s, default 5000] | next | status | cancel (auto dwell 100ms)\r\n"
       "chassis run <vx_mm_s> <vy_mm_s> <omega_rad_s> <hold_ms>\r\n"
       "  omega=0: hold starting IMU heading; verified fresh IMU required\r\n"
       "chassis heading <vx_mm_s> <vy_mm_s> <module_heading_deg> <hold_ms>\r\n"
+      "chassis turn <map_heading_deg -180..180> (feedback angle and stopped wheels)\r\n"
       "chassis origin <map_x_mm> <map_y_mm> <map_heading_deg> (verified IMU, stationary)\r\n"
+      "chassis test <forward_mm> <left_mm> <speed_mm_s> [linear|cosine] (default linear300; cosine K200)\r\n"
       "chassis profile receive (compatibility only; Emm42 default)\r\n"
       "chassis feedback <0..4> (0=all, 1..4=single, polling stays off)\r\n"
       "chassis feedback on|off\r\n"
       "chassis feedback (read cached raw values, valid=speed,position,state)\r\n"
-      "chassis units 65536 (after measured revolution) | 0 (unconfirmed)\r\n"
+      "chassis units 65536 (Emm42 protocol units per motor revolution) | 0 (clear confirmation)\r\n"
       "chassis stream on <nonzero_session_u32> | off\r\n"
       "chassis task | stop [client_token] | stop-status; Ctrl+C stops chassis\r\n"
       "chassis reset-confirmed (ONLY after physical driver reset)\r\n");
@@ -592,11 +557,13 @@ static void ArmConsole_HelpShow(void)
       "home <base|z|x|all> <near|dir|collision|limit>\r\n"
       "zero <base|z|x|all>    clear current position only\r\n"
       "stop <base|z|x|all>\r\n"
+      "lidarservo out(2450us) | in(1450us) | pulse <500..5000> | status\r\n"
       "grip duty <2.5..12.5>\r\n"
       "grip <idle|open|catch>\r\n");
   ArmConsole_Write(
-      "camera material <1|2|3|4|5|6>  recognition only, no motion\r\n"
+      "camera ring <1|2|3> | camera material <1|2|3|4|5|6>  recognition only, no motion\r\n"
       "camera status  readonly recognition and USB statistics\r\n"
+      "camera log start|stop|status  passive per-frame pixel recording\r\n"
       "camera stop\r\n"
       "imu status     readonly HWT101 angle and I2C statistics\r\n"
       "imu cal start  keep still: 20s native calibration + 30s verification\r\n"
@@ -608,16 +575,9 @@ static void ArmConsole_HelpShow(void)
       "screen status  readonly USART3 statistics\r\n"
       "qr status  UART4 bytes, accepted/rejected frames and event drops\r\n"
       "qr read  latest task code, non-consuming\r\n"
+      "grab qr begin [upper|lower] [10..200mm/s] | status | stop (Z-only scan)\r\n"
       "qr stream on|off  future task codes, <=5Hz, default off\r\n"
-      "material auto <1|2|3|4|5|6>  start chassis material task\r\n"
-      "material stop\r\n"
-      "material status\r\n"
-      "vision ref\r\n"
-      "vision calib material <1|2|3|4|5|6>\r\n"
-      "vision calib chassis <1|2|3|4|5|6>\r\n"
-      "vision material <1|2|3|4|5|6>  Base/X auto-align\r\n"
-      "vision status\r\n"
-      "vision stop\r\n");
+      "grab calib ref | grab calib <1..6> | grab calib status; cancel: grab stop\r\n");
   ArmConsole_Write(
       "chassis backward  continuous test, stop with chassis stop\r\n"
       "chassis <forward|backward> <1..200mm>\r\n"
@@ -627,8 +587,17 @@ static void ArmConsole_HelpShow(void)
       "chassis status  heading test state\r\n"
       "wheel <fl|rl|rr|fr> <-100..100rpm>\r\n"
       "wheel stop\r\n");
-  ArmConsole_Write("grab start fixed|align|pick [color 1..6] | grab route <speed_mm_s>\r\n"
+  ArmConsole_Write("grab start fixed|align|pick [color 1..6] | grab route [speed_mm_s, default 1000]\r\n"
                    "grab status | grab stop | grab rehome | grab set <key> <value> | grab get <key>\r\n");
+  ArmConsole_Write("grab ring align [1|2|3] [z_mm] [stay] | grab ring place <z_mm>\r\n");
+  ArmConsole_Write("grab mission qr|fixed [code] [speed] [turn_deg_s] [lower|upper] [fixed|radar] | grab mission pause|stop|continue | grab pose rear|work | grab place car\r\n");
+  ArmConsole_Write("grab take <slot 1..3> work [depth_mm, default 40]; wait 1s, pick, lift, Base +128, hold claw\r\n");
+  ArmConsole_Write("grab track observe [color] | reference | start [color] | stop | status | trace [index]\r\n"
+                   "grab track begin [color] [remaining_mm] | grab track pick [color] [z_mm] [speed_mm_s]\r\n"
+                   "grab track pickstore <color> <slot 0..3> [predict|visual|feedback] | grab track store <slot 0..3>\r\n"
+                   "grab track visual|feedback [color] [remaining_mm] (follow only; stop before switching)\r\n"
+                   "grab track log start [50..1000 ms] | stop | status (passive diagnostics, default off)\r\n"
+                   "grab track get <key> [predict|visual|feedback] | set <key> <value> [profile] (independent RAM)\r\n");
 }
 
 /**
@@ -687,6 +656,10 @@ static void ArmConsole_MotorBusShow(void)
                    (unsigned)Diagnostic.address, (unsigned)Diagnostic.function,
                    (unsigned)Diagnostic.active, (unsigned)Diagnostic.waiting_reply,
                    (unsigned long)Diagnostic.uart_error);
+  if (Diagnostic.startup_fe_recovered)
+    ArmConsole_Printf("[MOTOR BUS STARTUP] recovered_fe=%lu last_ms=%lu rx_restarted=1\r\n",
+                      (unsigned long)Diagnostic.startup_fe_recovered,
+                      (unsigned long)Diagnostic.startup_fe_last_ms);
 }
 
 static void ArmConsole_InfoShow(void)
@@ -747,88 +720,6 @@ static uint8_t ArmConsole_WheelParse(const char *Text, MecanumWheel_t *Wheel)
   else
     return 0U;
   return 1U;
-}
-
-/**
-  * 函    数：输出视觉任务接口的立即结果
-  * 参    数：Result 视觉任务接收结果
-  * 返 回 值：无
-  * 说    明：视觉任务均为非阻塞，OK只表示状态机已经启动
-  */
-static void ArmConsole_VisionResultShow(ArmVision_ResultTypeDef Result)
-{
-  if (Result == ARM_VISION_RESULT_OK)
-  {
-    ArmConsole_Write("OK vision accepted\r\n");
-  }
-  else if (Result == ARM_VISION_RESULT_BUSY)
-  {
-    OledUi_NoticeSet("Vision busy");
-    ArmConsole_Write("ERR vision_busy\r\n");
-  }
-  else if (Result == ARM_VISION_RESULT_NOT_READY)
-  {
-    OledUi_NoticeSet("Not ready");
-    ArmConsole_Write("ERR vision_not_ready\r\n");
-  }
-  else if (Result == ARM_VISION_RESULT_PARAM_ERROR)
-  {
-    OledUi_NoticeSet("Invalid param");
-    ArmConsole_Write("ERR vision param\r\n");
-  }
-  else
-  {
-    ArmConsole_Printf("ERR vision reason=%s\r\n",
-                      ArmVision_ErrorNameGet());
-  }
-}
-
-/**
-  * 函    数：输出一次二维标定结果
-  * 参    数：无
-  * 返 回 值：无
-  * 说    明：Base和X均按3200脉冲/圈换算本次标定运动对应的角度
-  */
-static void ArmConsole_CalibrationResultShow(void)
-{
-  ArmVision_CalibrationDataTypeDef Data;
-  double BaseDegree;
-  double XDegree;
-
-  if (ArmVision_CalibrationResultGet(&Data) == 0U)
-  {
-    return;
-  }
-  BaseDegree = (double)Data.BasePulses * 360.0 /
-               (double)MECHANICAL_ARM_COMMAND_PULSES_PER_REV;
-  XDegree = (double)Data.XPulses * 360.0 /
-            (double)MECHANICAL_ARM_COMMAND_PULSES_PER_REV;
-  ArmConsole_Printf("OK vision calibration source=%s target=%u\r\n",
-                    ArmVision_CalibrationSourceNameGet(),
-                    (unsigned int)ArmVision_CalibrationTargetGet());
-  ArmConsole_Printf("OK vision calib base pulses=%u angle=%.2f "
-                    "delta_dx=%d delta_dy=%d px_per_deg=(%.3f,%.3f)\r\n",
-                    (unsigned int)Data.BasePulses,
-                    BaseDegree,
-                    (int)Data.BaseDx,
-                    (int)Data.BaseDy,
-                    (double)Data.BaseDx / BaseDegree,
-                    (double)Data.BaseDy / BaseDegree);
-  ArmConsole_Printf("OK vision calib x pulses=%u angle=%.2f "
-                    "delta_dx=%d delta_dy=%d px_per_deg=(%.3f,%.3f)\r\n",
-                    (unsigned int)Data.XPulses,
-                    XDegree,
-                    (int)Data.XDx,
-                    (int)Data.XDy,
-                    (double)Data.XDx / XDegree,
-                    (double)Data.XDy / XDegree);
-  ArmConsole_Printf("OK vision matrix pixel_per_degree "
-                    "J11=%.3f J12=%.3f J21=%.3f J22=%.3f\r\n",
-                    (double)Data.BaseDx / BaseDegree,
-                    (double)Data.XDx / XDegree,
-                    (double)Data.BaseDy / BaseDegree,
-                    (double)Data.XDy / XDegree);
-  ArmConsole_PromptShow();
 }
 
 /**
@@ -945,7 +836,12 @@ static void ArmConsole_EventShow(const MechanicalArm_EventTypeDef *Event)
         ArmConsole_Printf("OK zero %s\r\n", MechanicalArm_AxisNameGet(Event->Axis));
         break;
       case MECHANICAL_ARM_ACTION_STOP:
-        ArmConsole_Printf("OK stop %s sent\r\n", MechanicalArm_AxisNameGet(Event->Axis));
+        if(Event->Axis==MECHANICAL_ARM_AXIS_ALL && Event->StopIdMask && Event->StopIdMask!=0xffU) {
+          const uint8_t ids[]={MOTOR_ID_ARM_BASE,MOTOR_ID_ARM_Z,MOTOR_ID_ARM_X};
+          for(unsigned axis=0;axis<3;axis++)
+            if(Event->StopIdMask&(1U<<(ids[axis]-1U)))
+              ArmConsole_Printf("OK stop %s sent\r\n",MechanicalArm_AxisNameGet((MechanicalArm_AxisTypeDef)axis));
+        } else ArmConsole_Printf("OK stop %s sent\r\n", MechanicalArm_AxisNameGet(Event->Axis));
         break;
       default:
         ArmConsole_Write("ERR format\r\n");
@@ -1058,6 +954,34 @@ static uint8_t ArmConsole_RequestResultShow(MechanicalArm_ResultTypeDef Result)
   * 返 回 值：1表示命令同步结束，0表示已启动异步电机请求
   * 说    明：解析只在主循环运行，中断不调用strtol和字符串函数
   */
+static uint8_t ArmConsole_LidarServoCommandHandle(uint8_t count, char *tokens[])
+{
+  int32_t pulse;
+  if (count == 2U && !strcmp(tokens[1], "status"))
+    goto report;
+  if (count == 2U && !strcmp(tokens[1], "out"))
+    pulse = LIDAR_SERVO_SCAN_PULSE_US;
+  else if (count == 2U && !strcmp(tokens[1], "in"))
+    pulse = LIDAR_SERVO_STOW_PULSE_US;
+  else if (count == 3U && !strcmp(tokens[1], "pulse"))
+  {
+    if (!ArmConsole_IntegerParse(tokens[2], &pulse) || pulse < 500 || pulse > 5000)
+    { ArmConsole_Write("ERR lidarservo range pulse_us=500..5000\r\n"); return 1U; }
+  }
+  else
+  { ArmConsole_Write("ERR lidarservo format: out | in | pulse <500..5000> | status\r\n"); return 1U; }
+  if (ResetPending || GrabTask_IsBusy() || GrabRoute_IsBusy() ||
+      ChassisMotion_IsBusy() || ChassisRoute_IsBusy() || HWT101_Cal_IsBusy() ||
+      RadarConsole_ScanBusy())
+  { ArmConsole_Write("ERR lidarservo task_busy; status allowed\r\n"); return 1U; }
+  if (LidarServo_PulseSet((uint16_t)pulse) != HAL_OK)
+  { ArmConsole_Write("ERR lidarservo unavailable\r\n"); return 1U; }
+report:
+  pulse = LidarServo_PulseGet();
+  ArmConsole_Printf("OK lidarservo enabled=%u pulse_us=%u\r\n", pulse ? 1U : 0U, (unsigned)pulse);
+  return 1U;
+}
+
 static uint8_t ArmConsole_GripCommandHandle(uint8_t TokenCount, char *Tokens[])
 {
   float Duty;
@@ -1100,67 +1024,17 @@ static uint8_t ArmConsole_GripCommandHandle(uint8_t TokenCount, char *Tokens[])
 
 static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[])
 {
-  ArmVision_ResultTypeDef VisionResult;
-  MaterialVision_ResultTypeDef MaterialResult;
   HAL_StatusTypeDef CameraStatus;
   Camera_ColorTypeDef Color;
 
-  if ((TokenCount == 2U) && (strcmp(Tokens[0], "vision") == 0))
-  {
-    if (strcmp(Tokens[1], "ref") == 0)
-    {
-      ArmConsole_CameraTraceStop();
-      ArmConsole_VisionResultShow(ArmVision_ReferenceSet());
-    }
-    else if (strcmp(Tokens[1], "status") == 0)
-    {
-      ArmVision_ProgressTypeDef Progress;
-
-      (void)ArmVision_ProgressGet(&Progress);
-      ArmConsole_Printf("OK vision state=%s ref=%u calibrated=%u source=%s "
-                        "target=%u error=%s correction_count=%u "
-                        "base_total=%ld x_total=%ld dx=%d dy=%d\r\n",
-                        ArmVision_StateNameGet(),
-                        (unsigned int)ArmVision_IsReferenceValid(),
-                        (unsigned int)ArmVision_IsCalibrated(),
-                        ArmVision_CalibrationSourceNameGet(),
-                        (unsigned int)ArmVision_CalibrationTargetGet(),
-                        ArmVision_ErrorNameGet(),
-                        (unsigned int)Progress.CorrectionCount,
-                        (long)Progress.BaseTotal,
-                        (long)Progress.XTotal,
-                        (int)Progress.Dx,
-                        (int)Progress.Dy);
-    }
-    else if (strcmp(Tokens[1], "stop") == 0)
-    {
-      ArmConsole_CameraTraceStop();
-      ArmVision_Stop();
-      MaterialVision_Stop();
-      OledUi_NoticeSet(NULL);
-      ArmConsole_Write("OK vision stop\r\n");
-    }
-    else
-    {
-      ArmConsole_Write("ERR format\r\n");
-    }
-    return 1U;
-  }
   if ((TokenCount == 2U) && (strcmp(Tokens[0], "camera") == 0))
   {
     if (strcmp(Tokens[1], "stop") == 0)
     {
-      if ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U))
-      {
-        ArmConsole_Write("ERR vision_busy use vision stop\r\n");
-      }
-      else
-      {
-        Camera_RequestStop();
-        ArmConsole_CameraTraceStop();
-        OledUi_NoticeSet(NULL);
-        ArmConsole_Write("OK camera stop\r\n");
-      }
+      Camera_RequestStop();
+      ArmConsole_CameraTraceStop();
+      OledUi_NoticeSet(NULL);
+      ArmConsole_Write("OK camera stop\r\n");
     }
     else
     {
@@ -1168,92 +1042,22 @@ static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[]
     }
     return 1U;
   }
-  if ((TokenCount == 3U) && (strcmp(Tokens[0], "vision") == 0))
-  {
-    if (strcmp(Tokens[1], "material") == 0)
-    {
-      if (ArmConsole_ColorParse(Tokens[2], &Color) == 0U)
-      {
-        ArmConsole_Write("ERR color\r\n");
-        return 1U;
-      }
-      VisionResult = ArmVision_MaterialStart(
-          Color, ARM_VISION_JOB_ALIGN_ONLY);
-      ArmConsole_VisionResultShow(VisionResult);
-      if (VisionResult == ARM_VISION_RESULT_OK)
-      {
-        ArmConsole_CameraTraceStart();
-      }
-      return 1U;
-    }
-    ArmConsole_Write("ERR format\r\n");
-    return 1U;
-  }
-  if ((TokenCount == 4U) && (strcmp(Tokens[0], "vision") == 0) &&
-      (strcmp(Tokens[1], "calib") == 0) &&
-      (strcmp(Tokens[2], "material") == 0))
-  {
-    if (ArmConsole_ColorParse(Tokens[3], &Color) == 0U)
-    {
-      ArmConsole_Write("ERR color\r\n");
-      return 1U;
-    }
-    VisionResult = ArmVision_MaterialCalibrationStart(Color);
-    if (VisionResult == ARM_VISION_RESULT_OK)
-    {
-      ArmConsole_CameraTraceStart();
-      ArmConsole_Printf("OK vision accepted calibration=material color=%u\r\n",
-                        (unsigned int)Color);
-    }
-    else
-    {
-      ArmConsole_VisionResultShow(VisionResult);
-    }
-    return 1U;
-  }
-  if ((TokenCount == 4U) && (strcmp(Tokens[0], "vision") == 0) &&
-      (strcmp(Tokens[1], "calib") == 0) &&
-      (strcmp(Tokens[2], "chassis") == 0))
-  {
-    if (ArmConsole_ColorParse(Tokens[3], &Color) == 0U)
-    {
-      ArmConsole_Write("ERR color\r\n");
-      return 1U;
-    }
-    MaterialResult = MaterialVision_CalibrationStart(Color);
-    if (MaterialResult == MATERIAL_VISION_RESULT_OK)
-    {
-      ArmConsole_CameraTraceStart();
-      ArmConsole_Printf("OK vision accepted calibration=chassis color=%u\r\n",
-                        (unsigned int)Color);
-    }
-    else if (MaterialResult == MATERIAL_VISION_RESULT_BUSY)
-      ArmConsole_Write("ERR vision_busy\r\n");
-    else if (MaterialResult == MATERIAL_VISION_RESULT_NOT_READY)
-      ArmConsole_Write("ERR vision_not_ready\r\n");
-    else
-      ArmConsole_Write("ERR vision calib chassis\r\n");
-    return 1U;
-  }
   if ((TokenCount == 3U) && (strcmp(Tokens[0], "camera") == 0) &&
-      (strcmp(Tokens[1], "material") == 0))
+      ((strcmp(Tokens[1], "material") == 0) || (strcmp(Tokens[1], "ring") == 0)))
   {
-    if (ArmConsole_ColorParse(Tokens[2], &Color) == 0U)
+    if (ArmConsole_ColorParse(Tokens[2], &Color) == 0U ||
+        (!strcmp(Tokens[1],"ring") && Color > CAMERA_COLOR_BLUE))
     {
-      ArmConsole_Write("ERR color\r\n");
+      ArmConsole_Write("ERR camera target\r\n");
       return 1U;
     }
-    if ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
-      return 1U;
-    }
-    CameraStatus = Camera_MaterialStart(Color);
+    CameraStatus = !strcmp(Tokens[1],"ring") ? Camera_RingStart((uint8_t)Color) : Camera_MaterialStart(Color);
     if (CameraStatus == HAL_OK)
     {
       ArmConsole_CameraTraceDirectStart();
-      ArmConsole_Printf("OK camera material color=%u sent\r\n",
-                        (unsigned int)Color);
+      if(!strcmp(Tokens[1],"ring"))
+        ArmConsole_Printf("OK camera ring ring=%u target=%u sent\r\n",(unsigned int)Color,(unsigned int)(9U+Color));
+      else ArmConsole_Printf("OK camera material color=%u sent\r\n",(unsigned int)Color);
     }
     else if (CameraStatus == HAL_BUSY)
     {
@@ -1270,87 +1074,6 @@ static uint8_t ArmConsole_VisionCommandHandle(uint8_t TokenCount, char *Tokens[]
     return 1U;
   }
 
-  if ((TokenCount == 2U) && (strcmp(Tokens[0], "material") == 0))
-  {
-    if (strcmp(Tokens[1], "stop") == 0)
-    {
-      ArmConsole_CameraTraceStop();
-      MaterialVision_Stop();
-      OledUi_NoticeSet(NULL);
-      ArmConsole_Write("OK material stop\r\n");
-    }
-    else if (strcmp(Tokens[1], "status") == 0)
-    {
-      Camera_SnapshotTypeDef Snapshot;
-      MaterialVision_CalibrationDataTypeDef Calibration;
-
-      Camera_SnapshotGet(&Snapshot);
-      if ((Snapshot.HasValidData != 0U) && (Snapshot.TargetValid != 0U))
-      {
-        ArmConsole_Printf("OK material state=%s calibrated=%u error=%s "
-                          "cx=%d cy=%d dx=%d dy=%d seq=%lu\r\n",
-                          MaterialVision_StateNameGet(),
-                          (unsigned int)MaterialVision_IsCalibrated(),
-                          MaterialVision_ErrorNameGet(),
-                          (int)Snapshot.Data.CX, (int)Snapshot.Data.CY,
-                          (int)Snapshot.Data.DX, (int)Snapshot.Data.DY,
-                          (unsigned long)Snapshot.Data.Sequence);
-      }
-      else
-      {
-        ArmConsole_Printf("OK material state=%s calibrated=%u error=%s "
-                          "cx=0 cy=0 dx=0 dy=0 seq=0\r\n",
-                          MaterialVision_StateNameGet(),
-                          (unsigned int)MaterialVision_IsCalibrated(),
-                          MaterialVision_ErrorNameGet());
-      }
-      if (MaterialVision_CalibrationGet(&Calibration) != 0U)
-      {
-        ArmConsole_Printf("OK material response forward=(%.3f,%.3f) "
-                          "x=(%.3f,%.3f)\r\n",
-                          (double)Calibration.ForwardDxPerMm,
-                          (double)Calibration.ForwardDyPerMm,
-                          (double)Calibration.XDxPerDegree,
-                          (double)Calibration.XDyPerDegree);
-      }
-    }
-    else
-    {
-      ArmConsole_Write("ERR format\r\n");
-    }
-    return 1U;
-  }
-  if ((TokenCount == 3U) && (strcmp(Tokens[0], "material") == 0) &&
-      (strcmp(Tokens[1], "auto") == 0))
-  {
-    if (ArmConsole_ColorParse(Tokens[2], &Color) == 0U)
-    {
-      ArmConsole_Write("ERR color\r\n");
-      return 1U;
-    }
-    MaterialResult = MaterialVision_Start(Color);
-    if (MaterialResult == MATERIAL_VISION_RESULT_OK)
-    {
-      ArmConsole_CameraTraceStart();
-      OledUi_NoticeSet(NULL);
-      ArmConsole_Printf("OK material auto color=%u\r\n",
-                        (unsigned int)Color);
-    }
-    else if (MaterialResult == MATERIAL_VISION_RESULT_BUSY)
-    {
-      OledUi_NoticeSet("Material busy");
-      ArmConsole_Write("ERR material busy\r\n");
-    }
-    else if (MaterialResult == MATERIAL_VISION_RESULT_NOT_READY)
-    {
-      OledUi_NoticeSet("Not ready");
-      ArmConsole_Write("ERR material_not_ready\r\n");
-    }
-    else
-      ArmConsole_Write("ERR material start\r\n");
-    return 1U;
-  }
-
   ArmConsole_Write("ERR format\r\n");
   return 1U;
 }
@@ -1362,8 +1085,8 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
 
   if ((TokenCount == 2U) && !strcmp(Tokens[0], "chassis") && !strcmp(Tokens[1], "status"))
   {
-    Mecanum_HeadingTestStatus_t Status;
-    Mecanum_HeadingTest_StatusGet(&Status);
+    ChassisMotion_HoldStatus_t Status;
+    ChassisMotion_HoldStatusGet(&Status);
     ArmConsole_Printf("OK chassis hold active=%u reason=%s target_deg=%.3f current_deg=%.3f output_rad_s=%.4f\r\n",
                       (unsigned)Status.active, Status.reason, (double)Status.target_deg,
                       (double)Status.current_deg, (double)Status.output_rad_s);
@@ -1372,59 +1095,34 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
   if ((TokenCount == 4U) && !strcmp(Tokens[0], "chassis") && !strcmp(Tokens[1], "hold"))
   {
     int32_t Speed, Seconds;
-    Mecanum_HeadingTestStatus_t Status;
-    if (MechanicalArm_IsBusy() || ArmVision_IsBusy() || MaterialVision_IsBusy())
+    ChassisMotion_HoldStatus_t Status;
+    if (MechanicalArm_IsBusy())
       ArmConsole_Write("ERR busy\r\n");
     else if (!ArmConsole_IntegerParse(Tokens[2], &Speed) ||
              !ArmConsole_IntegerParse(Tokens[3], &Seconds) ||
              Speed < -100 || Speed > 100 || Seconds < 1 || Seconds > 10)
       ArmConsole_Write("ERR range: chassis hold <-100..100mm/s> <1..10s>\r\n");
-    else if (Mecanum_HeadingTest_Start((float)Speed, (uint32_t)Seconds * 1000U))
+    else if (ChassisMotion_HoldStart((float)Speed, (uint32_t)Seconds * 1000U))
       ArmConsole_Printf("OK chassis hold speed=%ldmm/s duration=%lds source=module\r\n", (long)Speed, (long)Seconds);
     else
     {
-      Mecanum_HeadingTest_StatusGet(&Status);
+      ChassisMotion_HoldStatusGet(&Status);
       ArmConsole_Printf("ERR chassis hold reason=%s (stop existing motion first)\r\n", Status.reason);
     }
     return 1U;
   }
 
   if ((TokenCount == 2U) &&
-      ((strcmp(Tokens[0], "chassis") == 0) ||
-       (strcmp(Tokens[0], "wheel") == 0)) &&
-      (strcmp(Tokens[1], "stop") == 0))
-  {
-    if (MechanicalArm_IsBusy() != 0U)
-    {
-      ArmConsole_Write("ERR busy use stop all\r\n");
-    }
-    else if (Mecanum_Test_Stop())
-    {
-      ArmConsole_Write("OK chassis stop request accepted; physical stop unconfirmed\r\n");
-    }
-    else
-    {
-      ArmConsole_Write("ERR motor tx\r\n");
-    }
-    return 1U;
-  }
-  if ((TokenCount == 2U) &&
       (strcmp(Tokens[0], "chassis") == 0) &&
       (strcmp(Tokens[1], "backward") == 0))
   {
-    if ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
-      return 1U;
-    }
     if (MechanicalArm_IsBusy() != 0U)
     {
       ArmConsole_Write("ERR busy\r\n");
       return 1U;
     }
-    if (Mecanum_Velocity_Start(-ARM_CONSOLE_BACKWARD_TEST_SPEED_MM_S,
-                               0.0f,
-                               0.0f))
+    if ((ChassisMotion_VelocityUpdate(-ARM_CONSOLE_BACKWARD_TEST_SPEED_MM_S,0,0) ||
+        ChassisMotion_VelocityStart(-ARM_CONSOLE_BACKWARD_TEST_SPEED_MM_S,0,0)))
     {
       ArmConsole_Write("OK chassis backward velocity=30mm/s request accepted\r\n");
     }
@@ -1441,11 +1139,6 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
     int32_t ForwardMmPerSecond;
     int32_t LeftMmPerSecond;
     int32_t YawDegreesPerSecond;
-    if ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
-      return 1U;
-    }
     if (MechanicalArm_IsBusy() != 0U)
     {
       ArmConsole_Write("ERR busy\r\n");
@@ -1468,14 +1161,14 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
     if ((ForwardMmPerSecond == 0) && (LeftMmPerSecond == 0) &&
         (YawDegreesPerSecond == 0))
     {
-      (void)Mecanum_Test_Stop();
+      (void)ChassisMotion_StopRequest(0);
       ArmConsole_Write("OK chassis stop request accepted; physical stop unconfirmed\r\n");
       return 1U;
     }
-    if (Mecanum_Velocity_Start((float)ForwardMmPerSecond,
-                               (float)LeftMmPerSecond,
-                               (float)YawDegreesPerSecond *
-                               3.14159265358979323846f / 180.0f))
+    if ((ChassisMotion_VelocityUpdate((float)ForwardMmPerSecond,(float)LeftMmPerSecond,
+         (float)YawDegreesPerSecond*3.14159265358979323846f/180.0f) ||
+        ChassisMotion_VelocityStart((float)ForwardMmPerSecond,(float)LeftMmPerSecond,
+         (float)YawDegreesPerSecond*3.14159265358979323846f/180.0f)))
     {
       ArmConsole_Printf("OK chassis velocity forward=%ld left=%ld yaw=%lddeg/s request accepted\r\n",
                         (long)ForwardMmPerSecond,
@@ -1491,11 +1184,6 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
   if ((TokenCount == 3U) && (strcmp(Tokens[0], "chassis") == 0))
   {
     int32_t DistanceMagnitudeMm;
-    if ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
-      return 1U;
-    }
     if (MechanicalArm_IsBusy() != 0U)
     {
       ArmConsole_Write("ERR busy\r\n");
@@ -1530,11 +1218,6 @@ static uint8_t ArmConsole_ChassisCommandHandle(uint8_t TokenCount, char *Tokens[
   if ((TokenCount == 3U) && (strcmp(Tokens[0], "wheel") == 0))
   {
     int32_t WheelRpm;
-    if ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U))
-    {
-      ArmConsole_Write("ERR vision_busy\r\n");
-      return 1U;
-    }
     if (MechanicalArm_IsBusy() != 0U)
     {
       ArmConsole_Write("ERR busy\r\n");
@@ -1582,14 +1265,6 @@ static uint8_t ArmConsole_MechanicalArmCommandHandle(uint8_t TokenCount, char *T
     return 1U;
   }
 
-  if (((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U)) &&
-      !((strcmp(Tokens[0], "stop") == 0) &&
-        (Axis == MECHANICAL_ARM_AXIS_ALL)))
-  {
-    ArmConsole_Write("ERR vision_busy\r\n");
-    return 1U;
-  }
-
   if ((TokenCount == 2U) && (strcmp(Tokens[0], "enable") == 0))
   {
     return ArmConsole_RequestResultShow(MechanicalArm_Enable(Axis));
@@ -1630,15 +1305,6 @@ static uint8_t ArmConsole_MechanicalArmCommandHandle(uint8_t TokenCount, char *T
   }
   if ((TokenCount == 2U) && (strcmp(Tokens[0], "stop") == 0))
   {
-    if ((Axis == MECHANICAL_ARM_AXIS_ALL) &&
-        ((ArmVision_IsBusy() != 0U) || (MaterialVision_IsBusy() != 0U)))
-    {
-      ArmVision_Stop();
-      MaterialVision_Stop();
-      OledUi_NoticeSet(NULL);
-      ArmConsole_Write("OK stop all request accepted; physical stop unconfirmed\r\n");
-      return 1U;
-    }
     return ArmConsole_RequestResultShow(MechanicalArm_Stop(Axis));
   }
   if ((TokenCount == 3U) && (strcmp(Tokens[0], "pos") == 0))
@@ -1761,7 +1427,7 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
       ArmConsole_Write("ERR imu cal busy\r\n");
       return 1U;
     }
-    if (Mecanum_IsBusy() || MechanicalArm_IsBusy() || ArmVision_IsBusy() || MaterialVision_IsBusy())
+    if (Mecanum_IsBusy() || MechanicalArm_IsBusy())
     {
       ArmConsole_Write("ERR imu motion_busy stop all motion first\r\n");
       return 1U;
@@ -1783,9 +1449,9 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
   {
     if (!strcmp(Tokens[2], "cancel") || !strcmp(Tokens[2], "clear"))
     {
-      Mecanum_HeadingTestStatus_t Heading;
-      Mecanum_HeadingTest_StatusGet(&Heading);
-      if (Heading.active && !Mecanum_Test_Stop()) ArmConsole_Write("ERR chassis stop_tx_error\r\n");
+      ChassisMotion_HoldStatus_t Heading;
+      ChassisMotion_HoldStatusGet(&Heading);
+      if (Heading.active && !ChassisMotion_StopRequest(0)) ArmConsole_Write("ERR chassis stop_tx_error\r\n");
       HWT101_Cal_Cancel();
       ArmConsole_Write("OK imu cal cancel requested boot_verification_cleared=1 module_bias_kept=1 normal_mode=pending\r\n");
       return 1U;
@@ -1863,7 +1529,16 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
                       (unsigned long)Status.valid_read_count,
                       (unsigned long)Status.i2c_error_count);
     if (!HWT101_Cal_IsBusy()) (void)HWT101_Cal_RefreshRegisters();
+    (void)HWT101_Status_Get(&Status);
+    ArmConsole_Printf("OK imu bus last_HAL=%u error=0x%08lX state=0x%02lX op=%u reg=0x%02X fault_ms=%lu probe_failures=%lu reinit_count=%lu reinit_HAL=%u\r\n",
+      (unsigned)Status.last_hal, (unsigned long)Status.hal_error, (unsigned long)Status.hal_state,
+      (unsigned)Status.fault_operation, (unsigned)Status.fault_register, (unsigned long)Status.fault_ms,
+      (unsigned long)Status.probe_fail_count, (unsigned long)Status.reinit_count, (unsigned)Status.reinit_hal);
     if (!HWT101_Cal_GetStatus(&Cal)) return 1U;
+    if (Cal.first_reason && strcmp(Cal.first_reason, "none"))
+      ArmConsole_Printf("OK imu first_reason=%s first_HAL=%u first_error=0x%08lX first_state=0x%02lX first_op=%u first_reg=0x%02X\r\n",
+        Cal.first_reason, (unsigned)Cal.first_hal, (unsigned long)Cal.first_hal_error,
+        (unsigned long)Cal.first_hal_state, (unsigned)Cal.first_operation, (unsigned)Cal.first_register);
     ArmConsole_Printf("OK imu stream=%s result=%s save_state=%s persistent=UNTESTED\r\n",
                       ArmConsole_ImuStream ? "on" : "off", Cal.result, Cal.save_state);
     ArmConsole_Printf("OK imu cal_state=%s reason=%s HAL=%u run_id=%lu busy=%u verified=%u control_ready=%u normal_mode=%u\r\n",
@@ -2027,41 +1702,249 @@ static void ArmConsole_ResetCancel(void)
 
 static void ArmConsole_StopRequest(uint32_t token)
 {
+  bool arm_owned=GrabTask_IsBusy();
+  ArmConsole_BusTestStop("stopped");
   ArmConsole_ManualGuardCancel();
-  BusRecoveryPending=0U;
+  BusRecoveryPending=0U;BusRecoveryAutomatic=false;
+  MotorBus_Diagnostic_t stopped_fault;MotorBus_DiagnosticGet(&stopped_fault);
+  if(stopped_fault.locked){BusAutoFaultSeen=true;BusAutoFaultTick=stopped_fault.tick_ms;}
   MotorBus_RecoveryCancel();
   ArmConsole_ResetCancel();
   /* Cancel every automatic producer before requesting the shared UART5 stop. */
   GrabRoute_Stop();
+  /* Owned tasks already send arm STOP/HOME_ABORT through their cancellation
+   * chain. Manual pos/home can outlive its ACK without a GrabTask owner. */
+  if(!arm_owned) {
+    MechanicalArm_ResultTypeDef result=MechanicalArm_Stop(MECHANICAL_ARM_AXIS_ALL);
+    if(result!=MECHANICAL_ARM_RESULT_NONE && result!=MECHANICAL_ARM_RESULT_OK)
+      ArmConsole_Printf("ERR stop arm request result=%u physical_stop=unconfirmed\r\n",(unsigned)result);
+  }
   Turntable_Stop();
-  (void)ChassisRoute_Cancel();
-  ArmVision_Stop();
-  MaterialVision_Stop();
+  if(!GrabRoute_IsBusy()) (void)ChassisRoute_Cancel();
   OledUi_NoticeSet(NULL);
   (void)ChassisMotion_StopRequest(token);
   ArmConsole_StopStatusShow();
 }
 
+static void ArmConsole_BusTestShow(const char *action)
+{
+  bool failed=BusTest.timeouts || BusTest.uart_errors || BusTest.rejected ||
+    (BusTest.reason && !strcmp(BusTest.reason,"line_busy"));
+  ArmConsole_Printf("%s bus test %s id=%u rounds=%u active=%u attempts=%lu sent=%lu received=%lu "
+    "timeouts=%lu uart_errors=%lu rejected=%lu max_reply_ms=%lu last_uart_error=0x%08lX locked=%u reason=%s\r\n",
+    failed?"ERR":"OK",action,(unsigned)BusTest.address,(unsigned)BusTest.rounds,(unsigned)BusTest.active,
+    (unsigned long)BusTest.attempted,(unsigned long)BusTest.sent,(unsigned long)BusTest.received,
+    (unsigned long)BusTest.timeouts,(unsigned long)BusTest.uart_errors,(unsigned long)BusTest.rejected,
+    (unsigned long)BusTest.reply_max,(unsigned long)BusTest.last_uart_error,
+    (unsigned)MotorBus_IsQuarantined(),BusTest.reason?BusTest.reason:"idle");
+}
+static void ArmConsole_BusTestStop(const char *reason)
+{
+  if(!BusTest.active) return;
+  BusTest.active=false;BusTest.pending=false;BusTest.reason=reason;
+  BusTest.elapsed=HAL_GetTick()-BusTest.started;
+  MotorBus_ProbeStop();
+  ArmConsole_BusTestShow("complete");
+}
+static uint16_t ArmConsole_Read16(const uint8_t *p)
+{ return (uint16_t)((uint16_t)p[0]<<8|p[1]); }
+static uint32_t ArmConsole_Read32(const uint8_t *p)
+{ return (uint32_t)p[0]<<24|(uint32_t)p[1]<<16|(uint32_t)p[2]<<8|p[3]; }
+static void ArmConsole_BusReadShow(const MotorBus_Event_t *e)
+{
+  const uint8_t *p=e->data;
+  if(e->length!=BusTest.read_length) return; /* Short rejection is reported below. */
+  if(p[1]==0x27 || p[1]==0x24)
+    ArmConsole_Printf("OK bus read id=%u %s=%u\r\n",BusTest.address,
+      p[1]==0x27?"phase_ma":"voltage_mv",ArmConsole_Read16(p+2));
+  else if(p[1]==0x37) {
+    int64_t raw=ArmConsole_Read32(p+3);if(p[2])raw=-raw;
+    ArmConsole_Printf("OK bus read id=%u error_raw=%lld error_deg=%.3f units_per_rev=65536\r\n",
+      BusTest.address,(long long)raw,(double)raw*360.0/65536.0);
+  } else if(p[1]==0x22) {
+    ArmConsole_Printf("OK bus read id=%u home_mode=%u home_dir=%u home_rpm=%u timeout_ms=%lu\r\n",
+      BusTest.address,p[2],p[3],ArmConsole_Read16(p+4),(unsigned long)ArmConsole_Read32(p+6));
+    ArmConsole_Printf("OK bus read id=%u collision_rpm=%u collision_ma=%u collision_ms=%u boot_home=%u\r\n",
+      BusTest.address,ArmConsole_Read16(p+10),ArmConsole_Read16(p+12),ArmConsole_Read16(p+14),p[16]);
+  } else if(p[1]==0x42) {
+    if(p[2]!=33 || p[3]!=21) { ArmConsole_Write("ERR bus read driver_layout expected=Emm\r\n");return; }
+    ArmConsole_Printf("OK bus read id=%u driver=Emm open_current_ma=%u current_limit_ma=%u output_limit_raw=%u pulse_mode=%u\r\n",
+      BusTest.address,ArmConsole_Read16(p+12),ArmConsole_Read16(p+14),ArmConsole_Read16(p+16),p[5]);
+    ArmConsole_Printf("OK bus read id=%u stall_protect=%u stall_rpm=%u stall_ma=%u stall_ms=%u reach_deg=%.1f\r\n",
+      BusTest.address,p[23],ArmConsole_Read16(p+24),ArmConsole_Read16(p+26),ArmConsole_Read16(p+28),ArmConsole_Read16(p+30)/10.0);
+  }
+}
+static void ArmConsole_BusTestProcess(void)
+{
+  MotorBus_Event_t e;
+  static const uint8_t functions[]={0x3a,0x36,0x35};
+  static const uint8_t lengths[]={4,8,6};
+  uint32_t now=HAL_GetTick();
+  if(!BusTest.active) { (void)MotorBus_EventGet(MOTOR_BUS_PROBE,&e);return; }
+  if(MotorBus_EventGet(MOTOR_BUS_PROBE,&e) && BusTest.pending && e.token==BusTest.token) {
+    uint32_t round=(BusTest.attempted-1U)/3U+1U;
+    uint8_t function=BusTest.read_function?BusTest.read_function:functions[(BusTest.attempted-1U)%3U];
+    BusTest.pending=false;BusTest.wait_since=now;BusTest.next_tick=now+20U;
+    if(e.tx_completed) BusTest.sent++;
+    if(e.result==MOTOR_BUS_CANCELLED) { ArmConsole_BusTestStop("stopped");return; }
+    if(e.result==MOTOR_BUS_REPLY) {
+      char hex[3U*MOTOR_BUS_FRAME_MAX+1U];
+      uint32_t delay=e.tick_ms-e.tx_ms;
+      for(unsigned i=0;i<e.length;i++)
+        (void)snprintf(hex+3U*i,sizeof(hex)-3U*i,"%02X%s",e.data[i],i+1U<e.length?":":"");
+      if(delay>BusTest.reply_max) BusTest.reply_max=delay;
+      if(e.length==4U && (e.data[2]==0xe2 || e.data[2]==0xee)) BusTest.rejected++;
+      else BusTest.received++;
+      ArmConsole_Printf("%s bus test reply id=%u round=%lu func=0x%02X reply_ms=%lu hex=%s\r\n",
+        e.length==4U && (e.data[2]==0xe2 || e.data[2]==0xee)?"ERR":"OK",
+        (unsigned)BusTest.address,(unsigned long)round,(unsigned)function,(unsigned long)delay,hex);
+      if(BusTest.read_function)ArmConsole_BusReadShow(&e);
+    } else {
+      if(e.result==MOTOR_BUS_TIMEOUT) BusTest.timeouts++;
+      else { BusTest.uart_errors++;BusTest.last_uart_error=e.uart_error; }
+      ArmConsole_Printf("ERR bus test read id=%u round=%lu func=0x%02X reason=%s uart_error=0x%08lX\r\n",
+        (unsigned)BusTest.address,(unsigned long)round,(unsigned)function,
+        e.result==MOTOR_BUS_TIMEOUT?(e.tx_completed?"reply_timeout":"tx_timeout"):
+          (e.uart_error?"uart_error":"transport_error"),(unsigned long)e.uart_error);
+    }
+    if(BusTest.attempted==(BusTest.read_function?1U:3U*BusTest.rounds)) { ArmConsole_BusTestStop("done");return; }
+  }
+  if(BusTest.pending) return;
+  if(!MotorBus_ProbeReady()) {
+    if((uint32_t)(now-BusTest.wait_since)>1000U) ArmConsole_BusTestStop("line_busy");
+    return;
+  }
+  if((int32_t)(now-BusTest.next_tick)<0) return;
+  {
+    uint8_t kind=(uint8_t)(BusTest.attempted%3U);
+    uint8_t cmd[]={BusTest.address,BusTest.read_function?BusTest.read_function:functions[kind],0x6b,0x6b};
+    uint8_t length=3,reply_length=BusTest.read_function?BusTest.read_length:lengths[kind];
+    if(BusTest.read_function==0x42) { cmd[2]=0x6c;length=4; }
+    BusTest.token=++BusTestToken;
+    if(MotorBus_Submit(MOTOR_BUS_PROBE,cmd,length,reply_length,BusTest.token,false)) {
+      BusTest.pending=true;BusTest.attempted++;
+    } else if((uint32_t)(now-BusTest.wait_since)>1000U) ArmConsole_BusTestStop("line_busy");
+  }
+}
+static uint8_t ArmConsole_BusTestCommand(unsigned count,char *tokens[])
+{
+  int32_t id,rounds=10;
+  Mecanum_Status_t status;
+  if(count==3U && !strcmp(tokens[2],"status")) { ArmConsole_BusTestShow("status");return 1U; }
+  if(count==3U && !strcmp(tokens[2],"stop")) {
+    if(BusTest.active) ArmConsole_BusTestStop("stopped");else ArmConsole_BusTestShow("status");
+    return 1U;
+  }
+  if((count!=3U && count!=4U) || !ArmConsole_IntegerParse(tokens[2],&id) || id<1 || id>8 ||
+     (count==4U && (!ArmConsole_IntegerParse(tokens[3],&rounds) || rounds<1 || rounds>100))) {
+    ArmConsole_Write("ERR format: bus test <id 1..8> [rounds 1..100] | bus test status | bus test stop\r\n");return 1U;
+  }
+  if(BusTest.active) { ArmConsole_Write("ERR bus test active; use bus test stop\r\n");return 1U; }
+  Mecanum_StatusGet(&status);
+  if(BusRecoveryPending || ManualGuardActive || GrabTask_IsBusy() || GrabRoute_IsBusy() ||
+     Turntable_IsBusy() || MechanicalArm_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() ||
+     status.stop_pending || (!status.locked && Mecanum_IsBusy())) {
+    ArmConsole_Write("ERR bus test tasks_busy; stop active task before testing\r\n");return 1U;
+  }
+  if(!MotorBus_ProbeStart((uint8_t)id)) {
+    ArmConsole_Write("ERR bus test transport_busy; wait for current transaction\r\n");return 1U;
+  }
+  memset(&BusTest,0,sizeof BusTest);
+  BusTest.active=true;BusTest.address=(uint8_t)id;BusTest.rounds=(uint16_t)rounds;
+  BusTest.started=BusTest.wait_since=BusTest.next_tick=HAL_GetTick();BusTest.reason="testing";
+  ArmConsole_Printf("OK bus test start id=%u rounds=%u locked=%u read_only=1\r\n",
+    (unsigned)id,(unsigned)rounds,(unsigned)MotorBus_IsQuarantined());
+  return 1U;
+}
+
+static void ArmConsole_BusRecoveryEvidenceShow(void)
+{
+  MotorBus_Recovery_t s;
+  if(!ContestMission_BusRecoveryEvidenceGet(&s))MotorBus_RecoveryGet(&s);
+  ArmConsole_Printf("OK bus attempt stage=%s reason=%s addr=%u func=0x%02X uart_error=0x%08lX tx_sent=%u elapsed_ms=%lu\r\n",
+    s.stage?s.stage:"idle",s.reason?s.reason:"idle",s.address,s.function,(unsigned long)s.uart_error,s.tx_sent?1U:0U,(unsigned long)s.elapsed_ms);
+  char hex[33];unsigned i;
+  for(i=0;i<s.rx_sample_length;i++)(void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",s.rx_sample[i]);
+  if(!i)strcpy(hex,"none");
+  ArmConsole_Printf("OK bus attempt_rx bytes=%lu pending=%u partial=%u gap_ms=%lu ndtr=%u cursor=%u hex=%s\r\n",
+    (unsigned long)s.rx_bytes,s.rx_pending,s.parse_bytes,(unsigned long)s.process_gap_ms,s.dma_remaining,s.dma_position,hex);
+  MotorBus_Diagnostic_t first;MotorBus_DiagnosticGet(&first);
+  for(i=0;i<first.rx_sample_length;i++)(void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",first.rx_sample[i]);
+  if(!i)strcpy(hex,"none");
+  ArmConsole_Printf("OK bus first reason=%s addr=%u func=0x%02X uart_error=0x%08lX rx_bytes=%lu gap_ms=%lu hex=%s\r\n",
+    first.reason,first.address,first.function,(unsigned long)first.uart_error,(unsigned long)first.rx_bytes,(unsigned long)first.process_gap_ms,hex);
+}
 static void ArmConsole_BusStatusShow(void)
 {
   MotorBus_Recovery_t s;
+  MotorBus_Timing_t timing;
   MotorBus_RecoveryGet(&s);
-  ArmConsole_Printf("OK bus recovery active=%u success=%u reason=%s addr=%u checked=0x%02X locked=%u\r\n",
+  ArmConsole_Printf("OK bus recovery active=%u success=%u reason=%s addr=%u checked=0x%02X locked=%u speed_addr=%u speed_rpm=%ld speed_ms=%lu\r\n",
     (unsigned)(BusRecoveryPending!=0 || s.active),(unsigned)s.success,
     BusRecoveryPending==1?"stopping_tasks":s.reason,(unsigned)s.address,
-    (unsigned)s.checked_mask,(unsigned)MotorBus_IsQuarantined());
+    (unsigned)s.checked_mask,(unsigned)MotorBus_IsQuarantined(),
+    (unsigned)s.speed_address,(long)s.speed_rpm,(unsigned long)s.speed_ms);
+  Mecanum_Status_t chassis; Mecanum_StatusGet(&chassis);
+  ArmConsole_Printf("OK bus motion locked=%u error=%u feedback_allowed=%u\r\n",
+    (unsigned)chassis.locked,(unsigned)chassis.error,(unsigned)MotorBus_FeedbackAllowed());
+  MotorBus_Diagnostic_t fault;MotorBus_DiagnosticGet(&fault);
+  if(strcmp(fault.reason,"none")) {
+    char hex[33];unsigned j;
+    for(j=0;j<fault.rx_sample_length;j++)(void)snprintf(hex+2*j,sizeof(hex)-2*j,"%02X",fault.rx_sample[j]);
+    if(!j)strcpy(hex,"none");
+    ArmConsole_Printf("OK bus fault rx_bytes=%lu last_rx_ms=%lu pending=%u partial=%u process_gap_ms=%lu hex=%s historical=%u\r\n",
+      (unsigned long)fault.rx_bytes,(unsigned long)fault.last_rx_ms,(unsigned)fault.rx_pending,
+      (unsigned)fault.parse_bytes,(unsigned long)fault.process_gap_ms,hex,(unsigned)!fault.locked);
+  }
+  MotorBus_TimingGet(&timing);
+  ArmConsole_Printf("OK bus timing transactions=%lu ordinary=%lu emergency=%lu drained=%lu clock_ms=1\r\n",
+    (unsigned long)timing.transactions,(unsigned long)timing.ordinary,
+    (unsigned long)timing.emergency,(unsigned long)timing.drained);
+  for(unsigned i=0;i<8;i++) {
+    const MotorBus_IdTiming_t *t=&timing.id[i];
+    ArmConsole_Printf("OK bus id=%u requests=%lu success=%lu rejected=%lu timeouts=%lu tx_ms=%lu reply_ms=%lu reply_last_ms=%lu reply_max_ms=%lu queue_last_ms=%lu queue_max_ms=%lu\r\n",
+      i+1,(unsigned long)t->requests,(unsigned long)t->success,(unsigned long)t->rejected,
+      (unsigned long)t->timeouts,(unsigned long)t->tx_ms,(unsigned long)t->reply_ms,
+      (unsigned long)t->reply_last_ms,(unsigned long)t->reply_max_ms,
+      (unsigned long)t->queue_last_ms,(unsigned long)t->queue_max_ms);
+  }
 }
 static void ArmConsole_BusRecoveryProcess(void)
 {
   MotorBus_Recovery_t s;
-  if (!BusRecoveryPending) return;
+  MotorBus_Diagnostic_t fault;MotorBus_DiagnosticGet(&fault);
+  uint32_t now=HAL_GetTick();
+  MotorBus_RecoveryGet(&s);
+  if(!s.active && s.success && s.sync_warning_mask && s.speed_ms!=BusSyncWarningTick) {
+    BusSyncWarningTick=s.speed_ms;
+    ArmConsole_Printf("WARN bus sync_ack_ignored mask=0x%02X zero_cache_acked=1 wheels_stopped=1\r\n",s.sync_warning_mask);
+  }
+  if(fault.rx_warning_count!=BusRxWarningShown && now-BusRxWarningTick>=500U) {
+    BusRxWarningShown=fault.rx_warning_count;BusRxWarningTick=now;
+    ArmConsole_Printf("WARN bus rx_restarted count=%lu uart_error=0x%08lX tasks_interrupted=0\r\n",
+      (unsigned long)fault.rx_warning_count,(unsigned long)fault.rx_warning_error);
+  }
+  if(!BusRecoveryPending) {
+    /* Mission recovery owns its saved task. Outside a mission repair only the
+     * channel; interrupted HOME/reference and tasks are never declared done. */
+    if(ContestMission_HasPendingWork() || !MotorBus_TransientFault(&fault) ||
+       (BusAutoFaultSeen && BusAutoFaultTick==fault.tick_ms))return;
+    BusAutoFaultSeen=true;BusAutoFaultTick=fault.tick_ms;
+    ArmConsole_StopRequest(0);Mecanum_Feedback_Enable(false);
+    BusRecoveryAutomatic=true;BusRecoveryPending=1;BusRecoveryStarted=now;
+    ArmConsole_Write("WARN bus auto_recover requested tasks_resumed=0\r\n");
+  }
+  if(BusRecoveryPending==3) {
+    if(now-BusRecoveryStarted<2000U)return;
+    BusRecoveryPending=1;BusRecoveryStarted=now;
+  }
   if (BusRecoveryPending==1) {
     if ((uint32_t)(HAL_GetTick()-BusRecoveryStarted)>10000U) {
       BusRecoveryPending=0;
       ArmConsole_Write("ERR bus recover tasks_not_idle; inspect grab status and info\r\n");return;
     }
-    if (GrabTask_IsBusy() || GrabRoute_IsBusy() || Turntable_IsBusy() || MechanicalArm_IsBusy() ||
-        ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || ArmVision_IsBusy() || MaterialVision_IsBusy()) return;
+    if (GrabTask_IsBusy() || (GrabRoute_IsBusy() && !GrabRoute_CanConfigure()) || Turntable_IsBusy() || MechanicalArm_IsBusy() ||
+        ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return;
     /* A stopping task may have re-enabled its feedback before exiting. */
     Mecanum_Feedback_Enable(false);
     if (!MotorBus_RecoveryStart()) return;
@@ -2072,9 +1955,15 @@ static void ArmConsole_BusRecoveryProcess(void)
   BusRecoveryPending=0;
   if (s.success) {
     bool chassis_ready=Mecanum_RecoveryAfterBusCheck();
-    ArmConsole_Printf("OK bus recover complete arm_ready=1 chassis_ready=%u reason=%s tasks_resumed=0 home_reference=check\r\n",
+    ArmConsole_Printf("OK bus recover complete arm_ready=1 chassis_ready=%u reason=%s tasks_resumed=0 home_reference=check chassis_cache=cleared wheels_stopped=1\r\n",
       (unsigned)chassis_ready,chassis_ready?"complete":"chassis_cache_or_state_requires_reset");
-  } else ArmConsole_Printf("ERR bus recover reason=%s addr=%u locked=1\r\n",s.reason,(unsigned)s.address);
+  } else {
+    bool retry=BusRecoveryAutomatic && MotorBus_RecoveryRetryable(&s);
+    ArmConsole_Printf("WARN bus recover reason=%s addr=%u locked=%u retry=%u speed_addr=%u speed_rpm=%ld speed_ms=%lu\r\n",
+      s.reason,(unsigned)s.address,(unsigned)MotorBus_IsQuarantined(),retry?1U:0U,
+      (unsigned)s.speed_address,(long)s.speed_rpm,(unsigned long)s.speed_ms);
+    if(retry){BusRecoveryPending=3;BusRecoveryStarted=now;}
+  }
 }
 
 /* Manual commands are checked before dispatch; automatic tasks own their own
@@ -2160,6 +2049,14 @@ static uint8_t ArmConsole_StopCommandHandle(uint8_t count, char *tokens[])
 {
   uint32_t token = 0;
   const char *p;
+  if(count==3U && !strcmp(tokens[0],"grab") && !strcmp(tokens[1],"mission") &&
+     (!strcmp(tokens[2],"pause") || !strcmp(tokens[2],"stop")))
+  {
+    ArmConsole_ResetCancel();ArmConsole_ManualGuardCancel();ArmConsole_BusTestStop("stopped");
+    BusRecoveryPending=0;
+    if(!strcmp(tokens[2],"stop") || !ContestMission_HasPendingWork())MotorBus_RecoveryCancel();
+    (void)GrabRoute_Command(count,tokens);return 1U;
+  }
   if (count < 2U || (strcmp(tokens[0], "chassis") && strcmp(tokens[0], "wheel"))) return 0;
   if (!strcmp(tokens[0], "chassis") && !strcmp(tokens[1], "stop-status"))
   {
@@ -2185,7 +2082,7 @@ static uint8_t ArmConsole_StopCommandHandle(uint8_t count, char *tokens[])
 }
 
 uint8_t ArmConsole_ResetPending(void) { return ResetPending; }
-uint8_t ArmConsole_OperationBusy(void) { return BusRecoveryPending || ManualGuardActive; }
+uint8_t ArmConsole_OperationBusy(void) { return BusRecoveryPending || ManualGuardActive || BusTest.active; }
 
 uint8_t ArmConsole_ResetProcess(void)
 {
@@ -2226,7 +2123,7 @@ static uint8_t ArmConsole_SystemCommandHandle(uint8_t count, char *tokens[])
   if (count != 2U || strcmp(tokens[1], "reset"))
     ArmConsole_Write("ERR format: system reset\r\n");
   else if (ChassisMotion_IsBusy() || ChassisRoute_IsBusy() || Mecanum_IsBusy() ||
-           MechanicalArm_IsBusy() || ArmVision_IsBusy() || MaterialVision_IsBusy() || HWT101_Cal_IsBusy() ||
+           MechanicalArm_IsBusy() || HWT101_Cal_IsBusy() ||
            GrabTask_IsBusy() || GrabRoute_IsBusy() || Turntable_IsBusy())
     ArmConsole_Write("ERR system reset busy stop motion and finish/cancel calibration first\r\n");
   else
@@ -2242,10 +2139,34 @@ static uint8_t ArmConsole_SystemCommandHandle(uint8_t count, char *tokens[])
 
 static uint8_t ArmConsole_BusCommandHandle(unsigned count,char *tokens[])
 {
+  if(count>=2U && !strcmp(tokens[0],"bus") && !strcmp(tokens[1],"read")) {
+    const char *keys[]={"current","voltage","error","home","driver"};
+    const uint8_t functions[]={0x27,0x24,0x37,0x22,0x42},lengths[]={5,5,8,18,33};
+    unsigned selected=5;
+    if(count==4U)for(unsigned i=0;i<5;i++)if(!strcmp(tokens[3],keys[i]))selected=i;
+    if(selected==5) {
+      ArmConsole_Write("ERR format: bus read <id 1..8> current|voltage|error|home|driver\r\n");return 1U;
+    }
+    char *test_tokens[]={"bus","test",tokens[2],"1"};
+    bool was_active=BusTest.active;
+    (void)ArmConsole_BusTestCommand(4,test_tokens);
+    if(!was_active && BusTest.active) {
+      BusTest.read_function=functions[selected];BusTest.read_length=lengths[selected];
+      ArmConsole_Printf("OK bus read start id=%u field=%s read_only=1\r\n",BusTest.address,keys[selected]);
+    }
+    return 1U;
+  }
+  if(count>=2U && !strcmp(tokens[0],"bus") && !strcmp(tokens[1],"test"))
+    return ArmConsole_BusTestCommand(count,tokens);
   if (count==2 && !strcmp(tokens[0],"bus")) {
     if (!strcmp(tokens[1],"status")) ArmConsole_BusStatusShow();
+    else if(!strcmp(tokens[1],"recovery"))ArmConsole_BusRecoveryEvidenceShow();
     else if (!strcmp(tokens[1],"recover")) {
       if (BusRecoveryPending) ArmConsole_Write("ERR bus recovery_busy\r\n");
+      else if(ContestMission_RequestBusRecovery(false))
+      {
+        ArmConsole_Write("OK bus recover requested mission_preserved=1 tasks_resumed=0\r\n");
+      }
       else {
         ArmConsole_StopRequest(0);
         Mecanum_Feedback_Enable(false);
@@ -2253,7 +2174,7 @@ static uint8_t ArmConsole_BusCommandHandle(unsigned count,char *tokens[])
         BusRecoveryPending=1;BusRecoveryStarted=HAL_GetTick();
         ArmConsole_Write("OK bus recover requested tasks_resumed=0\r\n");
       }
-    } else ArmConsole_Write("ERR format: bus recover | bus status\r\n");
+    } else ArmConsole_Write("ERR format: bus recover | bus status | bus recovery\r\n");
     return 1;
   }
   return 0U;
@@ -2264,7 +2185,7 @@ static uint8_t ArmConsole_TurntableCommandHandle(unsigned count,char *tokens[])
   if (!strcmp(tokens[0],"turntable"))
   {
     if (count==2U && !strcmp(tokens[1],"stop")) ArmConsole_ResetCancel();
-    else if (ArmVision_IsBusy() || MaterialVision_IsBusy() || MechanicalArm_IsBusy() ||
+    else if (MechanicalArm_IsBusy() ||
              Mecanum_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy())
     { ArmConsole_Write("ERR turntable other_task_busy\r\n");return 1U; }
     return Turntable_Command(count,tokens) ? 1U : 0U;
@@ -2283,11 +2204,58 @@ static uint8_t ArmConsole_TurntableBusyGuard(unsigned count,char *tokens[])
   return 0U;
 }
 
+static uint8_t ArmConsole_TrackCommandHandle(unsigned count,char *tokens[])
+{
+  if(count<3U || strcmp(tokens[0],"grab") || strcmp(tokens[1],"track"))return 0U;
+  if(GrabRoute_IsBusy()) { ArmConsole_Write("ERR grab track route_busy\r\n"); return 1U; }
+  if(!strcmp(tokens[2],"observe") || !strcmp(tokens[2],"start"))ArmConsole_CameraTraceStop();
+  (void)GrabTask_Command(count,tokens);
+  return 1U;
+}
+
+static uint8_t ArmConsole_GrabQueryHandle(unsigned count,char *tokens[])
+{
+  /* Cached status queries do not compete for actuator ownership. */
+  if(!strcmp(tokens[0],"chassis"))
+  {
+    if(count==2U && !strcmp(tokens[1],"task"))
+      return ChassisTelemetry_Command(count,tokens)?1U:0U;
+    if(count==3U && !strcmp(tokens[1],"route") && !strcmp(tokens[2],"status"))
+      return ChassisRoute_Command(count,tokens)?1U:0U;
+  }
+  if(strcmp(tokens[0],"grab"))return 0U;
+  if(count==3U && !strcmp(tokens[1],"calib") && !strcmp(tokens[2],"status"))
+    return GrabTask_Command(count,tokens)?1U:0U;
+  if(count==3U && (!strcmp(tokens[1],"route") || !strcmp(tokens[1],"mission") || !strcmp(tokens[1],"qr")) &&
+     !strcmp(tokens[2],"status")) return GrabRoute_Command(count,tokens)?1U:0U;
+  if(!(((count==2U || count==3U) && !strcmp(tokens[1],"status")) || (count==3U && !strcmp(tokens[1],"get")) ||
+       (count>=3U && !strcmp(tokens[1],"track") &&
+        (!strcmp(tokens[2],"status") || !strcmp(tokens[2],"get") || !strcmp(tokens[2],"trace") || !strcmp(tokens[2],"log")))))return 0U;
+  (void)GrabRoute_Command(count,tokens); (void)GrabTask_Command(count,tokens);
+  return 1U;
+}
+
+static bool ArmConsole_GrabBusyGuard(unsigned TokenCount,char *Tokens[])
+{
+  if ((GrabTask_IsBusy() || GrabRoute_IsBusy()) &&
+      !(TokenCount==2U && !strcmp(Tokens[0],"grip") && GrabTask_RingManualAllowed()) &&
+      !(GrabRoute_CanConfigure() && !strcmp(Tokens[0],"grab") &&
+        ((TokenCount==4U && !strcmp(Tokens[1],"set")) ||
+         (TokenCount==3U && !strcmp(Tokens[1],"mission") && !strcmp(Tokens[2],"continue")))) &&
+      !(TokenCount==3U && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"qr") &&
+        (!strcmp(Tokens[2],"status") || !strcmp(Tokens[2],"stop"))) &&
+      !((TokenCount==1U && (!strcmp(Tokens[0],"help") || !strcmp(Tokens[0],"info"))) ||
+        (TokenCount==2U && ((!strcmp(Tokens[1],"status") &&
+           (!strcmp(Tokens[0],"camera") ||   !strcmp(Tokens[0],"console") || !strcmp(Tokens[0],"qr"))) ||
+          (!strcmp(Tokens[0],"qr") && !strcmp(Tokens[1],"read")))) ||
+        (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"status"))))
+    return true;
+  return false;
+}
 static uint8_t ArmConsole_CommandExecute(char *Line)
 {
   char *Tokens[ARM_CONSOLE_TOKEN_COUNT];
   uint8_t TokenCount;
-  Mecanum_HeadingTestStatus_t Heading;
 
   TokenCount = ArmConsole_Tokenize(Line, Tokens);
   if (TokenCount == 0U)
@@ -2295,34 +2263,60 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
     ArmConsole_Write("ERR format\r\n");
     return 1U;
   }
+  /* Independent PWM commands; status bypasses bus/task guards. */
+  if (!strcmp(Tokens[0], "lidarservo"))
+    return ArmConsole_LidarServoCommandHandle(TokenCount, Tokens);
+  if (!strcmp(Tokens[0],"material"))
+  {
+    ArmConsole_Write("ERR retired: material commands removed; use grab align color|ring, grab calib ref|status|<1..6>, grab stop\r\n");
+    return 1U;
+  }
+  if (!strcmp(Tokens[0], "vision"))
+  {
+    ArmConsole_Write("ERR retired: use grab align color|ring or grab calib ref|status|<1..6>\r\n");
+    return 1U;
+  }
   /* Queries and log subscription never operate actuators and bypass motion guards. */
   if (ArmConsole_StopCommandHandle(TokenCount, Tokens)) return 1U;
+  if (ArmConsole_PixelLogCommand(TokenCount, Tokens)) return 1U;
   if (!strcmp(Tokens[0],"turntable") &&
       ((TokenCount==2U && (!strcmp(Tokens[1],"status") || !strcmp(Tokens[1],"inventory"))) ||
        (TokenCount==3U && !strcmp(Tokens[1],"get"))))
     return Turntable_Command(TokenCount,Tokens) ? 1U : 0U;
   if (ArmConsole_BusCommandHandle(TokenCount,Tokens)) return 1U;
-  if (TokenCount==2 && (!strcmp(Tokens[0],"stop") || !strcmp(Tokens[1],"stop"))) {
+  if(BusTest.active && !((TokenCount==1U && (!strcmp(Tokens[0],"info") || !strcmp(Tokens[0],"help"))) ||
+     (TokenCount>=2U && (!strcmp(Tokens[0],"stop") || !strcmp(Tokens[1],"stop"))) ||
+     (TokenCount==3U && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"track") && !strcmp(Tokens[2],"stop")))) {
+    ArmConsole_Write("ERR bus test active; use bus test status or bus test stop\r\n");return 1U;
+  }
+  if ((TokenCount==2 && (!strcmp(Tokens[0],"stop") || !strcmp(Tokens[1],"stop"))) ||
+      (TokenCount==3 && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"track") && !strcmp(Tokens[2],"stop"))) {
     ArmConsole_ManualGuardCancel();
+    ArmConsole_BusTestStop("stopped");
     BusRecoveryPending=0;MotorBus_RecoveryCancel();
     if (!strcmp(Tokens[0],"stop") && !strcmp(Tokens[1],"all")) Turntable_Stop();
   }
   if ((BusRecoveryPending || ManualGuardActive) &&
       !(TokenCount==1 && (!strcmp(Tokens[0],"info") || !strcmp(Tokens[0],"help"))) &&
-      !(TokenCount==2 && (!strcmp(Tokens[1],"status") || !strcmp(Tokens[0],"state") || !strcmp(Tokens[0],"position")))) {
+      !(TokenCount==2 && (!strcmp(Tokens[1],"status") || !strcmp(Tokens[0],"state") || !strcmp(Tokens[0],"position"))) &&
+      !(TokenCount==3 && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"calib") && !strcmp(Tokens[2],"status")) &&
+      !(TokenCount>=3 && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"track") &&
+        (!strcmp(Tokens[2],"status") || !strcmp(Tokens[2],"get") || !strcmp(Tokens[2],"trace") || !strcmp(Tokens[2],"stop")))) {
     ArmConsole_Write("ERR operation_busy command_not_queued\r\n");return 1;
   }
   /* Stopping any owned actuator cancels the whole grasp producer before dispatch.
    * Claw PWM and the load-bearing Z enable remain unchanged. */
   if ((TokenCount==2U && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"stop")) ||
+      (TokenCount==3U && !strcmp(Tokens[0],"grab") && (!strcmp(Tokens[1],"track") || !strcmp(Tokens[1],"qr")) && !strcmp(Tokens[2],"stop")) ||
       ((GrabTask_IsBusy() || GrabRoute_IsBusy()) &&
        ((TokenCount==2U && ((!strcmp(Tokens[0],"stop") &&
           MechanicalArm_AxisGet(Tokens[1])!=MECHANICAL_ARM_AXIS_INVALID) ||
-         (!strcmp(Tokens[1],"stop") && (!strcmp(Tokens[0],"vision") ||
-          !strcmp(Tokens[0],"material") || !strcmp(Tokens[0],"camera") || !strcmp(Tokens[0],"turntable"))))) ||
+         (!strcmp(Tokens[1],"stop") && (!strcmp(Tokens[0],"camera") || !strcmp(Tokens[0],"turntable"))))) ||
         (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"cancel")))))
   {
-    ArmConsole_ResetCancel();GrabRoute_Stop();Turntable_Stop();
+    ArmConsole_ResetCancel();
+    if(!GrabTask_IsBusy())GrabTask_Stop(); /* An error is inactive but still needs cancellation. */
+    GrabRoute_Stop();Turntable_Stop();
     ArmConsole_Write("OK grab stop requested physical_stop=unconfirmed claw=held\r\n");
     return 1U;
   }
@@ -2331,8 +2325,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
     /* Every valid foreground stop keeps its existing scope and cancels reset. */
     if (TokenCount == 2U &&
         ((!strcmp(Tokens[0], "stop") && MechanicalArm_AxisGet(Tokens[1]) != MECHANICAL_ARM_AXIS_INVALID) ||
-         (!strcmp(Tokens[1], "stop") && (!strcmp(Tokens[0], "vision") ||
-          !strcmp(Tokens[0], "material") || !strcmp(Tokens[0], "camera") || !strcmp(Tokens[0], "turntable")))))
+         (!strcmp(Tokens[1], "stop") && (!strcmp(Tokens[0], "camera") || !strcmp(Tokens[0], "turntable")))))
       ArmConsole_ResetCancel();
     else { ArmConsole_Write("ERR system reset_pending\r\n"); return 1U; }
   }
@@ -2340,26 +2333,21 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   if (RadarConsole_Command(TokenCount,Tokens)) return 1U;
   if(ArmConsole_RadarMotionGuard(TokenCount,Tokens))
   { ArmConsole_Write("ERR radar stationary capture active; radar stop before driving\r\n");return 1U; }
-  if (!strcmp(Tokens[0],"grab") &&
-      ((TokenCount==2U && !strcmp(Tokens[1],"status")) ||
-       (TokenCount==3U && !strcmp(Tokens[1],"get"))))
-  { (void)GrabRoute_Command(TokenCount,Tokens);(void)GrabTask_Command(TokenCount,Tokens);return 1U; }
+  if(ArmConsole_GrabQueryHandle(TokenCount,Tokens))return 1U;
   if (ArmConsole_TurntableBusyGuard(TokenCount,Tokens)) return 1U;
-  if ((GrabTask_IsBusy() || GrabRoute_IsBusy()) &&
-      !((TokenCount==1U && (!strcmp(Tokens[0],"help") || !strcmp(Tokens[0],"info"))) ||
-        (TokenCount==2U && ((!strcmp(Tokens[1],"status") &&
-           (!strcmp(Tokens[0],"camera") || !strcmp(Tokens[0],"vision") ||
-            !strcmp(Tokens[0],"material") || !strcmp(Tokens[0],"console") || !strcmp(Tokens[0],"qr"))) ||
-          (!strcmp(Tokens[0],"qr") && !strcmp(Tokens[1],"read")))) ||
-        (TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"route") && !strcmp(Tokens[2],"status"))))
+  /* Track owns its feedback reads while observing/holding; do not mistake an
+   * in-flight owned query for a competing manual motion producer. */
+  if(ArmConsole_TrackCommandHandle(TokenCount,Tokens))return 1U;
+  if(ArmConsole_RingCommandHandle(TokenCount,Tokens))return 1U;
+  if(ArmConsole_GrabBusyGuard(TokenCount,Tokens))
   { ArmConsole_Write("ERR grab_busy use grab status or grab stop\r\n");return 1U; }
   if (ArmConsole_TurntableCommandHandle(TokenCount,Tokens)) return 1U;
   if (!strcmp(Tokens[0],"grab"))
   {
-    if (ArmVision_IsBusy() || MaterialVision_IsBusy() || MechanicalArm_IsBusy() ||
+    if (MechanicalArm_IsBusy() ||
         Mecanum_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || HWT101_Cal_IsBusy())
     { ArmConsole_Write("ERR grab other_task_busy\r\n");return 1U; }
-    if(TokenCount>=2U && (!strcmp(Tokens[1],"start") || !strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"store") || !strcmp(Tokens[1],"take") || !strcmp(Tokens[1],"return")))
+    if(TokenCount>=2U && (!strcmp(Tokens[1],"start") || !strcmp(Tokens[1],"mission") || !strcmp(Tokens[1],"route") || !strcmp(Tokens[1],"store") || !strcmp(Tokens[1],"take") || !strcmp(Tokens[1],"return") || !strcmp(Tokens[1],"ring") || !strcmp(Tokens[1],"align") || !strcmp(Tokens[1],"calib")))
       ArmConsole_CameraTraceStop(); /* Give the latest-only vision slot to grab progress. */
     if (GrabRoute_Command(TokenCount,Tokens)) return 1U;
     return GrabTask_Command(TokenCount,Tokens) ? 1U : 0U;
@@ -2384,30 +2372,20 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   if (ChassisTelemetry_Command(TokenCount, Tokens)) return 1U;
   if (ChassisMotion_IsBusy() || ChassisRoute_IsBusy())
   {
-    if (TokenCount == 2U && !strcmp(Tokens[0], "wheel") && !strcmp(Tokens[1], "stop"))
-    {
-      (void)ChassisRoute_Cancel();
-      ArmConsole_Write("OK chassis stop request accepted; physical stop unconfirmed\r\n");
-      return 1U;
-    }
+    ChassisMotion_Status_t motion;
+    ChassisMotion_StatusGet(&motion);
     if (!strcmp(Tokens[0], "stop")) (void)ChassisRoute_Cancel();
     else if (!((TokenCount == 1U && (!strcmp(Tokens[0], "help") || !strcmp(Tokens[0], "info"))) ||
                (TokenCount == 2U && (!strcmp(Tokens[1], "status") || !strcmp(Tokens[1], "stop") || !strcmp(Tokens[0], "state") || !strcmp(Tokens[0], "position") || !strcmp(Tokens[0], "config"))) ||
-               (TokenCount == 3U && !strcmp(Tokens[0], "imu") && !strcmp(Tokens[1], "stream"))))
+               (TokenCount == 3U && !strcmp(Tokens[0], "imu") && !strcmp(Tokens[1], "stream")) ||
+               (TokenCount == 3U && !strcmp(Tokens[0],"imu") && !strcmp(Tokens[1],"cal") &&
+                (!strcmp(Tokens[2],"cancel") || !strcmp(Tokens[2],"clear"))) ||
+               (motion.indefinite_velocity && TokenCount>=2U && !strcmp(Tokens[0],"chassis") &&
+                (!strcmp(Tokens[1],"velocity") || !strcmp(Tokens[1],"backward")))))
     {
       ArmConsole_Write("ERR chassis_task_busy use chassis stop\r\n");
       return 1U;
     }
-  }
-  if (((TokenCount >= 2U) && (strcmp(Tokens[0], "vision") == 0) &&
-       ((strcmp(Tokens[1], "ring") == 0) ||
-        ((strcmp(Tokens[1], "calib") == 0) && (TokenCount == 3U)) ||
-        ((TokenCount >= 3U) && (strcmp(Tokens[2], "ring") == 0)))) ||
-      ((TokenCount >= 2U) && (strcmp(Tokens[0], "camera") == 0) &&
-       (strcmp(Tokens[1], "ring") == 0)))
-  {
-    ArmConsole_Write("ERR Unsupported B3\r\n");
-    return 1U;
   }
   if ((TokenCount == 1U) && (strcmp(Tokens[0], "help") == 0))
   {
@@ -2431,15 +2409,6 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
     ArmConsole_Write("ERR imu_busy use imu cal cancel\r\n");
     return 1U;
   }
-  Mecanum_HeadingTest_StatusGet(&Heading);
-  if (Heading.active && strcmp(Tokens[0], "imu") && strcmp(Tokens[0], "help") &&
-      strcmp(Tokens[0], "info") && strcmp(Tokens[0], "stop") &&
-      !((TokenCount == 2U) && (!strcmp(Tokens[0], "chassis") || !strcmp(Tokens[0], "wheel")) &&
-        (!strcmp(Tokens[1], "stop") || !strcmp(Tokens[1], "status"))))
-  {
-    ArmConsole_Write("ERR chassis_hold_busy use chassis stop\r\n");
-    return 1U;
-  }
 
   if (strcmp(Tokens[0], "imu") == 0)
   {
@@ -2449,8 +2418,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
 
   if (strcmp(Tokens[0], "grip") == 0)
     return ArmConsole_GripCommandHandle(TokenCount, Tokens);
-  if ((strcmp(Tokens[0], "camera") == 0) || (strcmp(Tokens[0], "vision") == 0) ||
-      (strcmp(Tokens[0], "material") == 0))
+  if (strcmp(Tokens[0], "camera") == 0)
     return ArmConsole_VisionCommandHandle(TokenCount, Tokens);
   if ((strcmp(Tokens[0], "chassis") == 0) || (strcmp(Tokens[0], "wheel") == 0))
     return ArmConsole_ChassisCommandHandle(TokenCount, Tokens);
@@ -2476,6 +2444,8 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   ConsoleTx_Init(huart);
   ResetPending = ResetAckDrained = 0U;
   BusRecoveryPending=ManualGuardActive=ManualGuardExecuting=0U;
+  BusRecoveryAutomatic=BusAutoFaultSeen=false;BusRxWarningShown=BusRxWarningTick=BusSyncWarningTick=0;
+  memset(&BusTest,0,sizeof BusTest);BusTestToken=0U;
   ArmConsole_ImuStream = 0U;
   ArmConsole_QrStream = 0U;
   memset(&ArmConsole_QrPending, 0, sizeof(ArmConsole_QrPending));
@@ -2490,16 +2460,15 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   ArmConsole_LineLength = 0U;
   ArmConsole_LineOverflow = 0U;
   ArmConsole_LastWasCr = 0U;
-  ArmConsole_LastVisionStatusSequence = ArmVision_StatusSequenceGet();
-  ArmConsole_LastMaterialState = MaterialVision_StateGet();
-  ArmConsole_LastMaterialError = MaterialVision_ErrorGet();
   ArmConsole_CameraTrace = 0U;
   ArmConsole_CameraTraceSequence = 0U;
   memset(ArmConsole_RingBuffer, 0, sizeof(ArmConsole_RingBuffer));
+  PixelLogEnabled=0;PixelLogId=PixelLogCount=PixelLogQueued=PixelLogDropped=0;
+  Camera_FrameObserverSet(NULL);
   memset(ArmConsole_LineBuffer, 0, sizeof(ArmConsole_LineBuffer));
   ArmConsole_Write("\r\nSTM32 mechanical arm console ready\r\n");
   ArmConsole_BuildShow();
-  ArmConsole_Write("Boot: Z/X collision home -> Base near home -> IMU verify=5s; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
+  ArmConsole_Write("Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2500us -> Base negative direction home -> IMU verify=5s; enable_verify=on; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
   ArmConsole_PromptShow();
   return HAL_OK;
 }
@@ -2568,11 +2537,7 @@ void ArmConsole_Process(void)
 
   ArmConsole_StopProcess();
 
-  ArmConsole_CalibrationResultShow();
-  ArmConsole_VisionErrorShow();
-  ArmConsole_MaterialErrorShow();
   ArmConsole_CameraTraceShow();
-  ArmConsole_VisionMoveShow();
 
   while ((Result = ArmConsole_RingPop(&Data)) != 0U)
   {
@@ -2642,6 +2607,7 @@ void ArmConsole_Process(void)
   }
   /* Handle stream off commands before producing the next QR event. */
   ArmConsole_ManualGuardProcess();
+  ArmConsole_BusTestProcess();
   ArmConsole_BusRecoveryProcess();
   ArmConsole_QrEventProcess();
 }

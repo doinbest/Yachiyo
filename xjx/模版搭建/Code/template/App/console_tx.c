@@ -5,7 +5,7 @@
 #define EVENT_SIZE 128U
 #define URGENT_SIZE 1024U
 #define DEBUG_SIZE 320U
-enum { TX_REPLY, TX_EVENT, TX_TELEMETRY, TX_URGENT, TX_DEBUG, TX_BULK };
+enum { TX_REPLY, TX_EVENT, TX_TELEMETRY, TX_URGENT, TX_DEBUG, TX_BULK, TX_TRACKING };
 static char bulk[256];
 static uint16_t bulk_size;
 static UART_HandleTypeDef *port;
@@ -15,9 +15,6 @@ static char event[EVENT_SIZE];
 static uint16_t read_at, write_at, used, telemetry_size, event_size, active_size;
 static uint16_t active_offset, chunk_size;
 static uint32_t started, dropped, reply_dropped, event_dropped;
-static volatile uint32_t completed_at;
-static uint32_t gap_started;
-static bool gap_valid;
 static uint8_t active_kind, busy;
 static volatile uint8_t completed, failed;
 static uint8_t urgent[URGENT_SIZE];
@@ -37,8 +34,6 @@ void ConsoleTx_Init(UART_HandleTypeDef *uart)
   started = dropped = reply_dropped = event_dropped = 0;
   active_kind = busy = completed = failed = 0;
   active_offset = chunk_size = 0;
-  completed_at = gap_started = 0;
-  gap_valid = false;
   urgent_read = urgent_write = urgent_used = reply_peak = 0;
   bytes_sent = urgent_dropped = debug_dropped = 0;
   memset(debug_size, 0, sizeof(debug_size));
@@ -46,6 +41,29 @@ void ConsoleTx_Init(UART_HandleTypeDef *uart)
   debug_next = active_debug = 0;
   reply_continues = background_paused = false;
   bulk_size=0;
+}
+static bool ConsoleTx_TrackingBlocked(void)
+{
+  if(used || urgent_used || event_size || telemetry_size || bulk_size || reply_continues)return true;
+  for(unsigned i=0;i<CONSOLE_DEBUG_COUNT;i++)
+    if(debug_size[i] && (!debug_sent[i] || (uint32_t)(HAL_GetTick()-debug_started[i])>=500U))return true;
+  return false;
+}
+bool ConsoleTx_Tracking(const char *data,uint16_t size)
+{
+  if(!port || !data || !size || size>640U) { debug_dropped++; return false; }
+  if(background_paused)return false;
+  /* Reuse idle DMA storage: no additional SRAM queue and no old-record backlog.
+   * Busy/priority traffic drops this diagnostic, exposed by its sequence gap. */
+  if(busy || (active_size && (active_kind!=TX_TRACKING || active_offset)) || ConsoleTx_TrackingBlocked())
+  { debug_dropped++;return false; }
+  if(active_size)debug_dropped++;
+  memcpy(active,data,size);active_size=size;active_offset=0;active_kind=TX_TRACKING;return true;
+}
+void ConsoleTx_TrackingCancel(void)
+{
+  if(!busy && active_size && active_kind==TX_TRACKING && !active_offset)
+  { debug_dropped++;active_size=0; }
 }
 bool ConsoleTx_BulkReady(void)
 {
@@ -151,10 +169,11 @@ void ConsoleTx_BackgroundPause(bool paused)
   if (!paused) return;
   ConsoleTx_TelemetryCancel();
   bulk_size=0;
+  ConsoleTx_TrackingCancel();
   for (i = 0; i < CONSOLE_DEBUG_COUNT; i++) ConsoleTx_DebugCancel(i);
   /* Unstarted selection after HAL_BUSY can be discarded; started frames drain intact. */
   if (!busy && active_offset == 0 &&
-      (active_kind == TX_TELEMETRY || active_kind == TX_DEBUG || active_kind==TX_BULK)) active_size = 0;
+      (active_kind == TX_TELEMETRY || active_kind == TX_DEBUG || active_kind==TX_BULK || active_kind==TX_TRACKING)) active_size = 0;
 }
 bool ConsoleTx_UrgentIdle(void)
 {
@@ -174,7 +193,7 @@ static void ConsoleTx_ActiveDropped(void)
   if (active_kind == TX_TELEMETRY || active_kind == TX_BULK) dropped++;
   else if (active_kind == TX_EVENT) event_dropped++;
   else if (active_kind == TX_URGENT) urgent_dropped++;
-  else if (active_kind == TX_DEBUG) debug_dropped++;
+  else if (active_kind == TX_DEBUG || active_kind == TX_TRACKING) debug_dropped++;
   else reply_dropped++;
 }
 void ConsoleTx_Process(void)
@@ -191,7 +210,6 @@ void ConsoleTx_Process(void)
       ConsoleTx_ActiveDropped();
       reply_continues = false;
       active_size = 0;
-      gap_started = HAL_GetTick();
     }
     else if (!completed)
       return;
@@ -204,13 +222,11 @@ void ConsoleTx_Process(void)
           reply_continues = used && active[active_size - 1U] != '\n';
         active_size = 0;
       }
-      gap_started = completed_at;
     }
-    gap_valid = true;
     busy = completed = failed = 0;
   }
-  if (gap_valid && (uint32_t)(HAL_GetTick() - gap_started) < CONSOLE_TX_GAP_MS)
-    return;
+  if(active_size && active_kind==TX_TRACKING && !active_offset && ConsoleTx_TrackingBlocked())
+    ConsoleTx_TrackingCancel();
   if (!active_size)
   {
     active_offset = 0;
@@ -252,10 +268,13 @@ void ConsoleTx_Process(void)
         if (debug_size[active_debug] && (!debug_sent[active_debug] ||
             (uint32_t)(HAL_GetTick() - debug_started[active_debug]) >= 500U)) break;
       }
-      if (i == CONSOLE_DEBUG_COUNT) return;
-      active_size = debug_size[active_debug];
-      memcpy(active, debug[active_debug], active_size);
-      active_kind = TX_DEBUG;
+      if (i == CONSOLE_DEBUG_COUNT) {
+        return;
+      } else {
+        active_size = debug_size[active_debug];
+        memcpy(active, debug[active_debug], active_size);
+        active_kind = TX_DEBUG;
+      }
     }
   }
   /* HAL may complete immediately in an IRQ; set flags before enabling TX. */
@@ -296,19 +315,18 @@ void ConsoleTx_Process(void)
       ConsoleTx_ActiveDropped();
       reply_continues = false;
       active_size = 0;
-      gap_started = HAL_GetTick();
-      gap_valid = true;
     }
-    else if (active_offset == 0)
+    else if (active_offset == 0) {
+      if(active_kind==TX_TRACKING)debug_dropped++;
       active_size = 0; /* No byte sent: a reply may still take priority. */
-    /* Once started, retain this line across gaps/HAL_BUSY; never splice replies. */
+    }
+    /* Once started, retain this line across HAL_BUSY; never splice replies. */
   }
 }
 void ConsoleTx_TxCpltCallback(UART_HandleTypeDef *uart)
 {
   if (uart == port)
   {
-    completed_at = HAL_GetTick();
     completed = 1;
   }
 }

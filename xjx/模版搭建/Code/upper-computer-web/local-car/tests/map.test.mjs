@@ -12,9 +12,17 @@ test('station handoff telemetry is valid without claiming the full sixteen-segme
   assert.equal(m.route?.state,'station');
   assert.match(model.routeStatusText(m.route),/站点任务交接/);
   const finished={...route,state:'done',segment:4,reason:'station_handoff'};
-  assert.match(model.routeStatusText(finished),/前四段已交接抓取/);
+  assert.match(model.routeStatusText(finished),/首次原料区已交接首件抓取/);
   assert.doesNotMatch(model.routeStatusText(finished),/完整路线结束/);
   assert.match(model.routeStatusText({...finished,segment:16,reason:'reached'}),/完整路线结束/);
+});
+
+test('mission station work remains visible while local ring movement owns the chassis',()=>{
+  const m=new Telemetry();m.begin(42,0);send(m,config,1);
+  const route={state:'work',reason:'station_work',segment:4,action_id:12,target:[1200,350,180],error:[0,0,0],feedback_valid:true,stop_confirmed:true};
+  send(m,{...state(2),route},2);
+  assert.equal(m.route?.state,'work');assert.match(model.routeStatusText(m.route),/工位作业/);
+  assert.match(model.routeStatusText({...route,state:'waiting',reason:'auto_continue'}),/停稳后自动继续/);
 });
 
 test('standalone distance diagnostics share subscribed freshness, with active route taking priority',()=>{
@@ -28,7 +36,7 @@ test('standalone distance diagnostics share subscribed freshness, with active ro
   let display=model.motionDisplay(m.route,m.distance);
   assert.deepEqual(display.target,[2250,250,90]);assert.match(display.text,/单段位移/);assert.match(display.text,/未确认停止/);
   const activeRoute={...route,state:'running',segment:2,target:[2100,1200,90]};
-  display=model.motionDisplay(activeRoute,m.distance);assert.deepEqual(display.target,[2100,1200,90]);assert.match(display.text,/第 2 \/ 16 段/);
+  display=model.motionDisplay(activeRoute,m.distance);assert.deepEqual(display.target,[2100,1200,90]);assert.match(display.text,/第 2 个目标/);
   for(const patch of [{active:1},{state:'waiting'},{state:['running']},{action_id:-1},{target:[1,2]},{error:[0,null,0]},{feedback_valid:1},{stop_confirmed:1}]){
     send(m,{...packet(m.lastTime+1),distance:{...distance,...patch}},20);assert.equal(m.distance,null);
     assert.equal(model.motionDisplay(m.route,m.distance).target,null);
@@ -49,12 +57,12 @@ test('optional real route telemetry requires current subscribed state and clears
   send(m,packet(10),10);assert.equal(m.route,null);
   m.begin(42,10);send(m,packet(20),20);assert.equal(m.route,null);
   send(m,config,20);send(m,packet(30),30);assert.deepEqual(m.route,route);
-  assert.match(model.routeStatusText(m.route),/第 1 \/ 16 段/);
+  assert.match(model.routeStatusText(m.route),/第 1 个目标/);
   assert.match(model.routeStatusText(m.route),/已确认停止/);
   assert.match(model.routeStatusText(m.route),/误差 ΔX 1.0/);
   send(m,packet(40,{segment:16,reason:'auto_dwell'}),40);
   assert.match(model.routeStatusText(m.route),/停稳后等待0\.1秒，自动继续.*第 16/);
-  for(const patch of [{segment:17},{segment:-1},{action_id:-1},{action_id:4294967296},{state:'arrived'},{state:['waiting']},{feedback_valid:1},{stop_confirmed:'yes'},{target:[0,0]},{error:[0,null,0]},{reason:null}]){
+  for(const patch of [{segment:193},{segment:-1},{action_id:-1},{action_id:4294967296},{state:'arrived'},{state:['waiting']},{feedback_valid:1},{stop_confirmed:'yes'},{target:[0,0]},{error:[0,null,0]},{reason:null}]){
     send(m,packet(m.lastTime+10,patch),100);assert.equal(m.route,null);assert.ok(m.state);
   }
   send(m,packet(m.lastTime+10,{feedback_valid:false,stop_confirmed:false}),200);
@@ -133,10 +141,10 @@ test('position-derived pose is independent of RPM validity; trace reanchor start
   const b=state(210);b.trace_seq=2;send(m,b,210);assert.equal(m.paths.feedback.at(-2),null);assert.equal(m.paths.command.at(-2),null);
   const c=state(610);c.trace_seq=2;send(m,c,610);assert.equal(m.paths.command.at(-2),null);
 });
-test('fragmented 2 KB telemetry reception retains CRLF; outgoing remains 63 byte limit; B3 removed',()=>{
+test('fragmented 2 KB telemetry reception retains CRLF; outgoing remains 95 byte limit; B3 removed',()=>{
   const line='@CHASSIS '+JSON.stringify({...state(200),extra:'x'.repeat(1400)});assert.ok(line.length>1800);
   const d=new LineDecoder();assert.deepEqual(d.push(line.slice(0,1000)),[]);assert.deepEqual(d.push(line.slice(1000)+'\r\n'),[line]);
-  assert.throws(()=>frameCommand('x'.repeat(64)));assert.equal(frameCommand('chassis stream on 4294967295'),'chassis stream on 4294967295\r\n');
+  assert.throws(()=>frameCommand('x'.repeat(96)));assert.equal(frameCommand('chassis stream on 4294967295'),'chassis stream on 4294967295\r\n');
   assert.equal(commands.some(c=>c.id==='vision-ring'||c.id==='vision-calib'),false);
 });
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQrLine, QrState } from '../qr-panel.mjs';
+import { parseQrTestLine,parseQrLine, QrState } from '../qr-panel.mjs';
 
 const status='OK qr status valid=1 seq=7 age_ms=25 received=12 accepted=8 rejected=4 stream=off event_dropped=2';
 const read='OK qr read valid=1 seq=7 code=123+231+312+123 age_ms=25';
@@ -64,4 +64,35 @@ test('invalid current snapshot keeps previous code explicitly historical',()=>{
   const state=ready();state.request('qr read',2);state.receive(read,3);
   state.request('qr read',4);state.receive('OK qr read valid=0 seq=7 code=NA age_ms=NA',5);
   assert.equal(state.code,'123+231+312+123');assert.equal(state.codeCurrent,false);
+});
+
+
+test('UART source is parsed without treating it as a numeric statistic',()=>{
+  const result=parseQrLine('OK qr read valid=1 seq=2 age_ms=3 code=156+123+516+231 source=uart');
+  assert.equal(result?.code,'156+123+516+231');
+});
+
+
+test('QR control test defaults and command scopes stay explicit',async()=>{
+  const {buildCommand}=await import('../protocol.mjs');
+  const {scopedStopCommand,readOnlyCommand}=await import('../bridge.mjs');
+  assert.equal(buildCommand('qr-test-start',{speed:50}),'grab qr begin 50');
+  assert.equal(buildCommand('qr-test-origin',{}),'chassis origin 2250 2250 -90');
+  assert.equal(buildCommand('grab-set-qr_z_min',{value:-50}),'grab set qr_z_min -50');
+  assert.equal(scopedStopCommand('grab qr stop'),true);
+  assert.equal(readOnlyCommand('grab qr status'),true);
+  assert.equal(readOnlyCommand('grab qr begin 50'),false);
+  assert.equal(parseQrTestLine('OK grab qr state=done code=156+123+516+231 reason=qr_scanned elapsed_ms=123').state,'done');
+  assert.equal(parseQrTestLine('OK grab qr state=preparing code=none reason=feedback_wait elapsed_ms=123').state,'preparing');
+  assert.equal(parseQrTestLine('OK grab qr state=scan code=none reason=qr_not_found elapsed_ms=12').reason,'qr_not_found');
+  assert.equal(parseQrTestLine('OK grab qr state=done code=bad reason=qr_scanned elapsed_ms=123'),null);
+});
+
+test('lower QR test sets a left-facing lower origin and explicitly selects its route',async()=>{
+  const {buildCommand}=await import('../protocol.mjs');
+  const {readOnlyCommand}=await import('../bridge.mjs');
+  assert.equal(buildCommand('qr-test-lower-origin',{}),'chassis origin 2250 150 180');
+  assert.equal(buildCommand('qr-test-lower-start',{speed:50}),'grab qr begin lower 50');
+  assert.equal(readOnlyCommand('grab qr begin lower 50'),false);
+  assert.throws(()=>buildCommand('qr-test-lower-start',{speed:201}));
 });

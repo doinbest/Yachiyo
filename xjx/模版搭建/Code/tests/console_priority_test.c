@@ -50,6 +50,23 @@ int main(void)
   ConsoleTx_GetStats(&stats);
   assert(stats.reply_peak==7 && stats.reply_dropped==0 && stats.debug_dropped==400);
   assert(stats.bytes_sent==length);
+  /* Tracking records cannot consume reply space, splice a started line,
+   * or queue an unbounded history while the wireless link is busy. */
+  length=0;wire[0]=0;ConsoleTx_Init(&uart);
+  assert(ConsoleTx_Tracking("old track\r\n",11));
+  assert(ConsoleTx_Tracking("new track\r\n",11));
+  assert(ConsoleTx_Urgent("STOP\r\n",6));
+  ConsoleTx_Process();pump(20);
+  assert(!strcmp(wire,"STOP\r\n")); /* Unstarted diagnostics yield immediately. */
+  ConsoleTx_GetStats(&stats);assert(stats.debug_dropped==2 && stats.reply_dropped==0);
+  char record[601];memset(record,'t',599);record[599]='\n';record[600]=0;
+  length=0;wire[0]=0;assert(ConsoleTx_Tracking(record,600));ConsoleTx_Process();pump(1);
+  assert(!ConsoleTx_Tracking("newer\r\n",7)); /* Busy DMA owns the same storage. */
+  assert(ConsoleTx_Urgent("STOP\r\n",6));pump(20);
+  assert(!memcmp(wire,record,600) && !strcmp(wire+600,"STOP\r\n"));
+  assert(ConsoleTx_Tracking("stale track\r\n",13));ConsoleTx_BackgroundPause(true);
+  assert(!ConsoleTx_Tracking("late\r\n",6));pump(20);assert(!strstr(wire,"stale track"));
+  ConsoleTx_BackgroundPause(false);
   /* An urgent reply cannot splice an in-flight JSON or a long reply line. */
   char line[302];memset(line,'x',300);line[300]='\n';line[301]=0;
   length=0;wire[0]=0;assert(ConsoleTx_Write((uint8_t *)line,301));

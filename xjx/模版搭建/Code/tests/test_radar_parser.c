@@ -28,6 +28,9 @@ int main(void)
   assert(feed(status,sizeof status)==1 && LdsParser_Event(&parser)->data.status_flags==15);
   assert(feed(alarm,sizeof alarm)==1 && LdsParser_Event(&parser)->data.alarm_code==0x1234);
   assert(parser.stats.alarms==1);
+  /* Manual power-fault example CE CE CE CE 00 01 is 0x0100 little-endian. */
+  {uint8_t power[]={0xce,0xce,0xce,0xce,0,1};assert(feed(power,sizeof power)==1);
+    assert(LdsParser_Event(&parser)->data.alarm_code==0x0100 && parser.stats.last_alarm==0x0100);}
   n=packet(frame,false,80,0,1);frame[n-1]^=1;
   assert(feed(frame,n)==0 && parser.stats.bad_checksum==1);
   /* A missing checksum byte consumes the next CE; resync must retain that CE. */

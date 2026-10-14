@@ -1,5 +1,7 @@
 # 雷达双起点识别与 F4 地图参考接入 Implementation Plan
 
+后续状态（2026-10-03）：本计划保留早期完整方案。用户后续要求先实现必空区域判定、同圈建图和两起点规划，现行结果见[开发记录](../../开发记录/2026-10-03-雷达双起点约束建图与规划.md)；底盘固定执行仍为右下起点，未执行下列全部任务。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 本轮仅交付计划，后续实施按任务顺序执行。
 
 **Goal:** 在 F407 静止扫描后识别右上/右下起点，建立正确地图参考，使雷达规划路线从所选起点出发并返回。

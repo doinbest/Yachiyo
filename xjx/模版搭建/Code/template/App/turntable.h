@@ -19,6 +19,7 @@ typedef struct
 typedef struct
 {
   bool reference_valid, arrived, moving, feedback_valid;
+  bool reference_degraded; /**< HOME失败但停稳后建立的近似参考。 */
   uint8_t slot;
   const char *state, *reason;
   float angle_deg, target_deg, speed_rpm;
@@ -26,19 +27,39 @@ typedef struct
 
 /** @brief 上电初始化；三仓库存为待核对，第二/三仓角度未设置。 */
 void Turntable_Init(void);
+/** @brief 启动调度允许后仅发起一次ID8就近回零，与三轴动作并行。
+ * @param startup_allowed 上电等待已完成且未取消机械臂回零。 */
+void Turntable_BootHomeProcess(bool startup_allowed);
 /** @brief MotorBus_Process 后调用，读取本模块事件并推进反馈确认。 */
 void Turntable_Process(void);
 bool Turntable_IsBusy(void);
 /** @brief 请求 ID8 停止；普通停止保留参考、参数和库存。
  * 总线隔离时只能确认停止帧发送，status 报 stopped_unverified。 */
 void Turntable_Stop(void);
+/** @brief 单独使能/失能 ID 8；应答后读取状态确认，保留仓位参数、参考及库存。 */
+bool Turntable_Enable(bool enabled);
+/** @brief 将当前单圈机械零点保存到 ID 8 驱动器，并同步第一仓软件参考。 */
+bool Turntable_SaveZero(void);
+/** @brief 单圈就近回零，反馈完成后自动同步第一仓参考；不清位置计数。 */
+bool Turntable_Home(void);
 void Turntable_StatusGet(Turntable_Status_t *out);
 bool Turntable_ReferenceValid(void);
 bool Turntable_SlotConfigured(uint8_t slot);
 /** @brief 人工对齐第一仓后读取当前位置作为软件偏移；不回零/清零。 */
 bool Turntable_Origin(void);
-/** @brief 最短方向分度；true 仅表示受理，到位检查 StatusGet.arrived。 */
+/** @brief 仓1使用单圈就近回零，仓2/3按最短方向分度；保留库存。
+ * true 仅表示受理，到位检查 StatusGet.arrived。 */
 bool Turntable_Index(uint8_t slot);
+/** Fresh position/speed/state verification only; never HOME, move or disable. */
+bool Turntable_VerifySlot(uint8_t slot);
+/** Snapshot a configured slot angle relative to the established reference. */
+bool Turntable_SlotAngleGet(uint8_t slot,float *out);
+/** Fixed reference-relative target, shortest path; positive_half_turn resolves
+ * the 180-degree tie within arrival tolerance. slot=0 labels a clearance pose.
+ * Accepted only: caller must wait for fresh arrived feedback. Never HOME. */
+bool Turntable_AngleStart(float angle,uint8_t slot,bool positive_half_turn);
+/** Read-only verification of a saved angle, including after pause. */
+bool Turntable_AngleVerify(float angle,uint8_t slot);
 /** @brief 相对当前位置点动，degree 为度；不要求已建立仓位参考。 */
 bool Turntable_Jog(float degree);
 /** @brief 返回最小编号的空仓，0 表示没有已确认的空仓。 */

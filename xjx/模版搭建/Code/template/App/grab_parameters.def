@@ -1,0 +1,125 @@
+/* Authoritative grab RAM parameters; consumed by C and sync_grab_parameters.py.
+ * PARAM(id, wire key, default, min, max, validation, default phase)
+ * validation: 1=integer, 2=exclusive minimum. phase: 1=init, 2=X home,
+ * 4=Z home, 8=visual reference restore. NAN means operator-supplied height.
+ * Speed units mm/s; accel is MCU mm/s^2, not the motor driver gear.
+ * Z task speeds default to 111.11111111 mm/s, equivalent to 1000 RPM at 480 ppm.
+ * Keep row order: task readiness checks use the existing contiguous key groups.
+ */
+#define GRAB_BASE_WORK_OFFSET_DEG 130.0f
+#define GRAB_BASE_HOME_STABLE_TOL_DEG 5.0f
+#define GRAB_TRACK_PICK_DESCEND_TOL_PX 50.0f
+#define GRAB_CAR_PICK_CLEARANCE_MM 30.0f
+#define GRAB_CAR_PICK_OPEN_PULSE_US 2120U
+/* User measurement: 100 motor degrees -> 28 mm; 3200 command pulses/rev. */
+PARAM(C_X_PPM, "x_ppm", 31.746031746, 0, 100000, 2, 2)
+PARAM(C_Z_PPM, "z_ppm", 480, 0, 100000, 2, 4)
+PARAM(C_X_MIN, "x_min", 0, -10000, 10000, 0, 2)
+PARAM(C_X_MAX, "x_max", 130, -10000, 10000, 0, 2)
+PARAM(C_Z_MIN, "z_min", -150, -10000, 10000, 0, 4)
+PARAM(C_Z_MAX, "z_max", 0, -10000, 10000, 0, 4)
+PARAM(C_X_PRE, "x_pre", 0, -10000, 10000, 0, 2)
+PARAM(C_Z_OBSERVE, "z_observe", 0, -10000, 10000, 0, 4)
+PARAM(C_Z_GRAB, "z_grab", -50, -10000, 10000, 0, 4)
+PARAM(C_Z_LIFT, "z_lift", 0, -10000, 10000, 0, 4)
+PARAM(C_POS_TOL, "pos_tol", 1, 0, 100, 2, 1)
+PARAM(C_STOP_SPEED, "stop_speed", 2, 0, 100, 2, 1)
+PARAM(C_CLOSE_MS, "close_ms", 300, 1, 120000, 1, 1)
+PARAM(C_AGE_MS, "age_ms", 1000, 50, 5000, 1, 1)
+PARAM(C_FEEDBACK_MS, "feedback_ms", 2000, 50, 5000, 1, 1)
+PARAM(C_ACCEL, "accel", 300, 0, 1000, 2, 1)
+PARAM(C_TRAVEL, "travel_mm", 0, 0, 10000, 0, 1)
+PARAM(C_LEAD, "lead_mm", 12, 0, 10000, 2, 1)
+PARAM(C_DX_TOL, "dx_tol", 1, 0, 100, 2, 1)
+PARAM(C_DY_TOL, "dy_tol", 1, 0, 100, 2, 1)
+PARAM(C_J00, "j00", 2, -10000, 10000, 0, 8)
+PARAM(C_J01, "j01", 0, -10000, 10000, 0, 8)
+PARAM(C_J02, "j02", 0, -10000, 10000, 0, 8)
+PARAM(C_J10, "j10", 0, -10000, 10000, 0, 8)
+PARAM(C_J11, "j11", 2, -10000, 10000, 0, 8)
+PARAM(C_J12, "j12", 2, -10000, 10000, 0, 8)
+PARAM(C_LAMBDA, "lambda", 2.5, 0.001, 10, 0, 1)
+PARAM(C_BODY_SPEED, "body_speed", 160, 0, 300, 2, 1)
+PARAM(C_X_SPEED, "x_speed", 60, 0, 100, 2, 1)
+PARAM(C_Z_SPEED, "z_speed", 111.11111111, 0, 333.333, 2, 1)
+PARAM(C_STABLE_MS, "stable_ms", 200, 200, 120000, 1, 1)
+PARAM(C_FRAMES, "frames", 3, 3, 100, 1, 1)
+PARAM(C_RETRIES, "retries", 2, 0, 10, 1, 1)
+PARAM(C_X_WEIGHT, "x_weight", 2.333333, 0.01, 100, 0, 1)
+PARAM(C_Z_PLACE, "z_place", -40, -10000, 10000, 0, 4)
+PARAM(C_LOSS_GRACE_MS, "loss_grace_ms", 250, 0, 300, 1, 1)
+PARAM(C_Z_CAR_LIFT, "z_car_lift", 0, -10000, 10000, 0, 5)
+PARAM(C_Z_PROC_PLACE, "z_proc_place", -140, -10000, 10000, 0, 4)
+PARAM(C_Z_STACK_PLACE, "z_stack_place", -110, -10000, 10000, 0, 4)
+/* User-confirmed station alignment and second-layer release heights. */
+PARAM(C_Z_ROUGH_ALIGN, "z_rough_align", -100, -10000, 10000, 0, 4)
+PARAM(C_Z_TEMP_ALIGN, "z_temp_align", -100, -10000, 10000, 0, 4)
+/* Base home faces the car mouth: work +130 degrees returns home by -130.
+ * ID8 slot offsets (0/-90/-180) are independent of this Base parameter. */
+PARAM(C_BASE_CAR_OFFSET, "base_car_offset", -130, -360, 360, 0, 1)
+PARAM(C_VISION_WAIT_MS, "vision_wait_ms", 12000, 1500, 120000, 1, 1)
+PARAM(C_X_TRANSFER_SPEED, "x_transfer_speed", 60, 0, 100, 2, 1)
+PARAM(C_Z_PICK_SPEED, "z_pick_speed", 111.11111111, 0, 333.333, 2, 1)
+
+/* QR control test: official right-side scan region and Z search. */
+PARAM(C_QR_SCAN_Y, "qr_scan_y", 1200, 1100, 1300, 0, 1)
+PARAM(C_QR_Z_MIN, "qr_z_min", -50, -150, 0, 0, 1)
+PARAM(C_QR_Z_SPEED, "qr_z_speed", 111.11111111, 0, 333.333, 2, 1)
+PARAM(C_QR_WAIT_MS, "qr_wait_ms", 1000, 0, 10000, 1, 1)
+
+/* Competition continuity: Base HOME bit3 may use a freshly verified quiet anchor.
+ * Zero selects strict HOME success; neither mode bypasses real driver faults. */
+PARAM(C_BASE_HOME_DEGRADE, "base_home_degrade", 1, 0, 1, 1, 1)
+/* Tracking pickup only: independent from the controller's correction window. */
+PARAM(C_TRACK_PICK_TOL_PX, "track_pick_tol_px", 100, 1, 100, 0, 1)
+PARAM(C_TRACK_PICK_HOLD_MS, "track_pick_hold_ms", 10, 0, 10000, 1, 1)
+PARAM(C_TRACK_STORE_DROP_MM, "track_store_drop_mm", 40, 0, 10000, 2, 1)
+PARAM(C_CAR_PICK_DROP_MM, "car_pick_drop_mm", 40, 0, 150, 2, 1)
+
+/* Independent tracking profiles. Predict defaults/ranges are preserved.
+ * body_accel/x_accel are feedback-profile software tuning values, not measured
+ * mechanism capabilities or driver grades; X120 starts below grade20's ideal142. */
+PARAM(C_ARRIVAL_HOLD_MS, "arrival_hold_ms", 500, 200, 10000, 1, 1)
+
+#ifdef TRACK_PARAM
+TRACK_PARAM(body_speed_mm_s, "body_speed", 160, 1, 300, 0)
+TRACK_PARAM(x_speed_mm_s, "x_speed", 60, 1, 100, 0)
+TRACK_PARAM(accel_mm_s2, "accel", 300, 1, 1000, 0)
+TRACK_PARAM(lambda_s, "lambda", 2.5, .01, 10, 0)
+TRACK_PARAM(x_weight, "x_weight", 2.333333, .01, 100, 0)
+TRACK_PARAM(lead_mm, "lead_mm", 12, .1, 12, 0)
+TRACK_PARAM(tolerance_px, "tol_px", 5, 1, 20, 0)
+TRACK_PARAM(control_ms, "control_ms", 20, 20, 100, 1)
+TRACK_PARAM(batch_ms, "batch_ms", 0, 0, 200, 1)
+TRACK_PARAM(latency_ms, "latency_ms", 50, 0, 200, 1)
+TRACK_PARAM(fit_ms, "fit_ms", 240, 100, 500, 1)
+TRACK_PARAM(horizon_ms, "horizon_ms", 120, 50, 200, 1)
+TRACK_PARAM(grace_ms, "grace_ms", 250, 0, 250, 1)
+TRACK_PARAM(body_accel_mm_s2, "body_accel", 300, 1, 1000, 0)
+TRACK_PARAM(x_accel_mm_s2, "x_accel", 120, 1, 1000, 0)
+#endif
+
+/* Visual/feedback speed restored, gain 2 approved 2026-10-12. Other fields inherit predict
+ * defaults; these overrides affect startup values, not readback or saved RAM. */
+#ifdef TRACK_COMPARISON_DEFAULT
+TRACK_COMPARISON_DEFAULT(body_speed_mm_s, "body_speed", 160)
+TRACK_COMPARISON_DEFAULT(x_speed_mm_s, "x_speed", 60)
+TRACK_COMPARISON_DEFAULT(lambda_s, "lambda", 2.0)
+TRACK_COMPARISON_DEFAULT(horizon_ms, "horizon_ms", 60)
+#endif
+
+/* Station heading: unmeasured RAM calibration. Zero phase leaves NAN at boot. */
+PARAM(C_HEAD_PROC_ZERO, "head_proc_zero", NAN, -90, 90, 0, 0)
+PARAM(C_HEAD_PROC_GAIN, "head_proc_gain", NAN, -20, 20, 0, 0)
+PARAM(C_HEAD_TEMP_ZERO, "head_temp_zero", NAN, -90, 90, 0, 0)
+PARAM(C_HEAD_TEMP_GAIN, "head_temp_gain", NAN, -20, 20, 0, 0)
+PARAM(C_HEAD_TOL, "head_tol", NAN, 0, 2, 2, 0)
+PARAM(C_HEAD_SPREAD, "head_spread", NAN, 0, 2, 2, 0)
+PARAM(C_HEAD_SETTLE, "head_settle_ms", NAN, 0, 10000, 1, 0)
+/* Verified swept-envelope correction span, both directions at all used ring positions.
+ * Unset means software mapping only; no automatic turn authorization. */
+PARAM(C_HEAD_PROC_TURN, "head_proc_turn", NAN, 0, 10, 0, 0)
+PARAM(C_HEAD_TEMP_TURN, "head_temp_turn", NAN, 0, 10, 0, 0)
+/* Independently adjustable gripper dwell; no change to visual/drive stability. */
+PARAM(C_RELEASE_MS, "release_ms", 300, 1, 120000, 1, 1)
+PARAM(C_CAR_PICK_WAIT_MS, "car_pick_wait_ms", 300, 0, 10000, 1, 1)

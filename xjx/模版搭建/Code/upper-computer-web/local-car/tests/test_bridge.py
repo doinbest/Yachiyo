@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from serial_bridge import SerialBridge, READ_COMMAND
+from serial_bridge import SerialBridge, READ_COMMAND, PRIORITY_STOP, CANCEL_COMMAND
 from serve import make_server, print_events, console_command
 import serve
 
@@ -60,8 +60,281 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_scoped_stop_rejects_late_http_start_but_accepts_new_click(self):
+        port = self.connect()
+        old = self.bridge.status().get('command_epoch', 0)
+        with self.bridge.cv:
+            result = self.bridge.send('grab track stop')
+            with self.assertRaisesRegex(ValueError, 'superseded'):
+                self.bridge.send('grab track begin 3 50', command_epoch=old, require_epoch=True)
+            current = result['command_epoch']
+            self.bridge.send('grab track begin 3 50', command_epoch=current, require_epoch=True)
+            self.bridge.send('grab track status', command_epoch=old, require_epoch=True)
+        wait_for(lambda: len(port.writes) == 3)
+        self.assertEqual([data for _, data in port.writes],
+                         [b'grab track stop\r\n', b'grab track begin 3 50\r\n', b'grab track status\r\n'])
+
+    def test_old_resume_cannot_unlock_new_stop_and_old_start_stays_invalid(self):
+        port = self.connect()
+        old = self.bridge.status().get('command_epoch', 0)
+        first = self.bridge.request_stop()
+        wait_for(lambda: self.bridge.stop['status'] == 'sent')
+        self.reply(port, first['token'])
+        wait_for(lambda: self.bridge.stop['status'] == 'confirmed')
+        self.bridge.resume(stop_token=first['token'], require_token=True)
+        second = self.bridge.request_stop()
+        wait_for(lambda: self.bridge.stop['status'] == 'sent')
+        self.reply(port, second['token'])
+        wait_for(lambda: self.bridge.stop['status'] == 'confirmed')
+        with self.assertRaisesRegex(ValueError, 'token'):
+            self.bridge.resume(stop_token=first['token'], require_token=True)
+        self.assertTrue(self.bridge.stop_latched)
+        self.bridge.resume(stop_token=second['token'], require_token=True)
+        with self.assertRaisesRegex(ValueError, 'superseded'):
+            self.bridge.send('pos z -90', command_epoch=old, require_epoch=True)
+        current = self.bridge.status()['command_epoch']
+        self.bridge.send('pos z -90', command_epoch=current, require_epoch=True)
+        wait_for(lambda: any(data == b'pos z -90\r\n' for _, data in port.writes))
+
+    def test_profile_reads_work_under_latch_and_http_motion_requires_epoch(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        commands = ['grab track get control_ms'+suffix for suffix in ('', ' predict', ' visual', ' feedback')]
+        for command in commands:
+            self.assertIsNotNone(READ_COMMAND.fullmatch(command))
+            self.bridge.send(command, require_epoch=True)
+        wait_for(lambda: len(port.writes) == 4)
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('grab track set control_ms 50 visual', 'grab track visual 3 50'):
+            with self.assertRaises(ValueError):
+                self.bridge.send(command, require_epoch=True)
+        with self.bridge.cv:
+            self.bridge.stop_latched = False
+        with self.assertRaisesRegex(ValueError, 'epoch'):
+            self.bridge.send('pos z -90', require_epoch=True)
+
+    def test_selected_motor_probe_is_read_only_under_stop_latch(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        commands = ('bus test 1', 'bus test 4 10', 'bus test 8 100',
+                    'bus test status', 'bus test stop', 'bus read 5 current',
+                    'bus read 5 voltage', 'bus read 5 error', 'bus read 5 home', 'bus read 5 driver')
+        for command in commands:
+            self.assertIsNotNone(READ_COMMAND.fullmatch(command))
+            self.bridge.send(command)
+        wait_for(lambda: len(port.writes) == len(commands))
+        self.assertEqual([data.decode().strip() for _, data in port.writes], list(commands))
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('bus test 0', 'bus test 9', 'bus test 1 0', 'bus test 1 101',
+                        'bus test 1 1 extra', 'bus test status extra', 'bus test 1 enable'):
+            self.assertIsNone(READ_COMMAND.fullmatch(command))
+            with self.assertRaises(ValueError):
+                self.bridge.send(command)
+
+    def test_recording_payload_stays_on_disk_without_spamming_cmd(self):
+        port = self.connect()
+        payload = ('PIX id=1 i=0 t=12 c=3 v=1 m=1 x=334 y=338 crc=00000000\r\n'
+                   'arm> TRACK live id=1 i=0 data=...\r\nTRACK row i=0 data=...\r\n'
+                   'OK camera log_end id=1 count=1\r\nERR wheel fault\r\n')
+        output, finished = io.StringIO(), threading.Event()
+        with redirect_stdout(output):
+            thread = threading.Thread(target=print_events, args=(self.bridge, finished))
+            thread.start()
+            try:
+                port.rx.put(payload.encode())
+                wait_for(lambda: 'ERR wheel fault' in output.getvalue())
+            finally:
+                finished.set()
+                thread.join(1)
+        self.assertNotIn('PIX id=', output.getvalue())
+        self.assertNotIn('TRACK live', output.getvalue())
+        self.assertNotIn('TRACK row', output.getvalue())
+        self.assertIn('OK camera log_end', output.getvalue())
+        self.assertIn('PIX id=', Path(self.bridge.event_file.name).read_text(encoding='utf-8'))
+        self.assertEqual(Path(self.bridge.rx_file.name).read_bytes(), payload.encode())
+
+    def test_grab_calibration_query_and_cancel_keep_stop_semantics(self):
+        port = self.connect()
+        self.assertEqual(port.writes, [])
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        self.bridge.send('grab calib status')
+        wait_for(lambda: len(port.writes) == 1)
+        self.assertEqual(port.writes[0][1], b'grab calib status\r\n')
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('grab calib ref', 'grab calib 3', 'grab calib status extra',
+                        'material status', 'material calib 3'):
+            self.assertIsNone(READ_COMMAND.fullmatch(command), command)
+            with self.assertRaises(ValueError):
+                self.bridge.send(command)
+        with self.bridge.cv:
+            self.bridge.stop_latched = False
+            self.bridge.next_command_at = time.monotonic() + .2
+            self.bridge.send('grab calib 3')
+            self.bridge.send('grab stop')
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertEqual(port.writes[1][1], b'grab stop\r\n')
+        self.assertFalse(self.bridge.stop_latched)
+        self.assertFalse(any(data == b'grab calib 3\r\n' for _, data in port.writes))
+
+    def test_grab_route_and_mission_status_are_readable_while_stopped(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        commands = ('grab route status', 'grab mission status')
+        for command in commands:
+            self.assertIsNotNone(READ_COMMAND.fullmatch(command), command)
+            self.bridge.send(command)
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertEqual([data.decode().strip() for _, data in port.writes], list(commands))
+        self.assertTrue(self.bridge.stop_latched)
+
+    def test_mission_pause_and_stop_cancel_queued_starts_and_bypass_latch(self):
+        port = self.connect()
+        for command in ('grab mission pause', 'grab mission stop'):
+            self.assertIsNotNone(PRIORITY_STOP.fullmatch(command))
+            self.assertIsNotNone(CANCEL_COMMAND.fullmatch(command))
+            with self.bridge.cv:
+                self.bridge.stop_latched = False
+                self.bridge.next_command_at = time.monotonic() + .2
+                self.bridge.send('grab mission qr 200 50')
+                self.bridge.stop_latched = True
+                self.bridge.send(command)
+            wait_for(lambda: any(data == (command+'\r\n').encode() for _, data in port.writes))
+        self.assertFalse(any(data == b'grab mission qr 200 50\r\n' for _, data in port.writes))
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('grab route 200', 'grab mission 200', 'grab mission continue',
+                        'grab route status extra', 'grab mission status extra'):
+            self.assertIsNone(READ_COMMAND.fullmatch(command), command)
+            with self.assertRaises(ValueError):
+                self.bridge.send(command)
+
+    def test_stable_download_and_result_ack_are_readable_while_stopped(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        commands = ('radar fetch stable 3 1', 'radar host fetch stable:3 1',
+                    'radar ack 8', 'radar host ack 8')
+        for command in commands:
+            self.assertIsNotNone(READ_COMMAND.fullmatch(command), command)
+            self.bridge.send(command)
+        wait_for(lambda: len(port.writes) == len(commands))
+        self.assertEqual([data.decode().strip() for _, data in port.writes], list(commands))
+        self.assertTrue(self.bridge.stop_latched)
+        with self.assertRaises(ValueError):
+            self.bridge.send('radar live map start lower')
+
+    def test_tracking_long_raw_capture_is_not_limited_by_mcu_ring(self):
+        port=self.connect()
+        data=''.join(f'TRACK live id=1 i={i} t={i*50}\r\n' for i in range(300)).encode()
+        port.rx.put(data)
+        path=Path(self.bridge.rx_file.name)
+        wait_for(lambda:path.read_bytes()==data)
+        self.assertEqual(len(path.read_bytes().splitlines()),300)
+        self.assertEqual(port.writes,[])  # Capture alone never requests motion.
+
+    def test_f407_host_reads_stops_and_mutations_are_classified_exactly(self):
+        for command in ('radar host status fast','radar host bundle 5 all','radar host bundle 5 0,2,4',
+                        'radar host status','radar host get active','radar host get draft',
+                        'radar host live status','radar host fetch cloud:4294967295 65535','radar host ack 4294967295','radar host result 4294967295'):
+            self.assertIsNotNone(READ_COMMAND.fullmatch(command),command)
+        for command in ('radar host stop','radar host live stop'):
+            self.assertIsNotNone(PRIORITY_STOP.fullmatch(command),command)
+        for command in ('radar host start','radar host scan','radar host live start',
+                        'radar host draft reset','radar host set threshold 1','radar host apply 1','radar host ack 1 extra','radar host ack -1','radar host result -1','radar host result 1 extra'):
+            self.assertIsNone(READ_COMMAND.fullmatch(command),command)
+        port = self.connect()
+        host_line = '@RADAR {"v":1,"profile":"f1_host","k":"host_status","session":1,"config":1,"scan":0,"map":0,"plan":0}'
+        port.rx.put((host_line+'\r\n').encode())
+        wait_for(lambda: any(e['kind']=='radar' and e.get('text')==host_line for e in self.bridge.events))
+        self.assertNotIn('f1_host',Path(self.bridge.event_file.name).read_text(encoding='utf-8'))
+
+    def test_live_radar_stop_has_priority_and_stream_reaches_browser_channel(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.next_command_at = time.monotonic() + .2
+            self.bridge.send('info')
+            self.bridge.send('radar live stop')
+        wait_for(lambda: len(port.writes) == 1)
+        self.assertEqual(port.writes[0][1], b'radar live stop\r\n')
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+            self.bridge.next_command_at = 0
+        self.bridge.send('radar live status')
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertEqual(port.writes[1][1], b'radar live status\r\n')
+        self.assertTrue(self.bridge.stop_latched)
+        with self.assertRaises(ValueError):
+            self.bridge.send('radar live start lower')
+        line = '@RADAR {"v":1,"k":"live","s":13,"id":1,"q":2,"o":0,"n":120,"d":"AAAAAA=="}'
+        for prefix in ('', 'arm> '):
+            original = prefix+line
+            port.rx.put((original+'\r\n').encode())
+            wait_for(lambda: any(e['kind']=='radar' and e.get('text')==original for e in self.bridge.events))
+
+    def test_raw_radar_download_is_read_only_but_debug_scan_is_explicit(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        for command in ('radar debug status', 'radar fetch raw 1 0', 'radar fetch evidence 17 23'):
+            self.assertIsNotNone(READ_COMMAND.fullmatch(command))
+            self.bridge.send(command)
+        wait_for(lambda: len(port.writes) == 3)
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('radar debug scan lower', 'radar debug scan upper', 'radar debug scan auto', 'radar debug status extra'):
+            self.assertIsNone(READ_COMMAND.fullmatch(command))
+            with self.assertRaises(ValueError):
+                self.bridge.send(command)
+
+    def test_start_status_is_read_only_during_stop_latch_but_selection_is_explicit(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        self.bridge.send('radar start status')
+        wait_for(lambda: len(port.writes) == 1)
+        self.assertEqual(port.writes[0][1], b'radar start status\r\n')
+        self.assertTrue(self.bridge.stop_latched)
+        for command in ('radar start upper', 'radar start lower', 'radar scan auto'):
+            with self.assertRaises(ValueError):
+                self.bridge.send(command)
+
+    def test_probe_evidence_reaches_cmd_and_jsonl_history(self):
+        port = self.connect()
+        line = '@RADAR '+json.dumps(dict(v=1,k='probe',session=13,origin=0,scan=0,map=0,plan=0,page=2,pages=3,id=1,sn='MOCK12345',hex='CECECECE0001'),separators=(',',':'))
+        output = io.StringIO()
+        finished = threading.Event()
+        with redirect_stdout(output):
+            thread = threading.Thread(target=print_events,args=(self.bridge,finished))
+            thread.start()
+            try:
+                port.rx.put((line+'\r\n').encode())
+                wait_for(lambda: 'MOCK12345' in output.getvalue())
+            finally:
+                finished.set()
+                thread.join(1)
+        history = Path(self.bridge.event_file.name).read_text(encoding='utf-8')
+        self.assertIn('MOCK12345',history)
+        self.assertIn('CECECECE0001',history)
+
+    def test_radar_probe_can_run_during_stop_latch_without_resuming_motion(self):
+        port = self.connect()
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        self.bridge.send('radar probe')
+        self.bridge.send('radar probe status')
+        wait_for(lambda: len(port.writes) == 2)
+        self.assertEqual([data for _, data in port.writes], [b'radar probe\r\n', b'radar probe status\r\n'])
+        self.assertTrue(self.bridge.stop_latched)
+        with self.assertRaises(ValueError): self.bridge.send('radar scan')
+        with self.assertRaises(ValueError): self.bridge.send('radar probe LSTARH')
+
     def test_diagnostic_queries_are_read_only(self):
         self.assertIsNotNone(READ_COMMAND.fullmatch('grab status'))
+        for axis in ('base', 'x', 'z'):
+            self.assertIsNotNone(READ_COMMAND.fullmatch('grab status ' + axis))
+        self.assertIsNone(READ_COMMAND.fullmatch('grab status all'))
         self.assertIsNotNone(READ_COMMAND.fullmatch('grab get retarget_ok'))
         self.assertIsNone(READ_COMMAND.fullmatch('grab get z_grab extra'))
         self.assertIsNone(READ_COMMAND.fullmatch('grab start fixed'))
@@ -89,6 +362,20 @@ class BridgeTests(unittest.TestCase):
 
     def reply(self, port, token, complete=1, stopped=1):
         port.rx.put(f'OK chassis stop id=7 token={token} requested_ms=20 tx_complete={complete} wheels_stopped={stopped} reason=done\r\n'.encode())
+
+    def test_lidar_servo_scan_stow_are_mutations_and_off_has_no_priority(self):
+        self.assertIsNone(PRIORITY_STOP.fullmatch('lidarservo off'))
+        port = self.connect()
+        self.bridge.send('lidarservo out')
+        self.bridge.send('lidarservo in')
+        wait_for(lambda: len(port.writes) >= 2)
+        self.assertEqual([data for _, data in port.writes[:2]], [b'lidarservo out\r\n', b'lidarservo in\r\n'])
+        with self.bridge.cv:
+            self.bridge.stop_latched = True
+        self.bridge.send('lidarservo status')
+        for wire in ['lidarservo out','lidarservo in','lidarservo off']:
+            with self.assertRaises(ValueError): self.bridge.send(wire)
+        self.assertTrue(self.bridge.stop_latched)
 
     def test_scoped_cancel_bypasses_normal_queue_without_broadening_stop(self):
         port = self.connect()
@@ -292,9 +579,17 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(new.writes, [])
         self.assertTrue(self.bridge.status()['stop_latched'])
 
+    def test_long_mission_profile_command_is_written_once(self):
+        port = self.connect()
+        command = 'grab mission fixed 156+123+516+231 5000 500 upper radar lowered cosine'
+        self.assertGreater(len(command), 63)
+        self.bridge.send(command)
+        wait_for(lambda: len(port.writes) == 1)
+        self.assertEqual(port.writes[0][1], (command + '\r\n').encode('ascii'))
+
     def test_validation_and_config_persistence_do_not_send(self):
         port = self.connect()
-        for value in ['', 'info\nchassis run 1 0 0 10', '你好', 'x' * 64, 'info\x03']:
+        for value in ['', 'info\nchassis run 1 0 0 10', '你好', 'x' * 96, 'info\x03']:
             with self.assertRaises(ValueError):
                 self.bridge.send(value)
         self.assertEqual(self.bridge.status()['config']['profile'], '')
@@ -321,6 +616,85 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(self.bridge.status()['preparation']['active'])
         self.assertFalse(any(b'chassis run' in data for _, data in port.writes))
 
+    def test_http_stop_epoch_and_resume_token_are_enforced(self):
+        port = self.connect()
+        server = make_server(self.bridge, ROOT, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        origin = f'http://127.0.0.1:{server.server_port}'
+        headers = {'Origin':origin, 'X-Console-Token':self.bridge.auth_token,
+                   'Content-Type':'application/json'}
+        def post(path, body):
+            with urlopen(Request(origin+'/api/'+path, data=json.dumps(body).encode(), headers=headers)) as response:
+                return json.load(response)
+        def reject(path, body, message):
+            with self.assertRaises(HTTPError) as caught:
+                post(path, body)
+            with caught.exception as response:
+                self.assertEqual(response.code, 400)
+                self.assertIn(message, json.load(response)['error'])
+        try:
+            old = self.bridge.status()['command_epoch']
+            reject('send', {'command':'pos z -90'}, 'epoch')
+            scoped = post('send', {'command':'grab track stop'})
+            reject('send', {'command':'grab track begin 3 50', 'command_epoch':old}, 'superseded')
+            post('send', {'command':'grab track begin 3 50', 'command_epoch':scoped['command_epoch']})
+            wait_for(lambda: len(port.writes) == 2)
+            self.assertEqual([data for _, data in port.writes],
+                             [b'grab track stop\r\n', b'grab track begin 3 50\r\n'])
+            first = post('stop', {})
+            wait_for(lambda: self.bridge.stop['status'] == 'sent')
+            self.reply(port, first['token'])
+            wait_for(lambda: self.bridge.stop['status'] == 'confirmed')
+            reject('resume', {}, 'token')
+            post('resume', {'stop_token':first['token']})
+            second = post('stop', {})
+            wait_for(lambda: self.bridge.stop['status'] == 'sent')
+            self.reply(port, second['token'])
+            wait_for(lambda: self.bridge.stop['status'] == 'confirmed')
+            reject('resume', {'stop_token':first['token']}, 'token')
+            self.assertTrue(self.bridge.stop_latched)
+            post('send', {'command':'grab track get control_ms visual'})
+            post('resume', {'stop_token':second['token']})
+            self.assertFalse(self.bridge.stop_latched)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(1)
+
+    def test_http_preparation_accepts_left_facing_origin_and_reports_serial_write(self):
+        port = self.connect()
+        server = make_server(self.bridge, ROOT, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        origin = f'http://127.0.0.1:{server.server_port}'
+        headers = {'Origin':origin, 'X-Console-Token':self.bridge.auth_token,
+                   'Content-Type':'application/json'}
+        def post(path, body):
+            with urlopen(Request(origin+'/api/'+path, data=json.dumps(body).encode(), headers=headers)) as response:
+                return json.load(response)
+        try:
+            post('preparation', {'active':True, 'owner':'page-one'})
+            result = post('send', {'command':'chassis origin 2250 150 180', 'owner':'page-one',
+                                   'command_epoch':self.bridge.status()['command_epoch']})
+            self.assertTrue(result['queued'])
+            wait_for(lambda: bool(port.writes))
+            self.assertEqual(port.writes[0][1], b'chassis origin 2250 150 180\r\n')
+            self.assertTrue(any(e['kind']=='tx' and e.get('request_id')==result['request_id'] for e in self.bridge.events))
+            for command, owner in [('chassis origin 2250 150 180', 'page-two'),
+                                   ('chassis origin 2250 150 90', 'page-one'),
+                                   ('chassis origin 0 0 180', 'page-one'),
+                                   ('chassis route start', 'page-one')]:
+                with self.assertRaises(HTTPError) as caught:
+                    post('send', {'command':command, 'owner':owner,
+                                  'command_epoch':self.bridge.status()['command_epoch']})
+                caught.exception.close()
+            self.assertEqual(len(port.writes), 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(1)
+
     def test_cancel_from_cmd_ends_preparation_without_motion(self):
         port = self.connect()
         self.bridge.preparation(True, 'page-one')
@@ -333,7 +707,7 @@ class BridgeTests(unittest.TestCase):
         port = self.connect()
         self.bridge.preparation(True, 'page-one')
         self.bridge.preparation(False, 'page-one')
-        for command in ('chassis origin 2250 150 90', 'chassis stream on 42', 'imu status'):
+        for command in ('chassis origin 2250 150 180', 'chassis stream on 42', 'imu status'):
             with self.assertRaises(ValueError):
                 self.bridge.send(command, owner='page-one')
         self.assertEqual(port.writes, [])
@@ -405,6 +779,31 @@ class BridgeTests(unittest.TestCase):
         self.bridge.events = __import__('collections').deque(self.bridge.events, maxlen=2)
         self.bridge.save_config({'profile':'none'})
         self.assertTrue(self.bridge.get_events(0, 0)['gap'])
+
+    def test_disk_log_http_export_works_without_serial_and_keeps_all_rows(self):
+        self.bridge._handle_rx(('first\r\n'+''.join(f'row {i}\r\n' for i in range(700))+'partial').encode())
+        server = make_server(self.bridge, ROOT, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        origin = f'http://127.0.0.1:{server.server_port}'
+        try:
+            with urlopen(origin+'/api/logs') as response:
+                catalogue = json.load(response)
+            name = catalogue['current']
+            with urlopen(origin+f'/api/logs/export?name={name}&kind=rx') as response:
+                text = response.read().decode('utf-8-sig')
+                self.assertIn('attachment;', response.headers['Content-Disposition'])
+            self.assertTrue(text.startswith('first\r\nrow 0'))
+            self.assertTrue(text.endswith('row 699\r\npartial'))
+            with urlopen(origin+f'/api/logs/export?name={name}&kind=console') as response:
+                console = response.read().decode('utf-8-sig')
+            self.assertIn('RX first', console)
+            self.assertIn('RX row 699', console)
+            self.assertEqual(self.ports, [])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(1)
 
     def test_ports_endpoint_lists_devices_without_opening_them(self):
         from types import SimpleNamespace

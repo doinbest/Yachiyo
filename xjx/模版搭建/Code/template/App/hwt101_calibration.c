@@ -13,6 +13,7 @@
 #define COMMAND_WAIT_MS 100U
 #define CALIBRATION_MS 20000U
 #define SAMPLE_MS 100U
+#define RESTORE_WAIT_MS 5000U /* Allows 1s reprobes, two BUSY probes and three exit attempts. */
 
 typedef enum
 {
@@ -25,8 +26,11 @@ typedef enum
 static HWT101_CalStatus_t cal;
 static CalStep_t step;
 static uint32_t run_tick, step_tick, cal_tick, verify_tick, verify_wait_tick;
+static uint32_t restore_tick;
 static uint32_t error_baseline, last_sample_tick, last_sample_count;
 static uint32_t control_tick, control_count;
+static uint32_t control_errors;
+static unsigned control_recovery_samples;
 static bool native_run, start_attempted, aborting, cancelled, control_valid;
 static unsigned exit_attempts;
 static bool boot_pending;
@@ -65,12 +69,31 @@ static void BeginRestore(void)
   cal.normal_mode_confirmed = false;
   SetState(HWT101_CAL_RESTORING);
   exit_attempts = 0;
+  restore_tick = HAL_GetTick();
   step = STEP_EXIT_UNLOCK;
   step_tick = HAL_GetTick() - COMMAND_WAIT_MS;
 }
 
+static void RecordFailure(const char *reason, HAL_StatusTypeDef hal)
+{
+  HWT101_Status_t comm;
+  if (strcmp(cal.first_reason, "none")) return;
+  cal.first_reason = reason;
+  cal.first_hal = hal;
+  if (HWT101_Status_Get(&comm))
+  {
+    cal.first_fault_ms = comm.fault_ms;
+    cal.first_hal_error = comm.hal_error;
+    cal.first_hal_state = comm.hal_state;
+    cal.first_operation = comm.fault_operation;
+    cal.first_register = comm.fault_register;
+    if (!strcmp(reason, "i2c")) cal.first_hal = comm.last_hal;
+  }
+}
+
 static void Fail(const char *reason, HAL_StatusTypeDef hal)
 {
+  RecordFailure(reason, hal);
   cal.reason = reason;
   cal.hal = hal;
   control_valid = false;
@@ -84,10 +107,12 @@ void HWT101_Cal_Init(void)
   memset(&cal, 0, sizeof(cal));
   SetState(HWT101_CAL_IDLE);
   cal.reason = "none";
+  cal.first_reason = "none";
   cal.result = "NONE";
   cal.save_state = "NOT_REQUESTED";
   step = STEP_IDLE;
   start_attempted = control_valid = native_run = aborting = cancelled = boot_pending = false;
+  control_recovery_samples = 0U;
 }
 
 HAL_StatusTypeDef HWT101_Cal_RefreshRegisters(void)
@@ -149,15 +174,18 @@ static bool StartRun(bool native, uint32_t duration_ms)
   SetState(HWT101_CAL_IDLE);
   cal.run_id = id;
   cal.reason = "none";
+  cal.first_reason = "none";
   cal.result = "PENDING";
   cal.save_state = "NOT_REQUESTED";
   cal.verify_ms = duration_ms;
   cal.total_ms = duration_ms + (native ? CALIBRATION_MS : 0U);
   control_valid = false;
+  control_recovery_samples = 0U;
   run_tick = HAL_GetTick();
   if (!FreshAngle(&angle))
   {
     cal.reason = "imu_not_fresh";
+    RecordFailure(cal.reason, HAL_OK);
     Finish(HWT101_CAL_FAILED);
     return false;
   }
@@ -166,6 +194,7 @@ static bool StartRun(bool native, uint32_t duration_ms)
   {
     cal.reason = hal == HAL_OK ? "mode_not_normal" : "register_read";
     cal.hal = hal;
+    RecordFailure(cal.reason, hal);
     Finish(HWT101_CAL_FAILED);
     return false;
   }
@@ -325,6 +354,8 @@ static void VerifySample(void)
   cal.result = "PASS";
   control_tick = angle.last_update_ms;
   control_count = angle.update_count;
+  control_errors = error_baseline;
+  control_recovery_samples = 0U;
   if (native_run)
   {
     SetState(HWT101_CAL_SAVING);
@@ -341,6 +372,55 @@ static void SaveFailed(HAL_StatusTypeDef hal)
   Fail("save_failed", hal); /* 保留verified，保存失败不改写验证测量结果。 */
 }
 
+/* Communication availability can recover without re-zeroing a verified heading. */
+static bool ControlAngleRefresh(HWT101_Angle_t *angle)
+{
+  HWT101_Angle_t latest;
+  HWT101_Status_t comm;
+  if (cal.busy || !cal.verified || !cal.normal_mode_confirmed ||
+      cal.state != HWT101_CAL_DONE || strcmp(cal.result, "PASS") ||
+      (native_run && !cal.save_readback_ok))
+    return false;
+  if (!HWT101_Status_Get(&comm) || !FreshAngle(&latest))
+  {
+    control_valid = false;
+    control_recovery_samples = 0U;
+    cal.reason = "control_data_invalid";
+    return false;
+  }
+  if (comm.i2c_error_count != control_errors)
+  {
+    control_errors = comm.i2c_error_count;
+    control_valid = false;
+    control_recovery_samples = 0U;
+    /* The frame visible when the fault is detected is not recovery evidence. */
+    control_tick = latest.last_update_ms;
+    control_count = latest.update_count;
+    cal.reason = "control_data_invalid";
+    return false;
+  }
+  if (latest.update_count != control_count)
+  {
+    if ((uint32_t)(latest.last_update_ms - control_tick) > HWT101_DATA_FRESH_MS)
+    {
+      control_valid = false;
+      control_recovery_samples = 0U;
+      cal.reason = "control_data_invalid";
+    }
+    control_tick = latest.last_update_ms;
+    control_count = latest.update_count;
+    if (!control_valid && ++control_recovery_samples >= 2U)
+    {
+      control_valid = true;
+      control_recovery_samples = 0U;
+      cal.reason = "control_data_recovered";
+    }
+  }
+  if (!control_valid) return false;
+  *angle = latest;
+  return true;
+}
+
 void HWT101_Cal_Process(void)
 {
   HAL_StatusTypeDef hal;
@@ -354,18 +434,21 @@ void HWT101_Cal_Process(void)
   if (cal.busy) cal.i2c_errors = (uint32_t)(comm.i2c_error_count - error_baseline);
   if (!cal.busy)
   {
-    if (control_valid)
-    {
-      if (comm.i2c_error_count != error_baseline || !FreshAngle(&angle) ||
-          (uint32_t)(angle.last_update_ms - control_tick) > HWT101_DATA_FRESH_MS)
-      {
-        control_valid = false;
-        cal.reason = "control_data_invalid";
-      }
-      else if (angle.update_count != control_count)
-      { control_tick = angle.last_update_ms; control_count = angle.update_count; }
-    }
+    (void)ControlAngleRefresh(&angle);
     return;
+  }
+  if (cal.state == HWT101_CAL_RESTORING)
+  {
+    if ((uint32_t)(now - restore_tick) >= RESTORE_WAIT_MS)
+    {
+      cal.normal_mode_confirmed = control_valid = false;
+      cal.reason = "normal_mode_unconfirmed";
+      Finish(HWT101_CAL_FAILED);
+      return;
+    }
+    /* HWT101_Process owns one-second reprobing and host BUSY recovery.
+     * Keep the three exit attempts for an available link, not a disconnected bus. */
+    if (!HWT101_Is_Ready()) return;
   }
   if (step != STEP_EXIT_UNLOCK && step != STEP_EXIT_WRITE && step != STEP_EXIT_CHECK &&
       step != STEP_SAVE_UNLOCK && step != STEP_SAVE_WRITE && step != STEP_SAVE_CHECK)
@@ -497,14 +580,5 @@ bool HWT101_Cal_IsBusy(void) { return cal.busy; }
 
 bool HWT101_Cal_ControlAngleGet(HWT101_Angle_t *angle)
 {
-  HWT101_Angle_t latest;
-  HWT101_Status_t comm;
-  if (angle == NULL || cal.busy || !control_valid || !cal.verified || !cal.normal_mode_confirmed)
-    return false;
-  (void)HWT101_Status_Get(&comm);
-  if (!FreshAngle(&latest) || comm.i2c_error_count != error_baseline ||
-      (uint32_t)(latest.last_update_ms - control_tick) > HWT101_DATA_FRESH_MS)
-  { control_valid = false; return false; }
-  *angle = latest;
-  return true;
+  return angle != NULL && ControlAngleRefresh(angle);
 }

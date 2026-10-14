@@ -75,6 +75,12 @@ int main(void)
   assert(contains("main.tPlace.txt=\"正确放置数：1\""));
 
   sent_count = 0U;
+  assert(ContestScreen_ProgressSet(12U, 12U) == 1U);
+  drain_screen();
+  assert(contains("main.tGrab.txt=\"正确抓取数：12\""));
+  assert(contains("main.tPlace.txt=\"正确放置数：12\""));
+
+  sent_count = 0U;
   assert(ContestScreen_TaskCodeSet("123+456+789+012") == 1U);
   drain_screen();
   assert(sent_count == 0U);

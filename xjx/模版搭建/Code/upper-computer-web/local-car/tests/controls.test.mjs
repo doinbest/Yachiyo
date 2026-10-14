@@ -2,15 +2,51 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {commands, buildCommand, moduleForWire, describeReply} from '../protocol.mjs';
 
-test('finite velocity controls convert seconds to integer milliseconds once', () => {
-  assert.equal(buildCommand('chassis-run', {vx:60,vy:80,omega:0.15,seconds:1.25}), 'chassis run 60 80 0.15 1250');
-  assert.equal(buildCommand('chassis-run', {vx:0,vy:0,omega:-0.15,seconds:0.1}), 'chassis run 0 0 -0.15 100');
-  assert.equal(buildCommand('chassis-heading', {vx:10,vy:0,heading:-90,seconds:59}), 'chassis heading 10 0 -90 59000');
-  for (const changed of [{vx:80,vy:80},{omega:0.151},{seconds:0.09},{seconds:59.001},{seconds:'NaN'}]) {
-    assert.throws(() => buildCommand('chassis-run', {vx:0,vy:0,omega:0,seconds:1,...changed}));
+test('distance acceleration tests normalize diagonals and leave legacy timed controls separate', () => {
+  const vectors={forward:[1,0],back:[-1,0],left:[0,1],right:[0,-1],fl:[1,1],fr:[1,-1],bl:[-1,1],br:[-1,-1]};
+  for(const [direction,[x,y]] of Object.entries(vectors)){
+    const wire=buildCommand('chassis-test',{direction,distance:3000,speed:1000});
+    const [,verb,f,l,v]=wire.split(' ');
+    assert.equal(verb,'test');assert.equal(Number(v),1000);
+    assert.equal(Math.sign(Number(f)),x);assert.equal(Math.sign(Number(l)),y);
+    assert.ok(Math.hypot(Number(f),Number(l))<=3000);
+    assert.ok(Math.hypot(Number(f),Number(l))>2999.99);
   }
+  for(const changed of [{distance:0},{distance:3001},{speed:9},{speed:5001},{speed:'NaN'},{direction:'oops'}])
+    assert.throws(()=>buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,...changed}));
+  assert.equal(buildCommand('chassis-test',{direction:'back',distance:500,speed:1000}),'chassis test -500 0 1000 linear');
+  assert.equal(buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,profile:'cosine'}),'chassis test 500 0 1000 cosine');
+  assert.throws(()=>buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,profile:'unknown'}));
+});
+
+test('finite velocity controls convert seconds to integer milliseconds once', () => {
+  assert.equal(buildCommand('chassis-run', {vx:60,vy:80,omega_deg:500,seconds:1.25}), 'chassis run 60 80 8.726646 1250');
+  assert.equal(buildCommand('chassis-run', {vx:0,vy:0,omega_deg:-500,seconds:0.1}), 'chassis run 0 0 -8.726646 100');
+  assert.equal(buildCommand('chassis-heading', {vx:10,vy:0,heading:-90,seconds:59}), 'chassis heading 10 0 -90 59000');
+  for (const changed of [{vx:300,vy:1},{vx:301},{vy:-301},{omega_deg:500.1},{omega_deg:-500.1},{seconds:0.09},{seconds:59.001},{seconds:'NaN'}]) {
+    assert.throws(() => buildCommand('chassis-run', {vx:0,vy:0,omega_deg:0,seconds:1,...changed}));
+  }
+  assert.equal(buildCommand('chassis-run',{vx:0,vy:0,omega_deg:30.5,seconds:1}),'chassis run 0 0 0.532325 1000');
+  const angleField=commands.find(c=>c.id==='chassis-run').fields.find(f=>f.key==='omega_deg');
+  assert.match(angleField.label,/°/);
+  assert.equal(angleField.max,500);
   assert.throws(() => buildCommand('chassis-heading',{vx:0,vy:0,heading:'',seconds:1}));
-  assert.throws(() => buildCommand('chassis-heading',{vx:80,vy:80,heading:0,seconds:1}));
+  assert.throws(() => buildCommand('chassis-heading',{vx:300,vy:1,heading:0,seconds:1}));
+});
+
+test('live translation controls accept 300 mm/s and preserve the resultant speed limit', () => {
+  for (const [vx,vy] of [[300,0],[-300,0],[0,300],[0,-300],[180,240],[-180,-240]]) {
+    assert.equal(buildCommand('chassis-run',{vx,vy,omega_deg:0,seconds:1}),`chassis run ${vx} ${vy} 0 1000`);
+    assert.equal(buildCommand('chassis-heading',{vx,vy,heading:90,seconds:1}),`chassis heading ${vx} ${vy} 90 1000`);
+  }
+  for (const id of ['chassis-run','chassis-heading']) {
+    const fields = commands.find(c => c.id === id).fields;
+    for (const key of ['vx','vy']) {
+      assert.equal(fields.find(f => f.key === key).min,-300);
+      assert.equal(fields.find(f => f.key === key).max,300);
+    }
+    assert.throws(() => buildCommand(id,{vx:300,vy:300,omega_deg:0,heading:90,seconds:1}),/300 mm\/s/);
+  }
 });
 
 test('module heading and map origin remain separate commands; confirmation fields start empty', () => {
@@ -57,12 +93,15 @@ test('module classification preserves favorite wire text and refuses to infer ge
   assert.equal(commands.find(c=>c.id==='grip-open').group,'grip');
   assert.equal(commands.find(c=>c.id==='grip-open').owner,'arm');
   assert.equal(commands.find(c=>c.id==='camera-material').section,'debug');
-  assert.equal(commands.find(c=>c.id==='vision-calib-material').section,'calibration');
-  assert.equal(buildCommand('material-auto',{target:'3'}),'material auto 3');
-  assert.doesNotMatch(describeReply('OK material state=ALIGNED'),/搬运完成|已到位/);
+  assert.equal(commands.find(c=>c.id==='grab-calib').section,'calibration');
+  assert.equal(commands.some(c=>c.wire?.startsWith('vision ')||c.id.startsWith('vision-')),false);
+  assert.equal(buildCommand('grab-calib-ref'),'grab calib ref');
+  assert.equal(buildCommand('grab-calib',{target:'3'}),'grab calib 3');
+  assert.equal(commands.some(c=>c.id.startsWith('material-')),false);
+  assert.doesNotMatch(describeReply('OK grab state=hold mode=align'),/搬运完成|已到位/);
 });
 
-test('aligned is alignment only',()=>{assert.equal(describeReply('OK material state=ALIGNED'),'对准完成');assert.doesNotMatch(describeReply('OK material state=SEARCHING'),/完成/);});
+test('aligned is alignment only',()=>{assert.equal(describeReply('OK grab state=hold mode=align'),'对准动作完成 · 未执行抓取');assert.doesNotMatch(describeReply('OK grab state=acquire'),/完成/);});
 
 test('real route controls send one exact command and map displacement is nonzero up to 300 mm',()=>{
   for(const action of ['start','next','cancel','status']) {
@@ -86,4 +125,23 @@ test('real route speed is explicit and bounded independently of simulation',()=>
 test('full automatic route is an explicit command with bounded speed',()=>{
  assert.equal(buildCommand('chassis-route-auto',{speed:5000}),'chassis route auto 5000');
  assert.throws(()=>buildCommand('chassis-route-auto',{speed:5001}));
+});
+
+test('ID8 manual setup and nearest home use dedicated commands and arm replies',()=>{
+  for(const op of ['enable','disable','save_zero','home']){
+    assert.equal(buildCommand('turntable-'+op),'turntable '+op);
+    assert.equal(moduleForWire('OK turntable accepted action='+op),'arm');
+  }
+});
+
+test('direct onboard arm release has its own command independent of tray index',()=>{
+  assert.equal(buildCommand('grab-place-car'),'grab place car');
+  assert.equal(buildCommand('turntable-index',{slot:2}),'turntable index 2');
+});
+
+test('short axis diagnostics are read-only while stop is latched',async()=>{
+  const {readOnlyCommand}=await import('../bridge.mjs');
+  assert.equal(buildCommand('grab-base-status'),'grab status base');
+  for(const axis of ['base','x','z'])assert.equal(readOnlyCommand('grab status '+axis),true);
+  assert.equal(readOnlyCommand('grab status all'),false);
 });

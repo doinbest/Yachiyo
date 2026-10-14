@@ -13,17 +13,24 @@ import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
+from radar_direct_bridge import RadarDirectBridge
 from serial_bridge import SerialBridge
 
 
 _planner_lock = threading.Lock()
-RADAR_DEFAULTS = dict(lidar_x_mm=2170, lidar_y_mm=230, zero_deg=180,
+RADAR_DEFAULTS = dict(lidar_x_mm=2250, lidar_y_mm=150, zero_deg=180,
                      distance_min_mm=100, distance_max_mm=40000, angle_min_tenths=0,
-                     angle_max_tenths=3600, threshold=3, energy_min=0, energy_max=255)
+                     angle_max_tenths=3600, threshold=1, energy_min=0, energy_max=255)
 
 
 def plan_radar_offline(body):
     """Run the exact firmware C core locally. This never receives a serial bridge."""
+    start_mode = body.get('start_mode', 'manual')
+    if start_mode not in ('manual', 'auto', 'upper', 'lower'):
+        raise ValueError('start_mode must be manual, auto, upper or lower')
+    speed = body.get('speed_mm_s', 200)
+    if type(speed) not in (int, float) or not math.isfinite(speed) or not 10 <= speed <= 5000:
+        raise ValueError('Route speed must be a finite number from 10 to 5000 mm/s')
     mask = body.get('mask', 0)
     if type(mask) is not int or not 0 <= mask < (1 << 25):
         raise ValueError('mask must describe 25 cells')
@@ -35,16 +42,34 @@ def plan_radar_offline(body):
             raise ValueError('Radar filter parameters must be integers')
         params[key] = int(params[key])
     points = body.get('points', [])
-    if not isinstance(points, list) or len(points) > 4096:
+    circles = body.get('circles')
+    if circles is not None:
+        if not isinstance(circles, list) or not 15 <= len(circles) <= 256:
+            raise ValueError('稳定建图需要至少15个带完整圈边界的有效圈，最多256圈')
+        if points:
+            raise ValueError('circles与最后一圈诊断points不能同时作为建图输入')
+        if any(not isinstance(circle, list) or len(circle) > 65535 for circle in circles):
+            raise ValueError('每圈必须是完整测量列表')
+        points = [point for circle in circles for point in circle]
+    if not isinstance(points, list) or (circles is None and len(points) > 4096):
         raise ValueError('A cloud contains at most 4096 points')
+    if points and body.get('cloud_complete') is False:
+        raise ValueError('完整圈建图需要未截断的完整点云；当前点云仍可查看，也可按已有地图或手工障碍规划')
     for point in points:
         if not isinstance(point, list) or len(point) != 3 or any(type(v) is not int for v in point):
             raise ValueError('Points are integer [angle_tenths, distance_mm, energy]')
         if not 0 <= point[0] <= 3599 or not 0 <= point[1] <= 65535 or not 0 <= point[2] <= 255:
             raise ValueError('Point values exceed the radar protocol range')
     workspace = Path(__file__).resolve().parents[3]
-    sources = [workspace/'Code/tools/radar_plan_cli.c', workspace/'Code/template/App/radar_map.c']
-    headers = [workspace/'Code/template/App/radar_map.h']
+    sources = [workspace/'Code/tools/radar_plan_cli.c', workspace/'Code/template/App/radar_map.c',
+               workspace/'Code/template/App/radar_start.c',
+               workspace/'Code/template/App/radar_geometry.c', workspace/'Code/template/App/radar_stability.c',
+               workspace/'Code/template/App/chassis_route_profile.c']
+    headers = [workspace/'Code/template/App/radar_map.h', workspace/'Code/template/App/radar_start.h',
+               workspace/'Code/template/App/radar_geometry.h', workspace/'Code/template/App/radar_stability.h',
+               workspace/'Code/template/App/chassis_route_profile.h',
+               workspace/'Code/template/App/chassis_path.h',
+               workspace/'Code/template/App/chassis_config.h', workspace/'Code/template/App/motor_id_config.h']
     executable = workspace/'.embeddedskills/tests/radar_plan_cli.exe'
     with _planner_lock:
         if not all(path.is_file() for path in sources + headers):
@@ -59,9 +84,33 @@ def plan_radar_offline(body):
                                     '-lm', '-o', str(executable)], capture_output=True, text=True, timeout=30)
             if built.returncode:
                 raise OSError('Shared C planner build failed: '+built.stderr[-2000:])
-        request = f'RADAR1 {mask} {len(points)}\n'+' '.join(str(params[key]) for key in RADAR_DEFAULTS)+'\n'
-        request += ''.join(' '.join(map(str, point))+'\n' for point in points)
-        result = subprocess.run([str(executable)], input=request, capture_output=True, text=True, timeout=15)
+        if circles is None:
+            request = f'RADAR1 {mask} {len(points)}\n'+' '.join(str(params[key]) for key in RADAR_DEFAULTS)+'\n'
+            request += ''.join(' '.join(map(str, point))+'\n' for point in points)
+        else:
+            # Frozen installation travels with the circle recording. Browser
+            # local settings never stand in for missing measurement evidence.
+            geometry = body.get('geometry', {})
+            situation = body.get('situation', 2)
+            if situation not in (1, 2):
+                raise ValueError('situation must be 1 or 2')
+            matrix = geometry.get('matrix_q16', [65809, 680, -407, 66623] if situation == 2 else [65536, 0, 0, 65536])
+            origin = geometry.get('origin_q16', [149407997, 20569846] if situation == 2 else [15073280, 15073280])
+            zero = geometry.get('zero_tenths', 1800 if situation == 2 else 900)
+            if not isinstance(matrix, list) or len(matrix) != 4 or not isinstance(origin, list) or len(origin) != 2:
+                raise ValueError('geometry requires four matrix and two origin coefficients')
+            if any(type(v) is not int or not -(1 << 31) <= v < (1 << 31) for v in matrix + origin):
+                raise ValueError('Q16 coefficients must be int32')
+            if type(zero) is not int or not 0 <= zero < 3600:
+                raise ValueError('zero_tenths must be from 0 to 3599')
+            if not body.get('params'):
+                params.update(lidar_x_mm=2280 if situation == 2 else 230,
+                              lidar_y_mm=314 if situation == 2 else 230, zero_deg=zero / 10)
+            request = f'RADAR2 {mask} {len(circles)}\n'+' '.join(str(params[key]) for key in RADAR_DEFAULTS)+'\n'
+            request += ' '.join(map(str, [situation, *matrix, *origin, zero]))+'\n'
+            request += ''.join(str(len(circle))+'\n'+''.join(' '.join(map(str, point))+'\n' for point in circle) for circle in circles)
+        result = subprocess.run([str(executable), '--speed', str(speed), '--start', start_mode], input=request,
+                                capture_output=True, text=True, timeout=15)
         try:
             output = json.loads(result.stdout)
         except ValueError as error:
@@ -126,6 +175,36 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
         path = urlsplit(self.path)
         if path.path == '/api/status':
             self._json(200, self.server.bridge.status())
+        elif path.path in ('/api/logs', '/api/logs/tracking', '/api/logs/export'):
+            from log_archive import LogArchive
+            archive = LogArchive(self.server.bridge.state_dir / 'logs' / 'serial')
+            query = parse_qs(path.query)
+            try:
+                if path.path == '/api/logs':
+                    self._json(200, {'logs': archive.list(),
+                                     'current': Path(self.server.bridge.rx_file.name).name[:-7]})
+                elif path.path == '/api/logs/tracking':
+                    self._json(200, {'sessions': archive.tracking(query.get('name', [''])[0])})
+                else:
+                    name = query.get('name', [''])[0]
+                    kind = query.get('kind', ['rx'])[0]
+                    segment = int(query['segment'][0]) if 'segment' in query else None
+                    with archive.export(name, kind, segment) as stream:
+                        stream.seek(0, 2)
+                        size = stream.tell()
+                        stream.seek(0)
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                        self.send_header('Content-Length', str(size))
+                        self.send_header('Content-Disposition', f'attachment; filename="serial-{name}-{kind}{"-"+str(segment) if segment is not None else ""}.txt"')
+                        self.end_headers()
+                        try:
+                            while chunk := stream.read(65536):
+                                self.wfile.write(chunk)
+                        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                            pass
+            except (ValueError, OSError) as error:
+                self._json(400, {'error': str(error)})
         elif path.path == '/api/ports':
             try:
                 self._json(200, {'ports':available_ports()})
@@ -139,6 +218,32 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
                 self._json(200, self.server.bridge.get_events(after))
             except ValueError as error:
                 self._json(400, {'error':str(error)})
+        elif path.path in ('/api/radar-direct/ports', '/api/radar-direct/status',
+                            '/api/radar-direct/scan', '/api/radar-direct/events'):
+            radar_bridge = self.server.radar_bridge
+            if radar_bridge is None:
+                self._json(503, {'error':'Direct radar service is unavailable'})
+                return
+            try:
+                if path.path == '/api/radar-direct/ports':
+                    self._json(200, {'ports':available_ports()})
+                elif path.path == '/api/radar-direct/status':
+                    self._json(200, radar_bridge.status())
+                else:
+                    try:
+                        after = int(parse_qs(path.query).get('after', ['0'])[0])
+                    except (TypeError, ValueError) as error:
+                        raise ValueError('after must be a nonnegative integer') from error
+                    if after < 0:
+                        raise ValueError('after must be a nonnegative integer')
+                    if path.path == '/api/radar-direct/scan':
+                        self._json(200, radar_bridge.latest_scan(after))
+                    else:
+                        self._json(200, radar_bridge.get_events(after))
+            except ValueError as error:
+                self._json(400, {'error':str(error)})
+            except OSError as error:
+                self._json(503, {'error':str(error)})
         elif path.path.startswith('/api/'):
             self._json(404, {'error':'Unknown API'})
         else:
@@ -153,7 +258,7 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            limit = 262144 if urlsplit(self.path).path == '/api/radar/plan' else 8192
+            limit = 4 * 1024 * 1024 if urlsplit(self.path).path == '/api/radar/plan' else 8192
             if not 0 <= length <= limit:
                 raise ValueError('Request body too large')
             self.connection.settimeout(3)
@@ -164,10 +269,33 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
             path = urlsplit(self.path).path
             if path == '/api/radar/plan':
                 result = plan_radar_offline(body)
+            elif path in ('/api/radar-direct/connect', '/api/radar-direct/disconnect',
+                           '/api/radar-direct/start', '/api/radar-direct/stop',
+                           '/api/radar-direct/scan', '/api/radar-direct/continuous/start',
+                           '/api/radar-direct/continuous/stop'):
+                radar_bridge = self.server.radar_bridge
+                if radar_bridge is None:
+                    self._json(503, {'error':'Direct radar service is unavailable'})
+                    return
+                if path == '/api/radar-direct/connect':
+                    result = radar_bridge.connect(body.get('port'), body.get('baudrate'))
+                elif path == '/api/radar-direct/disconnect':
+                    result = radar_bridge.disconnect()
+                elif path == '/api/radar-direct/start':
+                    result = radar_bridge.start_rotation()
+                elif path == '/api/radar-direct/stop':
+                    result = radar_bridge.stop_rotation()
+                elif path == '/api/radar-direct/scan':
+                    result = radar_bridge.capture_single()
+                elif path == '/api/radar-direct/continuous/start':
+                    result = radar_bridge.start_continuous()
+                else:
+                    result = radar_bridge.stop_continuous()
             elif path == '/api/connect':
                 result = bridge.connect(body.get('port'), body.get('baudrate'))
             elif path == '/api/send':
-                result = bridge.send(body.get('command'), owner=body.get('owner'))
+                result = bridge.send(body.get('command'), owner=body.get('owner'),
+                                     command_epoch=body.get('command_epoch'), require_epoch=True)
             elif path == '/api/stop':
                 result = bridge.request_stop()
             elif path == '/api/disconnect':
@@ -175,7 +303,7 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
             elif path == '/api/config':
                 result = bridge.save_config(body)
             elif path == '/api/resume':
-                result = bridge.resume()
+                result = bridge.resume(stop_token=body.get('stop_token'), require_token=True)
             elif path == '/api/preparation':
                 result = bridge.preparation(body.get('active'), body.get('owner'))
             else:
@@ -186,10 +314,11 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
             self._json(400, {'error':str(error)})
 
 
-def make_server(bridge, root, port=8765):
+def make_server(bridge, root, port=8765, radar_bridge=None):
     server = ThreadingHTTPServer(('127.0.0.1', port), partial(ConsoleHandler, directory=str(root)))
     server.daemon_threads = True
     server.bridge = bridge
+    server.radar_bridge = radar_bridge
     server.console_origin = f'http://127.0.0.1:{server.server_port}'
     return server
 
@@ -205,14 +334,21 @@ def print_events(bridge, finished):
             if event['kind'] == 'raw':
                 continue
             text = event['text']
+            # The raw RX/JSONL capture retains every row. Keep CMD diagnostics readable.
+            payload = text.strip()
+            while payload.startswith('arm>'):
+                payload = payload[4:].lstrip()
+            if event['kind'] == 'rx' and payload.startswith(('PIX ', 'TRACK live ', 'TRACK row ')):
+                continue
             if event['kind'] == 'tx' and text.startswith('radar fetch ') or text == 'OK radar page_pending':
                 continue
             if event['kind'] in ('rx', 'radar') and text.startswith('@RADAR '):
                 try:
                     radar = json.loads(text[7:])
-                    if radar.get('k') not in ('status', 'nav'):
+                    if radar.get('k') not in ('status', 'nav', 'probe'):
                         continue
-                    text = f'RADAR {radar.get("k")} {radar.get("state", "")} {radar.get("reason", "")} (snapshot data; raw RX capture available)'
+                    if radar.get('k') != 'probe':
+                        text = f'RADAR {radar.get("k")} {radar.get("state", "")} {radar.get("reason", "")} (snapshot data; raw RX capture available)'
                 except ValueError:
                     text = 'RADAR malformed reply (full line in log)'
             elif event['kind'] == 'rx' and (text.startswith('{') or text.startswith('@CHASSIS ')):
@@ -271,10 +407,14 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parent
     bridge = SerialBridge(root.parents[2] / '.embeddedskills')
+    radar_bridge = RadarDirectBridge()
     try:
-        server = make_server(bridge, root, args.port)
+        server = make_server(bridge, root, args.port, radar_bridge=radar_bridge)
     except OSError as error:
-        bridge.close()
+        try:
+            radar_bridge.close()
+        finally:
+            bridge.close()
         print(f'Cannot start local server: {error}\nUse the existing console or choose --port 8766.', flush=True)
         return 1
     url = server.console_origin + '/'
@@ -319,13 +459,16 @@ def main():
     finally:
         quitting = True
         try:
-            bridge.close()
+            radar_bridge.close()
         finally:
-            finished.set()
-            server.shutdown()
-            server.server_close()
-            output_thread.join(1)
-            signal.signal(signal.SIGINT, old_sigint)
+            try:
+                bridge.close()
+            finally:
+                finished.set()
+                server.shutdown()
+                server.server_close()
+                output_thread.join(1)
+                signal.signal(signal.SIGINT, old_sigint)
     return 0
 
 

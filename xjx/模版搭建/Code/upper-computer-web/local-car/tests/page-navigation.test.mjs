@@ -7,14 +7,24 @@ test('deep and old routes retain exact context without any I/O',()=>{
   const memory=createNavigationMemory();memory.save('#map/radar',321);memory.enterParameters({hash:'#map/radar',label:'雷达建图'});
   assert.equal(memory.source.hash,'#map/radar');assert.equal(memory.restore(memory.source.hash),321);memory.enterParameters(null);assert.equal(memory.source,null);
 });
-test('legacy visual links select historical diagnostics while ordinary links retain task context',()=>{
-  assert.deepEqual(parsePageRoute('#vision/legacy'),{page:'vision',tab:'history',key:'legacy'});
-  assert.deepEqual(parsePageRoute('#vision/calibration'),{page:'vision',tab:'history',key:'calibration'});
-  assert.deepEqual(parsePageRoute('#vision/history'),{page:'vision',tab:'history',key:undefined});
+test('visual modes retain context and removed history links fall back to numbered rings',()=>{
+  for(const tab of ['legacy','calibration','history','unknown'])
+    assert.deepEqual(parsePageRoute('#vision/'+tab),{page:'vision',tab:'mission',key:undefined});
   assert.deepEqual(parsePageRoute('#vision/grab/status'),{page:'vision',tab:'grab',key:'status'});
-  assert.deepEqual(parsePageRoute('#vision/camera'),{page:'vision',tab:'camera',key:undefined});
-  assert.equal(parsePageRoute('#vision').tab,'grab');
+  for(const tab of ['ring','grab','route','camera'])
+    assert.deepEqual(parsePageRoute('#vision/'+tab),{page:'vision',tab,key:undefined});
+  assert.equal(parsePageRoute('#vision').tab,'mission');
   const memory=createNavigationMemory();
-  memory.save('#vision/legacy',450);memory.enterParameters({hash:'#vision/legacy',label:'历史视觉诊断'});
+  memory.save('#vision/ring',450);memory.enterParameters({hash:'#vision/ring',label:'编号环放置'});
   assert.equal(memory.restore(memory.source.hash),450);
+});
+test('radar, monitor and offline hashes remain distinct display-only tabs',()=>{
+  assert.deepEqual(parsePageRoute('#map/radar'),{page:'map',tab:'radar',key:undefined});
+  assert.deepEqual(parsePageRoute('#map/monitor'),{page:'map',tab:'monitor',key:undefined});
+  assert.deepEqual(parsePageRoute('#map/offline'),{page:'map',tab:'offline',key:undefined});
+});
+
+test('old tracking links open the unified material page and preserve status anchor',()=>{
+  assert.deepEqual(parsePageRoute('#vision/track/status'),{page:'vision',tab:'grab',key:'status'});
+  assert.equal(parsePageRoute('#vision/track').tab,'grab');
 });

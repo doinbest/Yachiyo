@@ -24,17 +24,20 @@ static void zero_dispatched(uint32_t now)
   sample(now);bus.stage=MECANUM_STAGE_SENT;bus.tx_complete=true;bus.sent_velocity_valid=true;
   bus.sent_ms=now;memset(bus.sent_rpm,0,sizeof(bus.sent_rpm));ChassisMotion_Process();
   assert(stops==previous_stops+1);bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;
+  bus.tx_complete=true;bus.sent_ms=now;
 }
+#ifndef CHASSIS_DISTANCE_TEST_HELPERS_ONLY
 /* Delayed wheel feedback and first-order motor response, no endpoint snapping. */
+static ChassisMotion_Profile_t plant_profile;
 static void delayed_plant(float length, float speed, unsigned delay_steps, bool disturb)
 {
   const unsigned directions[4]={CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR,
       CHASSIS_MOTOR_REAR_LEFT_FORWARD_DIR,CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR,
       CHASSIS_MOTOR_FRONT_RIGHT_FORWARD_DIR};
   float positions[32]={0}, velocities[32]={0};
-  float position=0, velocity=0, peak=0, overshoot=0, reverse=0;
+  float position=0, velocity=0, peak=0, sampled_peak=0, overshoot=0, reverse=0;
   unsigned step_index=0;bool pushed=false;
-  setup();location.observer.feedback.y_mm=-4000;
+  setup();assert(ChassisMotion_ProfileSet(plant_profile));location.observer.feedback.y_mm=-4000;
   assert(ChassisMotion_MoveTo(1200,-4000+length,90,speed,200000));
   for(unsigned now=120;now<190000 && ChassisMotion_IsBusy();now+=20)
   {
@@ -52,6 +55,7 @@ static void delayed_plant(float length, float speed, unsigned delay_steps, bool 
     {
       unsigned old=step_index>=delay_steps?(step_index-delay_steps)%32:0;
       sample(now);location.observer.feedback.y_mm=-4000+positions[old];
+      sampled_peak=fmaxf(sampled_peak,fabsf(lroundf(velocities[old]*60/(CHASSIS_MODEL_PI*80))*(CHASSIS_MODEL_PI*80)/60));
       for(unsigned w=0;w<4;w++)
       {
         location.wheels[w].speed_ms=location.wheels[w].position_ms=now-delay_steps*20;
@@ -62,7 +66,7 @@ static void delayed_plant(float length, float speed, unsigned delay_steps, bool 
     if(status().state==CHASSIS_MOTION_STOPPING)
     {
       if(bus.stop_pending || bus.stage==MECANUM_STAGE_STOPPED)
-      {bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;}
+      {if(bus.stop_pending)bus.sent_ms=now;bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;bus.tx_complete=true;}
       else
       {
         bus.stage=MECANUM_STAGE_SENT;bus.tx_complete=true;bus.sent_velocity_valid=true;
@@ -76,24 +80,55 @@ static void delayed_plant(float length, float speed, unsigned delay_steps, bool 
   fflush(stdout);
   assert(status().state==CHASSIS_MOTION_DONE && status().stop_confirmed);
   assert(fabsf(position-length)<=10 && overshoot<=(disturb?30:10) && reverse<=20);
+  assert(peak<=speed+.01f);
+  assert(status().peak_mm_s>0 && fabsf(status().peak_mm_s-sampled_peak)<.01f);
+  assert(status().elapsed_ms==step_index*20 && status().stop_ms>0);
   if(disturb)assert(pushed && stops>=2);
   if(length>10000)assert(peak>=990); /* actual modeled speed, not just command acceptance */
 }
 int main(void)
 {
+  /* Three new quiet groups complete arrival without an extra dwell timer. */
+  setup();assert(ChassisMotion_MoveTo(1200,1200,90,50,60000));
+  sample(120);ChassisMotion_Process();zero_dispatched(140);
+  ChassisMotion_Process();assert(!status().stop_confirmed); /* pre-TX cache */
+  sample(160);ChassisMotion_Process();assert(!status().stop_confirmed);
+  reading(170,30);ChassisMotion_Process();assert(!status().stop_confirmed);
+  sample(180);ChassisMotion_Process();assert(!status().stop_confirmed);
+  sample(200);ChassisMotion_Process();
+  assert(status().stop_confirmed && status().state==CHASSIS_MOTION_DONE);
+  assert(status().elapsed_ms==100 && status().stop_ms==80);
+  sample(250);ChassisMotion_Process();assert(status().elapsed_ms==100 && status().stop_ms==80);
+
+  /* A zero snapshot can predate the stop request: the repeated target was
+   * deduplicated by the bus. Retry the normal request until a fresh TX exists. */
+  setup();assert(ChassisMotion_MoveTo(1200,1200,90,50,60000));
+  bus.stage=MECANUM_STAGE_SENT;bus.tx_complete=true;bus.sent_velocity_valid=true;
+  bus.sent_ms=100;memset(bus.sent_rpm,0,sizeof(bus.sent_rpm));
+  sample(120);ChassisMotion_Process();unsigned zero_requests=sends;
+  sample(140);ChassisMotion_Process();
+  assert(sends==zero_requests+1 && !stops && status().state==CHASSIS_MOTION_STOPPING);
+  zero_dispatched(160);sample(200);ChassisMotion_Process();sample(500);ChassisMotion_Process();
+  sample(800);ChassisMotion_Process();assert(status().stop_confirmed);
+
+  for(unsigned mode=0;mode<2;mode++){
+  plant_profile=(ChassisMotion_Profile_t)mode;
   delayed_plant(14000,1000,5,false);
   delayed_plant(1750,1000,10,false);
   delayed_plant(1750,5000,10,false);
   delayed_plant(900,500,10,false);
   delayed_plant(212,1000,10,false);
   delayed_plant(212,1000,10,true);
+  delayed_plant(1750,200,10,false);
+  delayed_plant(75,50,10,false);
+  }
 
   setup();assert(ChassisMotion_MoveTo(1100,1300,90,50,60000));
   assert(fabsf(status().requested.heading_deg-30)<.01f); /* map90 = currentmodule30 */
   sample(120);ChassisMotion_Process();
-  assert(fabsf(status().body_target.vx_mm_s-14.142136f)<.001f);
-  assert(fabsf(status().body_target.vy_mm_s-14.142136f)<.001f);
-  assert(fabsf(status().body_target.omega_rad_s+.04f)<.001f);
+  assert(fabsf(status().body_target.vx_mm_s-4.242641f)<.001f);
+  assert(fabsf(status().body_target.vy_mm_s-4.242641f)<.001f); /* 300 mm/s2 vector ramp, first 20 ms */
+  assert(fabsf(status().body_target.omega_rad_s)<.001f);
   assert(!status().stop_confirmed); /* numerical position never implies physical stop */
   route_busy=true;ChassisMotion_Stop(0);complete_stop();assert(!ChassisMotion_MoveTo(1100,1300,90,50,60000));
   setup();location.feedback_valid=false;assert(!ChassisMotion_MoveTo(1100,1300,90,50,60000));
@@ -113,6 +148,11 @@ int main(void)
   sample(550);ChassisMotion_Process();assert(!status().stop_confirmed);
   sample(750);ChassisMotion_Process();assert(status().stop_confirmed&&status().state==CHASSIS_MOTION_DONE);
   assert(!strcmp(status().reason,"feedback_arrived"));
+  /* Positions and speeds arrive separately on the real shared bus. A fresh
+   * reused speed sample must wait for a full new group, not erase quiet time. */
+  setup();assert(ChassisMotion_MoveTo(1200,1200,90,50,60000));sample(120);ChassisMotion_Process();zero_dispatched(140);
+  for(unsigned j=200;j<=1000 && ChassisMotion_IsBusy();j+=20){sample(j);if((j/20)%2==0)location.wheels[0].speed_ms=j-20;ChassisMotion_Process();}
+  assert(status().stop_confirmed && status().state==CHASSIS_MOTION_DONE);
   setup();assert(ChassisMotion_MoveTo(1200,1200,90,50,60000));sample(120);ChassisMotion_Process();zero_dispatched(140);
   for(unsigned j=200;j<=3200;j+=100){sample(j);location.wheels[0].speed_rpm=2;ChassisMotion_Process();}
   assert(status().state==CHASSIS_MOTION_ERROR&&!status().stop_confirmed);assert(!strcmp(status().reason,"stop_unconfirmed"));
@@ -159,9 +199,10 @@ int main(void)
     location.observer.feedback.y_mm+=m.body_target.vx_mm_s*.02f;
     sample(j);ChassisMotion_Process();
     if(status().state==CHASSIS_MOTION_STOPPING && !stops)zero_dispatched(j);
-    if(stops){bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;}
+    if(stops){if(bus.stop_pending)bus.sent_ms=j;bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;bus.tx_complete=true;}
   }
   assert(status().stop_confirmed);assert(hypotf(status().error_x_mm,status().error_y_mm)<=10);
   puts("chassis_distance_test: PASS (coordinate conversion, arrival, fresh groups, timeout, loss, wrap, convergence)");
   return 0;
 }
+#endif

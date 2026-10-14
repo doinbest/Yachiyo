@@ -32,7 +32,7 @@
  */
 #define CHASSIS_WHEEL_DIAMETER_MM          80.0f
 
-/* 临时假设1.8°、16细分：200*16=3200命令脉冲/圈；需读回配置确认。 */
+/* 已确认Emm42默认1.8°、16细分：200*16=3200命令脉冲/电机轴圈。 */
 #define CHASSIS_MOTOR_FULL_STEPS_PER_REV   200U
 #define CHASSIS_MOTOR_MICROSTEP            16U
 #define CHASSIS_COMMAND_PULSES_PER_REV     \
@@ -55,30 +55,13 @@
 #define CHASSIS_TEST_SPEED_RPM             120U
 #define CHASSIS_TEST_ACCELERATION          20U
 #define CHASSIS_VELOCITY_ACCELERATION      20U
-#define CHASSIS_UART_COMMAND_INTERVAL_MS   10U
+/* UART5 transactions advance on matched Receive replies; no fixed TX gap. */
 
 /* 控制台极性测试使用独立低速参数，不影响正式底盘运动参数。 */
 #define CHASSIS_POLARITY_TEST_SPEED_RPM     20U  /* 整车前后极性测试速度。 */
 #define CHASSIS_POLARITY_TEST_ACCELERATION  10U  /* 极性测试加速度。 */
 #define CHASSIS_POLARITY_TEST_MAX_MM        200U  /* 单次前后测试最大距离。 */
 #define CHASSIS_WHEEL_TEST_MAX_RPM          100U  /* 单轮连续测试最大转速。 */
-
-/* 按键测试的航向保持任务周期和初始PID参数，必须在实车上重新整定。 */
-#define CHASSIS_KEY_HEADING_PERIOD_MS      50U
-#define CHASSIS_KEY_HEADING_KP             0.02f
-#define CHASSIS_KEY_HEADING_KI             0.0f
-#define CHASSIS_KEY_HEADING_KD             0.001f
-#define CHASSIS_KEY_HEADING_INTEGRAL_LIMIT 20.0f
-#define CHASSIS_KEY_HEADING_OUTPUT_LIMIT   0.5f
-
-/* 将原按键测试的120RPM换算为车体前向线速度，保持原测试速度不变。 */
-#define CHASSIS_KEY_TEST_SPEED_MM_S \
-  ((float)CHASSIS_TEST_SPEED_RPM * 3.14159265358979323846f * \
-   CHASSIS_WHEEL_DIAMETER_MM / \
-   (60.0f * CHASSIS_MOTOR_TO_WHEEL_RATIO))
-
-#define CHASSIS_KEY_TEST_DISTANCE_MM       1000.0f
-#define CHASSIS_MOVE_FINISH_MARGIN_MS      1000U
 
 /* 独立补偿直行测试：先核对正方向，再进行落地调试。 */
 #define CHASSIS_HEADING_TEST_YAW_SIGN      1.0f /* HWT逆时针角度增大用+1，否则-1。 */
@@ -100,7 +83,8 @@
 #define CHASSIS_MOTION_MAX_GAP_MS          100U
 #define CHASSIS_MOTION_DEFAULT_RAMP_MS     500U
 #define CHASSIS_MOTION_MAX_LINEAR_MM_S     5000.0f
-#define CHASSIS_MOTION_MAX_OMEGA_RAD_S     0.15f
+#define CHASSIS_MOTION_MAX_OMEGA_DEG_S     100.0f
+#define CHASSIS_MOTION_MAX_OMEGA_RAD_S     (CHASSIS_MOTION_MAX_OMEGA_DEG_S * 3.14159265358979323846f / 180.0f)
 /* Emm F6/FD speed field is documented as 0..3000 RPM; loaded speed is unverified. */
 #define CHASSIS_EMM_MAX_COMMAND_RPM         3000U
 #define CHASSIS_MOTION_MAX_WHEEL_RPM        ((float)CHASSIS_EMM_MAX_COMMAND_RPM)
@@ -108,8 +92,8 @@
 
 /* Route speed profile; verify acceleration and stopping distance on the chassis. */
 #define CHASSIS_DISTANCE_SPEED_MM_S       50.0f
-#define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  5000.0f
-#define CHASSIS_ROUTE_AUTO_DWELL_MS       100U
+#define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  1000.0f
+#define CHASSIS_ROUTE_AUTO_DWELL_MS       0U
 #define CHASSIS_DISTANCE_KP               2.5f
 #define CHASSIS_DISTANCE_RESPONSE_S       0.25f
 #define CHASSIS_DISTANCE_CREEP_MM         20.0f
@@ -117,13 +101,17 @@
 #define CHASSIS_DISTANCE_CORRECTION_SPEED_MM_S 20.0f
 #define CHASSIS_DISTANCE_CORRECTION_MM   100.0f
 #define CHASSIS_DISTANCE_CORRECTIONS       2U
-#define CHASSIS_DISTANCE_ACCEL_MM_S2      1000.0f
+/* Straight translation: linear by default, optional cosine K * 2 ms.
+ * Curved-path vector tracking retains its separately validated slew limit. */
+#define CHASSIS_DISTANCE_COSINE_K         200U
+#define CHASSIS_DISTANCE_ACCEL_MM_S2     300.0f
+#define CHASSIS_PATH_ACCEL_MM_S2          300.0f
 #define CHASSIS_DISTANCE_TOLERANCE_MM     10.0f
 #define CHASSIS_DISTANCE_HEADING_DEG      2.0f
 #define CHASSIS_DISTANCE_TIMEOUT_MS      60000U
 #define CHASSIS_DISTANCE_MAX_TIMEOUT_MS  400000U /* Full route: up to 1750 mm at 10 mm/s plus settling. */
 #define CHASSIS_DISTANCE_STOP_TIMEOUT_MS 3000U
-#define CHASSIS_DISTANCE_STOP_STABLE_MS   500U
+/* Confirm on three new quiet wheel groups; no additional dwell time. */
 #define CHASSIS_DISTANCE_STOP_GROUPS      3U
 #define CHASSIS_DISTANCE_STOP_RPM         1
 #define CHASSIS_DISTANCE_STOP_DELTA_MM    2.0f

@@ -70,18 +70,18 @@ test('rotation needs space for the corners, not just the wheel-center rectangle'
   near(Math.max(...corners.map(c=>c[0]))-Math.min(...corners.map(c=>c[0])),300*Math.SQRT2);
 });
 
-test('two batches visit every station in order, reload after processing and return in 170 seconds',()=>{
+test('two batches visit every station in order, reload after processing and return in 172 seconds',()=>{
   const rows=defaultRoute();assert.equal(rows.length,16);
   for(const i of [4,9])assert.match(rows[i].name,/放齐3件再按序装仓/);
   assert.match(rows[6].name,/第一批.*平放/);assert.match(rows[11].name,/第二批.*同色码垛/);
-  const expected=[[2100,300],[2100,1200],[2100,2100],[1200,2100],[1200,350],[1200,1200],[350,1200],[1200,1200],[1200,2100],[1200,350],[1200,1200],[350,1200],[1200,1200],[2100,1200],[2100,300],[2250,150]];
-  const r=new RouteRunner(rows,start);assert.equal(r.returnedToStart,false);r.advance(169.5);
+  const expected=[[2100,300],[2100,1200],[2100,2100],[1200,2100],[1200,300],[1200,1200],[350,1200],[1200,1200],[1200,2100],[1200,300],[1200,1200],[350,1200],[1200,1200],[2100,1200],[2100,300],[2250,150]];
+  const r=new RouteRunner(rows,start);assert.equal(r.returnedToStart,false);r.advance(171.5);
   assert.equal(r.state,'running');assert.equal(r.returnedToStart,false);r.advance(.5);
-  assert.equal(r.state,'done');near(r.elapsed,170);assert.equal(r.stops.length,16);
+  assert.equal(r.state,'done');near(r.elapsed,172);assert.equal(r.stops.length,16);
   r.stops.forEach((s,i)=>{near(s.pose.x_mm,expected[i][0]);near(s.pose.y_mm,expected[i][1]);near(s.pose.yaw_rad,Math.PI/2);});
   assert.ok(r.path.every(p=>footprintIssue(p)===null));
   for(const i of [3,8])near(turntableGap(r.stops[i].pose),70);
-  for(const i of [4,9])near(Math.min(...bodyCorners(r.stops[i].pose).map(c=>c[1]))-150,50);
+  for(const i of [4,9])near(Math.min(...bodyCorners(r.stops[i].pose).map(c=>c[1]))-150,0);
   for(const i of [6,11])near(Math.min(...bodyCorners(r.stops[i].pose).map(c=>c[0]))-150,50);
   assert.equal(r.returnedToStart,true);assert.match(routeResultText(r),/外框已进入原启停区/);
 });

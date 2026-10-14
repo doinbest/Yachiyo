@@ -18,7 +18,8 @@ static HAL_StatusTypeDef Emm_Send(const uint8_t *data,uint16_t length)
   if(owner==MOTOR_BUS_ARM && data[0]!=0 && data[1]!=0xfe && data[1]!=0x9c)
     reply=data[1]==0x36 ? 8 : data[1]==0x35 ? 6 : 4;
   if(owner==MOTOR_BUS_LEGACY)(void)MotorBus_EventGet(owner,&discarded);
-  return MotorBus_Submit(owner,data,(uint8_t)length,reply,0,data[1]==0xfe || data[1]==0x9c) ? HAL_OK : HAL_BUSY;
+  if(MotorBus_Submit(owner,data,(uint8_t)length,reply,0,data[1]==0xfe || data[1]==0x9c))return HAL_OK;
+  return MotorBus_IsQuarantined() ? HAL_ERROR : HAL_BUSY;
 }
 #define Emm_UartSendCmd(cmd,length) (Emm_V5_TxStatus=Emm_Send((const uint8_t *)(cmd),(length)))
 

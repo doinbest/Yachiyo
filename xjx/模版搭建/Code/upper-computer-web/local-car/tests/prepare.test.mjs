@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {RoutePreparation,validCarConfig} from '../route-preparation.mjs';
 const config={profile:'receive',units_per_rev:65536,directions_confirmed:true};
 
-function fixture() {
+function fixture(originFields='origin_valid=0') {
   let now=0, snapshot=null;
   const wires=[];
   const p=new RoutePreparation({send:async wire=>{wires.push(wire);return true;},now:()=>now,
@@ -12,7 +12,9 @@ function fixture() {
   function reply(...lines){p.receive(`arm> ${wires.at(-1)}`);for(const line of lines)p.receive(line);}
   function imu(ready,run=1){reply('OK imu ready=1 valid=1 fresh=1 yaw_deg=0',
     `OK imu cal_state=DONE reason=none HAL=0 run_id=${run} busy=0 verified=${ready} control_ready=${ready} normal_mode=1`,
-    'OK imu relative_deg=0 drift_dps=0 rms_deg=0');}
+    'OK imu relative_deg=0 drift_dps=0 rms_deg=0');
+    if(p.phase==='origin_check')reply('OK chassis task state=0 stage=5 error=0 ack=2 locked=0 units=65536 '+originFields);
+  }
   function throughFeedback(){p.start();reply('OK chassis request accepted (not motion/ACK confirmation)');
     reply('OK chassis task state=0 reason=idle dt_ms=0 seq=0 stage=5 error=0 ack=2 locked=0 units=65536');
     reply('OK chassis route state=idle segment=0 id=0 reason=idle feedback_valid=0 stop_confirmed=0');
@@ -24,7 +26,7 @@ function fixture() {
     reply(...[1,2,3,4].map(i=>`OK wheel=${i} raw_rpm=0 raw_units=0 flags=0x03 valid=1,1,1 rx_ms=20,20,20`));}
   return {p,wires,reply,imu,throughFeedback,advance:ms=>{now+=ms;p.tick();},setSnapshot:v=>{snapshot=v;}};
 }
-function goodSnapshot(){return {session:42,feedback:{x_mm:2250,y_mm:150,yaw_rad:Math.PI/2},state:{t_ms:100,
+function goodSnapshot(){return {session:42,feedback:{x_mm:2250,y_mm:150,yaw_rad:Math.PI},state:{t_ms:100,
   localization:{origin_valid:true},task:{state:'idle'},route:{state:'idle'},target:{rpm:[0,0,0,0]},
   feedback:{rpm:[0,0,0,0],speed_valid:[true,true,true,true],speed_ms:[90,90,90,90]},tx:{error:0}}};}
 
@@ -34,7 +36,7 @@ test('prepare performs only setup, uses five-second verification and requires ph
   f.advance(5000);assert.equal(f.wires.at(-1),'imu verify 5');
   f.advance(1500);assert.equal(f.wires.at(-1),'imu status');f.imu(1,2);
   assert.equal(f.p.phase,'confirm');assert.ok(!f.wires.some(w=>w.startsWith('chassis origin')));
-  f.p.confirmOrigin();assert.equal(f.wires.at(-1),'chassis origin 2250 150 90');
+  f.p.confirmOrigin();assert.equal(f.wires.at(-1),'chassis origin 2250 150 180');
   f.reply('OK chassis request accepted (not motion/ACK confirmation)');assert.equal(f.wires.at(-1),'chassis stream on 42');
   f.reply('OK chassis request accepted (not motion/ACK confirmation)');f.setSnapshot(goodSnapshot());f.p.tick();
   assert.equal(f.p.phase,'ready');assert.equal(f.wires.filter(w=>w==='imu verify 5').length,1);
@@ -104,7 +106,7 @@ test('accepted route consumes start qualification; normal departure is not prepa
   if(fromReply)f.p.receive('OK chassis route state=running segment=1 id=7 reason=running');
   const moving=goodSnapshot();moving.state.route={state:'running',segment:1};moving.feedback.x_mm=2200;
   f.setSnapshot(moving);f.p.tick();assert.equal(f.p.phase,'consumed');assert.equal(f.p.busy,false);
-  moving.state.route={state:'waiting',segment:1};moving.feedback={x_mm:2100,y_mm:300,yaw_rad:Math.PI/2};
+  moving.state.route={state:'waiting',segment:1};moving.feedback={x_mm:2100,y_mm:300,yaw_rad:Math.PI};
   f.p.tick();assert.equal(f.p.phase,'consumed');
   f.p.connection(false);assert.equal(f.p.phase,'cancelled');
  }
@@ -115,4 +117,37 @@ test('an old completed route does not consume a newly prepared start',()=>{
  f.reply('OK chassis request accepted (not motion/ACK confirmation)');f.reply('OK chassis request accepted (not motion/ACK confirmation)');
  const snapshot=goodSnapshot();snapshot.state.route={state:'done',segment:16};f.setSnapshot(snapshot);
  f.p.tick();f.p.tick();assert.equal(f.p.phase,'ready');snapshot.feedback.x_mm=2100;f.p.tick();assert.equal(f.p.phase,'cancelled');
+});
+
+const reusableOrigin='origin_valid=1 origin_mm=2250,150 origin_deg=180 feedback_valid=1 feedback_mm=2250,150 feedback_deg=180 feedback_age_ms=20';
+test('stop or a new bus fault during origin inspection never enables telemetry or resets origin',()=>{
+  const f=fixture();f.throughFeedback();
+  f.reply('OK imu ready=1 valid=1 fresh=1 yaw_deg=0',
+    'OK imu cal_state=DONE reason=none run_id=1 busy=0 verified=1 control_ready=1 normal_mode=1',
+    'OK imu relative_deg=0');
+  assert.equal(f.p.phase,'origin_check');const count=f.wires.length;
+  f.p.cancel('已停车');f.reply('OK chassis task state=0 stage=5 error=0 ack=2 locked=0 units=65536 '+reusableOrigin);
+  f.advance(13000);assert.equal(f.wires.length,count);assert.equal(f.p.phase,'cancelled');
+  const g=fixture(reusableOrigin+' error=2');g.throughFeedback();g.imu(1);
+  assert.equal(g.p.phase,'failed');assert.ok(!g.wires.some(w=>/^chassis (?:origin|stream on)/.test(w)));
+});
+test('stationary preparation reuses a matching fresh origin without an origin write',()=>{
+  const f=fixture(reusableOrigin);f.throughFeedback();f.imu(1);
+  assert.equal(f.p.phase,'telemetry');
+  assert.equal(f.wires.at(-1),'chassis stream on 42');
+  assert.ok(!f.wires.some(w=>w.startsWith('chassis origin')));
+  f.reply('OK chassis request accepted (not motion/ACK confirmation)');f.setSnapshot(goodSnapshot());f.p.tick();
+  assert.equal(f.p.phase,'ready');
+});
+test('missing, changed, stale or moved origin needs explicit physical confirmation',()=>{
+  for(const fields of ['origin_valid=0',reusableOrigin.replace('origin_deg=180','origin_deg=90'),reusableOrigin.replace('feedback_deg=180','feedback_deg=90'),reusableOrigin.replace('origin_mm=2250,150','origin_mm=0,0'),
+    reusableOrigin.replace('feedback_age_ms=20','feedback_age_ms=601'),
+    reusableOrigin.replace('feedback_mm=2250,150','feedback_mm=2100,150'),
+    reusableOrigin.replace('feedback_deg=180','feedback_deg=95'),
+    reusableOrigin.replace('feedback_deg=180','feedback_deg=NaN')]){
+    const f=fixture(fields);f.throughFeedback();f.imu(1);
+    assert.equal(f.p.phase,'confirm');
+    assert.ok(!f.wires.some(w=>w.startsWith('chassis origin')));
+    f.p.confirmOrigin();assert.equal(f.wires.at(-1),'chassis origin 2250 150 180');
+  }
 });

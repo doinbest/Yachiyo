@@ -2,7 +2,7 @@
   "keil": {
     "project": "Code/template/MDK-ARM/template.uvprojx",
     "target": "template",
-    "log_dir": ".embeddedskills/build"
+    "log_dir": ".embeddedskills/imu-native-recovery-20261015/build"
   },
   "eide": {
     "project": "Code/template/MDK-ARM/eide",
@@ -10,7 +10,7 @@
     "log_dir": ".embeddedskills/build"
   },
   "serial": {
-    "port": "COM11",
+    "port": "COM14",
     "baudrate": 115200,
     "bytesize": 8,
     "parity": "none",
@@ -20,10 +20,10 @@
     "log_dir": ".embeddedskills/logs/serial"
   },
   "openocd": {
-    "board": "",
-    "interface": "",
+    "board": ".embeddedskills/mission-integration/mission-dap.cfg",
+    "interface": "interface/cmsis-dap.cfg",
     "target": "target/stm32f4x.cfg",
-    "adapter_speed": "4000",
+    "adapter_speed": "1000",
     "transport": "swd",
     "tpiu_name": "stm32f4x.tpiu",
     "traceclk": "168000000",

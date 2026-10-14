@@ -9,10 +9,14 @@
 
 #include <string.h>
 
+static Camera_PoseSnapshot_t Camera_Pose;
+static uint32_t Camera_PoseSequence, Camera_RequestEpoch;
 static uint8_t Camera_InputBuffer[CAMERA_RX_BUFFER_SIZE];
+static uint32_t Camera_InputTimes[CAMERA_RX_BUFFER_SIZE];
 static volatile uint16_t Camera_InputLength;
 static volatile uint8_t Camera_InputOverflow;
 static uint8_t Camera_StreamBuffer[CAMERA_RX_BUFFER_SIZE];
+static uint32_t Camera_StreamTimes[CAMERA_RX_BUFFER_SIZE];
 static uint16_t Camera_StreamLength;
 static uint8_t Camera_RequestFunction;
 static uint8_t Camera_RequestTarget;
@@ -26,6 +30,7 @@ static uint32_t Camera_DataSequence;
 static uint32_t Camera_LastFrameTick;
 static volatile uint32_t Camera_RxByteCount;
 static uint32_t Camera_ChecksumErrorCount;
+static Camera_FrameObserver_t Camera_FrameObserver;
 static volatile uint32_t Camera_OverflowCount;
 
 /**
@@ -56,6 +61,9 @@ static HAL_StatusTypeDef Camera_RequestStart(uint8_t Function, uint8_t Target)
     Camera_RequestFunction = Function;
     Camera_RequestTarget = Target;
     Camera_RequestActive = 1U;
+    memset(&Camera_Pose, 0, sizeof Camera_Pose);
+    Camera_Pose.Active = Target == 0x0DU;
+    Camera_Pose.RequestEpoch = ++Camera_RequestEpoch;
     Camera_InvalidCount = 0U;
     Camera_LastFrameTick = 0U;
     (void)memset(&Camera_LatestData, 0, sizeof(Camera_LatestData));
@@ -106,6 +114,8 @@ static void Camera_StreamRemove(uint16_t Length)
   (void)memmove(Camera_StreamBuffer,
                 &Camera_StreamBuffer[Length],
                 Camera_StreamLength - Length);
+  (void)memmove(Camera_StreamTimes, &Camera_StreamTimes[Length],
+                (Camera_StreamLength - Length) * sizeof(Camera_StreamTimes[0]));
   Camera_StreamLength = (uint16_t)(Camera_StreamLength - Length);
 }
 
@@ -115,7 +125,7 @@ static void Camera_StreamRemove(uint16_t Length)
   * 返 回 值：无
   * 说    明：中心坐标为大端无符号16位，误差为大端有符号16位；Valid为01才发布
   */
-static void Camera_DataPublish(const uint8_t *Frame)
+static void Camera_DataPublish(const uint8_t *Frame, uint32_t ReceivedTick)
 {
   Camera_DataSequence++;
   Camera_LatestData.Function = Frame[1];
@@ -125,6 +135,8 @@ static void Camera_DataPublish(const uint8_t *Frame)
   Camera_LatestData.DX = (int16_t)(((uint16_t)Frame[8] << 8U) | Frame[9]);
   Camera_LatestData.DY = (int16_t)(((uint16_t)Frame[10] << 8U) | Frame[11]);
   Camera_LatestData.Tick = HAL_GetTick();
+  Camera_LatestData.ReceivedTick = ReceivedTick;
+  Camera_LatestData.HasReceiveTime = 1U;
   Camera_LatestData.Sequence = Camera_DataSequence;
 }
 
@@ -136,9 +148,13 @@ static void Camera_DataPublish(const uint8_t *Frame)
   */
 HAL_StatusTypeDef Camera_Init(void)
 {
+  memset(&Camera_Pose, 0, sizeof Camera_Pose);
+  Camera_PoseSequence = Camera_RequestEpoch = 0;
+  Camera_FrameObserver = NULL;
   Camera_InputLength = 0U;
   Camera_InputOverflow = 0U;
   Camera_StreamLength = 0U;
+  memset(&Camera_Pose, 0, sizeof Camera_Pose);
   Camera_RequestFunction = 0U;
   Camera_RequestTarget = 0U;
   Camera_RequestActive = 0U;
@@ -155,12 +171,27 @@ HAL_StatusTypeDef Camera_Init(void)
   return HAL_OK;
 }
 
+void Camera_FrameObserverSet(Camera_FrameObserver_t Observer)
+{
+  Camera_FrameObserver = Observer;
+}
+
 /**
   * 函    数：启动指定颜色物料识别
   * 参    数：Color 颜色枚举
   * 返 回 值：HAL执行状态
   * 说    明：只发送一次FF B2 Color FF
   */
+HAL_StatusTypeDef Camera_PoseStart(void)
+{ return Camera_RequestStart(0xB2U, 0x0DU); }
+void Camera_PoseSnapshotGet(Camera_PoseSnapshot_t *snapshot)
+{ if (snapshot) *snapshot = Camera_Pose; }
+HAL_StatusTypeDef Camera_RingStart(uint8_t Ring)
+{
+  if (Ring < 1U || Ring > 3U) return HAL_ERROR;
+  return Camera_RequestStart(0xB2U, (uint8_t)(0x09U + Ring));
+}
+
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef Color)
 {
   if ((Color < CAMERA_COLOR_RED) || (Color > CAMERA_COLOR_LIGHT_BLUE))
@@ -182,6 +213,7 @@ void Camera_RequestStop(void)
 
   Primask = __get_PRIMASK();
   __disable_irq();
+  memset(&Camera_Pose, 0, sizeof Camera_Pose);
   Camera_RequestFunction = 0U;
   Camera_RequestTarget = 0U;
   Camera_RequestActive = 0U;
@@ -206,6 +238,7 @@ void Camera_RequestStop(void)
 void Camera_Process(void)
 {
   uint8_t InputCopy[CAMERA_RX_BUFFER_SIZE];
+  uint32_t InputTimes[CAMERA_RX_BUFFER_SIZE];
   uint16_t InputLength;
   uint16_t CopyLength;
   uint32_t Primask;
@@ -216,6 +249,7 @@ void Camera_Process(void)
   if (InputLength > 0U)
   {
     (void)memcpy(InputCopy, Camera_InputBuffer, InputLength);
+    (void)memcpy(InputTimes, Camera_InputTimes, InputLength * sizeof(InputTimes[0]));
   }
   Camera_InputLength = 0U;
   if (Camera_InputOverflow != 0U)
@@ -237,6 +271,7 @@ void Camera_Process(void)
       __set_PRIMASK(Primask);
     }
     (void)memcpy(&Camera_StreamBuffer[Camera_StreamLength], InputCopy, CopyLength);
+    (void)memcpy(&Camera_StreamTimes[Camera_StreamLength], InputTimes, CopyLength * sizeof(InputTimes[0]));
     Camera_StreamLength = (uint16_t)(Camera_StreamLength + CopyLength);
   }
 
@@ -269,17 +304,36 @@ void Camera_Process(void)
       Camera_StreamRemove(1U);
       continue;
     }
+    if (Camera_FrameObserver && Camera_StreamBuffer[3] <= 0x01U)
+    {
+      uint8_t Matched = (Camera_RequestActive && Camera_StreamBuffer[1] == Camera_RequestFunction &&
+                         Camera_StreamBuffer[2] == Camera_RequestTarget) ? 1U : 0U;
+      Camera_FrameObserver(Camera_StreamBuffer, Camera_StreamTimes[FrameLength - 1U], Matched);
+    }
     if ((Camera_StreamBuffer[1] == Camera_RequestFunction) &&
         (Camera_StreamBuffer[2] == Camera_RequestTarget) &&
         (Camera_RequestActive != 0U) && (Camera_StreamBuffer[3] <= 0x01U))
     {
       Camera_HasFrame = 1U;
       Camera_LastFrameTick = HAL_GetTick();
-      if (Camera_StreamBuffer[3] == 0x01U)
+      if (Camera_RequestTarget == 0x0DU)
+      {
+        Camera_Pose.HasFrame = 1U;
+        Camera_Pose.Valid = Camera_TargetValid = Camera_StreamBuffer[3];
+        Camera_Pose.Sequence = ++Camera_PoseSequence;
+        Camera_Pose.ReceivedTick = Camera_StreamTimes[FrameLength - 1U];
+        Camera_Pose.EX = (int16_t)(((uint16_t)Camera_StreamBuffer[4]<<8) | Camera_StreamBuffer[5]);
+        Camera_Pose.EY = (int16_t)(((uint16_t)Camera_StreamBuffer[6]<<8) | Camera_StreamBuffer[7]);
+        Camera_Pose.AngleCdeg = (int16_t)(((uint16_t)Camera_StreamBuffer[8]<<8) | Camera_StreamBuffer[9]);
+        Camera_Pose.Stop = (int16_t)(((uint16_t)Camera_StreamBuffer[10]<<8) | Camera_StreamBuffer[11]);
+        Camera_HasValidData = 0U;
+        if (!Camera_Pose.Valid) Camera_InvalidCount++;
+      }
+      else if (Camera_StreamBuffer[3] == 0x01U)
       {
         Camera_TargetValid = 1U;
         Camera_HasValidData = 1U;
-        Camera_DataPublish(Camera_StreamBuffer);
+        Camera_DataPublish(Camera_StreamBuffer, Camera_StreamTimes[FrameLength - 1U]);
       }
       else if (Camera_StreamBuffer[3] == 0x00U)
       {
@@ -366,6 +420,9 @@ void Camera_UsbRxCallback(const uint8_t *Data, uint32_t Size)
   if (Size <= (uint32_t)(CAMERA_RX_BUFFER_SIZE - Camera_InputLength))
   {
     (void)memcpy(&Camera_InputBuffer[Camera_InputLength], Data, Size);
+    uint32_t ArrivalTick = HAL_GetTick();
+    for (uint32_t Index = 0; Index < Size; Index++)
+      Camera_InputTimes[Camera_InputLength + Index] = ArrivalTick;
     Camera_InputLength = (uint16_t)(Camera_InputLength + Size);
   }
   else

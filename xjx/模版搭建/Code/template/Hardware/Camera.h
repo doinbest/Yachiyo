@@ -31,7 +31,9 @@ typedef struct
   uint16_t CY;
   int16_t DX;
   int16_t DY;
-  uint32_t Tick; /**< MCU receive time, milliseconds. */
+  uint32_t Tick; /**< MCU parse time; existing estimator time base, milliseconds. */
+  uint32_t ReceivedTick; /**< USB arrival of the complete frame last byte, milliseconds. */
+  uint8_t HasReceiveTime; /**< ReceivedTick is valid, including tick zero. */
   uint32_t Sequence; /**< MCU valid-coordinate receive sequence, wraps at uint32. */
 } Camera_DataTypeDef;
 
@@ -64,8 +66,21 @@ typedef enum
 
 /* @brief 在MX_USB_DEVICE_Init之前清空协议状态。 */
 HAL_StatusTypeDef Camera_Init(void);
+/** Main-loop observer of each checksum-valid B2 frame, including Valid=0 and
+ * nonmatching targets. Frame is borrowed only for this call; no control changes. */
+typedef void (*Camera_FrameObserver_t)(const uint8_t *Frame, uint32_t ReceivedTick, uint8_t Matched);
+void Camera_FrameObserverSet(Camera_FrameObserver_t Observer);
 /* @brief 主循环发送FF B2 Color FF；USB未就绪返回ERROR，忙返回BUSY，可稍后重试。 */
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef Color);
+/** @brief 请求数字同心圆定位，Ring为1～3；发送FF B2 0A/0B/0C FF，不产生运动。 */
+HAL_StatusTypeDef Camera_RingStart(uint8_t Ring);
+typedef struct {
+  uint8_t Active, HasFrame, Valid;
+  int16_t EX, EY, AngleCdeg, Stop; /* Stop is diagnostic only, never a motor command. */
+  uint32_t Sequence, ReceivedTick, RequestEpoch;
+} Camera_PoseSnapshot_t;
+HAL_StatusTypeDef Camera_PoseStart(void);
+void Camera_PoseSnapshotGet(Camera_PoseSnapshot_t *snapshot);
 void Camera_RequestStop(void);
 void Camera_Process(void);
 /** @brief 主循环非消费式读取诊断快照；NULL不操作，不推进任务或发送数据。 */

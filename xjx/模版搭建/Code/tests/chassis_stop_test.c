@@ -25,6 +25,20 @@ int main(void)
 {
   ChassisStop_Status_t s;
   ChassisMotion_Target_t t;
+  /* Direct/mission stops use new complete groups, not elapsed half-seconds. */
+  begin_stop();stop_tx(110);stop_sample(120);assert(!stop_get().wheels_stopped);
+  tick=130;ChassisMotion_Process();assert(!stop_get().wheels_stopped);
+  tick=140;for(unsigned i=1;i<4;i++)location.wheels[i].speed_ms=location.wheels[i].position_ms=tick;
+  ChassisMotion_Process();assert(!stop_get().wheels_stopped);
+  stop_sample(160);assert(!stop_get().wheels_stopped);
+  stop_sample(180);assert(stop_get().wheels_stopped);
+  /* A moving group resets the count; three later quiet groups are required. */
+  begin_stop();stop_tx(110);stop_sample(120);
+  location.wheels[0].speed_rpm=2;stop_sample(140);assert(!stop_get().wheels_stopped);
+  location.wheels[0].speed_rpm=0;stop_sample(160);assert(!stop_get().wheels_stopped);
+  stop_sample(180);assert(!stop_get().wheels_stopped);
+  stop_sample(200);assert(stop_get().wheels_stopped);
+
   begin_stop();s=stop_get();assert(s.id==1 && s.token==123 && s.requested_ms==100);
   stop_sample(110);stop_sample(400);stop_sample(650);
   assert(!stop_get().tx_complete && !stop_get().wheels_stopped); /* zero feedback is not TX */

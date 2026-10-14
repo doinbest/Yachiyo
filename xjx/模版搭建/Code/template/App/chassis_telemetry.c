@@ -119,6 +119,16 @@ bool ChassisTelemetry_ConfirmPositionUnits(uint32_t value)
 }
 /* v2 array order is documented in docs/上位机协议.md and checked against the
    production browser decoder. All values/validity timestamps retain v1 units. */
+static void route_metadata(const ChassisRoute_Status_t *r)
+{
+  append("\"route_meta\":{\"action_id\":%lu,\"total\":%lu,\"station\":%lu,\"visit\":%lu,"
+         "\"phase\":\"%s\",\"direction\":\"%s\",\"speed_mm_s\":%.1f,\"phase_speed_mm_s\":%.1f,"
+         "\"phase_target\":[%.3f,%.3f,%.3f],\"planned\":%s},",
+         (unsigned long)r->action_id,(unsigned long)r->total,(unsigned long)r->station,(unsigned long)r->visit,
+         r->phase?r->phase:"idle",r->direction?r->direction:"none",(double)r->speed_mm_s,
+         (double)r->phase_speed_mm_s,(double)r->phase_target_x_mm,(double)r->phase_target_y_mm,
+         (double)r->phase_target_yaw_deg,boolean(r->planned));
+}
 static void compact_state(uint32_t now, const ChassisMotion_Status_t *m,
                           const Mecanum_Status_t *tx, const ChassisLocalization_Status_t *l,
                           const ChassisRoute_Status_t *r, const char *state)
@@ -151,6 +161,7 @@ static void compact_state(uint32_t now, const ChassisMotion_Status_t *m,
     r->state?r->state:"idle",r->reason?r->reason:"none",(unsigned long)r->segment,(unsigned long)r->action_id,
     (double)r->target_x_mm,(double)r->target_y_mm,(double)r->target_yaw_deg,
     (double)r->error_x_mm,(double)r->error_y_mm,(double)r->error_heading_deg,boolean(r->feedback_valid),boolean(r->stop_confirmed));
+  route_metadata(r);
   if (m->distance_mode)
     append("\"distance\":[%s,\"%s\",\"%s\",%lu,[%.3f,%.3f,%.3f],[%.3f,%.3f,%.3f],%s,%s],",
       boolean(ChassisMotion_IsBusy()),state,m->reason?m->reason:"none",(unsigned long)m->action_id,
@@ -233,6 +244,7 @@ static void emit_state(bool detailed)
          (double)route.target_x_mm, (double)route.target_y_mm, (double)route.target_yaw_deg,
          (double)route.error_x_mm, (double)route.error_y_mm, (double)route.error_heading_deg,
          boolean(route.feedback_valid), boolean(route.stop_confirmed));
+  route_metadata(&route);
   if(motion.distance_mode)
   {
     append("\"distance\":{\"active\":%s,\"state\":\"%s\",\"reason\":\"%s\",\"action_id\":%lu,"
@@ -279,7 +291,7 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
   ChassisMotion_Target_t target;
   ChassisMotion_Status_t status;
   Mecanum_Status_t tx;
-  char text[320];
+  char text[640];
   ChassisLocalization_Status_t localization;
   if (n < 2 || strcmp(t[0], "chassis"))
     return false;
@@ -287,7 +299,7 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
   if ((ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) &&
       (!strcmp(t[1], "origin") || !strcmp(t[1], "units") ||
        !strcmp(t[1], "profile") || (!strcmp(t[1], "feedback") && n > 2) ||
-       !strcmp(t[1], "run") || !strcmp(t[1], "heading") || !strcmp(t[1], "reset-confirmed")))
+       !strcmp(t[1], "run") || !strcmp(t[1], "heading") || !strcmp(t[1], "turn") || !strcmp(t[1], "reset-confirmed")))
   {
     reply("ERR chassis task reserved; stop/cancel before changing control settings\r\n");
     return true;
@@ -347,6 +359,11 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
     if (n == 2 && !ChassisMotion_IsBusy())
       ok = Mecanum_RecoveryAfterReset();
   }
+  else if (!strcmp(t[1], "turn"))
+  {
+    if (n==3 && number(t[2],&z) && z>=-180.0f && z<=180.0f)
+      ok=ChassisMotion_TurnTo(z,CHASSIS_DISTANCE_TIMEOUT_MS);
+  }
   else if (!strcmp(t[1], "run") || !strcmp(t[1], "heading"))
   {
     ChassisMotion_TargetDefaults(&target);
@@ -380,14 +397,23 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
     ChassisLocalization_Get(&localization);
     (void)snprintf(text, sizeof(text),
                    "OK chassis task state=%u reason=%s dt_ms=%lu seq=%lu stage=%u error=%u ack=%u "
-                   "locked=%u units=%lu mode=%u target_deg=%.2f yaw_deg=%.2f yaw_valid=%u omega=%.4f\r\n",
+                   "locked=%u units=%lu mode=%u target_deg=%.2f yaw_deg=%.2f yaw_valid=%u omega=%.4f "
+                   "origin_valid=%u origin_mm=%.3f,%.3f origin_deg=%.3f feedback_valid=%u "
+                   "feedback_mm=%.3f,%.3f feedback_deg=%.3f feedback_age_ms=%lu\r\n",
                    (unsigned)status.state, status.reason ? status.reason : "none",
                    (unsigned long)status.control_dt_ms, (unsigned long)tx.sequence,
                    (unsigned)tx.stage, (unsigned)tx.error, (unsigned)tx.ack_profile,
                    (unsigned)tx.locked, (unsigned long)localization.units_per_rev,
                    (unsigned)status.requested.mode, (double)status.requested.heading_deg,
                    (double)status.current_deg, (unsigned)status.heading_valid,
-                   (double)status.body_target.omega_rad_s);
+                   (double)status.body_target.omega_rad_s,
+                   (unsigned)localization.origin_valid,(double)localization.origin.x_mm,
+                   (double)localization.origin.y_mm,
+                   (double)(localization.origin.yaw_rad*180.0f/CHASSIS_MODEL_PI),
+                   (unsigned)localization.feedback_valid,
+                   (double)localization.observer.feedback.x_mm,(double)localization.observer.feedback.y_mm,
+                   (double)(localization.observer.feedback.yaw_rad*180.0f/CHASSIS_MODEL_PI),
+                   (unsigned long)(HAL_GetTick()-localization.feedback_tick));
     reply(text);
     if(status.distance_mode)
     {
@@ -396,6 +422,13 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
         (double)status.target_x_mm,(double)status.target_y_mm,(double)status.target_map_yaw_deg,
         (double)status.error_x_mm,(double)status.error_y_mm,(double)status.error_heading_deg,
         localization.feedback_valid?1:0,status.stop_confirmed?1:0);
+      reply(text);
+      (void)snprintf(text,sizeof(text),
+        "OK chassis test_result id=%lu state=%u profile=%s elapsed_ms=%lu peak_mm_s=%.3f error_mm=%.3f stop_ms=%lu stop_confirmed=%u\r\n",
+        (unsigned long)status.action_id,(unsigned)status.state,ChassisMotion_ProfileName(status.profile),
+        (unsigned long)status.elapsed_ms,(double)status.peak_mm_s,
+        (double)hypotf(status.error_x_mm,status.error_y_mm),(unsigned long)status.stop_ms,
+        status.stop_confirmed?1:0);
       reply(text);
     }
     return true;

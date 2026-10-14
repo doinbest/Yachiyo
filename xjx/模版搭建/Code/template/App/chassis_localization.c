@@ -17,6 +17,7 @@ static uint32_t last_observe;
 void ChassisLocalization_Init(void)
 {
   memset(&status, 0, sizeof(status));
+  status.units_per_rev = CHASSIS_EMM_POSITION_UNITS_PER_REV;
   last_observe = HAL_GetTick() - 20U;
   ChassisObserver_Init(&status.observer, 0, 0, 0);
 }
@@ -122,4 +123,17 @@ void ChassisLocalization_Process(void)
   status.feedback_valid = fresh && status.observer.feedback_valid;
   if (lost || (previously_valid && !status.feedback_valid))
     status.generation++;
+}
+
+void ChassisLocalization_HeadingSync(float yaw)
+{
+  float delta=remainderf(yaw-status.observer.feedback.yaw_rad,2*CHASSIS_MODEL_PI);
+  status.observer.command.yaw_rad=remainderf(status.observer.command.yaw_rad+delta,2*CHASSIS_MODEL_PI);
+  status.observer.feedback.yaw_rad=yaw;
+  status.observer.previous_yaw=yaw;
+  /* Flush wheel baseline at the verified stationary boundary, retaining odometry. */
+  for(unsigned i=0;i<4;i++) {
+    status.observer.previous_position[i]=dirs[i]?-status.wheels[i].position_raw:status.wheels[i].position_raw;
+    status.observer.previous_ms[i]=status.wheels[i].position_ms;
+  }
 }

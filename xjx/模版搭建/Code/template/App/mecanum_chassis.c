@@ -24,19 +24,17 @@ static const uint8_t motor_forward_direction[MECANUM_WHEEL_COUNT] = {
     CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR, CHASSIS_MOTOR_REAR_LEFT_FORWARD_DIR,
     CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR, CHASSIS_MOTOR_FRONT_RIGHT_FORWARD_DIR};
 
-static bool MecanumVelocityActive;
-/* 无到位反馈：发过运动命令后，直到四轮停止命令均成功发送才解除。 */
+/* Motion remains busy until all four stop frames have completed. */
 static bool MecanumMotionPending;
-static float MecanumVelocityForward;
-static float MecanumVelocityLeft;
-static float MecanumVelocityYaw;
-static uint32_t MecanumVelocityLastSendTick;
-static Mecanum_HeadingTestStatus_t HeadingTest = {false, "idle", 0, 0, 0};
-static Mecanum_HeadingPid_t HeadingTestPid;
-static float HeadingTestSpeed;
-static uint32_t HeadingTestStartTick, HeadingTestDuration, HeadingTestLastTick;
-static uint32_t HeadingTestSampleTick, HeadingTestSampleCount;
-static void Mecanum_HeadingTest_Process(void);
+static const ChassisModel_Geometry_t Geometry = {
+    CHASSIS_WHEELBASE_MM, CHASSIS_TRACK_WIDTH_MM,
+    CHASSIS_WHEEL_DIAMETER_MM, CHASSIS_MOTOR_TO_WHEEL_RATIO};
+static bool wheel_linear(float forward, float left, float yaw, float out[4])
+{
+  ChassisModel_Velocity_t body = {forward,left,yaw};
+  return ChassisModel_WheelLinearInverse(&Geometry,&body,out);
+}
+static uint32_t Mecanum_Distance_To_Pulse(float distance_mm);
 
 typedef struct
 {
@@ -46,26 +44,46 @@ typedef struct
   uint8_t count;
 } Mecanum_Batch_t;
 static Mecanum_Batch_t Batch, NextBatch;
+static Mecanum_Timing_t BatchTiming;
+static uint32_t BatchStartedMs;
+void Mecanum_TimingGet(Mecanum_Timing_t *out) { if(out)*out=BatchTiming; }
 static bool BatchActive, NextValid, BatchWaiting, BatchStarted, LastBatchValid;
 static uint8_t BatchIndex, StopIndex;
 static uint32_t LastBatchMs;
+static uint32_t TrackingBatchMs;
+static bool TrackingEnabled;
+
+static unsigned TrackingFeedbackTurn, TrackingSlowWheel;
+void Mecanum_TrackingTiming(bool enabled,uint32_t interval_ms)
+{ if(enabled && !TrackingEnabled)memset(&BatchTiming,0,sizeof BatchTiming);
+  TrackingEnabled=enabled;TrackingBatchMs=interval_ms<=200?interval_ms:0; }
 /* Confirmed Emm42 factory configuration: receive acknowledgement. */
 static Mecanum_Status_t BusStatus = {.ack_profile = MECANUM_ACK_RECEIVE};
 static Mecanum_Feedback_t Feedback[4];
 static bool FeedbackEnabled;
 static bool StopFeedbackDemand;
+static bool PlannedStopPending;
 static uint8_t FeedbackIndex;
 static uint8_t FeedbackAddress;
-static uint32_t FeedbackLastMs;
+
 static bool FaultStopPending;
 static bool StopFailed;
-/* A stopped motor can still contain an untriggered synchronous command. */
+/* A stopped motor can still contain an untriggered nonzero synchronous command.
+ * Zero F6 entries cannot restart motion; later motion overwrites all four. */
 static bool SyncCacheUncertain;
+
+static bool BatchZeroVelocity(void)
+{
+  if (!Batch.sync || Batch.count != MECANUM_WHEEL_COUNT) return false;
+  for (unsigned i = 0; i < MECANUM_WHEEL_COUNT; i++)
+    if (Batch.length[i] != 8 || Batch.frame[i][1] != 0xf6 || Batch.rpm[i]) return false;
+  return true;
+}
 
 static bool Mecanum_Ready(void)
 {
   /* Preserve the communication fault when a new request is rejected. */
-  if (BusStatus.locked || BusStatus.stop_pending || MotorBus_IsQuarantined())
+  if (BusStatus.locked || BusStatus.stop_pending || PlannedStopPending || MotorBus_IsQuarantined())
     return false;
   if (BusStatus.ack_profile == MECANUM_ACK_UNKNOWN)
   {
@@ -95,7 +113,7 @@ static bool QueuePosition(float forward, float left, float yaw, uint16_t speed, 
   uint32_t pulses;
   Mecanum_Batch_t next;
   if (!Mecanum_Ready() || BatchActive || NextValid || !isfinite(forward) || !isfinite(left) ||
-      !isfinite(yaw) || !Mecanum_Wheel_Speed_Calc(forward, left, yaw, distance))
+      !isfinite(yaw) || !wheel_linear(forward, left, yaw, distance))
     return false;
   memset(&next, 0, sizeof(next));
   next.count = 4;
@@ -116,7 +134,11 @@ static bool QueuePosition(float forward, float left, float yaw, uint16_t speed, 
     next.frame[i][12] = 0x6b;
     next.length[i] = 13;
   }
-  Mecanum_VelocityRefresh_Stop();
+  if(LastBatchValid && next.length[0]==8 &&
+     (uint32_t)(HAL_GetTick()-LastBatchMs)<MECANUM_VELOCITY_REFRESH_MS) {
+    const Mecanum_Batch_t *previous=NextValid?&NextBatch:&Batch;
+    if(previous->length[0]==8 && !memcmp(next.frame,previous->frame,sizeof next.frame))return true;
+  }
   NextBatch = next;
   NextValid = true;
   BusStatus.motion_sequence++;
@@ -133,7 +155,6 @@ static void BatchFault(Mecanum_Error_t error)
   BatchWaiting = false;
   NextValid = false;
   MecanumMotionPending = true;
-  Mecanum_VelocityRefresh_Stop();
   MotorBus_Release(MOTOR_BUS_CHASSIS);
   MotorBus_Release(MOTOR_BUS_STOP);
 }
@@ -162,8 +183,10 @@ static void FeedbackProcess(void)
     wheel = (uint8_t)(e.token / 3);
     kind = (uint8_t)(e.token % 3);
     f = &Feedback[wheel];
-    if (e.result == MOTOR_BUS_REPLY)
+    if (e.result == MOTOR_BUS_REPLY && e.length==length[kind] &&
+        !(e.length==4 && (e.data[2]==0xe2 || e.data[2]==0xee)))
     {
+
       if (kind == 0)
       {
         f->speed_rpm = (int32_t)(((uint32_t)e.data[3] << 8) | e.data[4]);
@@ -189,12 +212,17 @@ static void FeedbackProcess(void)
     }
     else
     {
-      if (kind == 0)
-        f->speed_valid = false;
-      else if (kind == 1)
-        f->position_valid = false;
-      else
-        f->state_valid = false;
+      /* Stop cancels unsent queries. No new sample does not invalidate the
+       * previous measurement; its unchanged timestamp still expires normally. */
+      if (e.result != MOTOR_BUS_CANCELLED)
+      {
+        if (kind == 0)
+          f->speed_valid = false;
+        else if (kind == 1)
+          f->position_valid = false;
+        else
+          f->state_valid = false;
+      }
       if (MotorBus_IsQuarantined() &&
           !(e.result == MOTOR_BUS_CANCELLED && MotorBus_FeedbackAllowed()))
       {
@@ -202,8 +230,7 @@ static void FeedbackProcess(void)
         if (BusStatus.error != MECANUM_ERROR_NONE && BusStatus.error != MECANUM_ERROR_PROFILE &&
             BusStatus.error != MECANUM_ERROR_CANCELLED)
           error = BusStatus.error;
-        if (!BusStatus.stop_pending && (BatchActive || NextValid || MecanumMotionPending ||
-                                        MecanumVelocityActive || HeadingTest.active))
+        if (!BusStatus.stop_pending && (BatchActive || NextValid || MecanumMotionPending))
         {
           MotorBus_Cancel(MOTOR_BUS_CHASSIS);
           BatchFault(error);
@@ -218,10 +245,10 @@ static void FeedbackProcess(void)
       }
     }
   }
-  if ((!FeedbackEnabled && !StopFeedbackDemand) || BusStatus.stop_pending ||
+  if ((!FeedbackEnabled && !StopFeedbackDemand) || PlannedStopPending || BusStatus.stop_pending ||
       (BusStatus.locked && BusStatus.error != MECANUM_ERROR_CANCELLED) ||
       !MotorBus_FeedbackAllowed() ||
-      MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK) || (uint32_t)(HAL_GetTick() - FeedbackLastMs) < 16U)
+      MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK))
     return;
   wheel = (uint8_t)(FeedbackIndex / 3);
   kind = (uint8_t)(FeedbackIndex % 3);
@@ -230,14 +257,24 @@ static void FeedbackProcess(void)
   cmd[2] = 0x6b;
   if (MotorBus_Submit(MOTOR_BUS_FEEDBACK, cmd, 3, length[kind], FeedbackIndex, false))
   {
-    if (FeedbackAddress && !StopFeedbackDemand)
+    if(TrackingEnabled && !StopFeedbackDemand)
+    {
+      /* Four positions, then one wheel's speed/state pair. With X writes and
+       * reads sharing UART5, the former 40-read slow cycle exceeded 2 seconds. */
+      TrackingFeedbackTurn=(TrackingFeedbackTurn+1U)%6U;
+      if(TrackingFeedbackTurn==0)TrackingSlowWheel=(TrackingSlowWheel+1U)%4U;
+      if(TrackingFeedbackTurn<4)FeedbackIndex=(uint8_t)(TrackingFeedbackTurn*3+1);
+      else if(TrackingFeedbackTurn==4)FeedbackIndex=(uint8_t)(TrackingSlowWheel*3);
+      else FeedbackIndex=(uint8_t)(TrackingSlowWheel*3+2);
+    }
+    else if (FeedbackAddress && !StopFeedbackDemand)
       FeedbackIndex = (uint8_t)((FeedbackAddress - 1) * 3 + (FeedbackIndex + 1) % 3);
     else
       /* Keep each four-wheel measurement group together across velocity batches.
        * Speed 1..4, position 1..4, state 1..4; tokens still encode wheel*3+kind. */
       FeedbackIndex = (uint8_t)(((wheel + 1U) % 4U) * 3U +
                                  (wheel == 3U ? (kind + 1U) % 3U : kind));
-    FeedbackLastMs = HAL_GetTick();
+
   }
 }
 void Mecanum_Process(void)
@@ -268,18 +305,33 @@ void Mecanum_Process(void)
       BatchIndex++;
       if (BatchIndex > Batch.count || (!Batch.sync && BatchIndex == Batch.count))
       {
+        if(BatchTiming.batches && LastBatchValid) {
+          uint32_t interval=e.tick_ms-BatchTiming.last_ms;
+          BatchTiming.intervals++;BatchTiming.interval_bins[interval<200?interval:200]++;
+          if(interval>BatchTiming.interval_max_ms)BatchTiming.interval_max_ms=interval;
+        }
+        BatchTiming.batches++;BatchTiming.last_ms=e.tick_ms;
+        if(e.tick_ms-BatchStartedMs>BatchTiming.duration_max_ms)BatchTiming.duration_max_ms=e.tick_ms-BatchStartedMs;
         if (Batch.sync) SyncCacheUncertain = false;
         BatchActive = false;
         BusStatus.stage = MECANUM_STAGE_SENT;
         MotorBus_Release(MOTOR_BUS_CHASSIS);
         memcpy(BusStatus.sent_rpm, Batch.rpm, sizeof(Batch.rpm));
-        BusStatus.sent_ms = e.tick_ms;
+        BusStatus.sent_ms = e.tx_ms; /* FF Receive time is not the DMA send time. */
         BusStatus.sent_velocity_valid = Batch.length[0] == 8;
         BusStatus.tx_complete = true;
         BusStatus.acknowledged = BusStatus.ack_profile == MECANUM_ACK_RECEIVE &&
                                  BusStatus.acknowledged_wheels == Batch.count;
+
       }
     }
+  }
+  if (PlannedStopPending)
+  {
+    /* Consume the current query's matched reply, without enqueueing another.
+     * The next main-loop gap then belongs to the planned stop. */
+    FeedbackProcess();
+    if (Mecanum_CanStopCleanly()) (void)Mecanum_Test_Stop();
   }
   if (BusStatus.stop_pending)
   {
@@ -338,16 +390,20 @@ void Mecanum_Process(void)
   if (BusStatus.locked)
     return;
   if (!BatchActive && NextValid &&
-      (!LastBatchValid || (uint32_t)(HAL_GetTick() - LastBatchMs) >= 100U))
+      (!TrackingEnabled || !TrackingBatchMs || !LastBatchValid ||
+       (uint32_t)(HAL_GetTick()-LastBatchMs)>=TrackingBatchMs))
   {
     if (!MotorBus_Reserve(MOTOR_BUS_CHASSIS))
+    {
+      FeedbackProcess(); /* Consume/queue feedback even while yielding a batch. */
       return;
+    }
     Batch = NextBatch;
     NextValid = false;
     BatchActive = true;
     BatchIndex = 0;
     BatchStarted = false;
-    LastBatchMs = HAL_GetTick();
+    LastBatchMs = HAL_GetTick();BatchStartedMs=LastBatchMs;
     LastBatchValid = true;
     BusStatus.sequence++;
     BusStatus.stage = MECANUM_STAGE_WHEELS;
@@ -366,7 +422,7 @@ void Mecanum_Process(void)
       {
         BatchWaiting = true;
         BatchStarted = true;
-        if (Batch.sync) SyncCacheUncertain = true;
+        if (Batch.sync && !BatchZeroVelocity()) SyncCacheUncertain = true;
       }
       else
         BatchFault(MECANUM_ERROR_TX);
@@ -374,7 +430,7 @@ void Mecanum_Process(void)
     else
     {
       BusStatus.stage = MECANUM_STAGE_SYNC;
-      if (MotorBus_Submit(MOTOR_BUS_CHASSIS, sync, 4, 0, BusStatus.sequence, false))
+      if (MotorBus_SubmitReplyTo(MOTOR_BUS_CHASSIS, sync, 4, 1, 4, BusStatus.sequence, false))
         BatchWaiting = true;
       else
         BatchFault(MECANUM_ERROR_TX);
@@ -404,30 +460,43 @@ bool Mecanum_AckProfile_Set(Mecanum_AckProfile_t profile)
   BusStatus.error = MECANUM_ERROR_NONE;
   return true;
 }
-bool Mecanum_RecoveryAfterReset(void)
+/** @brief Clear local stopped-batch state after physical reset or verified
+ * zero-cache recovery. Keeps user settings and wheel position snapshots.
+ * @retval None. @note Caller must validate the corresponding recovery proof. */
+static void RecoveryClear(void)
 {
-  if (BusStatus.stop_pending || BatchActive || NextValid || !MotorBus_RecoverAfterReset())
-    return false;
   SyncCacheUncertain = false;
-  memset(Feedback, 0, sizeof(Feedback));
   BusStatus.locked = false;
   BusStatus.error = MECANUM_ERROR_NONE;
   BusStatus.stage = MECANUM_STAGE_IDLE;
   MecanumMotionPending = false;
   BatchWaiting = false;
   LastBatchValid = false;
-  FaultStopPending = false;
+  FaultStopPending = PlannedStopPending = false;
   memset(BusStatus.sent_rpm, 0, sizeof(BusStatus.sent_rpm));
   BusStatus.sent_ms = HAL_GetTick();
   BusStatus.sent_velocity_valid = false;
+}
+bool Mecanum_RecoveryAfterReset(void)
+{
+  if (BusStatus.stop_pending || BatchActive || NextValid || !MotorBus_RecoverAfterReset())
+    return false;
+  memset(Feedback, 0, sizeof(Feedback));
+  RecoveryClear();
   return true;
 }
 bool Mecanum_RecoveryAfterBusCheck(void)
 {
   MotorBus_Recovery_t status;
   MotorBus_RecoveryGet(&status);
-  if (!status.success || status.active || SyncCacheUncertain) return false;
-  return Mecanum_RecoveryAfterReset();
+  /* Recovery success now includes ACK-confirmed zero overwrite, addressed sync
+   * and fresh stopped feedback. Ordinary stopping alone still cannot unlock. */
+  if (!status.success || status.active || BusStatus.stop_pending || BatchActive || NextValid ||
+      MotorBus_IsQuarantined()) return false;
+  /* The recovery owner already drained/recovered the transport. Fresh read-only
+   * stop polling may now be queued; do not mistake it for an unfinished batch. */
+  RecoveryClear();
+  return true;
 }
 void Mecanum_Feedback_StopMonitor(bool active)
 {
@@ -442,8 +511,12 @@ void Mecanum_Feedback_Enable(bool enabled)
 }
 bool Mecanum_Feedback_Select(uint8_t address)
 {
-  if (address > 4 || MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK))
+  if (address > 4)
     return false;
+  /* Only the next poll's schedule changes. The queued/in-flight read and its
+   * reply retain their MotorBus token; FeedbackProcess consumes that reply
+   * before submitting another. Waiting for OwnerBusy to clear here deadlocks
+   * foreground callers against a continuously replenished feedback stream. */
   FeedbackEnabled = false;
   FeedbackAddress = address;
   FeedbackIndex = (!StopFeedbackDemand && address) ? (uint8_t)((address - 1) * 3) : 0;
@@ -455,32 +528,6 @@ bool Mecanum_FeedbackGet(unsigned wheel, Mecanum_Feedback_t *feedback)
     return false;
   *feedback = Feedback[wheel];
   return true;
-}
-
-static float Mecanum_Clamp(float value, float min_value, float max_value)
-{
-  if (value < min_value)
-  {
-    return min_value;
-  }
-  if (value > max_value)
-  {
-    return max_value;
-  }
-  return value;
-}
-
-static float Mecanum_Wrap_Angle_Error(float error_deg)
-{
-  while (error_deg > 180.0f)
-  {
-    error_deg -= 360.0f;
-  }
-  while (error_deg < -180.0f)
-  {
-    error_deg += 360.0f;
-  }
-  return error_deg;
 }
 
 /**********************************************************
@@ -524,86 +571,6 @@ static uint32_t Mecanum_Distance_To_Count(float distance_mm, uint32_t counts_per
 }
 
 /**********************************************************
-*** 麦克纳姆轮逆运动学解算
-**********************************************************/
-/**
- * @brief    将车体前向、横向和旋转速度分解为四个车轮速度
- * @param    forward_mm_s ：车体前向速度，向前为正，单位 mm/s
- * @param    left_mm_s    ：车体横向速度，向左为正，单位 mm/s
- * @param    yaw_rad_s    ：车体角速度，逆时针为正，单位 rad/s
- * @param    wheel_mm_s   ：四轮输出数组，顺序为左上、左下、右下、右上
- * @retval   true  ：输入有效，四轮速度解算完成
- * @retval   false ：输出指针为空，或旋转时尚未配置轴距/轮距
- */
-bool Mecanum_Wheel_Speed_Calc(float forward_mm_s, float left_mm_s, float yaw_rad_s,
-                              float wheel_mm_s[MECANUM_WHEEL_COUNT])
-{
-  float rotation_arm_mm;
-
-  if (wheel_mm_s == NULL)
-  {
-    return false;
-  }
-
-  rotation_arm_mm = (CHASSIS_WHEELBASE_MM + CHASSIS_TRACK_WIDTH_MM) * 0.5f;
-  if ((yaw_rad_s != 0.0f) && (rotation_arm_mm <= 0.0f))
-  {
-    return false;
-  }
-
-  /*
-   * X型麦轮逆解：轮缘正速度统一定义为“该轮向车体前方滚动”。
-   * 0 左上 = Vx - Vy - (L+W)Wz
-   * 1 左下 = Vx + Vy - (L+W)Wz
-   * 2 右下 = Vx - Vy + (L+W)Wz
-   * 3 右上 = Vx + Vy + (L+W)Wz
-   */
-  wheel_mm_s[MECANUM_WHEEL_FRONT_LEFT] = forward_mm_s - left_mm_s - rotation_arm_mm * yaw_rad_s;
-  wheel_mm_s[MECANUM_WHEEL_REAR_LEFT] = forward_mm_s + left_mm_s - rotation_arm_mm * yaw_rad_s;
-  wheel_mm_s[MECANUM_WHEEL_REAR_RIGHT] = forward_mm_s - left_mm_s + rotation_arm_mm * yaw_rad_s;
-  wheel_mm_s[MECANUM_WHEEL_FRONT_RIGHT] = forward_mm_s + left_mm_s + rotation_arm_mm * yaw_rad_s;
-
-  return true;
-}
-
-/**********************************************************
-*** 麦克纳姆轮正运动学解算
-**********************************************************/
-/**
- * @brief    根据四个车轮速度计算车体前向、横向和旋转速度
- * @param    wheel_mm_s   ：四轮速度数组，顺序为左上、左下、右下、右上
- * @param    forward_mm_s ：返回车体前向速度，单位 mm/s
- * @param    left_mm_s    ：返回车体向左速度，单位 mm/s
- * @param    yaw_rad_s    ：返回车体逆时针角速度，单位 rad/s
- * @retval   true  ：正运动学解算完成
- * @retval   false ：参数指针为空，或轴距/轮距未配置导致无法计算角速度
- */
-bool Mecanum_Body_Speed_Calc(const float wheel_mm_s[MECANUM_WHEEL_COUNT], float *forward_mm_s,
-                             float *left_mm_s, float *yaw_rad_s)
-{
-  float rotation_arm_mm;
-
-  if ((wheel_mm_s == NULL) || (forward_mm_s == NULL) || (left_mm_s == NULL) || (yaw_rad_s == NULL))
-  {
-    return false;
-  }
-
-  *forward_mm_s = (wheel_mm_s[0] + wheel_mm_s[1] + wheel_mm_s[2] + wheel_mm_s[3]) * 0.25f;
-  *left_mm_s = (-wheel_mm_s[0] + wheel_mm_s[1] - wheel_mm_s[2] + wheel_mm_s[3]) * 0.25f;
-
-  rotation_arm_mm = (CHASSIS_WHEELBASE_MM + CHASSIS_TRACK_WIDTH_MM) * 0.5f;
-  if (rotation_arm_mm <= 0.0f)
-  {
-    *yaw_rad_s = 0.0f;
-    return false;
-  }
-
-  *yaw_rad_s =
-      (-wheel_mm_s[0] - wheel_mm_s[1] + wheel_mm_s[2] + wheel_mm_s[3]) / (4.0f * rotation_arm_mm);
-  return true;
-}
-
-/**********************************************************
 *** 距离与步进电机计数换算
 **********************************************************/
 /**
@@ -612,48 +579,9 @@ bool Mecanum_Body_Speed_Calc(const float wheel_mm_s[MECANUM_WHEEL_COUNT], float 
  * @retval   Emm_V5_Pos_Control() 的 clk 参数绝对值
  * @note     方向不包含在返回值中，由调用函数根据距离正负单独设置 dir
  */
-uint32_t Mecanum_Distance_To_Pulse(float distance_mm)
+static uint32_t Mecanum_Distance_To_Pulse(float distance_mm)
 {
   return Mecanum_Distance_To_Count(distance_mm, CHASSIS_COMMAND_PULSES_PER_REV);
-}
-
-/**
- * @brief    将车轮行驶距离换算成理论编码器计数
- * @param    distance_mm ：车轮行驶距离，单位 mm，可为负数
- * @retval   对应的理论编码器计数绝对值
- * @note     该结果用于反馈校验，不直接作为 Emm 位置命令的 clk 参数
- */
-uint32_t Mecanum_Distance_To_Encoder(float distance_mm)
-{
-  return Mecanum_Distance_To_Count(distance_mm, CHASSIS_ENCODER_COUNTS_PER_REV);
-}
-
-/**********************************************************
-*** 运动时间估算
-**********************************************************/
-/**
- * @brief    根据测试转速估算车轮完成指定路程需要的时间
- * @param    wheel_distance_mm ：车轮行驶距离，单位 mm，可为负数
- * @retval   理论运动时间，单位 ms；参数无效时返回0
- * @note     仅用于按键测试互锁，不代替电机到位反馈
- */
-uint32_t Mecanum_Move_Time_Calc(float wheel_distance_mm)
-{
-  float wheel_circumference_mm;
-  float motor_revolutions;
-  float move_time_ms;
-
-  wheel_circumference_mm = MECANUM_PI * CHASSIS_WHEEL_DIAMETER_MM;
-  if ((wheel_circumference_mm <= 0.0f) || (CHASSIS_TEST_SPEED_RPM == 0U))
-  {
-    return 0U;
-  }
-
-  motor_revolutions = Mecanum_Get_Abs(wheel_distance_mm) / wheel_circumference_mm;
-  motor_revolutions *= CHASSIS_MOTOR_TO_WHEEL_RATIO;
-  move_time_ms = motor_revolutions * 60000.0f / (float)CHASSIS_TEST_SPEED_RPM;
-
-  return (uint32_t)(move_time_ms + 0.5f);
 }
 
 /**********************************************************
@@ -709,14 +637,17 @@ bool Mecanum_Wheel_Test(MecanumWheel_t wheel, int16_t rpm)
   next.length[0] = 8;
   next.rpm[(unsigned)wheel] = rpm;
   VelocityFrame(next.frame[0], (unsigned)wheel, rpm, CHASSIS_POLARITY_TEST_ACCELERATION, false);
-  Mecanum_VelocityRefresh_Stop();
+  if(LastBatchValid && next.length[0]==8 &&
+     (uint32_t)(HAL_GetTick()-LastBatchMs)<MECANUM_VELOCITY_REFRESH_MS) {
+    const Mecanum_Batch_t *previous=NextValid?&NextBatch:&Batch;
+    if(previous->length[0]==8 && !memcmp(next.frame,previous->frame,sizeof next.frame))return true;
+  }
   NextBatch = next;
   NextValid = true;
   BusStatus.motion_sequence++;
   MecanumMotionPending = true;
   return true;
 }
-
 /**
  * @brief    依次立即停止底盘四个车轮。
  * @retval   true停车请求已接受；false至少一条发送失败
@@ -726,19 +657,32 @@ bool Mecanum_CanStopCleanly(void)
 {
   return !BatchActive && !BatchWaiting && !BusStatus.locked && !BusStatus.stop_pending &&
          !MotorBus_IsQuarantined() && !MotorBus_OwnerBusy(MOTOR_BUS_CHASSIS) &&
-         !MotorBus_OwnerBusy(MOTOR_BUS_FEEDBACK);
+         !MotorBus_OwnerInFlight(MOTOR_BUS_FEEDBACK);
+}
+
+bool Mecanum_RequestPlannedStop(void)
+{
+  if (PlannedStopPending || BusStatus.stop_pending) return true;
+  if (BusStatus.locked || BusStatus.error != MECANUM_ERROR_NONE || MotorBus_IsQuarantined() ||
+      !BusStatus.tx_complete || !BusStatus.sent_velocity_valid) return false;
+  for (unsigned i=0;i<4;i++) if (BusStatus.sent_rpm[i]) return false;
+  /* The synchronized zero snapshot is already confirmed. Stop refreshing it
+   * and let the current query finish before FE, rather than racing polling. */
+  PlannedStopPending = true;
+  NextValid = false;
+  return true;
 }
 
 bool Mecanum_Test_Stop(void)
 {
+  PlannedStopPending = false;
   if (BusStatus.stop_pending)
     return true;
-  if (BatchActive && BatchStarted)
+  if (BatchActive && BatchStarted && (!BatchZeroVelocity() || SyncCacheUncertain))
   {
     BusStatus.locked = true;
     BusStatus.error = MECANUM_ERROR_CANCELLED;
   }
-  Mecanum_VelocityRefresh_Stop();
   NextValid = false;
   BatchActive = false;
   BatchWaiting = false;
@@ -760,7 +704,7 @@ bool Mecanum_Test_Stop(void)
 
 bool Mecanum_IsBusy(void)
 {
-  return MecanumVelocityActive || HeadingTest.active || MecanumMotionPending ||
+  return PlannedStopPending || MecanumMotionPending ||
          BusStatus.stop_pending || BatchActive || NextValid ||
          BusStatus.stage == MECANUM_STAGE_FAULT;
 }
@@ -768,20 +712,14 @@ bool Mecanum_IsBusy(void)
 /**********************************************************
 *** 连续速度控制
 **********************************************************/
-bool Mecanum_Velocity_Control(float forward_mm_s, float left_mm_s, float yaw_rad_s)
-{
-  if (ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return false;
-  return Mecanum_Velocity_Request(forward_mm_s, left_mm_s, yaw_rad_s,
-                                  CHASSIS_VELOCITY_ACCELERATION);
-}
-
 bool Mecanum_Velocity_Request(float forward_mm_s, float left_mm_s, float yaw_rad_s, uint8_t acc)
 {
   Mecanum_Batch_t next;
-  float speed[4], rpm[4], largest = 0, scale = 1;
+  ChassisModel_Velocity_t body = {forward_mm_s,left_mm_s,yaw_rad_s};
+  ChassisModel_Wheels_t wheels;
   unsigned i;
   if (!Mecanum_Ready() || !isfinite(forward_mm_s) || !isfinite(left_mm_s) || !isfinite(yaw_rad_s) ||
-      !Mecanum_Wheel_Speed_Calc(forward_mm_s, left_mm_s, yaw_rad_s, speed))
+      !ChassisModel_Inverse(&Geometry,&body,CHASSIS_EMM_MAX_COMMAND_RPM,&wheels))
     return false;
   if (CHASSIS_WHEEL_DIAMETER_MM <= 0 || CHASSIS_MOTOR_TO_WHEEL_RATIO <= 0)
     return false;
@@ -794,269 +732,18 @@ bool Mecanum_Velocity_Request(float forward_mm_s, float left_mm_s, float yaw_rad
   next.sync = true;
   for (i = 0; i < 4; i++)
   {
-    rpm[i] =
-        speed[i] * 60.0f / (MECANUM_PI * CHASSIS_WHEEL_DIAMETER_MM) * CHASSIS_MOTOR_TO_WHEEL_RATIO;
-    if (!isfinite(rpm[i]))
-      return false;
-    if (fabsf(rpm[i]) > largest)
-      largest = fabsf(rpm[i]);
-  }
-  if (largest > CHASSIS_EMM_MAX_COMMAND_RPM)
-    scale = CHASSIS_EMM_MAX_COMMAND_RPM / largest;
-  for (i = 0; i < 4; i++)
-  {
-    float value = rpm[i] * scale;
-    next.rpm[i] = (int32_t)(value >= 0 ? value + 0.5f : value - 0.5f);
+    next.rpm[i] = wheels.command[i];
     VelocityFrame(next.frame[i], i, next.rpm[i], acc, true);
     next.length[i] = 8;
+  }
+  if(LastBatchValid && next.length[0]==8 &&
+     (uint32_t)(HAL_GetTick()-LastBatchMs)<MECANUM_VELOCITY_REFRESH_MS) {
+    const Mecanum_Batch_t *previous=NextValid?&NextBatch:&Batch;
+    if(previous->length[0]==8 && !memcmp(next.frame,previous->frame,sizeof next.frame))return true;
   }
   NextBatch = next;
   NextValid = true;
   BusStatus.motion_sequence++;
   MecanumMotionPending = true;
   return true;
-}
-
-/**
- * @brief    启动整车持续速度控制。
- * @param    forward_mm_s ：车体前后速度，前进为正，单位mm/s
- * @param    left_mm_s    ：车体左右速度，向左为正，单位mm/s
- * @param    yaw_rad_s    ：车体旋转速度，逆时针为正，单位rad/s
- * @retval   true首帧请求已接受；false运动学参数或UART5发送失败
- * @note     后续由主循环调用Mecanum_Velocity_Process()自动刷新
- */
-bool Mecanum_Velocity_Start(float forward_mm_s, float left_mm_s, float yaw_rad_s)
-{
-  if (HWT101_Cal_IsBusy() || HeadingTest.active)
-    return false;
-  if (!Mecanum_Velocity_Control(forward_mm_s, left_mm_s, yaw_rad_s))
-  {
-    return false;
-  }
-
-  MecanumVelocityForward = forward_mm_s;
-  MecanumVelocityLeft = left_mm_s;
-  MecanumVelocityYaw = yaw_rad_s;
-  MecanumVelocityActive = true;
-  MecanumVelocityLastSendTick = HAL_GetTick();
-  return true;
-}
-
-/**
- * @brief    刷新整车持续速度控制。
- * @param    无
- * @retval   无
- * @note     速度模式持续运行，直到调用停车接口
- */
-void Mecanum_Velocity_Process(void)
-{
-  uint32_t now;
-
-  Mecanum_Process();
-  if (HeadingTest.active)
-  {
-    Mecanum_HeadingTest_Process();
-    return;
-  }
-
-  if (!MecanumVelocityActive)
-  {
-    return;
-  }
-
-  now = HAL_GetTick();
-  if ((now - MecanumVelocityLastSendTick) >= MECANUM_VELOCITY_REFRESH_MS)
-  {
-    if (!Mecanum_Velocity_Control(MecanumVelocityForward, MecanumVelocityLeft, MecanumVelocityYaw))
-    {
-      MecanumVelocityActive = false;
-      (void)Mecanum_Test_Stop();
-      return;
-    }
-    MecanumVelocityLastSendTick = now;
-  }
-}
-
-/**
- * @brief    取消整车持续速度控制。
- * @param    无
- * @retval   无
- * @note     不主动发送停车帧，停车由调用者按需执行
- */
-void Mecanum_VelocityRefresh_Stop(void)
-{
-  MecanumVelocityActive = false;
-  if (HeadingTest.active)
-  {
-    HeadingTest.active = false;
-    HeadingTest.reason = "stopped";
-    HeadingTest.output_rad_s = 0.0f;
-  }
-}
-
-static void Mecanum_HeadingTest_Finish(const char *reason)
-{
-  bool stopped = Mecanum_Test_Stop();
-  HeadingTest.reason = stopped ? reason : "stop_tx_error";
-}
-
-bool Mecanum_HeadingTest_Start(float forward_mm_s, uint32_t duration_ms)
-{
-  if (ChassisRoute_IsBusy() || ChassisMotion_IsBusy()) return false;
-  HWT101_Angle_t angle;
-  if (HWT101_Cal_IsBusy())
-  {
-    if (!HeadingTest.active)
-      HeadingTest.reason = "imu_busy";
-    return false;
-  }
-  if (Mecanum_IsBusy())
-  {
-    if (!HeadingTest.active)
-      HeadingTest.reason = "chassis_busy";
-    return false;
-  }
-  HeadingTest.reason = "range";
-  if (!isfinite(forward_mm_s) || forward_mm_s < -100.0f || forward_mm_s > 100.0f ||
-      duration_ms < 1000U || duration_ms > 10000U)
-    return false;
-  HeadingTest.reason = "imu_not_verified";
-  if (!HWT101_Cal_ControlAngleGet(&angle))
-    return false;
-
-  HeadingTest.current_deg = angle.yaw * CHASSIS_HEADING_TEST_YAW_SIGN;
-  HeadingTest.target_deg = HeadingTest.current_deg;
-  HeadingTest.output_rad_s = 0.0f;
-  Mecanum_HeadingPid_Init(&HeadingTestPid, CHASSIS_HEADING_TEST_KP, 0.0f, 0.0f, 0.1f, 0.0f,
-                          CHASSIS_HEADING_TEST_OUTPUT_LIMIT);
-  Mecanum_HeadingPid_Set_Target(&HeadingTestPid, HeadingTest.target_deg);
-  HeadingTestSpeed = forward_mm_s;
-  HeadingTestDuration = duration_ms;
-  HeadingTestStartTick = HeadingTestLastTick = HAL_GetTick();
-  HeadingTestSampleTick = angle.last_update_ms;
-  HeadingTestSampleCount = angle.update_count;
-  HeadingTest.active = true;
-  HeadingTest.reason = "running";
-  if (!Mecanum_Velocity_Control(forward_mm_s, 0.0f, 0.0f))
-  {
-    Mecanum_HeadingTest_Finish("motor_tx_error");
-    return false;
-  }
-  return true;
-}
-
-static void Mecanum_HeadingTest_Process(void)
-{
-  HWT101_Angle_t angle;
-  uint32_t now = HAL_GetTick();
-  if ((uint32_t)(now - HeadingTestStartTick) >= HeadingTestDuration)
-  {
-    Mecanum_HeadingTest_Finish("complete");
-    return;
-  }
-  if (!HWT101_Cal_ControlAngleGet(&angle))
-  {
-    Mecanum_HeadingTest_Finish("imu_invalid");
-    return;
-  }
-  if ((uint32_t)(now - HeadingTestLastTick) < MECANUM_VELOCITY_REFRESH_MS ||
-      angle.update_count == HeadingTestSampleCount)
-    return;
-  HeadingTest.current_deg = angle.yaw * CHASSIS_HEADING_TEST_YAW_SIGN;
-  HeadingTestPid.sample_time_s = (uint32_t)(angle.last_update_ms - HeadingTestSampleTick) / 1000.0f;
-  HeadingTest.output_rad_s = Mecanum_HeadingPid_Update(&HeadingTestPid, HeadingTest.current_deg);
-  HeadingTestLastTick = now;
-  HeadingTestSampleTick = angle.last_update_ms;
-  HeadingTestSampleCount = angle.update_count;
-  if (!Mecanum_Velocity_Control(HeadingTestSpeed, 0.0f, HeadingTest.output_rad_s))
-    Mecanum_HeadingTest_Finish("motor_tx_error");
-}
-
-void Mecanum_HeadingTest_StatusGet(Mecanum_HeadingTestStatus_t *status)
-{
-  if (status != NULL)
-    *status = HeadingTest;
-}
-
-/**********************************************************
-*** 离散位置式航向角 PID
-**********************************************************/
-void Mecanum_HeadingPid_Init(Mecanum_HeadingPid_t *pid, float kp, float ki, float kd,
-                             float sample_time_s, float integral_limit, float output_limit)
-{
-  if (pid == NULL)
-  {
-    return;
-  }
-
-  pid->kp = kp;
-  pid->ki = ki;
-  pid->kd = kd;
-  pid->sample_time_s = sample_time_s;
-  pid->integral_limit = Mecanum_Get_Abs(integral_limit);
-  pid->output_limit = Mecanum_Get_Abs(output_limit);
-  pid->target_yaw_deg = 0.0f;
-  pid->integral = 0.0f;
-  pid->previous_error_deg = 0.0f;
-  pid->output_rad_s = 0.0f;
-  pid->initialized = false;
-}
-
-void Mecanum_HeadingPid_Set_Target(Mecanum_HeadingPid_t *pid, float target_deg)
-{
-  if (pid == NULL)
-  {
-    return;
-  }
-
-  pid->target_yaw_deg = Mecanum_Wrap_Angle_Error(target_deg);
-  pid->integral = 0.0f;
-  pid->previous_error_deg = 0.0f;
-  pid->output_rad_s = 0.0f;
-  pid->initialized = false;
-}
-
-float Mecanum_HeadingPid_Update(Mecanum_HeadingPid_t *pid, float current_yaw_deg)
-{
-  float error_deg;
-  float derivative_deg_s;
-  float integral_term;
-  float output_rad_s;
-
-  if ((pid == NULL) || (pid->sample_time_s <= 0.0f))
-  {
-    return 0.0f;
-  }
-
-  error_deg = Mecanum_Wrap_Angle_Error(pid->target_yaw_deg - current_yaw_deg);
-
-  if (!pid->initialized)
-  {
-    pid->previous_error_deg = error_deg;
-    pid->initialized = true;
-  }
-
-  pid->integral += error_deg * pid->sample_time_s;
-  pid->integral = Mecanum_Clamp(pid->integral, -pid->integral_limit, pid->integral_limit);
-  derivative_deg_s = (error_deg - pid->previous_error_deg) / pid->sample_time_s;
-  integral_term = pid->ki * pid->integral;
-  output_rad_s = pid->kp * error_deg + integral_term + pid->kd * derivative_deg_s;
-  pid->output_rad_s = Mecanum_Clamp(output_rad_s, -pid->output_limit, pid->output_limit);
-  pid->previous_error_deg = error_deg;
-
-  return pid->output_rad_s;
-}
-
-bool Mecanum_Heading_Hold_Step(Mecanum_HeadingPid_t *pid, float current_yaw_deg, float forward_mm_s,
-                               float left_mm_s)
-{
-  float yaw_rad_s;
-
-  if (pid == NULL || HWT101_Cal_IsBusy())
-  {
-    return false;
-  }
-
-  yaw_rad_s = Mecanum_HeadingPid_Update(pid, current_yaw_deg);
-  return Mecanum_Velocity_Control(forward_mm_s, left_mm_s, yaw_rad_s);
 }

@@ -1,11 +1,13 @@
 # 代码目录
 
+2026-10-14：[ 比赛视觉航向分支 ](../docs/开发记录/2026-10-14-比赛视觉航向分支实现与验证.md)，默认关闭；尚未标定时开启只观测。
+
 本目录统一保存项目代码、屏幕配置、软件测试与参考项目。仓库说明和协作规则分别见 [README](../README.md) 与 [AGENTS](../AGENTS.md)；正式资料在 [docs](../docs/README.md)。
 
 | 目录 | 用途与入口 |
 |---|---|
-| `template/` | F407 主车固件；Keil `MDK-ARM/template.uvprojx`，Target `template` |
-| [orange_pi/](orange_pi/README.md) | 香橙派最新视觉源码 `vision.py`，使用 USB CDC B2；本地更新不等于实机部署 |
+| [template/](template/README.md) | F407 主车固件；Keil `MDK-ARM/template.uvprojx`，Target `template` |
+| [orange_pi/](orange_pi/README.md) | 保留视觉入口 `vision.py`；新增待接入版 `combined_color_digit_ring.py`（三环工位姿态）；本地收录不等于实机部署 |
 | [HMI/](HMI/README.md) | 串口屏 `display.HMI` 和字库资源 |
 | [物料台转盘/](物料台转盘/README.md) | 独立 F103 转盘固件及原始压缩包 |
 | [upper-computer-web/](upper-computer-web/README.md) | 本地控制台；`local-car/start.cmd` 或启动快捷方式 |

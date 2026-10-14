@@ -30,7 +30,8 @@ extern "C"
     MECHANICAL_ARM_ACTION_ZERO,
     MECHANICAL_ARM_ACTION_STOP,
     MECHANICAL_ARM_ACTION_HOME_STATE,
-    MECHANICAL_ARM_ACTION_HOME_ABORT
+    MECHANICAL_ARM_ACTION_HOME_ABORT,
+    MECHANICAL_ARM_ACTION_SPEED_READ
   } MechanicalArm_ActionTypeDef;
 
   typedef enum
@@ -64,7 +65,10 @@ extern "C"
     MechanicalArm_AxisTypeDef FailureAxis;
     MechanicalArm_ResultTypeDef Result;
     int32_t PositionPulses;
+    uint16_t SpeedRpm; /* Submitted position speed, not measured speed. */
+    uint32_t TxDoneMs; /* UART5 DMA complete; not request/reply/arrival time. */
     int32_t CurrentPosition;
+    int32_t CurrentSpeedRpm; /* Signed measured 0x35 speed; not command SpeedRpm. */
     int64_t
         CurrentPositionRaw; /* Full signed 0x36 protocol payload; inspect on legacy range error. */
     uint8_t HomeMode;
@@ -74,6 +78,7 @@ extern "C"
     uint8_t FailureMask;
     uint8_t Transmitted;  /* Complete TX observed; never inferred from accepted request. */
     uint8_t Acknowledged; /* Matched reply; stop uses TX-only and leaves this zero. */
+    uint8_t StopIdMask; /* Priority STOP targets, bit0=ID1; 0xFF only for true ALL. */
   } MechanicalArm_EventTypeDef;
 
   HAL_StatusTypeDef MechanicalArm_Init(UART_HandleTypeDef *huart);
@@ -82,11 +87,14 @@ extern "C"
   MechanicalArm_ResultTypeDef MechanicalArm_Disable(MechanicalArm_AxisTypeDef Axis);
   MechanicalArm_ResultTypeDef MechanicalArm_Position(MechanicalArm_AxisTypeDef Axis,
                                                      int32_t Pulses);
+  /* Explicit speed and driver acceleration gear (1..255) for this request;
+   * saved axis configuration and homing parameters are not changed. */
   MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef Axis,
                                                        int32_t Position, uint16_t SpeedRpm,
                                                        uint8_t Acceleration,
                                                        MechanicalArm_PositionModeTypeDef Mode);
   MechanicalArm_ResultTypeDef MechanicalArm_PositionRead(MechanicalArm_AxisTypeDef Axis);
+  MechanicalArm_ResultTypeDef MechanicalArm_SpeedRead(MechanicalArm_AxisTypeDef Axis);
   MechanicalArm_ResultTypeDef MechanicalArm_StateRead(MechanicalArm_AxisTypeDef Axis);
   /** @brief Read Emm 0x3B homing flags into StateFlags[Axis]; single axis only. */
   MechanicalArm_ResultTypeDef MechanicalArm_HomeStateRead(MechanicalArm_AxisTypeDef Axis);
@@ -96,10 +104,15 @@ extern "C"
   MechanicalArm_ResultTypeDef MechanicalArm_OriginSet(MechanicalArm_AxisTypeDef Axis);
   MechanicalArm_ResultTypeDef MechanicalArm_Home(MechanicalArm_AxisTypeDef Axis, uint8_t HomeMode);
   MechanicalArm_ResultTypeDef MechanicalArm_Zero(MechanicalArm_AxisTypeDef Axis);
+  /** @brief Priority stop; cancels the current ARM transaction, even while awaiting ACK.
+   * @note Single axis sends FE only to its own ID; ALL sends to IDs1..8.
+   * Completion reports TX only. Existing ACK quarantine is retained. */
   MechanicalArm_ResultTypeDef MechanicalArm_Stop(MechanicalArm_AxisTypeDef Axis);
-  /* Stop(all) preempts active request; single-axis stop retains the existing busy guard.
- * Stop
-   * results report completed TX only, remain available after ACK quarantine. */
+  /** @brief Queue a routine single-axis hold without preempting other UART5 work.
+   * @param Axis One of Base/Z/X; ALL is rejected.
+   * @return Accepted/busy/error; completion is reported by ResultGet as STOP.
+   * @note Tracking zero-speed use only. Human/fault stops use Stop for priority. */
+  MechanicalArm_ResultTypeDef MechanicalArm_StopScheduled(MechanicalArm_AxisTypeDef Axis);
   uint8_t MechanicalArm_ConfigSet(MechanicalArm_AxisTypeDef Axis, uint16_t SpeedRpm,
                                   uint8_t Acceleration, uint32_t PulseLimit);
   uint8_t MechanicalArm_ConfigGet(MechanicalArm_AxisTypeDef Axis,

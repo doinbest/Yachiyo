@@ -41,12 +41,12 @@ static void step(void)
     } else if(sent[1]==0x3a) { r[2]=sent[0]==8 && moving?1:3;r[3]=0x6b; }
     else if(sent[1]==0xfd) {
       unsigned pulses=((unsigned)sent[6]<<24)|((unsigned)sent[7]<<16)|((unsigned)sent[8]<<8)|sent[9];
-      assert(sent[0]==8 && sent[10]==2);
+      assert(sent[0]==8 && sent[10]==1);
       motor_rpm=((unsigned)sent[3]<<8)|sent[4];
-      target_deg=actual_deg+(sent[2]?-1.0:1.0)*pulses*360.0/3200.0;
+      target_deg=(sent[2]?-1.0:1.0)*pulses*360.0/3200.0;
       r[2]=2;r[3]=0x6b;
     } else if(sent[1]==0xf3) { assert(sent[0]==8);r[2]=2;r[3]=0x6b; }
-    else if(sent[1]==0xfe) { target_deg=actual_deg;length=0; }
+    else if(sent[1]==0xfe) { target_deg=actual_deg;r[2]=2;r[3]=0x6b; }
     else assert(0);
     if(length)MotorBus_RxBytes(r,(uint16_t)length);
   }

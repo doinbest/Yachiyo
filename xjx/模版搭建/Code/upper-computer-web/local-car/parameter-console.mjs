@@ -1,4 +1,5 @@
-import {buildCommand} from './protocol.mjs?v=grab-preset-20260930';
+import {rejectionText} from './device-text.mjs';
+import {buildCommand} from './protocol.mjs?v=chinese-notices-20261009';
 
 const decimal='[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?';
 const grabReply=new RegExp(`^OK grab config key=([a-z][a-z0-9_]*) value=(unset|${decimal})$`);
@@ -26,13 +27,13 @@ export function parseTurntableConfig(line){
 }
 
 // Firmware prints grab values with %.6g; preserve an exact zero check for 0=disabled settings.
-export const sameNumber=(actual,expected)=>actual!==null&&
-  (expected===0?actual===0:Math.abs(actual-expected)<=Math.abs(expected)*0.000006);
+export const sameNumber=(actual,expected,roundingScale=Math.abs(expected))=>actual!==null&&
+  (expected===0?actual===0:Math.abs(actual-expected)<=roundingScale*0.000006);
 
 export function parameterError(line){
   const text=String(line).replace(/^ERR\s+/,'');
   const reason=/\bbusy\b|task_running/.test(text)?'任务忙':/invalid_parameter|range|invalid_value/.test(text)?'参数非法':/unknown_key|unknown_parameter|\bkey$/.test(text)?'参数未支持':null;
-  return `设备拒绝：${reason?reason+' · ':''}${text}`;
+  return `设备拒绝：${reason?reason+' · ':''}${rejectionText(line)}`;
 }
 
 /** One explicit request at a time; TX alone never counts as a device confirmation. */

@@ -3,25 +3,44 @@ import assert from 'node:assert/strict';
 import {mountParameterPage} from '../parameter-page.mjs';
 import {parameterFields} from '../parameter-schema.mjs';
 import {parameterSurface} from './parameter-surface.mjs';
+import {RadarModel,RadarExchange} from '../radar-model.mjs';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
+
+test('saving browser-only route speed preserves an active radar parameter occupation',async()=>{
+  const ui=parameterSurface(),wires=[],occupations=[],saved=[];let occupied=true;
+  try{
+    const page=mountParameterPage({root:ui.root,send:async wire=>{wires.push(wire);return true;},canSend:()=>!occupied,onBusy:value=>{occupations.push(value);occupied=value;},onRouteSpeed:value=>saved.push(value)});
+    page.selectTab('radar');const speed=ui.input('local','route_speed');speed.value='250';speed.oninput();
+    await page.apply();
+    assert.deepEqual(saved,[250]);assert.deepEqual(wires,[]);
+    assert.equal(occupied,true);assert.deepEqual(occupations,[]);
+  }finally{ui.restore();}
+});
 
 test('read all refreshes successful fields and unset, keeps failed input, gets radar once',async()=>{
   const ui=parameterSurface(),wires=[];let page,radarGets=0;
   try{
     page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{
       wires.push(wire);queueMicrotask(()=>{
-        if(wire==='grab get x_car')page.receive('ERR grab unknown_key');
+        if(wire==='grab get base_car_offset')page.receive('ERR grab unknown_key');
         else if(wire.startsWith('config '))page.receive(`OK config ${wire.split(' ')[1]} rpm=30 acc=8 limit_pulses=${wire==='config z'?'unlimited':'3200'}`);
-        else{const [kind,,key]=wire.split(' ');page.receive(`OK ${kind} config key=${key} value=${key==='z_proc_grab'||key.startsWith('slot2')?'unset':key==='z_grab'?'-80':key==='z_lift'?'-40':'1'}`);}
+        else{const [kind,,key]=wire.split(' ');page.receive(`OK ${kind} config key=${key} value=${key==='z_temp_align'||key.startsWith('slot2')?'unset':key==='z_grab'?'-80':key==='z_lift'?'-40':'1'}`);}
       });return true;
     },radarExchange:{async get(){radarGets++;return parameterFields.filter(p=>p.kind==='radar').map(p=>({key:p.key,value:5}));},cancel(){}}});
-    ui.input('grab','x_car').value='42';ui.input('grab','x_car').oninput();
-    assert.equal(ui.input('grab','z_grab').value,'');await page.readAll();
+    assert.equal(ui.input('grab','z_grab').value,'');
+    assert.ok(ui.all().filter(e=>e.className==='parameter-field-state').every(e=>e.hidden));
+    ui.input('grab','base_car_offset').value='42';ui.input('grab','base_car_offset').oninput();
+    await page.readAll();
     assert.equal(ui.input('grab','z_grab').value,'80');assert.equal(ui.input('grab','z_lift').value,'40');
-    assert.equal(ui.input('grab','z_proc_grab').value,'');assert.equal(ui.input('grab','x_car').value,'42');
+    assert.equal(ui.input('grab','z_temp_align').value,'');assert.equal(ui.input('grab','base_car_offset').value,'42');
     assert.equal(radarGets,1);assert.equal(wires.some(w=>w.includes('route_speed')),false);
     assert.equal(ui.all().filter(e=>e.tag==='details').length,0);
-    assert.ok(ui.all().some(e=>e.textContent==='未支持'));
+    assert.ok(ui.all().some(e=>e.textContent==='未支持'&&!e.hidden));
+    assert.ok(ui.input('grab','z_grab').title.includes('80 mm'));
+    const grabRow=ui.all().find(e=>e.id==='parameter-row-grab-z_grab');
+    assert.ok(grabRow.children.find(e=>e.className==='parameter-field-state').hidden);
+    const unsetRow=ui.all().find(e=>e.id==='parameter-row-grab-z_temp_align');
+    assert.ok(unsetRow.children.some(e=>e.textContent==='未设置'&&!e.hidden));
   }finally{ui.restore();}
 });
 
@@ -32,10 +51,63 @@ test('apply current tab writes paired absolute Z and reads each back; other draf
       wires.push(wire);const [,action,key,value]=wire.split(' ');
       queueMicrotask(()=>{if(action==='set'){device[key]=Number(value);page.receive('OK grab set');}else page.receive(`OK grab config key=${key} value=${device[key]}`);});return true;
     }});
-    for(const [key,value]of [['z_grab','70'],['z_lift','40'],['ref_u','334']]){ui.input('grab',key).value=value;ui.input('grab',key).oninput();}
+    for(const [key,value]of [['z_grab','70'],['z_lift','40'],['j00','2']]){ui.input('grab',key).value=value;ui.input('grab',key).oninput();}
     await page.apply();assert.deepEqual(wires,['grab set z_grab -70','grab get z_grab','grab set z_lift -30','grab get z_lift']);
-    page.selectTab('vision');assert.equal(ui.input('grab','ref_u').value,'334');assert.equal(ui.input('grab','z_lift').value,'40');
-    assert.ok(ui.all().some(e=>e.textContent==='读回一致'));
+    page.selectTab('vision');assert.equal(ui.input('grab','j00').value,'2');assert.equal(ui.input('grab','z_lift').value,'40');
+    assert.ok(ui.all().some(e=>e.textContent.includes('已应用并读回一致')));
+    const grabRow=ui.all().find(e=>e.id==='parameter-row-grab-z_grab');
+    assert.ok(grabRow.children.find(e=>e.className==='parameter-field-state').hidden);
+  }finally{ui.restore();}
+});
+
+test('relative lift readback accepts the rounding of its absolute firmware coordinates',async()=>{
+  const ui=parameterSurface(),device={};let page;
+  try{
+    page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{
+      const [,action,key,value]=wire.split(' ');
+      queueMicrotask(()=>{if(action==='set'){device[key]=Number(value);page.receive('OK grab set');}else page.receive(`OK grab config key=${key} value=${Number(device[key].toPrecision(6))}`);});return true;
+    }});
+    for(const [key,value]of [['z_grab','800'],['z_lift','10.1234']]){ui.input('grab',key).value=value;ui.input('grab',key).oninput();}
+    await page.apply();
+    const liftRow=ui.all().find(e=>e.id==='parameter-row-grab-z_lift');
+    assert.equal(liftRow.dataset.state,'read');
+    assert.ok(liftRow.children.find(e=>e.className==='parameter-field-state').hidden);
+    assert.equal(ui.input('grab','z_lift').value,'10.1234');
+    assert.ok(ui.all().some(e=>e.textContent.includes('已应用并读回一致')));
+  }finally{ui.restore();}
+});
+
+test('an unset descent readback cannot produce a successful relative lift summary',async()=>{
+  const ui=parameterSurface(),device={};let page;
+  try{
+    page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{
+      const [,action,key,value]=wire.split(' ');
+      queueMicrotask(()=>{if(action==='set'){device[key]=Number(value);page.receive('OK grab set');}else page.receive(`OK grab config key=${key} value=${key==='z_grab'?'unset':device[key]}`);});return true;
+    }});
+    for(const [key,value]of [['z_grab','70'],['z_lift','40']]){ui.input('grab',key).value=value;ui.input('grab',key).oninput();}
+    await page.apply();
+    assert.ok(ui.all().some(e=>e.textContent==='部分完成 · 成功 0 项，失败 2 项'));
+    assert.equal(ui.all().some(e=>e.textContent.includes('已应用并读回一致')),false);
+    assert.equal(ui.input('grab','z_lift').value,'40');
+  }finally{ui.restore();}
+});
+
+test('applying one current value does not hide the remaining historical parameter summary',async()=>{
+  const ui=parameterSurface(),device={};let page;
+  try{
+    page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{
+      queueMicrotask(()=>{
+        const [kind,action,key,value]=wire.split(' ');
+        if(kind==='config')page.receive(`OK config ${action} rpm=30 acc=8 limit_pulses=${action==='z'?'unlimited':'3200'}`);
+        else if(action==='set'){device[key]=Number(value);page.receive('OK grab set');}
+        else page.receive(`OK ${kind} config key=${key} value=${device[key]??(key==='z_grab'?-80:key==='z_lift'?-40:1)}`);
+      });return true;
+    },radarExchange:{async get(){return parameterFields.filter(p=>p.kind==='radar').map(p=>({key:p.key,value:5}));},cancel(){}}});
+    await page.readAll();page.cancel('断线',true);page.selectTab('motion');
+    ui.input('grab','close_ms').value='700';ui.input('grab','close_ms').oninput();await page.apply();
+    assert.ok(ui.all().some(e=>e.className==='parameter-progress'&&e.textContent.includes('历史')));
+    assert.ok(ui.input('grab','close_ms').title.includes('设备值：700'));
+    assert.ok(ui.input('grab','z_grab').title.includes('历史设备值'));
   }finally{ui.restore();}
 });
 
@@ -43,9 +115,10 @@ test('stop cancels remaining requests without clearing drafts and disconnect mar
   const ui=parameterSurface(),wires=[];let page;
   try{
     page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);return true;}});
-    ui.input('grab','x_car').value='42';ui.input('grab','x_car').oninput();const reading=page.readAll();await tick();page.receive('OK grab config key=z_ppm value=480');await tick();page.cancel('停止');await reading;
-    assert.equal(wires.length,2);assert.equal(ui.input('grab','x_car').value,'42');assert.equal(ui.input('grab','z_ppm').value,'480');
-    page.cancel('断线',true);assert.ok(ui.all().some(e=>e.textContent.includes('历史设备值')));
+    ui.input('grab','base_car_offset').value='42';ui.input('grab','base_car_offset').oninput();const reading=page.readAll();await tick();page.receive('OK grab config key=z_ppm value=480');await tick();page.cancel('停止');await reading;
+    assert.equal(wires.length,2);assert.equal(ui.input('grab','base_car_offset').value,'42');assert.equal(ui.input('grab','z_ppm').value,'480');
+    page.cancel('断线',true);assert.ok(String(ui.input('grab','z_ppm').title??'').includes('历史设备值'));
+    assert.ok(ui.all().some(e=>e.className==='parameter-progress'&&e.textContent.includes('历史')));
   }finally{ui.restore();}
 });
 
@@ -55,7 +128,9 @@ test('rejected apply retains draft, reports the reason and never reports readbac
     page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);queueMicrotask(()=>page.receive('ERR grab busy'));return true;}});
     page.selectTab('motion');ui.input('grab','close_ms').value='700';ui.input('grab','close_ms').oninput();await page.apply();
     assert.deepEqual(wires,['grab set close_ms 700']);assert.equal(ui.input('grab','close_ms').value,'700');
-    assert.ok(ui.all().some(e=>e.textContent.includes('任务忙')&&e.textContent.includes('grab busy')));assert.equal(ui.all().some(e=>e.textContent==='读回一致'),false);
+    assert.ok(ui.all().some(e=>e.textContent.includes('任务忙')&&e.textContent.includes('抓取任务')));assert.equal(ui.all().some(e=>e.textContent==='读回一致'),false);
+    const row=ui.all().find(e=>e.id==='parameter-row-grab-close_ms');
+    assert.ok(row.children.some(e=>e.className==='parameter-field-state'&&!e.hidden&&e.dataset.state==='failed'));
   }finally{ui.restore();}
 });
 
@@ -78,9 +153,10 @@ test('successful paired descent read does not discard a lift draft when the lift
     },radarExchange:{async get(){return parameterFields.filter(p=>p.kind==='radar').map(p=>({key:p.key,value:5}));},cancel(){}}});
     await page.readAll();assert.equal(ui.input('grab','z_lift').value,'30');
     const lift=ui.input('grab','z_lift');lift.value='55';lift.oninput();page.cancel('断线',true);secondRead=true;await page.readAll();
-    assert.equal(lift.value,'55');assert.ok(ui.all().some(e=>e.textContent.includes('任务忙')&&e.textContent.includes('grab busy')));
+    assert.equal(lift.value,'55');assert.ok(ui.all().some(e=>e.textContent.includes('任务忙')&&e.textContent.includes('抓取任务')));
     const row=ui.all().find(e=>e.id==='parameter-row-grab-z_lift');
-    assert.ok(row.children.some(e=>e.textContent.includes('历史设备值')));
+    assert.ok(String(lift.title??'').includes('历史设备值'));
+    assert.ok(row.children.some(e=>e.className==='parameter-field-state'&&!e.hidden&&e.dataset.state==='failed'));
   }finally{ui.restore();}
 });
 
@@ -95,20 +171,116 @@ test('a deep link for a shared key scrolls only the requested parameter category
   }finally{ui.restore();}
 });
 
-test('material height fields stay in six aligned scenarios with all parameter inputs intact',()=>{
+test('material height fields stay in four shared-height scenarios with all parameter inputs intact',()=>{
   const ui=parameterSurface();
   try{
     mountParameterPage({root:ui.root,canSend:()=>false,send:async()=>true});
     const all=ui.all(),scenarios=all.filter(e=>e.className==='parameter-height-row');
-    assert.equal(scenarios.length,6);
-    assert.deepEqual(scenarios.map(e=>e.children[0].textContent),['原料夹取','粗加工夹取','车载取放','粗加工释放','暂存第一层','暂存第二层']);
-    assert.equal(all.filter(e=>e.className==='parameter-empty-cell').length,3);
+    assert.equal(scenarios.length,4);
+    assert.deepEqual(scenarios.map(e=>e.children[0].textContent),['原料夹取','车载取放','加工取放 / 第一层暂存','暂存第二层']);
+    assert.equal(all.filter(e=>e.className==='parameter-empty-cell').length,2);
     assert.equal(all.filter(e=>e.dataset.parameterKey).length,parameterFields.length);
     for(const row of all.filter(e=>e.className==='parameter-field')){
       const label=row.children.find(e=>e.tag==='label');
       assert.ok(all.some(e=>e.id===label.htmlFor));
     }
     assert.ok(all.some(e=>e.className==='parameter-unit'&&e.textContent==='ms'));
-    assert.ok(all.some(e=>e.textContent.includes('发出开合指令后')));
+    assert.ok(all.some(e=>e.textContent.includes('闭爪后，到下一步 Z 提起')));
+  }finally{ui.restore();}
+});
+
+test('radar installation choices start unknown and fill only the existing zero draft without TX',()=>{
+  const ui=parameterSurface(),wires=[];
+  try{
+    const page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);return true;}});
+    page.selectTab('radar');
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction'),angle=ui.root.querySelector('#parameter-radar-installation-angle'),zero=ui.input('radar','zero_deg');
+    assert.ok(direction,'installation direction control is available');assert.ok(angle);
+    assert.equal(direction.value,'');assert.equal(angle.value,'');assert.equal(zero.value,'');
+    assert.match(ui.root.querySelector('#parameter-radar-installation-status').textContent,/未读取|未知/);
+    for(const [choice,relative,world]of [['front',0,90],['right',-90,0],['rear',180,270],['left',90,180]]){
+      direction.value=choice;direction.onchange();
+      assert.equal(Number(angle.value),relative);assert.equal(Number(zero.value),world);
+      assert.equal(ui.root.querySelector('#parameter-row-radar-zero_deg').dataset.state,'draft');
+    }
+    page.selectTab('motion');page.selectTab('radar');page.cancel('停止');
+    assert.equal(direction.value,'left');assert.equal(zero.value,'180');assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+
+test('radar installation custom angle and direct zero editing synchronize wrapped directions without TX',()=>{
+  const ui=parameterSurface(),wires=[];
+  try{
+    mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);return true;}});
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction'),angle=ui.root.querySelector('#parameter-radar-installation-angle'),zero=ui.input('radar','zero_deg');
+    assert.ok(direction);direction.value='custom';direction.onchange();
+    angle.value='37.5';angle.oninput();assert.equal(zero.value,'127.5');assert.equal(direction.value,'custom');
+    angle.value='37.4';angle.oninput();assert.equal(zero.value,'127.4');
+    angle.value='-90.1';angle.oninput();assert.equal(zero.value,'359.9');
+    angle.value='-220';angle.oninput();assert.equal(zero.value,'230');assert.equal(direction.value,'custom');
+    for(const [world,choice,relative]of [[-180,'left',90],[360,'right',-90],[270,'rear',180],[45,'custom',-45],[89.9,'custom',-0.1],[0.1,'custom',-89.9]]){
+      zero.value=String(world);zero.oninput();assert.equal(direction.value,choice);assert.equal(Number(angle.value),relative);
+    }
+    zero.value='';zero.oninput();assert.equal(direction.value,'');assert.equal(angle.value,'');assert.deepEqual(wires,[]);
+  }finally{ui.restore();}
+});
+
+test('radar zero readback derives installation direction while a pending installation draft survives readback',async()=>{
+  const ui=parameterSurface(),wires=[];let page;
+  try{
+    page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{
+      wires.push(wire);queueMicrotask(()=>{
+        const [kind,,key]=wire.split(' ');
+        if(kind==='config')page.receive(`OK config ${wire.split(' ')[1]} rpm=30 acc=8 limit_pulses=${wire==='config z'?'unlimited':'3200'}`);
+        else page.receive(`OK ${kind} config key=${key} value=${key==='z_grab'?'-80':key==='z_lift'?'-40':'1'}`);
+      });return true;
+    },radarExchange:{async get(){return parameterFields.filter(p=>p.kind==='radar').map(p=>({key:p.key,value:p.key==='zero_deg'?180:5}));},cancel(){}}});
+    await page.readAll();
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction'),zero=ui.input('radar','zero_deg');assert.ok(direction);assert.equal(direction.value,'left');
+    assert.match(ui.root.querySelector('#parameter-radar-installation-status').textContent,/参数.*折算/);
+    direction.value='right';direction.onchange();await page.readAll();
+    assert.equal(direction.value,'right');assert.equal(zero.value,'0');assert.equal(ui.root.querySelector('#parameter-row-radar-zero_deg').dataset.state,'draft');
+    assert.equal(wires.some(w=>w.includes(' set ')),false);
+  }finally{ui.restore();}
+});
+
+test('applying radar installation writes only zero_deg through the existing accepted/readback comparison',async()=>{
+  const ui=parameterSurface(),wires=[],model=new RadarModel();let page,exchange,deviceZero=180;
+  try{
+    exchange=new RadarExchange({send:async wire=>{
+      wires.push(wire);queueMicrotask(()=>{
+        let reply;
+        if(wire.startsWith('radar set zero_deg ')){deviceZero=Number(wire.split(' ').at(-1));reply='OK radar parameter_updated_ram';}
+        else{assert.equal(wire,'radar get');reply='@RADAR '+JSON.stringify({v:1,k:'params',session:1,origin:1,scan:1,map:1,plan:1,page:0,pages:1,rev:2,key:'zero_deg',value:deviceZero});}
+        model.accept(reply);exchange.receive(reply);page.receive(reply);
+      });return true;
+    }});
+    page=mountParameterPage({root:ui.root,canSend:()=>true,send:async wire=>{wires.push(wire);return true;},radarExchange:exchange,radarModel:model});page.selectTab('radar');
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction');assert.ok(direction);direction.value='right';direction.onchange();assert.deepEqual(wires,[]);
+    await page.apply();assert.deepEqual(wires,['radar set zero_deg 0','radar get']);assert.equal(deviceZero,0);assert.equal(direction.value,'right');
+    assert.equal(ui.root.querySelector('#parameter-row-radar-zero_deg').dataset.state,'read');
+    assert.ok(ui.all().some(e=>e.textContent.includes('已应用并读回一致')));
+    assert.doesNotMatch(ui.root.querySelector('#parameter-radar-installation-status').textContent,/待应用/);
+  }finally{exchange?.cancel();ui.restore();}
+});
+
+test('map-side radar parameter readback updates the parameter page only as a complete live snapshot and keeps drafts',()=>{
+  const ui=parameterSurface(),model=new RadarModel(),wires=[];
+  try{
+    model.connection(true);
+    const page=mountParameterPage({root:ui.root,canSend:()=>false,send:async wire=>wires.push(wire),radarModel:model});
+    assert.equal(typeof page.refreshRadarParameters,'function');
+    const base={v:1,k:'params',session:7,origin:0,scan:0,map:0,plan:0,pages:2,rev:1};
+    const receive=value=>{model.accept('@RADAR '+JSON.stringify({...base,...value}));page.refreshRadarParameters();};
+    receive({page:0,key:'zero_deg',value:90});assert.equal(ui.input('radar','zero_deg').value,'');
+    receive({page:1,key:'lidar_x_mm',value:2170});assert.equal(ui.input('radar','zero_deg').value,'90');
+    const direction=ui.root.querySelector('#parameter-radar-installation-direction');assert.equal(direction.value,'front');
+    direction.value='left';direction.onchange();
+    receive({rev:2,page:0,key:'zero_deg',value:0});receive({rev:2,page:1,key:'lidar_x_mm',value:2180});
+    assert.equal(ui.input('radar','zero_deg').value,'180');assert.equal(direction.value,'left');
+    assert.match(ui.input('radar','zero_deg').title,/设备值：0/);
+    assert.equal(ui.input('radar','lidar_x_mm').value,'2180');
+    assert.equal(ui.root.querySelector('#parameter-row-radar-zero_deg').dataset.state,'draft');
+    assert.deepEqual(wires,[]);
   }finally{ui.restore();}
 });

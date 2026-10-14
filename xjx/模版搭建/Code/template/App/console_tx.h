@@ -2,9 +2,10 @@
 #define CONSOLE_TX_H
 #include "main.h"
 #include <stdbool.h>
-/* Wireless pacing trial values; validate on the actual link after flashing. */
-#define CONSOLE_TX_CHUNK_BYTES 32U
-#define CONSOLE_TX_GAP_MS 30U
+/* 64-byte DMA chunks, no fixed inter-chunk wait (user-selected 2026-10-05).
+ * Keep complete lines atomic; actual DL-20 throughput/loss is measured on board. */
+#define CONSOLE_TX_CHUNK_BYTES 64U
+#define CONSOLE_TX_GAP_MS 0U
 enum { CONSOLE_DEBUG_IMU, CONSOLE_DEBUG_VISION, CONSOLE_DEBUG_CAMERA, CONSOLE_DEBUG_COUNT };
 typedef struct {
   uint32_t bytes_sent, reply_dropped, urgent_dropped, debug_dropped;
@@ -17,6 +18,18 @@ bool ConsoleTx_Urgent(const char *data, uint16_t size);
 /** Main-loop only: each debug source keeps its latest unsent sample (max 320 bytes). */
 bool ConsoleTx_Debug(unsigned source, const char *data, uint16_t size);
 void ConsoleTx_DebugCancel(unsigned source);
+/** @brief Opportunistic tracking record, <=640 bytes, below replies/telemetry/debug.
+ * Main-loop only; no delay, no reply FIFO use. Accepted is not transmitted.
+ * Reuses idle DMA storage. Busy/priority traffic rejects records; an unstarted
+ * record may be replaced or preempted (sequence gaps). Started lines drain intact.
+ * @param data ASCII record, copied before returning; caller keeps no DMA buffer.
+ * @param size Record bytes, 1..640, including any line ending.
+ * @return true if selected in idle RAM, not a delivery acknowledgement.
+ * @pre Main-loop producer after ConsoleTx_Init; never call from an interrupt.
+ */
+bool ConsoleTx_Tracking(const char *data, uint16_t size);
+/** @brief Cancel an unstarted tracking record; an in-flight line finishes intact. */
+void ConsoleTx_TrackingCancel(void);
 void ConsoleTx_GetStats(ConsoleTx_Stats_t *out);
 /** USART1 only. Main-loop producers; IRQ callbacks only set completion flags. */
 void ConsoleTx_Init(UART_HandleTypeDef *uart);

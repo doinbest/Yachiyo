@@ -4,6 +4,8 @@
 
 static uint32_t tick;
 static unsigned int read_count, write_count, probe_count;
+static unsigned int reinit_count, deinit_count;
+static bool busy_until_reinit, reinit_fails;
 static HAL_StatusTypeDef result = HAL_ERROR;
 static I2C_HandleTypeDef *expected_bus;
 static uint16_t expected_reg = 0x3fU;
@@ -16,8 +18,20 @@ HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *bus, uint16_t addr, u
   (void)bus;
   assert(addr == 0xa0 && trials == 1U && timeout == 5U);
   probe_count++;
-  return result;
+  return busy_until_reinit ? HAL_BUSY : result;
 }
+HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *bus)
+{ assert(bus==expected_bus); deinit_count++; return HAL_OK; }
+HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *bus)
+{
+  assert(bus==expected_bus); reinit_count++;
+  if(reinit_fails)return HAL_ERROR;
+  busy_until_reinit=false; return HAL_OK;
+}
+uint32_t HAL_I2C_GetError(I2C_HandleTypeDef *bus)
+{ assert(bus==expected_bus); return 0x20U; }
+uint32_t HAL_I2C_GetState(I2C_HandleTypeDef *bus)
+{ assert(bus==expected_bus); return 0x24U; }
 HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *bus, uint16_t addr, uint16_t reg,
                                    uint16_t size, uint8_t *data, uint16_t length, uint32_t timeout)
 {
@@ -182,11 +196,47 @@ static void test_register_access(void)
   assert(read_count == reads_before && write_count == writes_before);
 }
 
+/* Repeated address probes cannot clear a stuck host peripheral by themselves. */
+static void test_stuck_busy_recovers_without_restarting_angle_history(void)
+{
+  I2C_HandleTypeDef bus={0}; HWT101_Angle_t before,after;
+  expected_bus=&bus;expected_reg=0x3fU;result=HAL_OK;
+  tick=5000; assert(HWT101_Init(&bus)); HWT101_Process();
+  assert(HWT101_Angle_Get(&before));
+  result=HAL_BUSY; tick+=10;HWT101_Process();assert(!HWT101_Is_Ready());
+  busy_until_reinit=true;result=HAL_OK;
+  tick+=1000;HWT101_Process();assert(reinit_count==0);
+  tick+=1000;HWT101_Process();
+  assert(HWT101_Is_Ready());
+  assert(reinit_count==1 && deinit_count==1);
+  assert(HWT101_Angle_Get(&after) && after.update_count==before.update_count+1);
+  assert(after.last_update_ms==tick);
+  /* A transient BUSY that clears before the second probe needs no reinit. */
+  result=HAL_BUSY;tick+=10;HWT101_Process();
+  tick+=1000;HWT101_Process();
+  result=HAL_OK;tick+=1000;HWT101_Process();
+  assert(HWT101_Is_Ready() && reinit_count==1);
+  /* A disconnected/NACK target is not a reason to reset the host peripheral. */
+  result=HAL_ERROR;tick+=10;HWT101_Process();
+  tick+=1000;HWT101_Process();tick+=1000;HWT101_Process();
+  assert(!HWT101_Is_Ready() && reinit_count==1);
+  /* Failed host reinit leaves qualification unavailable, and can be retried. */
+  result=HAL_OK;busy_until_reinit=true;reinit_fails=true;
+  tick+=1000;HWT101_Process();tick+=1000;HWT101_Process();
+  assert(!HWT101_Is_Ready() && reinit_count==2);
+  reinit_fails=false;tick+=1000;HWT101_Process();tick+=1000;HWT101_Process();
+  assert(HWT101_Is_Ready() && reinit_count==3);
+  HWT101_Status_t s;assert(HWT101_Status_Get(&s));
+  assert(s.reinit_count==3 && s.reinit_hal==HAL_OK && s.probe_fail_count>=6);
+  assert(s.hal_state==0x24U && s.hal_error==0x20U);
+}
+
 int main(void)
 {
   test_uninitialized_register_access();
   test_angle_polling_unchanged();
   test_register_access();
+  test_stuck_busy_recovers_without_restarting_angle_history();
   puts("HWT101 bounded register access and angle-cache tests passed");
   return 0;
 }

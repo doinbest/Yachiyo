@@ -5,8 +5,67 @@ import {BridgeLink,readOnlyCommand,scopedStopCommand} from '../bridge.mjs';
 import {frameCommand,moduleForWire} from '../protocol.mjs';
 import {chineseTerminalLine} from '../terminal-format.mjs';
 
+test('one result request assembles the exact map and path without per-page round trips',async()=>{
+  const model=new radar.RadarModel(),wires=[],target={session:13,origin:0,scan:7,map:7,plan:7};let exchange;
+  const frames=[{k:'map',page:0,pages:2,mask:1378624,pose:[2170,230,180]},
+    {k:'map',page:1,pages:2,offset:0,a:3,f:[100,40000,0,3600,1,0,255],counts:Array(25).fill(1)},
+    {k:'path',page:0,pages:2,offset:0,valid:true,points:[[2250,150,1,0]]},
+    {k:'path',page:1,pages:2,offset:1,points:[[2100,300,0,0],[2100,1200,5,1]]}];
+  exchange=new radar.RadarExchange({timeoutMs:50,send:async wire=>{wires.push(wire);queueMicrotask(()=>{
+    for(const frame of frames){const line='@RADAR '+JSON.stringify({v:1,...target,...frame});model.accept(line);exchange.receive(line);}
+  });return true;}});
+  await exchange.result(target);
+  assert.deepEqual(wires,['radar result 7']);assert.equal(model.snapshots.map.mask,1378624);
+  assert.deepEqual(model.snapshots.path.points,[[2250,150,1,0],[2100,300,0,0],[2100,1200,5,1]]);
+});
+
+test('result end repairs only the missing page and ignores another capture',async()=>{
+  const model=new radar.RadarModel(),wires=[],target={session:13,origin:0,scan:7,map:7,plan:7};let exchange;
+  const emit=frame=>{const line='@RADAR '+JSON.stringify({v:1,...target,...frame});model.accept(line);exchange.receive(line);};
+  exchange=new radar.RadarExchange({timeoutMs:50,send:async wire=>{wires.push(wire);queueMicrotask(()=>{
+    if(wire==='radar result 7'){
+      emit({scan:6,k:'path',page:0,pages:1,offset:0,valid:false,points:[]});
+      emit({k:'map',page:0,pages:2,mask:1378624,pose:[2170,230,180]});
+      emit({k:'path',page:0,pages:1,offset:0,valid:true,points:[[2250,150,1,0]]});
+      emit({k:'result_end',mp:2,pp:1});
+    }else emit({k:'map',page:1,pages:2,offset:0,counts:Array(25).fill(0)});
+  });return true;}});
+  await exchange.result(target);assert.deepEqual(wires,['radar result 7','radar fetch map 7 1']);
+  assert.equal(model.snapshots.map.counts.length,25);assert.equal(model.snapshots.path.scan,7);
+  assert.equal(readOnlyCommand('radar result 7'),true);frameCommand('radar result 7');
+});
+
+test('intact radar JSON after an interrupted command echo still updates the device state',()=>{
+  const wire='arm> rad@RADAR {"v":1,"k":"status","session":13,"origin":0,"scan":7,"map":7,"plan":7,"page":0,"pages":1,"state":"ready","reason":"complete"}';
+  const model=new radar.RadarModel();
+  assert.equal(model.accept(wire),true);
+  assert.equal(model.status.scan,7);assert.equal(model.status.state,'ready');
+  assert.equal(radar.parseRadar('arm> rad@RADAR {"v":1,"k":"status"'),null);
+  assert.equal(radar.parseRadar('radar fetch path 7 2'),null);
+});
+
+test('a complete radar page after command echo satisfies the exact pending read without retry',async()=>{
+  const wires=[];let exchange;
+  exchange=new radar.RadarExchange({timeoutMs:50,send:async wire=>{
+    wires.push(wire);queueMicrotask(()=>exchange.receive('arm> rad@RADAR {"v":1,"k":"path","session":13,"origin":0,"scan":7,"map":7,"plan":7,"page":0,"pages":1,"offset":0,"start":2,"valid":true,"failed_leg":0,"points":[[2100,1200,5,1]]}'));
+    return true;
+  }});
+  assert.equal((await exchange.fetch('path',7)).length,1);
+  assert.deepEqual(wires,['radar fetch path 7 0']);
+});
+
+test('frozen filter and algorithm metadata on the first counts page bind to the complete map',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'map',session:9,origin:2,scan:3,map:7,plan:8,pages:3};
+  model.accept('@RADAR '+JSON.stringify({...base,page:1,offset:0,a:3,f:[100,40000,0,3600,1,0,255],counts:Array(12).fill(1)}));
+  model.accept('@RADAR '+JSON.stringify({...base,page:0,g:2,mask:0x50140,pose:[2250,150,180]}));
+  assert.equal(model.snapshots.map,undefined);
+  model.accept('@RADAR '+JSON.stringify({...base,page:2,offset:12,counts:Array(13).fill(2)}));
+  assert.equal(model.snapshots.map.a,3);assert.deepEqual(model.snapshots.map.f,[100,40000,0,3600,1,0,255]);
+  assert.deepEqual(model.snapshots.map.pose,[2250,150,180]);assert.equal(model.snapshots.map.counts.length,25);
+});
+
 test('complete radar pages are assembled out of order without mixing maps or erasing history',()=>{
-  const model=new radar.RadarModel(),base={v:1,k:'map',session:9,origin:2,scan:3,map:7,plan:0,pages:2,mask:4,pose:[2250,150,0]};
+  const model=new radar.RadarModel(),base={v:1,k:'map',session:9,origin:2,scan:3,map:7,plan:0,pages:2};
   model.accept('@RADAR '+JSON.stringify({...base,page:1,offset:5,counts:[6,7,8,9,10]}),100);
   assert.equal(model.snapshots.map,undefined);
   model.accept('@RADAR '+JSON.stringify({...base,page:0,offset:0,counts:[1,2,3,4,5]}),110);
@@ -31,6 +90,26 @@ test('serial page fetch waits for its exact reply and ignores unrelated and old 
   const result=await fetcher.fetch('map',7);
   assert.equal(result.length,2);
   assert.deepEqual(wires,['radar fetch map 7 0','radar fetch map 7 1']);
+});
+
+test('overlapping page_pending preserves the exact read until its already queued reply arrives',async()=>{
+  const wires=[];let exchange;
+  exchange=new radar.RadarExchange({send:async wire=>{
+    wires.push(wire);queueMicrotask(()=>{
+      exchange.receive('arm> ERR radar page_pending');
+      exchange.receive('@RADAR '+JSON.stringify({v:1,k:'map',session:1,origin:0,scan:3,map:3,plan:3,page:0,pages:1,counts:Array(25).fill(0),offset:0}));
+    });return true;
+  },timeoutMs:100});
+  assert.equal((await exchange.fetch('map',3)).length,1);
+  assert.deepEqual(wires,['radar fetch map 3 0']);
+});
+
+test('page_pending without a matching page still times out and other device errors still fail',async()=>{
+  let exchange;
+  exchange=new radar.RadarExchange({send:async()=>{queueMicrotask(()=>exchange.receive('ERR radar page_pending'));return true;},timeoutMs:20});
+  await assert.rejects(exchange.fetch('map',3),/超时/);
+  exchange.send=async()=>{queueMicrotask(()=>exchange.receive('arm> ERR radar snapshot_changed_or_page_range'));return true;};
+  await assert.rejects(exchange.fetch('map',3),/snapshot_changed_or_page_range/);
 });
 
 test('radar write rejected before get preserves the device reason',async()=>{
@@ -107,7 +186,7 @@ test('radar transport reaches the snapshot consumer independently of terminal RX
 test('a new scan keeps the previous complete cloud and labels it historical even when the old map remains',()=>{
   const model=new radar.RadarModel(),base={v:1,session:1,origin:2,scan:3,map:7,plan:0,page:0,pages:1};
   model.connection(true);
-  model.accept('@RADAR '+JSON.stringify({...base,k:'map',mask:0,pose:[2170,230,180],counts:[0],offset:0}));
+  model.accept('@RADAR '+JSON.stringify({...base,k:'map',mask:0,pose:[2170,230,180],counts:Array(25).fill(0),offset:0}));
   model.accept('@RADAR '+JSON.stringify({...base,k:'cloud',points:[[900,200,50]],offset:0,total:1}));
   assert.deepEqual(model.snapshots.cloud.pose,[2170,230,180]);
   model.accept('@RADAR '+JSON.stringify({...base,k:'status',scan:4,state:'collecting',points_valid:false}));
@@ -129,7 +208,7 @@ test('three-sample firmware pages assemble without assuming the previous four-sa
 
 test('reconnecting preserves historical labels until that kind is fully read again, even if IDs coincide',()=>{
   const model=new radar.RadarModel(),base={v:1,session:1,origin:2,scan:3,map:7,plan:0,page:0,pages:1};
-  const map='@RADAR '+JSON.stringify({...base,k:'map',mask:0,pose:[2170,230,180],counts:[0],offset:0});
+  const map='@RADAR '+JSON.stringify({...base,k:'map',mask:0,pose:[2170,230,180],counts:Array(25).fill(0),offset:0});
   model.connection(true);model.accept(map);
   model.accept('@RADAR '+JSON.stringify({...base,k:'cloud',points:[[900,200,50]],offset:0,total:1}));
   assert.doesNotMatch(model.describe(model.snapshots.map),/历史/);
@@ -143,4 +222,84 @@ test('reconnecting preserves historical labels until that kind is fully read aga
   model.accept(map);
   assert.doesNotMatch(model.describe(model.snapshots.map),/历史/);
   assert.match(model.describe(model.snapshots.cloud),/历史/);
+});
+
+test('firmware maps require all 25 counts independently of compact page capacities',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'map',session:1,origin:2,scan:3,map:7,plan:8,pages:3};
+  const frame=f=>'@RADAR '+JSON.stringify({...base,...f});
+  model.accept(frame({page:0,mask:4,pose:[2170,230,180]}));
+  model.accept(frame({page:1,offset:0,counts:Array(7).fill(1)}));
+  model.accept(frame({page:2,offset:7,counts:Array(17).fill(2)}));
+  assert.equal(model.snapshots.map,undefined,'a short compact map must not publish a partial grid');
+  model.accept(frame({page:2,offset:7,counts:Array(18).fill(2)}));
+  assert.deepEqual(model.snapshots.map.counts,[...Array(7).fill(1),...Array(18).fill(2)]);
+});
+
+test('three-circle map retains frozen aggregation metadata from the counts page',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'map',session:1,origin:2,scan:3,map:7,plan:8,pages:2};
+  model.accept('@RADAR '+JSON.stringify({...base,page:0,mask:4,pose:[2170,230,180]}));
+  model.accept('@RADAR '+JSON.stringify({...base,page:1,a:3,c:3,f:[100,40000,0,3600,1,0,255],offset:0,counts:Array(25).fill(3)}));
+  assert.equal(model.snapshots.map.c,3);assert.equal(model.snapshots.map.a,3);
+  assert.deepEqual(model.snapshots.map.f,[100,40000,0,3600,1,0,255]);
+});
+
+test('default page transport immediately requests the next page after the matched reply',async()=>{
+  const wires=[];let exchange;
+  exchange=new radar.RadarExchange({send:async wire=>{
+    wires.push(wire);const page=Number(wire.split(' ').at(-1));
+    queueMicrotask(()=>exchange.receive('@RADAR '+JSON.stringify({v:1,k:'path',session:1,origin:2,scan:3,map:7,plan:8,page,pages:2,offset:page,points:[[page,100,0,0]]})));return true;
+  }});
+  const reading=exchange.fetch('path',8);reading.catch(()=>{});
+  try{await new Promise(setImmediate);assert.equal(wires.length,2,'matched pages should have no one-second browser sleep');await reading;}
+  finally{exchange.cancel();await reading.catch(()=>{});}
+});
+
+test('start classification pages publish atomically and retain both candidate scores',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'start',session:9,origin:2,scan:3,map:7,plan:8,id:3,pages:2};
+  model.connection(true);
+  model.accept('@RADAR '+JSON.stringify({...base,page:1,qr:[0,4],raw:[0,5],conflicts:[0,2]}));assert.equal(model.snapshots.start,undefined);
+  model.accept('@RADAR '+JSON.stringify({...base,page:0,auto:true,selected:1,reason:'clear_regions'}));
+  assert.ok(model.snapshots.start,'classification should publish after all score pages arrive');
+  assert.equal(model.snapshots.start.selected,1);assert.deepEqual(model.snapshots.start.qr,[0,4]);assert.deepEqual(model.snapshots.start.conflicts,[0,2]);
+  model.connection(false);assert.equal(model.snapshots.start.historical,true);
+});
+
+test('start classification supports an extra budget page without mixing completed circles',()=>{
+  const model=new radar.RadarModel(),base={v:1,k:'start',session:4294967295,origin:4294967294,scan:4294967293,map:4294967292,plan:4294967291,id:4294967293,pages:3};
+  const frame=value=>'@RADAR '+JSON.stringify({...base,...value});
+  model.accept(frame({page:0,auto:true,selected:0,reason:'both_conflict'}));
+  model.accept(frame({page:1,qr:[1,2],raw:[3,4]}));model.accept(frame({page:2,id:22,conflicts:[2,2]}));assert.equal(model.snapshots.start,undefined);
+  model.accept(frame({page:2,conflicts:[2,2]}));assert.ok(model.snapshots.start,'classification should assemble variable score pages');assert.equal(model.snapshots.start.reason,'both_conflict');assert.deepEqual(model.snapshots.start.raw,[3,4]);
+});
+
+test('offline copies retain only the start and path belonging to their complete map',()=>{
+  const base={session:9,origin:2,scan:3,map:7,plan:8},map={...base,mask:0,counts:Array(25).fill(0),pose:[2330,2170,0],coordinate_frame:'current'};
+  const upper=radar.importSnapshot({snapshots:{map,start:{...base,selected:1},path:{...base,start:1,points:[[2250,2250,1,0]]}},params:{lidar_x_mm:2170,lidar_y_mm:230,zero_deg:180}});
+  assert.equal(upper.start_id,1);assert.equal(upper.start_mode,'upper');assert.equal(radar.importSnapshot(JSON.parse(JSON.stringify(upper))).start_id,1);
+  const untouchedOffline=radar.importSnapshot({snapshots:{map,start:{...base,selected:1}},offline:{mask:0x50140,coordinate_frame:'current'}});
+  assert.equal(untouchedOffline.start_id,1);assert.equal(untouchedOffline.mask,0);
+  const lower=radar.importSnapshot({snapshots:{map,start:{...base,scan:4,selected:0},path:{...base,start:2,points:[[2250,150,1,0]]}}});
+  assert.equal(lower.start_id,2);assert.equal(lower.start_mode,'lower');
+  const unrelated=radar.importSnapshot({snapshots:{map,start:{...base,scan:4,selected:1},path:{...base,map:8,start:1,points:[[2250,2250,1,0]]}}});
+  assert.equal(unrelated.start_id,undefined);assert.equal(unrelated.start_mode,'manual');assert.deepEqual(unrelated.points,[]);
+});
+
+test('exported offline obstacle edits and selected corner take precedence over the original device snapshot',()=>{
+  const copy=radar.importSnapshot({snapshots:{map:{mask:0,counts:Array(25).fill(0),coordinate_frame:'current'}},offline:{mask:1<<21,manual_mask:1<<21,start_id:1,start_mode:'upper',pose:[2330,2170,0],coordinate_frame:'current'}});
+  assert.equal(copy.mask,1<<21);assert.equal(copy.manual_mask,1<<21);assert.equal(copy.start_id,1);
+});
+
+
+test('a matching complete raw cloud takes precedence over a newer display sample on offline import',()=>{
+  const base={session:9,origin:2,scan:3,map:7,plan:8};
+  const full={...base,k:'cloud',complete:true,truncated:false,receivedAt:100,points:[[90,800,30],[100,800,30]]};
+  const sample={...base,k:'points',complete:true,truncated:false,receivedAt:200,points:[[90,800,30]]};
+  const result=radar.importSnapshot({snapshots:{map:{...base,mask:0,pose:[2250,150,180]},cloud:full,points:sample}});
+  assert.equal(result.cloud,full);
+});
+
+test('bare polar points can declare cloud completeness without an inferred point-count rule',()=>{
+  const points=[[90,800,30],[100,800,30]];
+  const result=radar.importSnapshot({mask:0,start_id:2,pose:[2250,150,180],points,cloud_complete:true});
+  assert.deepEqual(result.cloud?.points,points);assert.equal(result.cloud?.cloud_complete,true);
 });

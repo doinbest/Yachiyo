@@ -1,9 +1,23 @@
 /** @file chassis_motion.h
- * @brief 主循环20ms有限时长低速任务。完成仅表示时间结束且停车发送完成。
+ * @brief 主循环20ms运动任务；距离及转向完成需要反馈到位和实际停车证据。
  */
 #ifndef CHASSIS_MOTION_H
 #define CHASSIS_MOTION_H
+#include "chassis_path.h"
 #include "chassis_model.h"
+
+typedef enum { CHASSIS_PROFILE_LINEAR, CHASSIS_PROFILE_COSINE } ChassisMotion_Profile_t;
+/** Select the next distance task while idle. The accepted action snapshots it. */
+bool ChassisMotion_ProfileSet(ChassisMotion_Profile_t profile);
+ChassisMotion_Profile_t ChassisMotion_ProfileGet(void);
+static inline const char *ChassisMotion_ProfileName(ChassisMotion_Profile_t profile)
+{ return profile==CHASSIS_PROFILE_COSINE?"cosine":"linear"; }
+
+/** Continuous path retains its final target and only stops at that target.
+ * resume_mm is the saved path progress, zero for a new leg. */
+bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn_deg_s,
+                             uint32_t timeout,float resume_mm);
+float ChassisMotion_PathProgress(void);
 
 typedef enum
 {
@@ -36,12 +50,16 @@ typedef struct
   float rpm_unquantized[4];
   int16_t rpm_command[4];
   float rpm_scale;
-  bool distance_mode, stop_confirmed;
+  bool distance_mode, turn_only, stop_confirmed, indefinite_velocity;
   float target_x_mm, target_y_mm, target_map_yaw_deg;
   float error_x_mm, error_y_mm, error_heading_deg;
   bool heading_valid, map_anchor_valid;
   float current_deg, unwrapped_yaw_deg, map_yaw_rad;
   uint32_t heading_sample_tick;
+  uint32_t heading_revision; /* Map correction only, independent of origin generation. */
+  ChassisMotion_Profile_t profile;
+  float peak_mm_s; /* Fresh wheel-feedback planar speed, never commanded speed. */
+  uint32_t stop_ms; /* Final stop request to fresh standstill confirmation. */
 } ChassisMotion_Status_t;
 
 /** @brief 启动时初始化RAM；不得用它终止运行中的电机。 */
@@ -49,23 +67,50 @@ void ChassisMotion_Init(void);
 /** @brief 0目标、角速度模式、500ms过渡/1000ms保持/500ms减速。 */
 void ChassisMotion_TargetDefaults(ChassisMotion_Target_t *target);
 /** @brief 仅空闲且视觉/机械臂/校准/底盘无冲突时接受任务；不阻塞。
- * @param target 车体mm/s、rad/s；线速度模长<=100、角速度<=0.15。
+ * @param target 车体mm/s、rad/s；线速度模长<=5000、角速度<=100°/s（约1.745329 rad/s）。
  * @return true为RAM目标接受，非发送完成或到位；失败原因见状态。
  * @pre 主循环调用；heading模式要求本次静止验证通过、角度新鲜且已AnchorSet。
  * HOLD_CURRENT只要求验证后的新鲜角度，不建立或修改地图锚点。
  */
 bool ChassisMotion_Start(const ChassisMotion_Target_t *target);
+/** @brief Indefinite body velocity until explicit stop; immediate target, drive grade20.
+ * Linear speed <=5000 mm/s; legacy debug yaw <=360 deg/s (2*PI rad/s).
+ * Same admission gates as timed tasks, no duration surrogate.
+ */
+bool ChassisMotion_VelocityStart(float vx_mm_s, float vy_mm_s, float omega_rad_s);
+/** @brief Replace only a running indefinite target; preserve action/start tick. */
+bool ChassisMotion_VelocityUpdate(float vx_mm_s, float vy_mm_s, float omega_rad_s);
+/** @brief Legacy module-yaw hold: capture qualified fresh yaw, no map origin.
+ * forward=-100..100 mm/s, duration=1000..10000 ms, immediate target/drive grade20.
+ */
+bool ChassisMotion_HoldStart(float forward_mm_s, uint32_t duration_ms);
+typedef struct
+{
+  bool active;
+  const char *reason;
+  float target_deg, current_deg, output_rad_s;
+} ChassisMotion_HoldStatus_t;
+void ChassisMotion_HoldStatusGet(ChassisMotion_HoldStatus_t *status);
 /** @brief Feedback-position task in map mm/deg; main-loop, qualified fresh IMU,
  * valid origin and four-wheel feedback required. True means accepted only.
  */
 bool ChassisMotion_MoveTo(float x_mm, float y_mm, float map_yaw_deg,
                           float max_speed_mm_s, uint32_t timeout_ms);
+/** @brief 原地转至绝对地图航向，只输出角速度，不修正XY漂移。
+ * @param map_yaw_deg 地图角度，-180..180 deg；+X为0，逆时针为正。
+ * @param timeout_ms 同一动作及角度修正的总时限，20..400000 ms。
+ * @return true仅表示受理；完成需要IMU到角及新鲜四轮停车反馈。
+ * @pre 有效地图原点、已验证IMU、四轮新鲜静止反馈；抓取任务空闲。
+ */
+bool ChassisMotion_TurnTo(float map_yaw_deg, uint32_t timeout_ms);
+bool ChassisMotion_TurnToSpeed(float map_yaw_deg,float max_deg_s,uint32_t timeout_ms);
 /** @brief Refresh heading before localization sampling, without sending targets. */
 void ChassisMotion_HeadingProcess(void);
 /** @brief 半余弦减速后请求停车；stop_ms=0立即取消并请求异步停车。 */
 bool ChassisMotion_Stop(uint32_t stop_ms);
-/** @brief HWT101/校准处理之后、Mecanum_Velocity_Process之前循环调用。
- * 超过100ms调度间隔直接停车报错，不补跑积压周期。
+/** @brief HWT101/校准处理之后、Mecanum_Process之前循环调用。
+ * 规划曲线超过100ms调度间隔直接停车报错，不补跑积压周期。
+ * 兼容持续速度/hold无位移积分，短调度间隔恢复后刷新原目标；hold仍检查IMU新鲜度与时长。
  */
 void ChassisMotion_Process(void);
 bool ChassisMotion_IsBusy(void);
@@ -92,4 +137,8 @@ void ChassisMotion_StopStatusGet(ChassisStop_Status_t *status);
 bool ChassisMotion_AnchorSet(float map_yaw_rad);
 /** @brief 归零/重校准/重启通知；角度失效也会自动撤销锚点。 */
 void ChassisMotion_AnchorInvalidate(void);
+/** Internal half of ChassisHeading_Apply; preserves raw IMU unwrap. */
+bool ChassisMotion_AnchorCorrect(float map_yaw_rad);
+/** Station-only precision; ordinary turns retain their existing tolerance. */
+bool ChassisMotion_TurnToPrecision(float yaw,float max_deg_s,float tolerance_deg,uint32_t timeout);
 #endif

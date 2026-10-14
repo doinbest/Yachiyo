@@ -1,8 +1,12 @@
 const pages=new Set(['system','chassis','map','qr','vision','params','arm']);
 const parameterTabs=new Set(['material','turntable','vision','motion','radar']);
 const mapTabs=new Set(['monitor','radar','offline']);
+const visionTabs=new Set(['mission','ring','stack','grab','heading','route','camera']);
 export function parsePageRoute(hash){
   const [page,tab,key]=String(hash??'').replace(/^#/,'').split('/');
+  if(page==='vision'){
+    return {page,tab:tab==='track'?'grab':visionTabs.has(tab)?tab:'mission',key};
+  }
   return {page:pages.has(page)?page:'system',tab:page==='params'?(parameterTabs.has(tab)?tab:'material'):page==='map'?(mapTabs.has(tab)?tab:'monitor'):tab,key};
 }
 /** In-memory context only; the caller performs navigation without device I/O. */

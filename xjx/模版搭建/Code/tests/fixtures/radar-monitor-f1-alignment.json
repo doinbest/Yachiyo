@@ -1,0 +1,19 @@
+{
+  "source": "synthetic_direction_and_outer_band_fixture_not_hardware",
+  "distance_unit": "mm",
+  "raw_angle_unit": "0.1deg_clockwise",
+  "f1_pose": [1200, 1200],
+  "formal_pose": [1200, 1200, 180],
+  "angle_range": [0, 3600],
+  "distance_range": [100, 40000],
+  "energy_range": [0, 255],
+  "threshold": 1,
+  "f1_grid": [150, 550, 1000, 1400, 1850, 2250],
+  "formal_grid": [0, 550, 1000, 1400, 1850, 2400],
+  "inner_samples": [[0, 600, 80], [900, 600, 80], [1800, 600, 80], [2700, 600, 80]],
+  "formal_inner_cells": [11, 17, 13, 7],
+  "outer_samples": [[0, 1125, 80], [900, 1125, 80], [1800, 1125, 80], [2700, 1125, 80]],
+  "formal_outer_cells": [10, 22, 14, 2],
+  "f1_outer_filtered": 4,
+  "f1_outer_outside": 4
+}

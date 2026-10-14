@@ -22,6 +22,9 @@ typedef struct
 {
   float x_mm, y_mm, yaw_rad;
 } ChassisModel_Pose_t;
+/** @brief Shared X-wheel decomposition (mm/s, or mm for displacement). */
+bool ChassisModel_WheelLinearInverse(const ChassisModel_Geometry_t *g,
+                                     const ChassisModel_Velocity_t *v, float out[4]);
 /** @brief X型麦轮逆解；组合后按最大RPM整组缩放，再四舍五入整数RPM。
  * @param max_rpm 1..32767，正有限值。
  * @param out rpm为缩放后未量化值；command为整数值；scale为共同缩放比例。

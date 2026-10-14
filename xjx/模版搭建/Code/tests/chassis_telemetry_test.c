@@ -12,8 +12,11 @@ static bool motion_busy;
 static ChassisMotion_Status_t motion_fixture;
 static ChassisMotion_Target_t submitted;
 static bool route_busy;
+static unsigned turns;
+static float turn_yaw;
+bool ChassisMotion_TurnTo(float yaw,uint32_t timeout){assert(timeout==60000);turns++;turn_yaw=yaw;return true;}
 bool ChassisRoute_IsBusy(void){return route_busy;}
-void ChassisRoute_StatusGet(ChassisRoute_Status_t *out){memset(out,0,sizeof(*out));out->state="waiting";out->reason="arrived";out->segment=2;out->action_id=9;out->target_x_mm=1200;out->stop_confirmed=true;}
+void ChassisRoute_StatusGet(ChassisRoute_Status_t *out){memset(out,0,sizeof(*out));out->state="waiting";out->reason="arrived";out->segment=2;out->total=15;out->action_id=9;out->target_x_mm=1200;out->stop_confirmed=true;out->phase="arrival_turn";out->direction="turn";out->speed_mm_s=200;out->phase_target_x_mm=1200;out->phase_target_y_mm=2100;out->phase_target_yaw_deg=90;}
 static char reply[4096],frame[2048];
 static bool tx_ready=true;
 static unsigned telemetry_cancels;
@@ -38,6 +41,9 @@ bool ChassisMotion_IsBusy(void){return motion_busy;}
 bool ChassisMotion_AnchorSet(float yaw){(void)yaw;return true;}
 int main(void)
 {
+  {char *turn[]={"chassis","turn","180"};
+   assert(ChassisTelemetry_Command(3,turn));assert(turns==1 && turn_yaw==180 && strstr(reply,"OK"));
+   turn[2]="181";assert(ChassisTelemetry_Command(3,turn));assert(turns==1 && strstr(reply,"ERR"));}
   {char *run[]={"chassis","run","50","0","0","19500"};
    assert(ChassisTelemetry_Command(6,run));assert(submitted.mode==CHASSIS_MOTION_HOLD_CURRENT);
    run[4]="0.1";assert(ChassisTelemetry_Command(6,run));
@@ -54,9 +60,11 @@ int main(void)
   tick=220;ChassisTelemetry_Process();assert(!frame[0]);
   tick=2200;ChassisLocalization_Process();ChassisTelemetry_Process();assert(strstr(frame,"\"v\":2"));
   assert(strlen(frame)<1000);assert(strstr(frame,"-4294967295"));assert(strstr(frame,"\"route\":[\"waiting\",\"arrived\",2,9"));assert(strstr(frame,"\"dropped\":7"));puts(frame);
+  assert(strstr(frame,"\"route_meta\":") && strstr(frame,"\"phase_target\":["));
   {char *snapshot[]={"chassis","snapshot"};assert(ChassisTelemetry_Command(2,snapshot));
    assert(strstr(reply,"\"v\":1") && strstr(reply,"\"position_valid\":[false,false,false,false]"));
    assert(strstr(reply,"\"stop_confirmed\":true"));
+   assert(strstr(reply,"\"route_meta\":") && strstr(reply,"\"phase_target\":["));
    printf("wire bytes compact=%u detailed=%u\n",(unsigned)strlen(frame),(unsigned)strlen(reply));
    assert(strlen(frame)*10 < strlen(reply)*7);}
   motion_fixture.distance_mode=true;motion_fixture.state=CHASSIS_MOTION_STOPPING;
@@ -73,12 +81,24 @@ int main(void)
    assert(strstr(reply,"error_mm=") && strstr(reply,"stop_confirmed="));motion_fixture.distance_mode=false;}
   {char *task[]={"chassis","task"};motion_fixture.requested.mode=CHASSIS_MOTION_HOLD_CURRENT;
    motion_fixture.requested.heading_deg=12.5f;assert(ChassisTelemetry_Command(2,task));
-   assert(strstr(reply,"mode=2 target_deg=12.50") && strstr(reply,"yaw_valid="));}
+   assert(strstr(reply,"mode=2 target_deg=12.50") && strstr(reply,"yaw_valid="));
+   assert(strstr(reply,"origin_valid=") && strstr(reply,"origin_mm=") &&
+          strstr(reply,"feedback_valid=") && strstr(reply,"feedback_age_ms=") && strstr(reply,"\r\n"));
+   }
   assert(!ChassisTelemetry_ConfirmPositionUnits(16384));
   assert(ChassisTelemetry_ConfirmPositionUnits(65536));
+  {char *task[]={"chassis","task"};ChassisLocalization_Status_t before,after;
+   assert(ChassisTelemetry_Origin(2250,150,3.14159265358979323846f/2));
+   ChassisLocalization_Get(&before);
+   assert(ChassisTelemetry_Command(2,task));ChassisLocalization_Get(&after);
+   assert(strstr(reply,"origin_valid=1 origin_mm=2250.000,150.000 origin_deg=90.000"));
+   assert(strstr(reply,"feedback_valid=0") && strlen(reply)<640 && strstr(reply,"\r\n"));
+   assert(after.generation==before.generation && after.origin_valid && turns==1);}
   assert(ChassisTelemetry_Stream(false,0));frame[0]=0;tick=1000;ChassisTelemetry_Process();assert(!frame[0]);
   assert(telemetry_cancels>=2);
   route_busy=true;
+  {char *turn[]={"chassis","turn","90"};assert(ChassisTelemetry_Command(3,turn));
+   assert(turns==1 && strstr(reply,"ERR"));}
   {char *profile[]={"chassis","profile","none"};char *feedback[]={"chassis","feedback","on"};
    assert(ChassisTelemetry_Command(3,profile));assert(strstr(reply,"ERR"));
    assert(ChassisTelemetry_Command(3,feedback));assert(strstr(reply,"ERR"));}
