@@ -312,6 +312,16 @@ export const GRAB_PARAMETER_METADATA = Object.freeze({
     "max": 20.0,
     "step": "any"
   },
+  "head_line_zero": {
+    "min": -90.0,
+    "max": 90.0,
+    "step": "any"
+  },
+  "head_line_gain": {
+    "min": -20.0,
+    "max": 20.0,
+    "step": "any"
+  },
   "head_tol": {
     "min": 0.0,
     "max": 2.0,
@@ -392,7 +402,7 @@ export const GRAB_FORM_DEFAULTS = Object.freeze({
   "z_stack_place": -110.0,
   "z_rough_align": -100.0,
   "z_temp_align": -100.0,
-  "base_car_offset": -130.0,
+  "base_car_offset": -127.5,
   "vision_wait_ms": 12000.0,
   "x_transfer_speed": 60.0,
   "z_pick_speed": 111.11111111,
@@ -402,10 +412,10 @@ export const GRAB_FORM_DEFAULTS = Object.freeze({
   "qr_wait_ms": 1000.0,
   "base_home_degrade": 1.0,
   "track_pick_tol_px": 100.0,
-  "track_pick_hold_ms": 10.0,
+  "track_pick_hold_ms": 0.0,
   "track_store_drop_mm": 40.0,
   "car_pick_drop_mm": 40.0,
-  "arrival_hold_ms": 500.0,
+  "arrival_hold_ms": 200.0,
   "release_ms": 300.0,
   "car_pick_wait_ms": 300.0
 });

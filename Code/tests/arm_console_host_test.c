@@ -52,6 +52,7 @@ void GrabTask_Stop(void){grab_stops++;grab_busy=false;}
 void GrabRoute_Stop(void){grab_route_busy=false;if(grab_busy)GrabTask_Stop();}
 static unsigned mission_pauses,mission_cancels,mission_fields;
 bool GrabRoute_Command(unsigned n,char *t[]){
+ if(n==4 && !strcmp(t[0],"grab") && !strcmp(t[1],"ring") && !strcmp(t[2],"take")){ArmConsole_Write("OK ring take routed\r\n");return true;}
  if((n==9 || n==10) && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && !strcmp(t[2],"fixed"))
  {assert(!strcmp(t[8],"lowered"));if(n==10)assert(!strcmp(t[9],"cosine"));mission_fields=n;return true;}
  if(n==3 && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && (!strcmp(t[2],"pause") || !strcmp(t[2],"stop")))
@@ -203,7 +204,7 @@ bool HWT101_Cal_ZeroStart(void) { zero_calls++; cal_status.busy=true; return tru
 bool HWT101_Cal_Start(void)
 {
   assert(!chassis_busy && !motor_busy && !grab_busy);
-  cal_starts++; cal_status.busy=true; cal_status.state=HWT101_CAL_CALIBRATING; return true;
+  cal_starts++; cal_status.busy=true; cal_status.state=HWT101_CAL_CALIBRATING; cal_status.native_wait_ms=20000; return true;
 }
 bool HWT101_Cal_VerifyStart(uint32_t duration)
 {
@@ -313,7 +314,7 @@ int main(void)
     char qr[]="grab mission qr 500 100 lower fixed";
     char fixed[]="grab mission fixed 156+123+516+231 500 100 upper radar";
     char raised[]="grab mission fixed 156+123+516+231 500 100 upper radar raised";
-    char extra[]="grab mission fixed 156+123+516+231 500 100 upper radar raised cosine extra";
+    char extra[]="grab mission fixed 156+123+516+231 500 100 upper radar raised cosine extra overflow";
     char *tokens[ARM_CONSOLE_TOKEN_COUNT];
     assert(ArmConsole_Tokenize(qr,tokens)==7);
     assert(!strcmp(tokens[5],"lower") && !strcmp(tokens[6],"fixed"));
@@ -321,6 +322,8 @@ int main(void)
     assert(!strcmp(tokens[3],"156+123+516+231") && !strcmp(tokens[6],"upper") && !strcmp(tokens[7],"radar"));
     assert(ArmConsole_Tokenize(raised,tokens)==9 && !strcmp(tokens[8],"raised"));
     assert(ArmConsole_Tokenize(extra,tokens)==0);
+    char asymmetric[]="chassis test 1000 0 1000 linear 500 0.02 0 1 300";
+    assert(ArmConsole_Tokenize(asymmetric,tokens)==11 && !strcmp(tokens[10],"300"));
   }
   UART_HandleTypeDef uart={0};MechanicalArm_EventTypeDef event={0};unsigned before;
   uart.Instance=USART1;ArmConsole_Init(&uart);BusAutoFaultSeen=true;BusAutoFaultTick=12345; /* Existing guards use an already acknowledged fault. */
@@ -445,7 +448,17 @@ int main(void)
   cal_status.state=HWT101_CAL_DONE;
   before=refresh_calls;command("imu status\r");assert(refresh_calls==before+1 && strstr(output,"result=PASS"));
   cal_status.state=HWT101_CAL_FAILED;cal_status.gap_ms=353;cal_status.max_gap_ms=353;
+  cal_status.recovery_step="CAL_WAIT";cal_status.recovery_expected_mode=1;cal_status.recovery_mode_mask=6;
+  cal_status.recovery_mode_first=cal_status.recovery_mode_last=0x1234;
+  cal_status.recovery_mode_seen=cal_status.recovery_mode_valid=true;cal_status.recovery_mode_reads=2;
   command("imu status\r");assert(strstr(output,"result=FAIL") && strstr(output,"gap_ms=353 max_gap_ms=353 limit_ms=300"));
+  assert(strstr(output,"recovery_step=CAL_WAIT expected_mode=0x0001 first_mode=0x1234 last_mode=0x1234"));
+  assert(strstr(output,"mode_seen=1 mode_valid=1 mode_HAL=0 mode_reads=2"));
+  assert(strstr(output,"allowed_mode_mask=0x0006"));
+  cal_status.timing_valid=true;cal_status.peak_time_s=cal_status.bias_time_s=10;
+  cal_status.native_modes_seen=7;cal_status.native_normal_ms=15800;
+  command("imu status\r");assert(strstr(output,"OK imu native timing_valid=1 peak_time_s=10 bias_time_s=10"));
+  assert(strstr(output,"native_modes=0x07 native_normal_ms=15800"));
   command("imu cal clear\r");assert(cal_cancels==5);
   command("imu cal start extra\r");assert(cal_starts==1 && strstr(output,"ERR imu format"));
   before=motor_calls;command("chassis hold 30 5\r");assert(motor_calls==before && strstr(output,"imu_not_verified"));
@@ -625,6 +638,7 @@ int main(void)
   command("pos z 10\r");assert(motor_calls==before&&strstr(output,"grab_busy"));
   command("grip open\r");assert(strstr(output,"grab_busy"));
   ring_manual=true;
+  command("grab ring take 2\r");assert(strstr(output,"ring take routed") && motor_calls==before);
   command("grip catch\r");assert(!strstr(output,"grab_busy") && grip_duty==ARM_GRIPPER_CATCH);
   command("grab stack lower -100\r");assert(strstr(output,"stack routed") && motor_calls==before);
   command("grab stack release\r");assert(strstr(output,"stack routed") && motor_calls==before);

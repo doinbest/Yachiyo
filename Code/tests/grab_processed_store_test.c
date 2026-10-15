@@ -17,7 +17,7 @@ static void finish_store(void)
 static void align_then_descend_without_vision(bool missing)
 {
  setup();assert(GrabTask_ProcessedStoreStartEx(5,2,1,false));
- assert(grip_custom_calls==1 && fabsf(grip_custom_duty-12.5f)<.001f);
+ assert(grip_custom_calls==1 && fabsf(grip_custom_duty-(float)ARM_GRIPPER_OPEN_PULSE_US/200.0f)<.001f);
  run_to(GRAB_ACQUIRE,200,0);
  assert(fabsf(physical[1]+100)<.1f && !velocity_requests && !closures);
  run_to(GRAB_ALIGN,200,0);

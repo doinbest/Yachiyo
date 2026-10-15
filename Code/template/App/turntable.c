@@ -10,7 +10,7 @@
 #include <string.h>
 
 /* Emm42 默认 1.8°/16细分：指令3200脉冲/圈，实时位置65536单位/圈。
- * 二者不可互换；车载转盘与电机1:1直连。此模块不修改驱动配置。 */
+ * 二者不可互换；车载转盘与电机1:1直连。固定分度只在RAM选择Both应答。 */
 #define COMMAND_PULSES_PER_REV 3200.0
 #define FEEDBACK_UNITS_PER_REV 65536.0
 enum { SLOT1_DEG, SLOT2_DEG, SLOT3_DEG, SPEED_RPM, ACC, POS_TOL_DEG,
@@ -35,6 +35,9 @@ static uint32_t Started, MotionBudget, StopStarted;
 static bool Pending, Stable, MotionStarted, PowerEnabled, BootHomePending;
 static const char *StopReason;
 static bool PositiveHalfTurn;
+static bool ArrivalReply;
+static uint32_t ArrivalReplyTick;
+static uint32_t PositionAccepted;
 
 static float wrap(float degree)
 {
@@ -113,6 +116,7 @@ static void fail(const char *reason)
 }
 void Turntable_Init(void)
 {
+  /* Fixed index/jog/angle actions prepare Both in start(); boot HOME does not. */
   unsigned i;
   static const float Defaults[PARAM_COUNT] = {0, 90, 180, 30, 8, 2.5f, 200, 2000};
   memcpy(Params, Defaults, sizeof(Params));
@@ -158,12 +162,17 @@ void Turntable_StatusGet(Turntable_Status_t *out)
 {
   if (!out) return;
   *out = Status;
-  out->feedback_valid = fresh() && !MotorBus_IsQuarantined();
+  out->feedback_valid = (fresh() || (ArrivalReply && HAL_GetTick()-ArrivalReplyTick<=Params[FEEDBACK_MS])) && !MotorBus_IsQuarantined();
 }
 static bool start(Operation op)
 {
   if (Turntable_IsBusy()) { Status.reason = "busy"; return false; }
+  ArrivalReply=false;
   if (MotorBus_IsQuarantined()) { Status.reason = "bus_locked"; return false; }
+  if(op==OP_INDEX || op==OP_ANGLE || op==OP_JOG) {
+    int ready=MotorBus_PositionReplyEnsure(MOTOR_ID_TURNTABLE);
+    if(ready!=1){Status.reason=ready<0?"reply_mode_failed":"bus_busy";return false;}
+  }
   if (!MotorBus_Reserve(MOTOR_BUS_TURNTABLE)) { Status.reason = "bus_busy"; return false; }
   BootHomePending = false; /* An accepted explicit operation owns the turntable. */
   Op = op;
@@ -270,6 +279,7 @@ void Turntable_BootHomeProcess(bool startup_allowed)
 }
 void Turntable_Stop(void)
 {
+  ArrivalReply=false;
   BootHomePending = false;
   if (Op != OP_STOP) stop_start("stopped");
 }
@@ -434,7 +444,7 @@ void Turntable_Process(void)
         memset(SampleTick, 0, sizeof(SampleTick));
         LastCycle = now - 50U;
       } else if (Step == TT_PHASE_ENABLE || Step == TT_PHASE_MOVE || Step == TT_PHASE_HOME) {
-        if (event.length != 4 || event.data[2] != 2U) { fail("driver_rejected"); return; }
+        if (event.length != 4 || (event.data[2] != 2U && !(Step==TT_PHASE_MOVE && event.data[2]==0x9fU))) { fail("driver_rejected"); return; }
         if (Step == TT_PHASE_ENABLE && Op == OP_POWER) {
           Step = TT_PHASE_SAMPLE;
           SampleKind = 0;
@@ -468,6 +478,13 @@ void Turntable_Process(void)
     }
   }
   if (Op == OP_NONE || Pending) return;
+  if(MotionStarted && (Op==OP_INDEX || Op==OP_ANGLE || Op==OP_JOG) &&
+     MotorBus_PositionReached(MOTOR_ID_TURNTABLE,PositionAccepted)) {
+    ArrivalReply=true;ArrivalReplyTick=now;
+    finish("arrived_reply",true);Status.feedback_valid=true;Status.moving=false;
+    reply("OK turntable arrived source=reached_reply target_deg=%.6g ref=%u\r\n",
+      (double)Status.target_deg,(unsigned)Status.reference_valid);return;
+  }
   if (Op == OP_STOP && (uint32_t)(now - StopStarted) > (uint32_t)Params[FEEDBACK_MS] + 500U) {
     finish("stop_unconfirmed", false); return;
   }
@@ -503,7 +520,7 @@ void Turntable_Process(void)
     cmd[10] = 1; cmd[11] = 0; cmd[12] = 0x6b;
     /* Once copied for transmission, a lost/rejected ACK cannot prove the motor
      * stayed still. The failure path must issue Stop as well as report failure. */
-    if (submit(cmd, 13, 4, false)) MotionStarted = true;
+    if (submit(cmd, 13, 4, false)) {MotionStarted = true;PositionAccepted=now;}
   } else if (SampleKind || (uint32_t)(now - LastCycle) >= 50U) {
     static const uint8_t functions[] = {0x36, 0x35, 0x3a, 0x3b};
     static const uint8_t lengths[] = {8, 6, 4, 4};

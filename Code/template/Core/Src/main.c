@@ -298,6 +298,10 @@ static void ImuTiming_Report(const HWT101_CalStatus_t *Cal)
   */
 static void HWT101_Upload_Process(void)
 {
+  static uint32_t recovery_run, recovery_reported_count;
+  static bool recovery_reported_wait;
+  static uint32_t mode_reported_recovery, mode_reported_reads;
+  static uint8_t native_reported_modes;
   char UploadText[320];
   int UploadLength;
   uint32_t CurrentTick = HAL_GetTick();
@@ -308,6 +312,47 @@ static void HWT101_Upload_Process(void)
 
   if (!HWT101_Cal_GetStatus(&Cal)) return;
   (void)HWT101_Status_Get(&Comm);
+  if (Cal.run_id != recovery_run) {
+    recovery_run = Cal.run_id;
+    recovery_reported_count = 0;
+    recovery_reported_wait = false;
+    mode_reported_recovery = mode_reported_reads = 0U;
+    native_reported_modes = 0U;
+  }
+  if (Cal.recovery_count != recovery_reported_count || Cal.read_recovering != recovery_reported_wait) {
+    recovery_reported_count = Cal.recovery_count;
+    recovery_reported_wait = Cal.read_recovering;
+    UploadLength = snprintf(UploadText, sizeof(UploadText),
+        "[IMU RECOVERY] read_recovering=%u read_recoveries=%lu read_wait_ms=%lu limit_ms=5000 reason=%s\r\n",
+        (unsigned)Cal.read_recovering, (unsigned long)Cal.recovery_count,
+        (unsigned long)Cal.recovery_elapsed_ms, Cal.reason);
+    if (UploadLength > 0 && UploadLength < (int)sizeof(UploadText))
+      (void)ConsoleTx_Write((uint8_t *)UploadText, (uint16_t)UploadLength);
+  }
+  if (Cal.recovery_mode_reads &&
+      (Cal.recovery_count != mode_reported_recovery || Cal.recovery_mode_reads != mode_reported_reads)) {
+    mode_reported_recovery = Cal.recovery_count;
+    mode_reported_reads = Cal.recovery_mode_reads;
+    UploadLength = snprintf(UploadText, sizeof(UploadText),
+        "[IMU MODE] recovery_step=%s expected_mode=0x%04X first_mode=0x%04X last_mode=0x%04X "
+        "mode_seen=%u mode_valid=%u mode_HAL=%u mode_reads=%lu mode_tick=%lu read_recoveries=%lu allowed_mode_mask=0x%04X\r\n",
+        Cal.recovery_step ? Cal.recovery_step : "IDLE", (unsigned)Cal.recovery_expected_mode,
+        (unsigned)Cal.recovery_mode_first, (unsigned)Cal.recovery_mode_last,
+        (unsigned)Cal.recovery_mode_seen, (unsigned)Cal.recovery_mode_valid, (unsigned)Cal.recovery_mode_hal,
+        (unsigned long)Cal.recovery_mode_reads, (unsigned long)Cal.recovery_mode_tick,
+        (unsigned long)Cal.recovery_count, (unsigned)Cal.recovery_mode_mask);
+    if (UploadLength > 0 && UploadLength < (int)sizeof(UploadText))
+      (void)ConsoleTx_Write((uint8_t *)UploadText, (uint16_t)UploadLength);
+  }
+  if (Cal.native_modes_seen != native_reported_modes) {
+    native_reported_modes = Cal.native_modes_seen;
+    UploadLength = snprintf(UploadText, sizeof(UploadText),
+        "[IMU NATIVE] timing_valid=%u peak_time_s=%u bias_time_s=%u native_wait_ms=%lu native_modes=0x%02X native_normal_ms=%lu\r\n",
+        (unsigned)Cal.timing_valid, (unsigned)Cal.peak_time_s, (unsigned)Cal.bias_time_s,
+        (unsigned long)Cal.native_wait_ms, (unsigned)Cal.native_modes_seen, (unsigned long)Cal.native_normal_ms);
+    if (UploadLength > 0 && UploadLength < (int)sizeof(UploadText))
+      (void)ConsoleTx_Write((uint8_t *)UploadText, (uint16_t)UploadLength);
+  }
   if (Cal.run_id != HWT101_UploadRunId)
   {
     HWT101_UploadRunId = Cal.run_id;
@@ -604,7 +649,7 @@ int main(void)
     if (ArmConsole_ResetPending()) continue;
     ImuTiming_Mark(IMU_TIME_CONSOLE);
     TJC_Process();
-    if (!ChassisMotion_IsBusy() && !ChassisRoute_IsBusy()) ContestScreen_Process();
+    ContestScreen_Process(); /* Independent USART3 DMA; display never gates movement. */
     ImuTiming_Mark(IMU_TIME_SCREEN);
 
     if (QR_TaskCodeGet(QR_TaskCode) == 1U)

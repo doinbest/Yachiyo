@@ -6,11 +6,9 @@
  * Z task speeds default to 111.11111111 mm/s, equivalent to 1000 RPM at 480 ppm.
  * Keep row order: task readiness checks use the existing contiguous key groups.
  */
-#define GRAB_BASE_WORK_OFFSET_DEG 130.0f
+#define GRAB_BASE_WORK_OFFSET_DEG 127.5f
 #define GRAB_BASE_HOME_STABLE_TOL_DEG 5.0f
-#define GRAB_TRACK_PICK_DESCEND_TOL_PX 50.0f
 #define GRAB_CAR_PICK_CLEARANCE_MM 30.0f
-#define GRAB_CAR_PICK_OPEN_PULSE_US 2120U
 /* User measurement: 100 motor degrees -> 28 mm; 3200 command pulses/rev. */
 PARAM(C_X_PPM, "x_ppm", 31.746031746, 0, 100000, 2, 2)
 PARAM(C_Z_PPM, "z_ppm", 480, 0, 100000, 2, 4)
@@ -54,9 +52,9 @@ PARAM(C_Z_STACK_PLACE, "z_stack_place", -110, -10000, 10000, 0, 4)
 /* User-confirmed station alignment and second-layer release heights. */
 PARAM(C_Z_ROUGH_ALIGN, "z_rough_align", -100, -10000, 10000, 0, 4)
 PARAM(C_Z_TEMP_ALIGN, "z_temp_align", -100, -10000, 10000, 0, 4)
-/* Base home faces the car mouth: work +130 degrees returns home by -130.
+/* Base home faces the car mouth: work +127.5 degrees returns home by -127.5.
  * ID8 slot offsets (0/-90/-180) are independent of this Base parameter. */
-PARAM(C_BASE_CAR_OFFSET, "base_car_offset", -130, -360, 360, 0, 1)
+PARAM(C_BASE_CAR_OFFSET, "base_car_offset", -127.5, -360, 360, 0, 1)
 PARAM(C_VISION_WAIT_MS, "vision_wait_ms", 12000, 1500, 120000, 1, 1)
 PARAM(C_X_TRANSFER_SPEED, "x_transfer_speed", 60, 0, 100, 2, 1)
 PARAM(C_Z_PICK_SPEED, "z_pick_speed", 111.11111111, 0, 333.333, 2, 1)
@@ -72,14 +70,14 @@ PARAM(C_QR_WAIT_MS, "qr_wait_ms", 1000, 0, 10000, 1, 1)
 PARAM(C_BASE_HOME_DEGRADE, "base_home_degrade", 1, 0, 1, 1, 1)
 /* Tracking pickup only: independent from the controller's correction window. */
 PARAM(C_TRACK_PICK_TOL_PX, "track_pick_tol_px", 100, 1, 100, 0, 1)
-PARAM(C_TRACK_PICK_HOLD_MS, "track_pick_hold_ms", 10, 0, 10000, 1, 1)
+PARAM(C_TRACK_PICK_HOLD_MS, "track_pick_hold_ms", 0, 0, 10000, 1, 1)
 PARAM(C_TRACK_STORE_DROP_MM, "track_store_drop_mm", 40, 0, 10000, 2, 1)
 PARAM(C_CAR_PICK_DROP_MM, "car_pick_drop_mm", 40, 0, 150, 2, 1)
 
 /* Independent tracking profiles. Predict defaults/ranges are preserved.
  * body_accel/x_accel are feedback-profile software tuning values, not measured
  * mechanism capabilities or driver grades; X120 starts below grade20's ideal142. */
-PARAM(C_ARRIVAL_HOLD_MS, "arrival_hold_ms", 500, 200, 10000, 1, 1)
+PARAM(C_ARRIVAL_HOLD_MS, "arrival_hold_ms", 200, 200, 10000, 1, 1)
 
 #ifdef TRACK_PARAM
 TRACK_PARAM(body_speed_mm_s, "body_speed", 160, 1, 300, 0)
@@ -113,6 +111,9 @@ PARAM(C_HEAD_PROC_ZERO, "head_proc_zero", NAN, -90, 90, 0, 0)
 PARAM(C_HEAD_PROC_GAIN, "head_proc_gain", NAN, -20, 20, 0, 0)
 PARAM(C_HEAD_TEMP_ZERO, "head_temp_zero", NAN, -90, 90, 0, 0)
 PARAM(C_HEAD_TEMP_GAIN, "head_temp_gain", NAN, -20, 20, 0, 0)
+/* Ground line uses the ring angle convention, but requires its own measured mapping. */
+PARAM(C_HEAD_LINE_ZERO, "head_line_zero", NAN, -90, 90, 0, 0)
+PARAM(C_HEAD_LINE_GAIN, "head_line_gain", NAN, -20, 20, 0, 0)
 PARAM(C_HEAD_TOL, "head_tol", NAN, 0, 2, 2, 0)
 PARAM(C_HEAD_SPREAD, "head_spread", NAN, 0, 2, 2, 0)
 PARAM(C_HEAD_SETTLE, "head_settle_ms", NAN, 0, 10000, 1, 0)

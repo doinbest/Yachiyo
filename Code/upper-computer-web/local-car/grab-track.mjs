@@ -107,7 +107,7 @@ export function mountTracking({root,send,canSend=()=>false}){
   const el=(tag,value,cls)=>{const e=document.createElement(tag);if(value!==undefined)e.textContent=value;if(cls)e.className=cls;return e;};
   const card=el('section',undefined,'tracking-card');card.id='grab-material-tracking';
   const header=el('div',undefined,'tracking-header');header.append(el('h3','原料追踪夹取与入仓'),el('span','观察与参考自动衔接','tracking-badge'));card.append(header);
-  card.append(el('p','先准备抓取姿态，Base转完后自动打开夹爪2500 µs。选择颜色与仓位；双轴±50 px开始下降，下降时继续追踪。Z到位且双轴进入夹取窗口（默认±100 px）保持至少10 ms后停车，核验坐标再闭爪。追踪夹取并入仓由STM32连续执行提起、收X、车仓分度、Base回仓、下降松爪和返回观察。','form-note'));
+  card.append(el('p','先准备抓取姿态，Base转完后自动打开夹爪2450 µs。选择颜色与仓位；双轴±50 px开始下降，下降时继续追踪。Z到位且双轴进入夹取窗口（默认±100 px）保持至少10 ms后停车，核验坐标再闭爪。追踪夹取并入仓由STM32连续执行提起、收X、车仓分度、Base回仓、下降松爪和返回观察。','form-note'));
   const color=el('select');color.setAttribute('aria-label','追踪颜色');
   for(const [value,label]of [[1,'红'],[2,'黄'],[3,'蓝'],[4,'绿'],[5,'黑'],[6,'浅蓝']]){const o=el('option',label);o.value=value;color.append(o);}color.value=3;
   const actions=el('div',undefined,'actions');actions.append(color);
@@ -138,7 +138,7 @@ export function mountTracking({root,send,canSend=()=>false}){
   const pickupSpeed=numberField('物料夹取下降速度 / mm/s',GRAB_FORM_DEFAULTS.z_pick_speed,1,GRAB_PARAMETER_METADATA.z_pick_speed.min,GRAB_PARAMETER_METADATA.z_pick_speed.max);
   pickupSpeed.exclusiveMin=GRAB_PARAMETER_METADATA.z_pick_speed.exclusiveMin;
   const pickupConditions=new Map();
-  for(const [key,label]of [['track_pick_tol_px','夹取误差窗口 / ±px'],['track_pick_hold_ms','夹取连续保持时间 / ms（0为不等待）']]){
+  for(const [key,label]of [['track_pick_tol_px','夹取误差窗口 / ±px'],['track_pick_hold_ms','高位窗口保持时间 / ms（0为立即下降）']]){
     const meta=GRAB_PARAMETER_METADATA[key],input=numberField(label,GRAB_FORM_DEFAULTS[key],meta.step,meta.min,meta.max);
     input.dataset.pickupKey=key;pickupConditions.set(key,input);
   }

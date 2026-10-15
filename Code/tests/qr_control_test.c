@@ -58,5 +58,15 @@ int main(void)
   scanning_setup();GrabTask_Stop();run_to(GRAB_IDLE,100,0);
   before=positions;for(unsigned i=0;i<50;i++)step(false,0,0,0);
   assert(positions==before && !strcmp(Status.result,"cancelled"));
+  scanning_setup();
+  GrabTask_Stop();run_to(GRAB_IDLE,100,0);
+  assert(GrabTask_QrScanCompetitionStart(10));
+  qr_snapshot.Valid=1;qr_snapshot.Source=QR_SOURCE_UART;qr_snapshot.Sequence=11;
+  before=stops;step(false,0,0,0);
+  assert(Status.state==GRAB_QR_SCAN && stops==before && !Status.stop_requested);
+  assert(GrabTask_QrDepartStart() && GrabTask_QrDepartureActive());
+  assert(Status.state==GRAB_ROUTE_POSE && stops==before);
+  assert(GrabTask_Pause() && !GrabTask_QrDepartureActive());
+  run_to(GRAB_IDLE,200,0);
   puts("qr_control_test: PASS (wait, Z-only descent, lower limit, new UART code, stop)");
 }

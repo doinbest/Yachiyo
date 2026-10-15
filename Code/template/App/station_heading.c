@@ -13,20 +13,27 @@ static unsigned station,count;
 static uint32_t begun,window,sequence,last_rx;
 static bool have_seq,have_rx,debt,calibrated,clock_started;
 static bool observe_only;
+static uint8_t source=STATION_HEADING_RING;
 static float nominal,speed,sum,low,high,first_yaw,image_angle,body_error,observation_z;
 static float first_image;
 static StationHeading_Config_t cfg;
 static const char *reason="heading_idle";
-void StationHeading_Reset(void){state=H_DONE;reason="heading_idle";debt=false;clock_started=false;image_angle=body_error=observation_z=NAN;}
+void StationHeading_Reset(void){state=H_DONE;reason="heading_idle";source=STATION_HEADING_RING;debt=false;clock_started=false;image_angle=body_error=observation_z=NAN;}
 static void fresh_window(void){count=0;have_seq=have_rx=false;window=HAL_GetTick();}
 void StationHeading_Begin(unsigned at,float yaw,float max_speed)
+{StationHeading_BeginSource(at,yaw,max_speed,STATION_HEADING_RING);}
+void StationHeading_BeginSource(unsigned at,float yaw,float max_speed,uint8_t target)
 {
+  source=target;
   observe_only=false;
   station=at;nominal=yaw;speed=max_speed;debt=false;clock_started=false;image_angle=body_error=observation_z=NAN;
   begun=HAL_GetTick();state=H_REQUEST;fresh_window();reason="heading_observing";
 }
 void StationHeading_ObserveBegin(unsigned at,float yaw,float max_speed)
 {StationHeading_Begin(at,yaw,max_speed);observe_only=true;}
+void StationHeading_ObserveBeginSource(unsigned at,float yaw,float max_speed,uint8_t target)
+{StationHeading_BeginSource(at,yaw,max_speed,target);observe_only=true;}
+uint8_t StationHeading_Source(void){return source;}
 void StationHeading_Pause(void)
 {
   if(state==H_DONE)return;
@@ -76,13 +83,14 @@ bool StationHeading_Process(void)
   if(state==H_REQUEST){
     /* Start once after readiness/resume; USB retries share this bounded window. */
     if(!clock_started){begun=now;clock_started=true;}
-    GrabTask_HeadingConfigGet(station,&cfg);
+    if(source==STATION_HEADING_LINE)GrabTask_LineHeadingConfigGet(&cfg);
+    else GrabTask_HeadingConfigGet(station,&cfg);
     if(cfg.wait_ms>STATION_HEADING_WAIT_MS)cfg.wait_ms=STATION_HEADING_WAIT_MS;
     observation_z=cfg.observation_z_mm;
     calibrated=!observe_only && cfg.height_matches && isfinite(cfg.zero_deg) && isfinite(cfg.gain) && fabsf(cfg.gain)>0 &&
       isfinite(cfg.tolerance_deg) && cfg.tolerance_deg>0 && cfg.tolerance_deg<=2 &&
       isfinite(cfg.spread_deg) && cfg.spread_deg>0 && isfinite(cfg.settle_ms) && cfg.settle_ms>=0;
-    if(Camera_PoseStart()!=HAL_OK){reason="heading_usb_wait";if(!debt && now-begun>=cfg.wait_ms)return finish("heading_no_observation");return false;}
+    if(Camera_PoseStartSource(source)!=HAL_OK){reason="heading_usb_wait";if(!debt && now-begun>=cfg.wait_ms)return finish("heading_no_observation");return false;}
     state=H_SAMPLE;fresh_window();reason="heading_observing";return false;
   }
   if(state==H_TURN){
@@ -96,7 +104,7 @@ bool StationHeading_Process(void)
   Camera_PoseSnapshot_t p;Camera_PoseSnapshotGet(&p);
   if(state==H_COMMIT){
     /* A busy transport/late stop may postpone commit: never retain a stale ready result. */
-    if(!p.Active || !p.Valid || now-p.ReceivedTick>CAMERA_DATA_STALE_MS){state=H_SAMPLE;fresh_window();return false;}
+    if(!p.Active || p.Target!=source || !p.Valid || now-p.ReceivedTick>CAMERA_DATA_STALE_MS){state=H_SAMPLE;fresh_window();return false;}
     if(p.Sequence!=sequence || fabsf(remainderf(motion.map_yaw_rad-first_yaw,2*CHASSIS_MODEL_PI))*180/CHASSIS_MODEL_PI>cfg.tolerance_deg){state=H_SAMPLE;fresh_window();return false;}
     float observed=remainderf(nominal+body_error,360);
     /* Spread qualifies samples, not a permission to retain a wrong map when
@@ -108,7 +116,7 @@ bool StationHeading_Process(void)
     debt=true;state=H_TURN;reason="heading_corrected";return false;
   }
   if(!debt && now-begun>=cfg.wait_ms)return finish("heading_no_observation");
-  if(!p.Active || !p.HasFrame || !p.Valid || now-p.ReceivedTick>CAMERA_DATA_STALE_MS){
+  if(!p.Active || p.Target!=source || !p.HasFrame || !p.Valid || now-p.ReceivedTick>CAMERA_DATA_STALE_MS){
     /* Retain samples that were fresh when received. Missing/invalid reports
      * add no evidence; only new valid samples can complete the group. */
     if(!debt && now-begun>=cfg.wait_ms)return finish("heading_no_observation");

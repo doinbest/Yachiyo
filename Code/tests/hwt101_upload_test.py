@@ -52,6 +52,27 @@ static void state(HWT101_CalState_t value,const char *name,bool busy)
 {status.state=value;status.state_name=name;status.busy=busy;}
 int main(void)
 {
+  state(HWT101_CAL_CALIBRATING,"CALIBRATING",true);
+  status.run_id=41;status.reason="i2c_recovering";status.read_recovering=true;status.recovery_count=1;
+  HWT101_Upload_Process();assert(strstr(output,"[IMU RECOVERY] read_recovering=1 read_recoveries=1"));
+  status.timing_valid=true;status.peak_time_s=status.bias_time_s=10;status.native_wait_ms=20000;
+  status.native_modes_seen=7;status.native_normal_ms=15800;
+  reset_output();HWT101_Upload_Process();
+  assert(strstr(output,"[IMU NATIVE] timing_valid=1 peak_time_s=10 bias_time_s=10 native_wait_ms=20000 native_modes=0x07 native_normal_ms=15800"));
+  status.recovery_step="CAL_WAIT";status.recovery_expected_mode=1;status.recovery_mode_mask=6;
+  status.recovery_mode_first=status.recovery_mode_last=0x1234;
+  status.recovery_mode_seen=status.recovery_mode_valid=true;status.recovery_mode_reads=1;
+  reset_output();HWT101_Upload_Process();
+  assert(strstr(output,"[IMU MODE] recovery_step=CAL_WAIT expected_mode=0x0001"));
+  assert(strstr(output,"first_mode=0x1234 last_mode=0x1234 mode_seen=1 mode_valid=1 mode_HAL=0 mode_reads=1"));
+  assert(strstr(output,"allowed_mode_mask=0x0006"));
+  reset_output();HWT101_Upload_Process();assert(!strstr(output,"[IMU MODE]"));
+  status.recovery_mode_reads=2;status.mode=0;status.reason="recovery_mode_changed";
+  reset_output();HWT101_Upload_Process();assert(strstr(output,"last_mode=0x1234") && strstr(output,"mode_reads=2"));
+  reset_output();HWT101_Upload_Process();assert(!strstr(output,"[IMU RECOVERY]"));
+  status.read_recovering=false;status.reason="i2c_recovered";
+  HWT101_Upload_Process();assert(strstr(output,"[IMU RECOVERY] read_recovering=0"));
+  memset(&status,0,sizeof status);reset_output();
   status.reason="none";status.result="NONE";status.save_state="NOT_REQUESTED";
   state(HWT101_CAL_IDLE,"IDLE",false);tick=200;HWT101_Upload_Process();assert(output[0]==0);
   stream=1;HWT101_Upload_Process();assert(strstr(output,"yaw_deg=NA") && !strstr(output,"corrected"));

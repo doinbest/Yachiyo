@@ -84,7 +84,7 @@ int main(void)
   /* Straight heading correction must not inherit the faster pure-turn ceiling. */
   reset();valid=true;reading(0,0);ChassisMotion_TargetDefaults(&t);
   t.mode=CHASSIS_MOTION_HOLD_CURRENT;t.vx_mm_s=100;t.transition_ms=0;
-  assert(ChassisMotion_Start(&t));reading(20,-30);ChassisMotion_Process();assert(fabsf(sent_omega-.15f)<.00001f);
+  assert(ChassisMotion_Start(&t));reading(20,-30);ChassisMotion_Process();assert(fabsf(sent_omega-.5f)<.00001f);
   /* A timed straight task captures module yaw; no artificial map origin. */
   reset();ChassisMotion_TargetDefaults(&t);t.mode=CHASSIS_MOTION_HOLD_CURRENT;
   t.vx_mm_s=50;t.transition_ms=0;
@@ -109,9 +109,9 @@ int main(void)
   reset();ChassisMotion_TargetDefaults(&t);assert(t.transition_ms==500&&t.stop_ms==500);t.vx_mm_s=100;t.hold_ms=100;
   assert(ChassisMotion_Start(&t));assert(ChassisMotion_IsBusy());
   for(tick=20;tick<=240;tick+=20)ChassisMotion_Process();
-  tick=250;ChassisMotion_Process();assert(sent_vx<50); /* not due yet */
+  tick=250;ChassisMotion_Process();assert(fabsf(sent_vx-50)<.001f); /* 1ms scheduling consumes this 10ms interval. */
   tick=260;ChassisMotion_Process();assert(fabsf(sent_vx-53.1395f)<.001f);
-  assert(status().control_dt_ms==20);
+  assert(status().control_dt_ms==10);
   for(tick=280;tick<=600;tick+=20)ChassisMotion_Process();
   assert(fabsf(sent_vx-100)<.001f);
   for(tick=620;tick<=1100;tick+=20)ChassisMotion_Process();

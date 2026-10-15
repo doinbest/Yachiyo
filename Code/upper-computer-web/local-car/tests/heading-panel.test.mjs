@@ -33,6 +33,18 @@ test('active test blocks repeat start; cancellation waits for device confirmatio
  f.panel.receive({mode:'heading',state:'cancelled'});assert.equal(f.get('heading-start').disabled,false);
 });
 
+test('black-line source has distinct commands and device source wins over draft selection',async()=>{
+ assert.equal(buildHeadingTestCommand('temp',5,'line'),'grab heading temp 5 line');
+ assert.equal(buildHeadingProbeCommand('temp',-1,5,'line'),'grab heading angle temp -1 5 line');
+ assert.throws(()=>buildHeadingTestCommand('temp',5,'unknown'));
+ const f=fixture();f.panel.connection(true);
+ f.get('heading-source').value='line';f.get('heading-source').change();
+ assert.deepEqual(f.wires,[]);
+ await f.get('heading-start').onclick();assert.equal(f.wires.at(-1),'grab heading temp 5 line');
+ f.get('heading-source').value='ring';f.get('heading-source').change();
+ f.panel.receive({mode:'heading',state:'done',heading_source:'line',station:3,heading_image:'1.2'});
+ assert.match(f.get('heading-result').textContent,/黑线/);
+});
 test('signed trial is explicit and shows before/after data without writing calibration',async()=>{
  assert.equal(buildHeadingProbeCommand('proc',1,5),'grab heading angle proc 1 5');
  assert.equal(buildHeadingProbeCommand('temp',-1,5),'grab heading angle temp -1 5');

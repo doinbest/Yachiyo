@@ -3,6 +3,20 @@ import {visibleTerminalLogs} from '../terminal-log.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {formatTerminalLine,describeReply} from '../protocol.mjs';
+test('native calibration phase observations do not claim validation success',()=>{
+ const text=formatTerminalLine('[IMU NATIVE] timing_valid=1 peak_time_s=10 bias_time_s=10 native_wait_ms=20000 native_modes=0x07 native_normal_ms=15800');
+ assert.match(text,/原生标定阶段.*峰峰值采集时间.*10.*零偏采集时间.*10/);
+ assert.match(text,/本轮标定等待时间.*20000.*模块回正常模式时刻.*15800/);
+ assert.match(formatTerminalLine('[IMU RECOVERY] reason=native_returned_normal_wait'),/等待标定时限后验证/);
+ assert.doesNotMatch(text,/验证通过|保存成功/);
+});
+test('IMU mode diagnosis preserves and labels the pre-abort readings',()=>{
+ const text=formatTerminalLine('[IMU MODE] recovery_step=CAL_WAIT expected_mode=0x0001 first_mode=0x1234 last_mode=0x1234 mode_seen=1 mode_valid=1 mode_HAL=0 mode_reads=2 allowed_mode_mask=0x0006');
+ assert.match(text,/IMU.*模式核验/);
+ assert.match(text,/预期模式.*0x0001.*首次读回模式.*0x1234.*最近读回模式.*0x1234/);
+ assert.match(text,/允许模式掩码.*0x0006/);
+ assert.match(formatTerminalLine('[IMU RECOVERY] reason=recovery_mode_recheck'),/等待复核IMU工作模式/);
+});
 test('processed pickup distinguishes observation alignment and committed descent',()=>{
  assert.match(formatTerminalLine('OK grab state=align mode=pick reason=processed_alignment'),/在观察高度对准加工物料/);
  assert.match(formatTerminalLine('OK grab state=descend mode=pick reason=processed_descending'),/保持水平位置下降夹取/);
@@ -255,6 +269,10 @@ test('fault reasons are Chinese across modules while raw replies and numbers sta
     ['ERR turntable reference_required action=index',/转盘.*参考.*分度/],
     ['OK chassis status reason=anchor_invalid',/底盘.*地图起点参考.*无效/],
     ['OK imu status reason=drift_or_noise',/IMU.*漂移.*噪声/],
+    ['[IMU RECOVERY] read_recovering=1 read_recoveries=1 reason=i2c_recovering',/IMU.*读取恢复.*等待.*通信恢复/],
+    ['OK imu status reason=i2c_recovered',/通信已恢复/],
+    ['OK imu status reason=i2c_recovery_timeout',/通信恢复等待超时/],
+    ['OK imu status reason=recovery_mode_changed',/恢复后工作模式不符/],
     ['OK bus status reason=rx_restart_failed addr=7',/总线.*接收.*失败.*7/],
     ['ERR manual axis_busy_or_fault addr=6 command_not_sent',/手动操作.*运动.*故障.*6.*未发送/],
     ['ERR grab track pickup height/speed; inspect z_grab z_lift z_pick_speed',/夹取高度.*下降速度.*检查.*提起高度/],
@@ -278,8 +296,9 @@ test('rejection instructions explain status queries in Chinese without inventing
 });
 
 test('negative Base boot reports opening before direction home',()=>{
-  const banner='Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2500us -> Base negative direction home -> IMU verify=5s; enable_verify=on';
-  assert.match(formatTerminalLine(banner),/X\/Z 完成后开爪2500.*Base负向回零.*逆时针/);
+  const banner='Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2450us -> Base negative direction home -> IMU verify=5s; enable_verify=on';
+  assert.match(formatTerminalLine(banner),/X\/Z 完成后开爪2450.*Base负向回零.*逆时针/);
+  assert.match(formatTerminalLine(banner.replace('2450us','2500us')),/X\/Z 完成后开爪2500.*Base负向回零.*逆时针/);
 });
 
 test('turntable degraded reference remains explicit in status',()=>{

@@ -48,7 +48,13 @@ static bool action(float x,float y,float yaw,float speed,uint32_t timeout,bool t
   return true;
 }
 bool ChassisMotion_MoveTo(float x,float y,float yaw,float speed,uint32_t timeout)
-{ return action(x,y,yaw,speed,timeout,false); }
+{ motion.linear_accel_mm_s2=300;return action(x,y,yaw,speed,timeout,false); }
+bool ChassisMotion_MoveToAccel(float x,float y,float yaw,float speed,float accel,uint32_t timeout)
+{ motion.linear_accel_mm_s2=accel;return action(x,y,yaw,speed,timeout,false); }
+void ChassisMotion_TestParametersDefaults(ChassisMotion_TestParameters_t *p)
+{p->curve_period_ms=1;p->linear_decel_mm_s2=300;p->linear_accel_mm_s2=300;p->cosine_k=200;p->heading_kp=CHASSIS_HEADING_TEST_KP;p->heading_kd=CHASSIS_HEADING_TEST_KD;}
+bool ChassisMotion_MoveToTuned(float x,float y,float yaw,float speed,const ChassisMotion_TestParameters_t *p,uint32_t timeout)
+{motion.linear_decel_mm_s2=p->linear_decel_mm_s2;motion.curve_period_ms=p->curve_period_ms;motion.linear_accel_mm_s2=p->linear_accel_mm_s2;motion.cosine_k=p->cosine_k;motion.heading_kp=p->heading_kp;motion.heading_kd=p->heading_kd;return action(x,y,yaw,speed,timeout,false);}
 bool ChassisMotion_TurnTo(float yaw,uint32_t timeout)
 { return action(loc.observer.feedback.x_mm,loc.observer.feedback.y_mm,yaw,0,timeout,true); }
 static float turn_limit;
@@ -248,6 +254,27 @@ int main(void)
   setup();assert(ChassisRoute_Command(5,single));
   assert(starts==1 && fabsf(motion.target_x_mm-1250)<0.01f && fabsf(motion.target_y_mm-150)<0.01f);
   assert(last_speed==1000 && strstr(reply,"profile=linear") && !last_turn);
+  assert(motion.linear_accel_mm_s2==300 && strstr(reply,"accel_mm_s2=300.0"));
+  char *custom[]={"chassis","test","1000","0","1000","linear","800"};
+  setup();assert(ChassisRoute_Command(7,custom));assert(starts==1 && motion.linear_accel_mm_s2==800 && strstr(reply,"accel_mm_s2=800.0"));
+  const char *invalid_accel[]={"0","9","5001","nan"};
+  for(unsigned i=0;i<4;i++){setup();custom[6]=(char*)invalid_accel[i];assert(ChassisRoute_Command(7,custom));assert(!starts && strstr(reply,"accel_range"));}
+  setup();custom[5]="cosine";custom[6]="800";assert(ChassisRoute_Command(7,custom));assert(starts==1 && motion.cosine_k==800);
+  char *asym[]={"chassis","test","1000","0","1000","linear","500","0.02","0","1","300"};
+  setup();assert(ChassisRoute_Command(11,asym));assert(starts==1 && motion.linear_accel_mm_s2==500 && motion.linear_decel_mm_s2==300);
+  assert(strstr(reply,"decel_mm_s2=300.0"));
+  asym[10]="0";setup();assert(ChassisRoute_Command(11,asym));assert(!starts && strstr(reply,"decel_range"));
+  char *period[]={"chassis","test","1000","0","1000","linear","300","0.02","0","5"};
+  setup();assert(ChassisRoute_Command(10,period));assert(starts==1 && motion.curve_period_ms==5);
+  assert(strstr(reply,"curve_period_ms=5 control_period_ms=1"));
+  period[9]="0";setup();assert(ChassisRoute_Command(10,period));assert(!starts && strstr(reply,"curve_period_range"));
+  period[9]="1.5";setup();assert(ChassisRoute_Command(10,period));assert(!starts && strstr(reply,"curve_period_range"));
+  char *tuned[]={"chassis","test","1000","0","1000","cosine","120","0.1","0.01"};
+  setup();assert(ChassisRoute_Command(9,tuned));assert(starts==1 && motion.cosine_k==120 && motion.heading_kp==.1f && motion.heading_kd==.01f);
+  assert(strstr(reply,"cosine_k=120 heading_kp=0.100000 heading_kd=0.010000"));
+  setup();tuned[7]="nan";assert(ChassisRoute_Command(9,tuned));assert(!starts && strstr(reply,"heading_gain_range"));
+  setup();tuned[7]="0.1";tuned[6]="120.5";assert(ChassisRoute_Command(9,tuned));assert(!starts && strstr(reply,"cosine_k_range"));
+  setup();tuned[6]="120";assert(ChassisRoute_Command(8,tuned));assert(!starts);
   char *cosine[]={"chassis","test","1000","0","1000","cosine"};
   setup();assert(ChassisRoute_Command(6,cosine));assert(starts==1 && motion.profile==CHASSIS_PROFILE_COSINE && strstr(reply,"profile=cosine"));
   setup();mission_pending=true;assert(ChassisRoute_Command(6,cosine));assert(!starts && selected_profile==CHASSIS_PROFILE_LINEAR && strstr(reply,"mission_reserved"));
@@ -339,3 +366,5 @@ int main(void)
   puts("chassis_route_test: PASS (15 targets, phase sequence, stop gates, deadlines, station semantics, cancel)");
   return 0;
 }
+
+bool GrabTask_QrDepartureActive(void){return false;}

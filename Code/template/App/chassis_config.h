@@ -65,8 +65,12 @@
 
 /* 独立补偿直行测试：先核对正方向，再进行落地调试。 */
 #define CHASSIS_HEADING_TEST_YAW_SIGN      1.0f /* HWT逆时针角度增大用+1，否则-1。 */
-#define CHASSIS_HEADING_TEST_KP            0.02f
-#define CHASSIS_HEADING_TEST_OUTPUT_LIMIT  0.15f /* rad/s，首次测试仅使用P控制。 */
+#define CHASSIS_HEADING_TEST_KP            0.02f /* Pure P, rad/s per degree of error. */
+#define CHASSIS_HEADING_TEST_KD            0.00f /* D disabled for the P-only comparison. */
+#define CHASSIS_HEADING_RATE_FILTER_MS     40U
+#define CHASSIS_HEADING_DEADBAND_DEG       0.10f /* Translation/heading hold only; precision turns bypass. */
+#define CHASSIS_HEADING_TEST_OUTPUT_LIMIT  0.50f /* Straight heading correction, rad/s. */
+#define CHASSIS_TURN_KP                    0.02f /* Preserve independent pure-turn control. */
 
 /* 参数版本与确认状态；数值变更时同步网页模型和版本。 */
 #define CHASSIS_CONFIG_REVISION           "geom-20260912-v1"
@@ -79,7 +83,10 @@
 #define CHASSIS_PHYSICAL_ENCODER_BITS      0U
 #define CHASSIS_EMM_POSITION_UNITS_PER_REV 65536U
 /* 0x36协议位置单位不等于命令脉冲数，也不代表物理编码器分辨率。 */
-#define CHASSIS_MOTION_PERIOD_MS           20U
+#define CHASSIS_MOTION_PERIOD_MS           1U
+#define CHASSIS_MOTION_MIN_DURATION_MS     20U
+#define CHASSIS_CURVE_PERIOD_MS            1U
+#define CHASSIS_CURVE_PERIOD_MAX_MS        100U
 #define CHASSIS_MOTION_MAX_GAP_MS          100U
 #define CHASSIS_MOTION_DEFAULT_RAMP_MS     500U
 #define CHASSIS_MOTION_MAX_LINEAR_MM_S     5000.0f
@@ -105,6 +112,11 @@
  * Curved-path vector tracking retains its separately validated slew limit. */
 #define CHASSIS_DISTANCE_COSINE_K         200U
 #define CHASSIS_DISTANCE_ACCEL_MM_S2     300.0f
+#define CHASSIS_TEST_ACCEL_MIN_MM_S2     10.0f
+#define CHASSIS_TEST_ACCEL_MAX_MM_S2     5000.0f
+#define CHASSIS_TEST_COSINE_K_MIN         10U
+#define CHASSIS_TEST_COSINE_K_MAX         2000U
+#define CHASSIS_TEST_HEADING_GAIN_MAX     1.0f
 #define CHASSIS_PATH_ACCEL_MM_S2          300.0f
 #define CHASSIS_DISTANCE_TOLERANCE_MM     10.0f
 #define CHASSIS_DISTANCE_HEADING_DEG      2.0f

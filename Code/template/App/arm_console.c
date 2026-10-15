@@ -37,7 +37,7 @@
 #define ARM_CONSOLE_LINE_SIZE 96U
 /* 单条终端命令允许占用的最大缓冲区长度。 */
 
-#define ARM_CONSOLE_TOKEN_COUNT 10U
+#define ARM_CONSOLE_TOKEN_COUNT 11U
 /* 一条命令解析时允许的最大字段数量。 */
 
 #define ARM_CONSOLE_TX_SIZE 256U
@@ -115,6 +115,11 @@ static bool ArmConsole_RadarMotionGuard(unsigned n,char *t[])
 /* Held static operations retain their owned feedback token; no manual motion producer. */
 static bool ArmConsole_RingCommandHandle(unsigned count,char *tokens[])
 {
+  if(count>=3U && !strcmp(tokens[0],"grab") && !strcmp(tokens[1],"ring") && !strcmp(tokens[2],"take"))
+  {
+    if(GrabRoute_IsBusy()){ArmConsole_Write("ERR grab ring_take reason=busy\r\n");return true;}
+    return GrabRoute_Command(count,tokens);
+  }
   if(count>=3U && !strcmp(tokens[0],"grab") && !strcmp(tokens[1],"stack"))
   {
     if(GrabRoute_IsBusy()){ArmConsole_Write("ERR grab stack route_busy\r\n");return true;}
@@ -263,8 +268,8 @@ static void ArmConsole_PixelFrame(const uint8_t *frame,uint32_t received,uint8_t
   int dx=((unsigned)frame[8]<<8)|frame[9],dy=((unsigned)frame[10]<<8)|frame[11];
   if(dx>=32768)dx-=65536;
   if(dy>=32768)dy-=65536;
-  int length=frame[2]==0x0d ? snprintf(line,sizeof line,"POSE id=%lu i=%lu t=%lu v=%u m=%u ex=%d ey=%d ea=%d stop=%d",
-    (unsigned long)PixelLogId,(unsigned long)index,(unsigned long)received,frame[3],matched,(int)(int16_t)cx,(int)(int16_t)cy,dx,dy) :
+  int length=(frame[2]==0x0d || frame[2]==0x0e) ? snprintf(line,sizeof line,"POSE id=%lu i=%lu t=%lu c=%u v=%u m=%u ex=%d ey=%d ea=%d stop=%d",
+    (unsigned long)PixelLogId,(unsigned long)index,(unsigned long)received,frame[2],frame[3],matched,(int)(int16_t)cx,(int)(int16_t)cy,dx,dy) :
     snprintf(line,sizeof line,"PIX id=%lu i=%lu t=%lu c=%u v=%u m=%u x=%u y=%u dx=%d dy=%d",
     (unsigned long)PixelLogId,(unsigned long)index,(unsigned long)received,frame[2],frame[3],matched,cx,cy,dx,dy);
   if(length<=0 || length>=(int)sizeof(line)-16){PixelLogDropped++;return;}
@@ -533,7 +538,7 @@ static void ArmConsole_HelpShow(void)
       "chassis heading <vx_mm_s> <vy_mm_s> <module_heading_deg> <hold_ms>\r\n"
       "chassis turn <map_heading_deg -180..180> (feedback angle and stopped wheels)\r\n"
       "chassis origin <map_x_mm> <map_y_mm> <map_heading_deg> (verified IMU, stationary)\r\n"
-      "chassis test <forward_mm> <left_mm> <speed_mm_s> [linear|cosine] (default linear300; cosine K200)\r\n"
+      "chassis test <forward_mm> <left_mm> <speed_mm_s> [linear [accel [P D]]|cosine [K [P D]]] (accel10..5000 K10..2000 P/D0..1)\r\n"
       "chassis profile receive (compatibility only; Emm42 default)\r\n"
       "chassis feedback <0..4> (0=all, 1..4=single, polling stays off)\r\n"
       "chassis feedback on|off\r\n"
@@ -589,9 +594,9 @@ static void ArmConsole_HelpShow(void)
       "wheel stop\r\n");
   ArmConsole_Write("grab start fixed|align|pick [color 1..6] | grab route [speed_mm_s, default 1000]\r\n"
                    "grab status | grab stop | grab rehome | grab set <key> <value> | grab get <key>\r\n");
-  ArmConsole_Write("grab ring align [1|2|3] [z_mm] [stay] | grab ring place <z_mm>\r\n");
+  ArmConsole_Write("grab ring align [1|2|3] [z_mm] [stay] | grab ring place <z_mm> | grab ring take <slot 1..3>\r\n");
   ArmConsole_Write("grab mission qr|fixed [code] [speed] [turn_deg_s] [lower|upper] [fixed|radar] | grab mission pause|stop|continue | grab pose rear|work | grab place car\r\n");
-  ArmConsole_Write("grab take <slot 1..3> work [depth_mm, default 40]; wait 1s, pick, lift, Base +128, hold claw\r\n");
+  ArmConsole_Write("grab take <slot 1..3> work [depth_mm, default 40]; wait 1s, pick, lift, Base +127.5, hold claw\r\n");
   ArmConsole_Write("grab track observe [color] | reference | start [color] | stop | status | trace [index]\r\n"
                    "grab track begin [color] [remaining_mm] | grab track pick [color] [z_mm] [speed_mm_s]\r\n"
                    "grab track pickstore <color> <slot 0..3> [predict|visual|feedback] | grab track store <slot 0..3>\r\n"
@@ -1435,11 +1440,12 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
     Started = Native ? HWT101_Cal_Start() : ZeroOnly ? HWT101_Cal_ZeroStart() : HWT101_Cal_VerifyStart(VerifyMs);
     if (Started)
     {
+      (void)HWT101_Cal_GetStatus(&Cal);
       ArmConsole_ImuStream = 0U;
       ConsoleTx_DebugCancel(CONSOLE_DEBUG_IMU);
       ArmConsole_CameraTraceStop();
       ArmConsole_Printf("OK imu %s started cal_ms=%lu verify_ms=%lu keep_still=1 stream=off\r\n",
-                        Native ? "cal" : ZeroOnly ? "zero" : "verify", Native ? 20000UL : 0UL, (unsigned long)VerifyMs);
+                        Native ? "cal" : ZeroOnly ? "zero" : "verify", Native ? (unsigned long)Cal.native_wait_ms : 0UL, (unsigned long)VerifyMs);
     }
     else if (HWT101_Cal_GetStatus(&Cal))
       ArmConsole_Printf("ERR imu cal reason=%s HAL=%u\r\n", Cal.reason, (unsigned)Cal.hal);
@@ -1556,6 +1562,19 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
     ArmConsole_Printf("OK imu gap_ms=%lu max_gap_ms=%lu limit_ms=%lu i2c_errors=%lu\r\n",
                       (unsigned long)Cal.gap_ms, (unsigned long)Cal.max_gap_ms,
                       (unsigned long)HWT101_DATA_FRESH_MS, (unsigned long)Cal.i2c_errors);
+    ArmConsole_Printf("OK imu read_recovering=%u read_recoveries=%lu read_wait_ms=%lu read_limit_ms=5000\r\n",
+                      (unsigned)Cal.read_recovering, (unsigned long)Cal.recovery_count,
+                      (unsigned long)Cal.recovery_elapsed_ms);
+    ArmConsole_Printf("OK imu recovery_mode recovery_step=%s expected_mode=0x%04X first_mode=0x%04X last_mode=0x%04X "
+                      "mode_seen=%u mode_valid=%u mode_HAL=%u mode_reads=%lu mode_tick=%lu allowed_mode_mask=0x%04X\r\n",
+                      Cal.recovery_step ? Cal.recovery_step : "IDLE", (unsigned)Cal.recovery_expected_mode,
+                      (unsigned)Cal.recovery_mode_first, (unsigned)Cal.recovery_mode_last,
+                      (unsigned)Cal.recovery_mode_seen, (unsigned)Cal.recovery_mode_valid,
+                      (unsigned)Cal.recovery_mode_hal, (unsigned long)Cal.recovery_mode_reads,
+                      (unsigned long)Cal.recovery_mode_tick, (unsigned)Cal.recovery_mode_mask);
+    ArmConsole_Printf("OK imu native timing_valid=%u peak_time_s=%u bias_time_s=%u native_wait_ms=%lu native_modes=0x%02X native_normal_ms=%lu\r\n",
+                      (unsigned)Cal.timing_valid, (unsigned)Cal.peak_time_s, (unsigned)Cal.bias_time_s,
+                      (unsigned long)Cal.native_wait_ms, (unsigned)Cal.native_modes_seen, (unsigned long)Cal.native_normal_ms);
     ArmConsole_Printf("OK imu relative_deg=%.3f drift_dps=%.5f rms_deg=%.4f save_requested=%u save_readback_ok=%u\r\n",
                       (double)Cal.relative_deg, (double)Cal.drift_dps, (double)Cal.rms_deg,
                       (unsigned)Cal.save_requested, (unsigned)Cal.save_readback_ok);
@@ -2468,7 +2487,7 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   memset(ArmConsole_LineBuffer, 0, sizeof(ArmConsole_LineBuffer));
   ArmConsole_Write("\r\nSTM32 mechanical arm console ready\r\n");
   ArmConsole_BuildShow();
-  ArmConsole_Write("Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2500us -> Base negative direction home -> IMU verify=5s; enable_verify=on; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
+  ArmConsole_Write("Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2450us -> Base negative direction home -> IMU verify=5s; enable_verify=on; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
   ArmConsole_PromptShow();
   return HAL_OK;
 }

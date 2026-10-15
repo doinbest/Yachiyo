@@ -1,0 +1,180 @@
+﻿stage,action,seconds
+route,entry_curve,10.525103165499951
+route,move,4.235237200973141
+route,work_curve,16.425476687984716
+route,turn,3.679999999999968
+route,work_approach,5.585737960911434
+route,work_turn,3.679999999999968
+route,work_dock,2.71527148539521
+route,undock,2.71527148539521
+route,turn,3.679999999999968
+route,move,3.964928204016593
+route,work_approach,3.964928204016593
+route,work_dock,1.715271485395221
+route,undock,1.715271485395221
+route,turn,3.679999999999968
+route,move,3.964928204016593
+route,turn,3.679999999999968
+route,work_curve,15.565549955541588
+route,turn,3.679999999999968
+route,work_approach,5.585737960911434
+route,work_turn,3.679999999999968
+route,work_dock,2.71527148539521
+route,undock,2.71527148539521
+route,turn,3.679999999999968
+route,move,3.964928204016593
+route,work_approach,3.964928204016593
+route,work_dock,1.715271485395221
+route,undock,1.715271485395221
+route,turn,3.679999999999968
+route,move,3.964928204016593
+route,move,4.235237200973141
+route,arrival_turn,3.679999999999968
+route,move,4.235237200973141
+route,move,2.234309928458413
+start_scan_handoff,"initial evidence, QR acquisition/display and residual pose joins",2.7
+batch1_raw,"track/descent, close, lift Z then retract X; parallel ID8",4.183204086069987
+batch1_raw,"Base to car, descend40, release, lift40",2.8212698298188004
+batch1_raw,return observation Base and X,2.394473914378587
+batch1_raw,"track/descent, close, lift Z then retract X; parallel ID8",4.183204086069987
+batch1_raw,"Base to car, descend40, release, lift40",2.8212698298188004
+batch1_raw,return observation Base and X,2.394473914378587
+batch1_raw,"track/descent, close, lift Z then retract X; parallel ID8",4.183204086069987
+batch1_raw,"Base to car, descend40, release, lift40",2.8212698298188004
+batch1_raw,handoff/start evidence allowance,0.3
+batch1_rough_place,X retract before local movement,0
+batch1_rough_place,local move (departure Base turn overlaps),3.215271485395199
+batch1_rough_place,empty-claw visual align including stop/capture,1.5
+batch1_rough_place,retract X / ID8 in parallel,1.6019999999999999
+batch1_rough_place,"Base car, open dwell, descend40, close, lift+X30, Base work",4.875743743694287
+batch1_rough_place,restore saved X,0
+batch1_rough_place,"lower to release, release dwell, raise Z to0",3.2000000010224
+batch1_rough_place,X retract before local movement,1.1532040855659864
+batch1_rough_place,local move (departure Base turn overlaps),3.215271485395199
+batch1_rough_place,empty-claw visual align including stop/capture,1.5
+batch1_rough_place,retract X / ID8 in parallel,1.1532040855659864
+batch1_rough_place,"Base car, open dwell, descend40, close, lift+X30, Base work",4.875743743694287
+batch1_rough_place,restore saved X,0
+batch1_rough_place,"lower to release, release dwell, raise Z to0",3.2000000010224
+batch1_rough_place,X retract before local movement,1.1532040855659864
+batch1_rough_place,local move (departure Base turn overlaps),3.215271485395199
+batch1_rough_place,empty-claw visual align including stop/capture,1.5
+batch1_rough_place,retract X / ID8 in parallel,1.1532040855659864
+batch1_rough_place,"Base car, open dwell, descend40, close, lift+X30, Base work",4.362539658631401
+batch1_rough_place,restore saved X,1.1532040855659864
+batch1_rough_place,"lower to release, release dwell, raise Z to0",3.2000000010224
+batch1_rough_retrieve,X retract before local movement,1.1532040855659864
+batch1_rough_retrieve,local move (departure Base turn overlaps),6.215271485395136
+batch1_rough_retrieve,"visual align and final descent130, close",3.2500000005112
+batch1_rough_retrieve,"Z to0 then X; parallel ID8, then Base",3.8444739148897873
+batch1_rough_retrieve,deposit40 and raise40,1.5800000010062
+batch1_rough_retrieve,return observation Base and X,2.394473914378587
+batch1_rough_retrieve,X retract before local movement,1.1532040855659864
+batch1_rough_retrieve,local move (departure Base turn overlaps),3.215271485395199
+batch1_rough_retrieve,"visual align and final descent130, close",3.2500000005112
+batch1_rough_retrieve,"Z to0 then X; parallel ID8, then Base",3.8444739148897873
+batch1_rough_retrieve,deposit40 and raise40,1.5800000010062
+batch1_rough_retrieve,return observation Base and X,2.394473914378587
+batch1_rough_retrieve,X retract before local movement,1.1532040855659864
+batch1_rough_retrieve,local move (departure Base turn overlaps),3.215271485395199
+batch1_rough_retrieve,slot3 clearance before acquisition,1.6019999999999999
+batch1_rough_retrieve,"visual align and final descent130, close",3.2500000005112
+batch1_rough_retrieve,raise Z to0,1.4500000005112001
+batch1_rough_retrieve,X retract then Base; parallel ID8 return,2.394473914378587
+batch1_rough_retrieve,deposit40 and raise40,1.5800000010062
+batch1_rough_retrieve,X retract before local movement,0
+batch1_rough_retrieve,local move (departure Base turn overlaps),3.215271485395199
+batch1_temp,X retract before local movement,0
+batch1_temp,local move (departure Base turn overlaps),3.215271485395199
+batch1_temp,empty-claw visual align including stop/capture,1.5
+batch1_temp,retract X / ID8 in parallel,1.6019999999999999
+batch1_temp,"Base car, open dwell, descend40, close, lift+X30, Base work",4.875743743694287
+batch1_temp,restore saved X,0
+batch1_temp,"lower to release, release dwell, raise Z to0",3.2000000010224
+batch1_temp,X retract before local movement,1.1532040855659864
+batch1_temp,local move (departure Base turn overlaps),3.215271485395199
+batch1_temp,empty-claw visual align including stop/capture,1.5
+batch1_temp,retract X / ID8 in parallel,1.1532040855659864
+batch1_temp,"Base car, open dwell, descend40, close, lift+X30, Base work",4.875743743694287
+batch1_temp,restore saved X,0
+batch1_temp,"lower to release, release dwell, raise Z to0",3.2000000010224
+batch1_temp,X retract before local movement,1.1532040855659864
+batch1_temp,local move (departure Base turn overlaps),3.215271485395199
+batch1_temp,empty-claw visual align including stop/capture,1.5
+batch1_temp,retract X / ID8 in parallel,1.1532040855659864
+batch1_temp,"Base car, open dwell, descend40, close, lift+X30, Base work",4.362539658631401
+batch1_temp,restore saved X,1.1532040855659864
+batch1_temp,"lower to release, release dwell, raise Z to0",3.2000000010224
+batch1_temp,X retract before local movement,1.1532040855659864
+batch1_temp,local move (departure Base turn overlaps),3.215271485395199
+batch2_raw,"track/descent, close, lift Z then retract X; parallel ID8",4.183204086069987
+batch2_raw,"Base to car, descend40, release, lift40",2.8212698298188004
+batch2_raw,return observation Base and X,2.394473914378587
+batch2_raw,"track/descent, close, lift Z then retract X; parallel ID8",4.183204086069987
+batch2_raw,"Base to car, descend40, release, lift40",2.8212698298188004
+batch2_raw,return observation Base and X,2.394473914378587
+batch2_raw,"track/descent, close, lift Z then retract X; parallel ID8",4.183204086069987
+batch2_raw,"Base to car, descend40, release, lift40",2.8212698298188004
+batch2_raw,handoff/start evidence allowance,0.3
+batch2_rough_place,X retract before local movement,0
+batch2_rough_place,local move (departure Base turn overlaps),0.12
+batch2_rough_place,empty-claw visual align including stop/capture,1.5
+batch2_rough_place,retract X / ID8 in parallel,1.6019999999999999
+batch2_rough_place,"Base car, open dwell, descend40, close, lift+X30, Base work",4.875743743694287
+batch2_rough_place,restore saved X,0
+batch2_rough_place,"lower to release, release dwell, raise Z to0",3.2000000010224
+batch2_rough_place,X retract before local movement,1.1532040855659864
+batch2_rough_place,local move (departure Base turn overlaps),3.215271485395199
+batch2_rough_place,empty-claw visual align including stop/capture,1.5
+batch2_rough_place,retract X / ID8 in parallel,1.1532040855659864
+batch2_rough_place,"Base car, open dwell, descend40, close, lift+X30, Base work",4.875743743694287
+batch2_rough_place,restore saved X,0
+batch2_rough_place,"lower to release, release dwell, raise Z to0",3.2000000010224
+batch2_rough_place,X retract before local movement,1.1532040855659864
+batch2_rough_place,local move (departure Base turn overlaps),6.215271485395136
+batch2_rough_place,empty-claw visual align including stop/capture,1.5
+batch2_rough_place,retract X / ID8 in parallel,1.1532040855659864
+batch2_rough_place,"Base car, open dwell, descend40, close, lift+X30, Base work",4.362539658631401
+batch2_rough_place,restore saved X,1.1532040855659864
+batch2_rough_place,"lower to release, release dwell, raise Z to0",3.2000000010224
+batch2_rough_retrieve,X retract before local movement,1.1532040855659864
+batch2_rough_retrieve,local move (departure Base turn overlaps),3.215271485395199
+batch2_rough_retrieve,"visual align and final descent130, close",3.2500000005112
+batch2_rough_retrieve,"Z to0 then X; parallel ID8, then Base",3.8444739148897873
+batch2_rough_retrieve,deposit40 and raise40,1.5800000010062
+batch2_rough_retrieve,return observation Base and X,2.394473914378587
+batch2_rough_retrieve,X retract before local movement,1.1532040855659864
+batch2_rough_retrieve,local move (departure Base turn overlaps),3.215271485395199
+batch2_rough_retrieve,"visual align and final descent130, close",3.2500000005112
+batch2_rough_retrieve,"Z to0 then X; parallel ID8, then Base",3.8444739148897873
+batch2_rough_retrieve,deposit40 and raise40,1.5800000010062
+batch2_rough_retrieve,return observation Base and X,2.394473914378587
+batch2_rough_retrieve,X retract before local movement,1.1532040855659864
+batch2_rough_retrieve,local move (departure Base turn overlaps),6.215271485395136
+batch2_rough_retrieve,slot3 clearance before acquisition,1.6019999999999999
+batch2_rough_retrieve,"visual align and final descent130, close",3.2500000005112
+batch2_rough_retrieve,raise Z to0,1.4500000005112001
+batch2_rough_retrieve,X retract then Base; parallel ID8 return,2.394473914378587
+batch2_rough_retrieve,deposit40 and raise40,1.5800000010062
+batch2_rough_retrieve,X retract before local movement,0
+batch2_rough_retrieve,local move (departure Base turn overlaps),3.215271485395199
+batch2_temp,X retract before local movement,0
+batch2_temp,local move (departure Base turn overlaps),0.12
+batch2_temp,retract X / ID8 in parallel,1.6019999999999999
+batch2_temp,"Base car, open dwell, descend40, close, lift+X30, Base work",4.875743743694287
+batch2_temp,held visual align,1.5
+batch2_temp,"lower to release, release dwell, raise Z to0",2.660000001017
+batch2_temp,X retract before local movement,1.1532040855659864
+batch2_temp,local move (departure Base turn overlaps),3.215271485395199
+batch2_temp,retract X / ID8 in parallel,1.102
+batch2_temp,"Base car, open dwell, descend40, close, lift+X30, Base work",4.875743743694287
+batch2_temp,held visual align,1.5
+batch2_temp,"lower to release, release dwell, raise Z to0",2.660000001017
+batch2_temp,X retract before local movement,1.1532040855659864
+batch2_temp,local move (departure Base turn overlaps),6.215271485395136
+batch2_temp,retract X / ID8 in parallel,1.102
+batch2_temp,"Base car, open dwell, descend40, close, lift+X30, Base work",4.362539658631401
+batch2_temp,held visual align,1.5
+batch2_temp,"lower to release, release dwell, raise Z to0",2.660000001017
+batch2_temp,X retract before local movement,1.1532040855659864
+batch2_temp,local move (departure Base turn overlaps),3.215271485395199

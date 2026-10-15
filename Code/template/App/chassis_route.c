@@ -79,7 +79,7 @@ static bool pose_can_overlap(const ChassisRoute_Phase_t *phase)
    * A new chassis turn still waits for the whole arm pose. */
   return !phase->turn && (strcmp(phase->direction,"curve") ||
     (CurveProgress>=Curve.turn_end && fabsf(Route.error_heading_deg)<=CHASSIS_DISTANCE_HEADING_DEG)) &&
-    GrabTask_PoseClearanceReady();
+    (GrabTask_PoseClearanceReady() || GrabTask_QrDepartureActive());
 }
 static bool submit_phase(const ChassisRoute_Phase_t *phase)
 {
@@ -361,7 +361,7 @@ bool ChassisRoute_WorkBegin(void)
 bool ChassisRoute_WorkResume(void)
 {
   if(!TaskRoute || !Stations || strcmp(Route.state,"work") ||
-     (GrabTask_IsBusy() && !GrabTask_PoseClearanceReady()) || ChassisMotion_IsBusy()) return false;
+     (GrabTask_IsBusy() && !GrabTask_PoseClearanceReady() && !GrabTask_QrDepartureActive()) || ChassisMotion_IsBusy()) return false;
   ChassisLocalization_Get(&Position);
   if(!Position.origin_valid || !Position.feedback_valid || !Position.speed_valid ||
      HAL_GetTick()-Position.feedback_tick>600U)
@@ -587,38 +587,56 @@ bool ChassisRoute_Command(unsigned n,char *t[])
   if(!strcmp(t[1],"stop") && n==2 && ChassisRoute_IsBusy()) ok=ChassisRoute_Cancel();
   else if(!strcmp(t[1],"test"))
   {
-    float speed=0.0f,distance=0.0f;
+    float speed=0.0f,distance=0.0f,profile_value=0,curve_period=CHASSIS_CURVE_PERIOD_MS,decel=CHASSIS_DISTANCE_ACCEL_MM_S2;
+    ChassisMotion_TestParameters_t tuning;ChassisMotion_TestParametersDefaults(&tuning);
     ChassisMotion_Profile_t profile=CHASSIS_PROFILE_LINEAR,previous=ChassisMotion_ProfileGet();
     reject="invalid_displacement";
-    if(n==6 && !strcmp(t[5],"cosine"))profile=CHASSIS_PROFILE_COSINE;
+    if(n>=6 && !strcmp(t[5],"cosine"))profile=CHASSIS_PROFILE_COSINE;
     if(ContestMission_HasPendingWork())reject="mission_reserved";
     else if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved()) reject="route_reserved";
     else if(ChassisMotion_IsBusy()) reject="motion_busy";
-    else if(n==6 && strcmp(t[5],"linear") && strcmp(t[5],"cosine"))reject="profile_required";
-    else if((n==5 || n==6) && number(t[2],&dx) && number(t[3],&dy) && number(t[4],&speed) &&
+    else if(n>=6 && strcmp(t[5],"linear") && strcmp(t[5],"cosine"))reject="profile_required";
+    else if((n==7 || n==9 || n==10 || n==11) &&
+            (!number(t[6],&profile_value) || (profile==CHASSIS_PROFILE_LINEAR?
+             (profile_value<CHASSIS_TEST_ACCEL_MIN_MM_S2 || profile_value>CHASSIS_TEST_ACCEL_MAX_MM_S2):
+             (profile_value<CHASSIS_TEST_COSINE_K_MIN || profile_value>CHASSIS_TEST_COSINE_K_MAX || floorf(profile_value)!=profile_value))))
+      reject=profile==CHASSIS_PROFILE_LINEAR?"accel_range":"cosine_k_range";
+    else if((n==9 || n==10 || n==11) && (!number(t[7],&tuning.heading_kp) || !number(t[8],&tuning.heading_kd) ||
+            tuning.heading_kp<0 || tuning.heading_kd<0 || tuning.heading_kp>CHASSIS_TEST_HEADING_GAIN_MAX || tuning.heading_kd>CHASSIS_TEST_HEADING_GAIN_MAX))reject="heading_gain_range";
+    else if((n==10 || n==11) && (!number(t[9],&curve_period) || curve_period<1 || curve_period>CHASSIS_CURVE_PERIOD_MAX_MS || floorf(curve_period)!=curve_period))reject="curve_period_range";
+    else if(n==11 && (profile!=CHASSIS_PROFILE_LINEAR || !number(t[10],&decel) || decel<CHASSIS_TEST_ACCEL_MIN_MM_S2 || decel>CHASSIS_TEST_ACCEL_MAX_MM_S2))reject="decel_range";
+    else if((n==5 || n==6 || n==7 || n==9 || n==10 || n==11) && number(t[2],&dx) && number(t[3],&dy) && number(t[4],&speed) &&
             (distance=hypotf(dx,dy))>0.0f && distance<=3000.0f)
     {
       reject="speed_range";
       if(speed>=10.0f && speed<=CHASSIS_MOTION_MAX_LINEAR_MM_S)
       {
         float yaw,c,s;
+        if(n>=7){if(profile==CHASSIS_PROFILE_LINEAR)tuning.linear_accel_mm_s2=tuning.linear_decel_mm_s2=profile_value;else tuning.cosine_k=(uint16_t)profile_value;}
+        if(n==11)tuning.linear_decel_mm_s2=decel;
+        tuning.curve_period_ms=(uint16_t)curve_period;
         uint32_t timeout=(uint32_t)(distance/speed*1250.0f)+10000U;
         if(timeout<CHASSIS_DISTANCE_TIMEOUT_MS) timeout=CHASSIS_DISTANCE_TIMEOUT_MS;
         ChassisLocalization_Get(&Position);
         yaw=Position.observer.feedback.yaw_rad;c=cosf(yaw);s=sinf(yaw);
         /* Same selected straight-line controller as a route leg; retain anchor. */
-        ok=ChassisMotion_ProfileSet(profile) && ChassisMotion_MoveTo(Position.observer.feedback.x_mm+c*dx-s*dy,
+        ok=ChassisMotion_ProfileSet(profile) && ChassisMotion_MoveToTuned(Position.observer.feedback.x_mm+c*dx-s*dy,
                                Position.observer.feedback.y_mm+s*dx+c*dy,
-                               yaw*180.0f/CHASSIS_MODEL_PI,speed,timeout);
+                               yaw*180.0f/CHASSIS_MODEL_PI,speed,&tuning,timeout);
         ChassisMotion_StatusGet(&Motion);reject=Motion.reason;
         if(ok) ChassisRoute_Init();
         else (void)ChassisMotion_ProfileSet(previous);
       }
     }
     ChassisMotion_StatusGet(&Motion);
-    length=snprintf(text,sizeof(text),"%s chassis test reason=%s id=%lu profile=%s distance_mm=%.3f speed_mm_s=%.1f; request only, arrival requires feedback\r\n",
+    length=snprintf(text,sizeof(text),"%s chassis test reason=%s id=%lu profile=%s distance_mm=%.3f speed_mm_s=%.1f accel_mm_s2=%.1f cosine_k=%u heading_kp=%.6f heading_kd=%.6f curve_period_ms=%u control_period_ms=%u decel_mm_s2=%.1f; request only, arrival requires feedback\r\n",
                     ok?"OK":"ERR",ok?"accepted":reject,(unsigned long)Motion.action_id,
-                    ChassisMotion_ProfileName(profile),(double)distance,(double)speed);
+                    ChassisMotion_ProfileName(profile),(double)distance,(double)speed,
+                    profile==CHASSIS_PROFILE_LINEAR?(double)(ok?Motion.linear_accel_mm_s2:tuning.linear_accel_mm_s2):0.0,
+                    profile==CHASSIS_PROFILE_COSINE?(unsigned)(ok?Motion.cosine_k:tuning.cosine_k):0U,
+                    (double)(ok?Motion.heading_kp:tuning.heading_kp),(double)(ok?Motion.heading_kd:tuning.heading_kd),
+                    (unsigned)(ok?Motion.curve_period_ms:tuning.curve_period_ms),(unsigned)CHASSIS_MOTION_PERIOD_MS,
+                    profile==CHASSIS_PROFILE_LINEAR?(double)(ok?Motion.linear_decel_mm_s2:tuning.linear_decel_mm_s2):0.0);
     if(length>0 && (size_t)length<sizeof(text)) (void)ConsoleTx_Write((const uint8_t*)text,(uint16_t)length);
     return true;
   }

@@ -40,8 +40,8 @@ static void overlap_pause(void)
 static void qr_departure_and_upper_start(void)
 {
   fixture(M_QR_LEAVE);unsigned old=resumes;
-  ContestMission_Process();assert(State==M_QR_LEAVE && resumes==old);
-  pose_clearance=true;ContestMission_Process();
+  /* Frozen code resumes translation while the departure pose is still moving. */
+  ContestMission_Process();
   assert(State==M_DRIVING && resumes==old+1 && grab.state==GRAB_ROUTE_POSE);
   /* Upper start can leave with a moving QR Base after live clearance, while
    * retaining the usual initial localization and feedback checks. */

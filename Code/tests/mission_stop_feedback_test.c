@@ -54,6 +54,7 @@ bool GrabTask_TrackedStoreStart(uint8_t a,uint8_t b,GrabTracking_Mode_t c){(void
 bool GrabTask_ProcessedStoreStart(uint8_t a,uint8_t b,uint8_t c){(void)a;(void)b;(void)c;return false;}
 bool GrabTask_CarPickStart(uint8_t s){(void)s;return false;}
 bool GrabTask_HeldPlaceStart(const char *s,uint8_t a,uint8_t b){(void)s;(void)a;(void)b;return false;}
+bool GrabTask_RingTakePrepare(uint8_t *ring){(void)ring;return false;}
 bool GrabTask_AlignPlaceStart(const char *s,uint8_t a){(void)s;(void)a;return false;}
 bool GrabTask_ProcessedStoreStartEx(uint8_t a,uint8_t b,uint8_t c,bool raised)
 {(void)raised;return GrabTask_ProcessedStoreStart(a,b,c);}
@@ -97,3 +98,9 @@ int main(void)
  }
  puts("production motion + mission: cancellation and pre-departure stop await physical feedback PASS");
 }
+
+bool GrabTask_QrDepartureActive(void){return false;}
+
+bool GrabTask_QrScanCompetitionStart(uint32_t baseline){return GrabTask_QrScanStart(baseline);}
+void GrabTask_NextRawColorSet(uint8_t color){(void)color;}
+bool GrabTask_QrDepartStart(void){return false;}

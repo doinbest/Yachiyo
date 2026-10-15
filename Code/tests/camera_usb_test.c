@@ -231,6 +231,22 @@ int main(void)
   pose_reply[3]=0;pose_reply[12]--;Camera_UsbRxCallback(pose_reply,14);Camera_Process();
   Camera_PoseSnapshotGet(&pose);assert(!pose.Valid && pose.Sequence!=seq);
   assert(Camera_RingStart(1)==HAL_OK);Camera_PoseSnapshotGet(&pose);assert(!pose.Valid);
+  /* A black-line reply cannot satisfy a ring request, or leak into DX/DY. */
+  assert(Camera_PoseStartSource(0x0e)==HAL_OK && tx[2]==0x0e);
+  Camera_PoseSnapshotGet(&pose);assert(pose.Active && pose.Target==0x0e && !pose.HasFrame);
+  pose_reply[3]=1;pose_reply[12]++;
+  Camera_UsbRxCallback(pose_reply,14);Camera_Process();
+  Camera_PoseSnapshotGet(&pose);assert(!pose.HasFrame);
+  pose_reply[2]=0x0e;pose_reply[12]++;
+  tick=400;Camera_UsbRxCallback(pose_reply,5);Camera_Process();
+  tick=410;Camera_UsbRxCallback(pose_reply+5,9);Camera_Process();
+  Camera_PoseSnapshotGet(&pose);Camera_SnapshotGet(&snapshot);
+  assert(pose.Valid && pose.Target==0x0e && pose.AngleCdeg==-50 && pose.ReceivedTick==410);
+  assert(!snapshot.HasValidData);
+  assert(Camera_PoseStartSource(0x01)==HAL_ERROR);
+  assert(Camera_PoseStart()==HAL_OK && tx[2]==0x0d);
+  Camera_UsbRxCallback(pose_reply,14);Camera_Process();
+  Camera_PoseSnapshotGet(&pose);assert(!pose.HasFrame && pose.Target==0x0d);
   request_cache_test();
   b2_boundaries();
   puts("camera USB snapshot, counters, B2 protocol and visual-state tests passed");

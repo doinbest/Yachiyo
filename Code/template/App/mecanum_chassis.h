@@ -46,6 +46,7 @@ typedef struct
   bool locked, stop_pending;
   int32_t sent_rpm[4];
   uint32_t sent_ms;
+  uint32_t sent_sequence; /* Sequence of the committed batch, not the pending plan. */
   bool sent_velocity_valid;
   bool tx_complete, acknowledged;
   uint8_t acknowledged_wheels;
@@ -56,6 +57,10 @@ typedef struct
   int64_t position_raw; /* signed magnitude 32-bit payload, no truncation */
   uint8_t state_flags;
   uint32_t speed_ms, position_ms, state_ms;
+  uint32_t speed_tx_ms, position_tx_ms;
+  uint32_t speed_target_ms, speed_target_sequence;
+  int32_t speed_target_rpm; /* Logical chassis-forward target active at speed query TX. */
+  bool speed_target_valid;
   bool speed_valid, position_valid, state_valid;
 } Mecanum_Feedback_t;
 /** Accept a latest target snapshot; main loop sends asynchronously. acc is drive grade. */

@@ -2,7 +2,7 @@
 #include "grab_task_test.c"
 #undef main
 static void seed(unsigned i) {
-  reset();configure(true);clock_ms=1000;
+  reset();configure(true);clock_ms=1000;Config[C_ARRIVAL_HOLD_MS]=500;
   Axes[i]=(GrabAxis_t){.mm=-39.974f,.target=-40,.flags=1,
     .position_valid=true,.state_valid=true,.quiet=true,.commanded=true,
     .position_tick=1000,.state_tick=1000,.quiet_since=500,.command_tick=600};
@@ -30,7 +30,9 @@ int main(void) {
     assert(!sample(i,100));assert(sample(i,500));
     seed(i);assert(!arrived(i,clock_ms));stop_begin();
     assert(!sample(i,600));assert(!sample(i,500));
-    seed(i);Axes[i].flags=3;assert(arrived(i,clock_ms)); /* Normal reached unchanged. */
+    seed(i);Axes[i].flags=3;assert(!arrived(i,clock_ms)); /* No 9F: use measured fallback. */
+    physical[i]=destination[i]=Axes[i].target;arrival_reply_enabled=true;
+    assert(arrived(i,clock_ms)); /* 9F completes without added hold. */
     seed(i);assert(!arrived(i,clock_ms));Axes[i].quiet=false;
     assert(!sample(i,600));Axes[i].quiet=true;Axes[i].quiet_since=clock_ms;
     assert(!sample(i,300));assert(sample(i,500));

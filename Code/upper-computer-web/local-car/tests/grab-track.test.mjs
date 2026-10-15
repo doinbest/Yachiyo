@@ -218,7 +218,7 @@ test('pickup window and hold are explicit, confirmed before one motion command, 
       return true;
     },canSend:()=>true});panel.connection(true);
     const input=key=>ui.all().find(e=>e.dataset?.pickupKey===key);
-    assert.equal(Number(input('track_pick_tol_px').value),100);assert.equal(Number(input('track_pick_hold_ms').value),10);
+    assert.equal(Number(input('track_pick_tol_px').value),100);assert.equal(Number(input('track_pick_hold_ms').value),0);
     assert.deepEqual(wires,[]);
     input('track_pick_tol_px').value=8;input('track_pick_hold_ms').value=300;
     await ui.all().find(e=>e.title==='grab track pick').onclick();

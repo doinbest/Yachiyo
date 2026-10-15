@@ -7,7 +7,9 @@ import {mountStacking} from './stack-panel.mjs?v=stack-20261008';
 import {mountMission} from './mission-panel.mjs?v=mission-20261012';
 import {mountHeadingTest} from './heading-panel.mjs';
 import {mountChassisTestResult} from './chassis-test-result.mjs';
-let stackingPanel,missionPanel,headingPanel,chassisTestResult;
+import {mountChassisTestSession} from './chassis-test-session.mjs';
+import {StopRecovery} from './stop-recovery.mjs';
+let stackingPanel,missionPanel,headingPanel,chassisTestResult,chassisTestSession,stopRecovery;
 import {createAttemptTracker} from './command-attempt.mjs?v=terminal-3';
 import {mountPreparation} from './route-preparation.mjs?v=chinese-notices-20261009';
 import {commands,buildCommand,positionDegreeRange,frameCommand,describeReply,formatTerminalLine,replyIsFault,moduleForWire,grabColorOptions,parseGrabStatus,parseGrabCalibrationStatus,parseGrabRouteStatus,describeGrabRoute,describeGrabMissing,grabPixelText,grabRecoveryText,deviceText,reasonText} from './protocol.mjs?v=lidar-poses-20261012';
@@ -64,6 +66,7 @@ function receiveRadarLiveState(frame){
   $('map-recent-result').textContent=text;status.set('map',{line:text,time:Date.now(),live:bridge.connected});renderStatus();updateControls();
 }
 function receive(line){
+  stopRecovery?.receive(line);
   const hostAccepted=radarDirectView?.receive(line)??radarHostClient?.receive(line)??false;
   if(hostAccepted){
     const reply=line.trim().replace(/^(?:arm>\s*)+/,'');
@@ -92,6 +95,7 @@ function receive(line){
   if(/^(OK|ERR) radar\b/.test(line))$('map-recent-result').textContent=`${line.startsWith('ERR')?'设备未受理':'设备回复'} · ${radarReasonText(line.split(' ')[2])}`;
   paramsView?.receive(line);
   chassisTestResult?.receive(line);
+  chassisTestSession?.receive(line);
   missionPanel?.receiveReply(line);
   materialTrackingPanel?.receive(line);
   const progress=bootProgress(line,bootStage);if(progress!==bootStage){bootStage=progress;$('boot-status').textContent=progress;}
@@ -99,11 +103,12 @@ function receive(line){
   if(calibration){grabCalibrationSnapshot={data:calibration,time:Date.now(),live:bridge.connected};renderGrabCalibrationStatus();}
   if(!calibration&&/^(OK|ERR) grab\b/.test(line)){grabReply={line,time:Date.now(),live:bridge.connected};const routeSnapshot=parseGrabRouteStatus(line);if(routeSnapshot){grabRouteSnapshot={data:routeSnapshot,time:Date.now(),live:bridge.connected};missionPanel?.receive(routeSnapshot);headingPanel?.receive(routeSnapshot);}const snapshot=parseGrabStatus(line);if(snapshot){grabSnapshot={data:snapshot,time:Date.now(),live:bridge.connected};stackingPanel?.receive(snapshot);headingPanel?.receiveGrab(snapshot);}renderGrabStatus();}
   if(line==='STM32 mechanical arm console ready'){
+    stopRecovery?.cancel('设备已重启；请重新读取状态再恢复。');
     if(grabCalibrationSnapshot)grabCalibrationSnapshot.live=false;renderGrabCalibrationStatus();
     stackingPanel?.cancel();
     materialTrackingPanel?.connection(false);materialTrackingPanel?.connection(bridge.connected);
     paramsView?.cancel('STM32 已重启，旧读回标为历史值。',true);
-    missionPanel?.reset();headingPanel?.reset();chassisTestResult?.reset();status.clear();routeLocked=false;grabSnapshot=null;grabRouteSnapshot=null;grabReply=null;renderGrabStatus();
+    missionPanel?.reset();headingPanel?.reset();chassisTestResult?.reset();chassisTestSession?.reset();status.clear();routeLocked=false;grabSnapshot=null;grabRouteSnapshot=null;grabReply=null;renderGrabStatus();
     for(const view of [wheelView,mapView,radarView,qrView,prepView]){view?.connection(false);view?.connection(bridge.connected);}
     appendLog('SYS','已收到 STM32 启动信息；旧状态已清除。启动流程以设备报告为准，IMU 验证时请保持静止。');renderStatus();
   }
@@ -114,15 +119,19 @@ function receive(line){
 wheelView?.receive(line);mapView?.receive(line);
 const routeState=line.trim().replace(/^(?:arm>\s*)+/,'').match(/^(?:OK|ERR) chassis route state=(\w+)/)?.[1]??(line.startsWith('@CHASSIS ')?mapView?.snapshot()?.route?.state:null);if(routeState){routeLocked=['running','stopping','waiting','station'].includes(routeState);updateControls();}
 qrView?.receive(line);prepView?.receive(line);const owner=moduleForWire(line);if(owner!=='manual'&&!line.startsWith('@CHASSIS ')&&/^(OK |ERR |\[IMU CAL\]|\[MOTOR BUS\]|ARM STM32|BUILD |EVT qr )/.test(line)){status.set(owner,{line,time:Date.now(),live:bridge.connected});renderStatus();}}
-function connection(state){const changed=state!==connectionState;if(changed){if(grabCalibrationSnapshot)grabCalibrationSnapshot.live=false;renderGrabCalibrationStatus();stackingPanel?.connection(state==='connected');missionPanel?.connection(state==='connected');headingPanel?.connection(state==='connected');chassisTestResult?.connection(state==='connected');routeLocked=false;bootStage='';if($('boot-status'))$('boot-status').textContent='启动状态：连接变化，请读取设备状态';grabRouteSnapshot=null;grabSnapshot=null;grabReply=null;renderGrabStatus();}connectionState=state;if(lastStopEvent)$('stop-status').textContent=describeStopEvent(lastStopEvent,state==='connected'||state==='disconnecting',state==='disconnecting');const connected=state==='connected';if(connected&&bridge.port){const select=$('serial-port');if(!Array.from(select.options).some(o=>o.value===bridge.port)){const o=node('option',bridge.port);o.value=bridge.port;select.append(o);}select.value=bridge.port;}if(changed){wheelView?.connection(connected);mapView?.connection(connected);radarView?.connection(connected);const radarConnection={state,port:bridge.port||$('serial-port').value||'',baudrate:Number($('baud').value)||115200};if(radarDirectView)radarDirectView.connection(radarConnection);else radarHostClient?.connection(radarConnection);qrView?.connection(connected);prepView?.connection(connected);if(!connected)paramsView?.cancel('连接已变化，旧读回标为历史值。',true);}$('connection-status').textContent=({connected:`本地服务已连接 ${bridge.port}`,connecting:`正在连接 ${$('serial-port').value}…`,disconnecting:'正在停车并断开…',disconnected:'尚未连接'})[state];$('connection-dot').classList.toggle('online',connected);$('connect').disabled=state!=='disconnected'||!$('serial-port').value;$('serial-port').disabled=state!=='disconnected';$('refresh-ports').disabled=state!=='disconnected';$('disconnect').disabled=!connected;$('baud').disabled=state!=='disconnected';if(changed)for(const value of status.values())value.live=false;if(!connected)$('subscription-note').textContent='';updateControls();renderStatus();if(changed&&connected)appendLog('SYS','已连接，尚未自动发送任何指令。');}
+function connection(state){const changed=state!==connectionState;if(changed){stopRecovery?.cancel('连接已变化；本次恢复已取消。');if(grabCalibrationSnapshot)grabCalibrationSnapshot.live=false;renderGrabCalibrationStatus();stackingPanel?.connection(state==='connected');missionPanel?.connection(state==='connected');headingPanel?.connection(state==='connected');chassisTestResult?.connection(state==='connected');chassisTestSession?.connection(state==='connected');routeLocked=false;bootStage='';if($('boot-status'))$('boot-status').textContent='启动状态：连接变化，请读取设备状态';grabRouteSnapshot=null;grabSnapshot=null;grabReply=null;renderGrabStatus();}connectionState=state;if(lastStopEvent)$('stop-status').textContent=describeStopEvent(lastStopEvent,state==='connected'||state==='disconnecting',state==='disconnecting');const connected=state==='connected';if(connected&&bridge.port){const select=$('serial-port');if(!Array.from(select.options).some(o=>o.value===bridge.port)){const o=node('option',bridge.port);o.value=bridge.port;select.append(o);}select.value=bridge.port;}if(changed){wheelView?.connection(connected);mapView?.connection(connected);radarView?.connection(connected);const radarConnection={state,port:bridge.port||$('serial-port').value||'',baudrate:Number($('baud').value)||115200};if(radarDirectView)radarDirectView.connection(radarConnection);else radarHostClient?.connection(radarConnection);qrView?.connection(connected);prepView?.connection(connected);if(!connected)paramsView?.cancel('连接已变化，旧读回标为历史值。',true);}$('connection-status').textContent=({connected:`本地服务已连接 ${bridge.port}`,connecting:`正在连接 ${$('serial-port').value}…`,disconnecting:'正在停车并断开…',disconnected:'尚未连接'})[state];$('connection-dot').classList.toggle('online',connected);$('connect').disabled=state!=='disconnected'||!$('serial-port').value;$('serial-port').disabled=state!=='disconnected';$('refresh-ports').disabled=state!=='disconnected';$('disconnect').disabled=!connected;$('baud').disabled=state!=='disconnected';if(changed)for(const value of status.values())value.live=false;if(!connected)$('subscription-note').textContent='';updateControls();renderStatus();if(changed&&connected)appendLog('SYS','已连接，尚未自动发送任何指令。');}
 function communicationError(error){appendLog('SYS',`通信异常：${error.message}`);toast(error.message);prepView?.refreshConfiguration();updateControls();}
 function stopped(){return bridge.stopLatched;}
-function bridgeEvent(e){if(e.kind==='preparation'&&e.active===false&&e.owner===bridge.preparationOwner&&prepView?.busy)prepView.cancel('共享准备锁定已结束，请重新准备。');if(e.kind==='tx'&&!/^radar (?:host )?fetch /.test(e.text))appendLog('TX',e.text);if(e.kind==='system')appendLog('SYS',e.text||e.error||'本地服务状态变化');if(e.kind==='stop'){if(e.latched)paramsView?.cancel('停止操作已取消参数批次；已读值和草稿保留。');if(e.latched)prepView?.cancel('停止已锁定，准备已取消；解除锁定后也不会自动继续。');lastStopEvent=e;$('stop-status').textContent=describeStopEvent(e,bridge.connected,bridge.disconnecting);$('resume-stop').hidden=!e.latched;updateControls();prepView?.refreshConfiguration();}}
+function bridgeEvent(e){if(e.kind==='preparation'&&e.active===false&&e.owner===bridge.preparationOwner&&prepView?.busy)prepView.cancel('共享准备锁定已结束，请重新准备。');if(e.kind==='tx'&&!/^radar (?:host )?fetch /.test(e.text))appendLog('TX',e.text);if(e.kind==='system')appendLog('SYS',e.text||e.error||'本地服务状态变化');if(e.kind==='stop'){stopRecovery?.observeStop(e);chassisTestSession?.stopEvent(e);if(e.latched)chassisTestResult?.interrupted();if(e.latched)paramsView?.cancel('停止操作已取消参数批次；已读值和草稿保留。');if(e.latched)prepView?.cancel('停止已锁定，准备已取消；解除锁定后也不会自动继续。');lastStopEvent=e;$('stop-status').textContent=describeStopEvent(e,bridge.connected,bridge.disconnecting);$('resume-stop').hidden=!e.latched;updateControls();prepView?.refreshConfiguration();}}
 const bridge=new BridgeLink({receive,state:connection,error:communicationError,event:bridgeEvent,configuration:()=>prepView?.refreshConfiguration()});
+stopRecovery=new StopRecovery({bridge,changed:()=>{
+  updateControls();
+  if(stopRecovery.message){$('stop-status').textContent=stopRecovery.message;appendLog('SYS',stopRecovery.message);}
+}});
 radarHostClient=new RadarHostClient({fastResults:true,send:wire=>executeSend(wire,false,true,true),onError:error=>{radarDirectView?.refresh();appendLog('SYS',error.message);}});
 const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|radar live stop|grab stop)$/.test(wire);
 function mayQuery(wire){return readOnlyCommand(wire)&&(!prepView?.busy||!prepView.pending);}
-async function requestStop(){stackingPanel?.cancel();presetCancelled=true;radarExchange.cancel('停止操作已取消雷达读取，保留已完成快照');paramsView?.cancel('停止操作已取消参数核对。');attempts.supersede();$('attempt-wire').textContent='chassis stop';$('attempt-status').textContent='请求停车 · 确认见底部状态';$('latest-command').dataset.state='pending';appendLog('SYS','请求停车 → chassis stop');prepView?.cancel('已中止准备并请求停车；请查看停止状态。');try{await bridge.stop();return true;}catch(error){communicationError(error);return false;}}
+async function requestStop(){stopRecovery?.cancel('已重新请求停车，取消本次恢复。');chassisTestResult?.interrupted();chassisTestSession?.cancel('已请求停止测试；停车结果以设备反馈为准。');stackingPanel?.cancel();presetCancelled=true;radarExchange.cancel('停止操作已取消雷达读取，保留已完成快照');paramsView?.cancel('停止操作已取消参数核对。');attempts.supersede();$('attempt-wire').textContent='chassis stop';$('attempt-status').textContent='请求停车 · 确认见底部状态';$('latest-command').dataset.state='pending';appendLog('SYS','请求停车 → chassis stop');prepView?.cancel('已中止准备并请求停车；请查看停止状态。');try{await bridge.stop();return true;}catch(error){communicationError(error);return false;}}
 function showAttempt({wire,state,current}) {
   if(current){
   $('attempt-wire').textContent=wire;
@@ -135,20 +144,24 @@ function showAttempt({wire,state,current}) {
 const attempts=createAttemptTracker(showAttempt);
 async function send(wire,fromPreparation=false){
   if(['chassis stop','wheel stop'].includes(wire))return requestStop();
-  if(preparationStop(wire)||scopedStopCommand(wire)){stackingPanel?.cancel();radarExchange.cancel();presetCancelled=true;paramsView?.cancel('停止操作已取消参数核对。');}
+  if(preparationStop(wire)||scopedStopCommand(wire)){stopRecovery?.cancel('新的停止或恢复请求已取消当前恢复流程。');stackingPanel?.cancel();radarExchange.cancel();presetCancelled=true;paramsView?.cancel('停止操作已取消参数核对。');}
   if(/^system\s+reset$/.test(wire.trim())&&!window.confirm('重启 STM32？\n仅在整车静止、任务空闲时操作。主控将重新初始化，外部驱动器不会断电复位。启动流程以设备报告为准，IMU 验证时请保持静止。'))return false;
   return attempts.run(wire,()=>executeSend(wire,fromPreparation));
 }
 
-async function executeSend(wire,fromPreparation=false,quiet=false,fromParameters=false){
+async function executeSend(wire,fromPreparation=false,quiet=false,fromParameters=false,fromChassisTest=false){
+  if(stopRecovery?.busy&&!scopedStopCommand(wire)&&!preparationStop(wire)){toast('底盘正在恢复，请等待完成；停止始终可用。');return false;}
+  if(chassisTestSession?.preparing&&!fromChassisTest&&!scopedStopCommand(wire)&&!preparationStop(wire)){toast('单段测试操作进行中，请等待或点击停止测试。');return false;}
   if(parameterBusy&&!fromParameters&&!scopedStopCommand(wire)&&!preparationStop(wire)){toast('参数批次正在进行，请等待完成；停止始终可用。');return false;}
   if(stopped()&&!readOnlyCommand(wire)&&!scopedStopCommand(wire)&&wire!=='bus recover'){appendLog('SYS','停止已锁定，本次指令未发送。');toast('停止已锁定，请确认停车后解除锁定。');return false;}
   if(prepView?.busy&&!fromPreparation){if(preparationStop(wire)||wire==='imu cal cancel')prepView.cancel('已中止准备；实际停止请查看设备反馈。');else if(!mayQuery(wire)){toast('准备正在等待专属回复，请稍后查询，或先取消准备。停止始终可用。');return false;}else prepView.cancel('已退出准备并读取状态，避免查询回复混入准备流程。');}
   if(sending&&!fromPreparation&&!scopedStopCommand(wire)){toast('上一条指令仍在发送，本次未排队。');return false;}
   try{frameCommand(wire);sending=Number(sending)+1;updateControls();chassisTestResult?.requested(wire);await bridge.send(wire,fromPreparation);if(!quiet)toast(`已发送：${wire}`);if(wire==='chassis stream off')$('subscription-note').textContent='已请求关闭遥测';return true;}catch(error){chassisTestResult?.failed(wire);appendLog('SYS',error.message);toast(error.message);return false;}finally{sending=Math.max(0,Number(sending)-1);updateControls();}
 }
-function canSend(wire){return !(routeLocked&&/^chassis route (start|auto)/.test(wire))&&bridge.connected&&!bridge.disconnecting&&(!(applyingGrabPreset||parameterBusy)||scopedStopCommand(wire)||preparationStop(wire))&&(!sending||scopedStopCommand(wire))&&(!stopped()||readOnlyCommand(wire)||scopedStopCommand(wire)||wire==='bus recover')&&(!prepView?.busy||preparationStop(wire)||wire==='imu cal cancel'||mayQuery(wire));}
-function updateControls(){const connected=bridge.connected&&!bridge.disconnecting;if(connected!==trackingConnected){trackingConnected=connected;materialTrackingPanel?.connection(connected);}materialTrackingPanel?.update();stackingPanel?.update();missionPanel?.update();headingPanel?.update();qrView?.refreshControls();document.querySelectorAll('[data-send]').forEach(b=>{const wire=b.dataset.stop||b.title||'';b.disabled=!canSend(wire)||(b.dataset.single==='1'&&axis==='all');});$('raw-send').disabled=!bridge.connected||bridge.disconnecting||!!sending||applyingGrabPreset||parameterBusy||(!!prepView?.busy&&!!prepView.pending);$('device-reset').disabled=!canSend('system reset');$('service-stop').disabled=!bridge.available;$('resume-stop').disabled=!bridge.available;paramsView?.update();radarView?.render();for(let i=forms.length-1;i>=0;i--){if(forms[i].root.isConnected){forms[i].mounted=true;forms[i].update();}else if(forms[i].mounted)forms.splice(i,1);}}
+function canSend(wire){return (!stopRecovery?.busy||scopedStopCommand(wire)||preparationStop(wire))&&(!chassisTestSession?.preparing||scopedStopCommand(wire)||preparationStop(wire))&&!(routeLocked&&/^chassis route (start|auto)/.test(wire))&&bridge.connected&&!bridge.disconnecting&&(!(applyingGrabPreset||parameterBusy)||scopedStopCommand(wire)||preparationStop(wire))&&(!sending||scopedStopCommand(wire))&&(!stopped()||readOnlyCommand(wire)||scopedStopCommand(wire)||wire==='bus recover')&&(!prepView?.busy||preparationStop(wire)||wire==='imu cal cancel'||mayQuery(wire));}
+function updateControls(){const connected=bridge.connected&&!bridge.disconnecting;if(connected!==trackingConnected){trackingConnected=connected;materialTrackingPanel?.connection(connected);}materialTrackingPanel?.update();stackingPanel?.update();missionPanel?.update();headingPanel?.update();qrView?.refreshControls();document.querySelectorAll('[data-send]').forEach(b=>{const wire=b.dataset.stop||b.title||'';b.disabled=!canSend(wire)||(b.dataset.single==='1'&&axis==='all');});$('raw-send').disabled=!bridge.connected||bridge.disconnecting||!!sending||applyingGrabPreset||parameterBusy||(!!prepView?.busy&&!!prepView.pending);$('device-reset').disabled=!canSend('system reset');$('service-stop').disabled=!bridge.available;$('resume-stop').disabled=!bridge.available||!!stopRecovery?.busy||!!chassisTestSession?.preparing||!!prepView?.busy;
+$('resume-stop').hidden=!bridge.stopLatched&&!stopRecovery?.busy&&stopRecovery?.phase!=='failed';
+$('resume-stop').textContent=stopRecovery?.busy?'正在恢复底盘…':stopRecovery?.phase==='failed'?'重试底盘恢复':'解除停止锁定并恢复底盘';paramsView?.update();radarView?.render();for(let i=forms.length-1;i>=0;i--){if(forms[i].root.isConnected){forms[i].mounted=true;forms[i].update();}else if(forms[i].mounted)forms.splice(i,1);}}
 async function refreshPorts(){
   const select=$('serial-port'),previous=select.value;
   $('refresh-ports').disabled=true;
@@ -181,15 +194,15 @@ $('serial-port').onchange=()=>connection(connectionState);
 $('connect').onclick=()=>void connectShared($('serial-port').value,Number($('baud').value)).catch(error=>toast(error.message));
 $('disconnect').onclick=()=>void disconnectShared().catch(error=>toast(error.message));
 window.addEventListener('pagehide',()=>{bridge.suspend();radarDirectView?.dispose();});
-$('device-reset').onclick=()=>void send('system reset');$('service-stop').onclick=()=>void requestStop();$('resume-stop').onclick=()=>void bridge.resume().catch(communicationError);
+$('device-reset').onclick=()=>void send('system reset');$('service-stop').onclick=()=>void requestStop();$('resume-stop').onclick=()=>void stopRecovery.start();
 function renderStatus(){const s=status.get(active);$('reply-title').textContent=s?`${s.live?'':'历史 · '}${describeReply(s.line)}`:(bridge.connected?'已连接 · 请读取状态':'尚未连接');$('reply-text').classList.toggle('error',!!s&&replyIsFault(s.line));$('reply-text').textContent=(s?displayReply(s.line):'')||'状态由设备回复确认，点击按钮不会预先标为成功。';$('reply-time').textContent=s?`最近回复 ${new Date(s.time).toLocaleTimeString('zh-CN',{hour12:false})}`:'尚无本模块回复';}
 function definition(id){const c=commands.find(c=>c.id===id);if(!c)throw new Error(`缺少命令定义 ${id}`);return c;}
 function action(id,label,preset={},useAxis=false){const c=definition(id),b=node('button',label||c.label);b.type='button';b.dataset.send='1';if(useAxis&&!c.fields.find(f=>f.key==='axis')?.options?.some(([v])=>v==='all'))b.dataset.single='1';const wire=()=>buildCommand(id,{...Object.fromEntries(c.fields.map(f=>[f.key,f.value])),...(typeof preset==='function'?preset():preset),...(useAxis?{axis}: {})});const hint=()=>{try{b.title=wire();}catch{b.title='请选择单轴';}};b.onmouseenter=hint;b.onfocus=hint;hint();b.onclick=()=>{try{void send(wire());}catch(e){toast(e.message);}};return b;}
 function actions(container,list){const row=node('div',undefined,'actions');for(const item of list)row.append(action(...(Array.isArray(item)?item:[item])));container.append(row);return row;}
-function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,executeLabel,note:noteText,alternateCommand}={}){
+function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,executeLabel,note:noteText,alternateCommand,onExecute,isBusy=()=>false}={}){
   const c=definition(id),root=node('form',undefined,'control-form');
   root.classList.toggle('compact-control',compact);root.append(node('h3',label||c.label));
-  const fields=node('div',undefined,'fields'),inputs={};
+  const fields=node('div',undefined,'fields'),inputs={},fieldLabels={};
   for(const f of c.fields){
     if(sharedAxis&&f.key==='axis')continue;
     const wrap=node('label',f.label);let input;
@@ -199,7 +212,7 @@ function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,execut
       for(const [v,t] of f.options){const o=node('option',t);o.value=v;input.append(o);}
     }else{input=node('input');input.type='number';input.min=f.min;input.max=f.max;input.step=f.step??1;input.required=true;}
     input.name=f.key;input.value=f.value??'';input.id=`${idPrefix}${id}-${f.key}`;
-    wrap.append(input);fields.append(wrap);inputs[f.key]=input;
+    wrap.append(input);fields.append(wrap);inputs[f.key]=input;fieldLabels[f.key]=wrap;
   }
   root.append(fields);
   const note=node('p',noteText??c.note??'每次执行发送一条指令，以设备回复为准。','form-note');root.append(note);
@@ -218,6 +231,12 @@ function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,execut
   let wire='',alternateWire='';
   function update(){
     if(id==='grab-ring-align-options')inputs.z.disabled=inputs.height.value==='raised';
+    if(id==='chassis-test'){
+      const cosine=inputs.profile.value==='cosine';
+      inputs.accel.disabled=cosine;fieldLabels.accel.hidden=cosine;
+      inputs.decel.disabled=cosine;fieldLabels.decel.hidden=cosine;
+      inputs.cosine_k.disabled=!cosine;fieldLabels.cosine_k.hidden=!cosine;
+    }
     if(['chassis-route-start','chassis-route-auto'].includes(id))inputs.speed.disabled=routeLocked;
     if(id==='pos'){
       const [min,max]=positionDegreeRange(sharedAxis?axis:inputs.axis.value);
@@ -227,14 +246,18 @@ function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,execut
       const values={...Object.fromEntries(Object.entries(inputs).map(([k,e])=>[k,e.value])),...(sharedAxis?{axis}: {})};
       wire=buildCommand(id,values);
       if(alternate){alternateWire=buildCommand(alternateCommand.id,values);alternate.title=alternateWire;alternate.disabled=!canSend(alternateWire);}
-      code.textContent=wire;execute.title=wire;validation.textContent='';execute.disabled=!canSend(wire);copy.disabled=false;
+      code.textContent=wire;execute.title=wire;validation.textContent='';execute.disabled=!canSend(wire)||isBusy();copy.disabled=false;
     }catch(e){wire=alternateWire='';code.textContent='请补全有效参数';execute.title='';validation.textContent=e.message;execute.disabled=copy.disabled=true;if(alternate){alternate.title='';alternate.disabled=true;}}
+    if(id==='chassis-test'){
+      const k=Number(inputs.cosine_k.value);
+      note.textContent=`${inputs.profile.value==='cosine'?`余弦过渡时间：${Number.isFinite(k)?k*2:'—'} ms（K越大越缓）。`:'线性起步加速度与停车减速度分别设置；减速度越小，需要越早刹车，短段峰值会降低。'}航向P、D允许0；两项均为0时关闭航向纠偏输出，IMU验证和到点航向判定仍保留。控制计算目标周期1 ms；曲线按所填周期更新，中间复用平移参考，航向纠偏继续更新。参数只用于本次平移，输出限幅±0.50 rad/s。运行中改输入用于下一次测试。${noteText??c.note??''}`;
+    }
     if(inputs.seconds&&['chassis-run','chassis-heading'].includes(id)){
       const t=Number(inputs.seconds.value);note.textContent=`起步 0.5 秒 + 保持 ${Number.isFinite(t)?t:'—'} 秒 + 停车 0.5 秒，总时长 ${Number.isFinite(t)?Math.round((t+1)*1000)/1000:'—'} 秒。${noteText??c.note??''}`;
     }
   }
   for(const input of Object.values(inputs)){input.oninput=update;input.onchange=update;}
-  root.onsubmit=e=>{e.preventDefault();update();if(wire)void send(wire);};copy.onclick=()=>void copyText(wire);
+  root.onsubmit=e=>{e.preventDefault();update();if(wire&&!execute.disabled)void (onExecute?onExecute(wire):send(wire));};copy.onclick=()=>void copyText(wire);
   if(alternate)alternate.onclick=()=>{update();if(alternateWire)void send(alternateWire);};
   // Nested pages refresh controls before these forms are attached; retain them until first mount.
   forms.push({root,update,mounted:false});update();return root;
@@ -274,7 +297,7 @@ function buildGrabPanel(body){
   body.append(node('h2','物料取放','vision-title'),node('p','原料夹取入仓、车仓取出与加工取回集中操作；单独追踪、参数和记录按需展开。','form-note'));
   materialTrackingPanel=mountTracking({root:body,send:wire=>send(wire),canSend});materialTrackingPanel.connection(bridge.connected);
   const takeWork=node('section',undefined,'vision-card');
-  takeWork.append(controlForm('grab-take-work',{compact:true,label:'车仓取出并保持',executeLabel:'夹取并转到130° · 保持闭爪'}));
+  takeWork.append(controlForm('grab-take-work',{compact:true,label:'车仓取出并保持',executeLabel:'夹取并转到127.5° · 保持闭爪'}));
   actions(takeWork,[['grab-status','读取取出任务状态'],['grab-stop','停止车仓取出']]);body.append(takeWork);
   const manual=node('details',undefined,'vision-card material-manual');manual.append(node('summary','固定夹取与静态对准'));body.append(manual);
   const options=node('section',undefined,'vision-card');options.append(node('h3','固定夹取与原静态流程的任务目标'));
@@ -303,12 +326,14 @@ function buildGrabPanel(body){
 }
 function buildRingPanel(body){
   const ring=node('section',undefined,'ring-flow');ring.id='ring-place-test';
-  ring.append(node('h2','编号环放置','vision-title'),node('p','粗加工区 · 先对准编号环，再手动装料放置。','form-note'));
+  ring.append(node('h2','编号环放置','vision-title'),node('p','粗加工区 · 先对准编号环，再选择自动取仓放置或手动装料。','form-note'));
   ring.append(controlForm('grab-ring-align-options',{compact:true,label:'1 · 视觉对准',executeLabel:'开始对准',note:'默认回到Z=0完成对准并保持，不再下降识别再抬高。下降选项仅用于对照测试。完成后可保持该高度观察，或抬回上限（默认Z=0）装料；已经在上限时不重复抬升。选择不会自动发送指令。'}));
-  const load=node('section',undefined,'vision-card ring-load');load.append(node('h3','2 · 手动装料'),node('p','对准完成并停稳后装料、闭合夹爪；需要高位装料时，上一步选择“抬回上限”。','form-note'));
-  actions(load,[['grip-open','打开夹爪 · 2500 µs'],['grip-catch','闭合夹爪 · 1920 µs']]);ring.append(load);
-  ring.append(controlForm('grab-ring-place',{compact:true,label:'3 · 下降放置',executeLabel:'下降、松爪并提起',note:'按所设绝对高度下降，松爪后自动提起。'}));
-  ring.append(node('p','“停止并退出”结束当前测试；再次放置前需重新对准。','form-note'));body.append(ring);
+  const autoTake=controlForm('grab-ring-take',{compact:true,label:'2 · 自动取仓放置',executeLabel:'从料盘取料并放置',note:'沿用上一步已对准的环号。保持空爪，选择物料所在料盘；按比赛流程核验并保存位置、回仓夹取、转回作业方向并恢复X，再按设备z_proc_place放置高度下降、松爪和提起（默认Z=−140 mm）。无需再做下面的手动装料与下降。'});
+  autoTake.classList.add('ring-auto-take');actions(autoTake,[['grab-mission-continue','继续自动取仓'],['grab-get-z_proc_place','读取比赛放置高度']]);ring.append(autoTake);
+  const load=node('section',undefined,'vision-card ring-load');load.append(node('h3','手动方式 · 装料'),node('p','对准完成并停稳后装料、闭合夹爪；需要高位装料时，上一步选择“抬回上限”。','form-note'));
+  actions(load,[['grip-open','打开夹爪 · 2450 µs'],['grip-catch','闭合夹爪 · 1920 µs']]);ring.append(load);
+  ring.append(controlForm('grab-ring-place',{compact:true,label:'手动方式 · 下降放置',executeLabel:'下降、松爪并提起',note:'按所设绝对高度下降，松爪后自动提起。'}));
+  ring.append(node('p','自动取仓可停止后点击“继续自动取仓”续接；手动放置完成后，再次放置前需重新对准。','form-note'));body.append(ring);
   const comparison=node('details',undefined,'vision-card advanced');
   comparison.append(node('summary','通信故障对照 · 对环与Z下降'),node('p','先结束比赛并确认停稳，准备作业姿态。A在Z=0对环，B按设定高度逐步下降对环；两项均不夹取、不松爪。一次只运行一项，停止后再切换。若复现故障，点击“读取本次恢复诊断”。','form-note'));
   comparison.append(controlForm('grab-ring-align-top',{compact:true,label:'A · 保持Z=0对环',executeLabel:'启动A · 不下降'}),
@@ -377,7 +402,13 @@ function renderGrabStatus(){
   for(const [label,text] of rows){const target=primaryLabels.has(label)?list:diagnostics;target.append(node('dt',label),node('dd',text));}
   const reply=node('p',grabReply?`${grabReply.live?'':'历史 · '}${displayReply(grabReply.line)}`:'设备回复将在此显示。','grab-reply');reply.classList.toggle('error',!!grabReply&&replyIsFault(grabReply.line));
   const routeReply=node('div',undefined,'grab-route-status');
-  if(r){const old=!grabRouteSnapshot.live||Date.now()-grabRouteSnapshot.time>5000;const progress=(r.mode==='mission'||r.mode==='single')?`工位 ${r.station??'—'} · 入仓 ${r.stored??'—'} / 放出 ${r.placed??'—'}`:`第 ${r.segment??'—'} 段`;routeReply.append(node('h3',`${old?'历史 · ':''}${describeGrabRoute(r)}`),node('p',`${progress} · 来源 ${r.source==='test'?'固定蓝色测试':r.source==='simulated'?'模拟任务码':r.source||'—'} · ${r.code||'—'} · ${r.elapsed_ms??'—'} ms`, 'form-note'),node('p',`路线原因：${r.state==='config_wait'?describeGrabMissing(r.reason):reasonText(r.reason)}`,r.state==='error'?'grab-reply error':'grab-reply'));}
+  if(r){
+    const old=!grabRouteSnapshot.live||Date.now()-grabRouteSnapshot.time>5000;
+    const ringOnly=r.mode==='ring_place';
+    const progress=(r.mode==='mission'||r.mode==='single')?`工位 ${r.station??'—'} · 入仓 ${r.stored??'—'} / 放出 ${r.placed??'—'}`:`第 ${r.segment??'—'} 段`;
+    const metadata=ringOnly?`任务耗时 ${r.elapsed_ms??'—'} ms`:`${progress} · 来源 ${r.source==='test'?'固定蓝色测试':r.source==='simulated'?'模拟任务码':r.source||'—'} · ${r.code||'—'} · ${r.elapsed_ms??'—'} ms`;
+    routeReply.append(node('h3',`${old?'历史 · ':''}${describeGrabRoute(r)}`),node('p',metadata,'form-note'),node('p',`${ringOnly?'任务':'路线'}原因：${r.state==='config_wait'?describeGrabMissing(r.reason):reasonText(r.reason)}`,r.state==='error'?'grab-reply error':'grab-reply'));
+  }
   details.append(diagnostics,reply);
   heading.textContent='抓取任务状态 · '+heading.textContent;
   grabPanel.replaceChildren(routeReply,heading,freshness);
@@ -399,9 +430,9 @@ const grip=node('section',undefined,'lidar-servo-card gripper-servo-card');grip.
 const gripHeader=node('div',undefined,'lidar-servo-header'),gripTitle=node('div',undefined,'lidar-servo-title');
 gripTitle.append(node('h3','夹爪舵机'),node('span','50 Hz · 开口测试','lidar-servo-meta'));gripHeader.append(gripTitle);
 grip.append(gripHeader,node('p','调节开口，检查夹爪下降时与相邻料盘的间隙。','form-note'));
-const gripPresets=actions(grip,[['grip-open','打开 · 2500 µs'],['grip-catch','夹取 · 1920 µs']]);gripPresets.classList.add('lidar-servo-presets');
+const gripPresets=actions(grip,[['grip-open','打开 · 2450 µs'],['grip-catch','夹取 · 1920 µs']]);gripPresets.classList.add('lidar-servo-presets');
 const gripForm=controlForm('grip-pulse',{compact:true,executeLabel:'应用脉宽'});gripForm.classList.add('lidar-servo-pulse-form');grip.append(gripForm);
-grip.append(node('p','车仓取料开口：2120 μs。自定义应用只改变当前输出，两个默认按钮保留。','form-note'));
+grip.append(node('p','自动打开统一为2450 μs。自定义应用只改变当前输出。','form-note'));
 arm.append(grip);
 const lidarServo=node('section',undefined,'lidar-servo-card');lidarServo.id='lidar-servo-controls';
 const lidarServoHeader=node('div',undefined,'lidar-servo-header'),lidarServoTitle=node('div',undefined,'lidar-servo-title');
@@ -427,10 +458,12 @@ const baseDetails=node('details',undefined,'advanced');baseDetails.append(node('
 const ch=pages.chassis;
 ch.append(node('p','单独验证当前路线加减速，无需执行比赛。上电初始化与 IMU 静止验证完成后，在空旷区域测试；底部随时可以立即停止底盘。','form-note'));
 const accelerationTest=node('section',undefined,'vision-card chassis-test-card');
-accelerationTest.append(node('h2','底盘单段运动测试'),node('p','① 首次测试先建立当前位置参考　② 选择方向、距离和速度　③ 启动并查看底盘状态','form-note'));
-actions(accelerationTest,[['chassis-origin','当前位置作为测试起点',{x:0,y:0,heading:0}],['chassis-task','查看底盘状态']]);
-accelerationTest.append(node('p','建立测试起点只设置本地坐标 (0,0,0°)，不移动小车、不清零 IMU；会替换原地图定位。已有有效定位时可直接测试，每次运动均相对当时车头。测试结束跑比赛时重新从所选起点开始。','form-note'));
-accelerationTest.append(controlForm('chassis-test',{compact:true,executeLabel:'开始单段测试'}));
+accelerationTest.append(node('h2','底盘单段运动测试'),node('p','① 设置本次运动参数　② 直接开始测试　③ 自动显示进度，随时停止测试','form-note'));
+accelerationTest.append(node('p','开始测试直接提交运动，不重复查询或重设参考。下方展示设备最近回报；需要时点“查询状态”，反馈或参考未就绪时再点“准备/恢复测试状态”。总线锁定使用底部恢复入口，IMU验证未通过时到系统与标定处理。','form-note'));
+const chassisTestState=node('div');accelerationTest.append(chassisTestState);
+accelerationTest.append(controlForm('chassis-test',{compact:true,executeLabel:'开始测试',onExecute:wire=>chassisTestSession.start(wire),isBusy:()=>!!chassisTestSession?.busy}));
+chassisTestSession=mountChassisTestSession({root:chassisTestState,send:(wire,owned)=>executeSend(wire,owned,true,false,true),stop:requestStop,acquire:()=>bridge.acquirePreparation(),release:()=>bridge.releasePreparation(),canStart:()=>canSend('chassis test')&&!prepView?.busy,started:()=>chassisTestResult?.preparing(),changed:updateControls});
+chassisTestSession.connection(bridge.connected);
 chassisTestResult=mountChassisTestResult({root:accelerationTest});chassisTestResult.connection(bridge.connected);
 ch.append(accelerationTest);
 const timedMotion=node('details',undefined,'advanced');timedMotion.append(node('summary','定时运动 · 平移与转向组合'));
@@ -452,7 +485,7 @@ const advancedMotion=node('details',undefined,'advanced');advancedMotion.append(
 advancedMotion.append(node('p','指定航向使用 HWT101 模块角度；地图位移使用场地坐标。先完成准备跑图，再使用这些操作。','form-note'));
 advancedMotion.append(controlForm('chassis-turn',{compact:true,executeLabel:'开始原地转向'}),controlForm('chassis-heading',{compact:true,label:'保持指定模块航向',executeLabel:'启动航向保持测试',note:'目标使用HWT101模块角度，需本次IMU验证通过。'}),controlForm('chassis-move',{compact:true,label:'地图相对位移 · 最长 300 mm',executeLabel:'执行地图位移'}),controlForm('chassis-origin',{compact:true,label:'手动设置地图位姿 · 不移动小车',executeLabel:'设置地图位姿'}));ch.append(advancedMotion);
 const recovery=node('details',undefined,'advanced');recovery.append(node('summary','故障恢复 · 实物驱动已复位后使用'));
-recovery.append(node('p','用于驱动器已实际复位后的总线恢复，不会复位硬件。先停止四轮采集并等待在途事务结束，再确认恢复。底部“解除停止锁定”仅解除网页软件停车锁，两者不同。','form-note'));
+recovery.append(node('p','用于驱动器已实际复位后的总线恢复，不会复位硬件。先停止四轮采集并等待在途事务结束，再确认恢复。底部“解除停止锁定并恢复底盘”会按需恢复总线并开启四轮反馈，但不代表驱动器已经物理复位。','form-note'));
 actions(recovery,[['feedback-off','停止四轮采集'],['reset-confirmed','确认驱动已复位']]);ch.append(recovery);
 buildVisionWorkspace(pages.vision);
 const sys=pages.system;buildGrabCalibrationPanel(sys);const bootNote=node('p',bootStage||'启动状态：尚未收到本次启动报告','form-note');bootNote.id='boot-status';sys.append(bootNote);actions(sys,[['bus-recover','一键恢复电机总线'],['bus-status','查看恢复结果']]);sys.append(node('p','误操作或通信错误后使用：停止任务、检查全部电机，成功后由你重新启动。不会重启主控、自动归零或续跑；恢复结果见终端。','form-note'));actions(sys,[['info','设备信息'],['help','固件帮助'],['imu-status','读取 IMU 状态']]);sys.append(node('p','上电先完成 Z/X/Base 回零，再静止验证 5 秒；失败后可手动重新验证。原生零偏标定约 20 秒，随后自动验证 30 秒；全过程保持静止。保存请求与断电保持验证分别查看。','form-note'));actions(sys,[['imu-cal-start','原生标定'],['imu-verify','重新验证 5 秒'],['imu-cal-cancel','取消标定/验证']]);sys.append(node('p','Z 轴角度清零：把当前朝向设为 0°，不消除漂移、不标定零偏。保持静止操作；跑图前重新验证 IMU 并设置地图起点。','form-note'));

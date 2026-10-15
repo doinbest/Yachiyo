@@ -217,21 +217,34 @@ bool GrabRoute_Command(unsigned Count,char *Tokens[])
   char *End;
   float Speed;
   if(Count<2U || strcmp(Tokens[0],"grab")) return false;
+  if(Count>=3U && !strcmp(Tokens[1],"ring") && !strcmp(Tokens[2],"take"))
+  {
+    if(Count!=4U || Tokens[3][0]<'1' || Tokens[3][0]>'3' || Tokens[3][1])
+    {static const char error[]="ERR grab ring_take reason=invalid_slot\r\n";(void)ConsoleTx_Write((const uint8_t*)error,sizeof error-1);return true;}
+    if(!ContestMission_StartRingTake((uint8_t)(Tokens[3][0]-'0'))){
+      char line[160];snprintf(line,sizeof line,"ERR grab ring_take reason=%s\r\n",ContestMission_Reason());(void)ConsoleTx_Write((const uint8_t*)line,(uint16_t)strlen(line));
+    }
+    return true;
+  }
   if(!strcmp(Tokens[1],"heading"))
   {
-    const char *error=NULL;unsigned station=0;Speed=5;float polarity=-1;
+    const char *error=NULL;unsigned station=0;Speed=5;float polarity=-1;uint8_t source=STATION_HEADING_RING;
     bool probe=Count>2 && !strcmp(Tokens[2],"angle");
     unsigned station_index=probe?3U:2U,speed_index=probe?5U:3U;
-    if(Count<(probe?4U:3U) || Count>speed_index+1)error="format";
+    if(Count<(probe?4U:3U) || Count>speed_index+2)error="format";
     else {
       station=!strcmp(Tokens[station_index],"proc")?2:!strcmp(Tokens[station_index],"temp")?3:0;
       if(!station)error="heading_station_required";
       if(probe && Count>4){polarity=strtof(Tokens[4],&End);if(End==Tokens[4] || *End)error="heading_probe_polarity";}
       if(Count>speed_index){Speed=strtof(Tokens[speed_index],&End);if(End==Tokens[speed_index] || *End)error="heading_speed_range";}
+      if(Count>speed_index+1){
+        if(!strcmp(Tokens[speed_index+1],"line"))source=STATION_HEADING_LINE;
+        else if(strcmp(Tokens[speed_index+1],"ring"))error="heading_source_required";
+      }
     }
     if(!error && GrabRoute_IsBusy())error="busy";
     if(!error){
-      bool accepted=probe?ContestMission_StartHeadingProbe(station,polarity,Speed):ContestMission_StartHeadingTest(station,Speed);
+      bool accepted=probe?ContestMission_StartHeadingProbeSource(station,polarity,Speed,source):ContestMission_StartHeadingTestSource(station,Speed,source);
       if(accepted){QrTest=false;return true;}
       error=ContestMission_Reason();
     }

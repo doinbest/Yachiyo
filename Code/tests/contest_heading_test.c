@@ -12,6 +12,7 @@ bool ChassisMotion_TurnToPrecision(float yaw,float speed,float tol,uint32_t time
 #include "../template/App/contest_mission.c"
 static void fixture(MissionState s){ContestMission_Init();State=s;Single=false;Station=2;WorkYaw=180;RouteOptions.turn_speed_deg_s=10;motion.state=CHASSIS_MOTION_DONE;motion.stop_confirmed=true;motion.reason="feedback_arrived";route.state="work";route.reason="station_work";grab.state=GRAB_COMPLETE;grab.result="work_ready";}
 extern unsigned test_heading_starts,test_heading_processes,test_heading_pauses;
+extern uint8_t test_heading_source;
 extern bool test_heading_done;
 extern float test_heading_image;
 extern const char *test_heading_result;
@@ -56,6 +57,7 @@ int main(void){
     route.state="station";route.stop_confirmed=true;route.station=(visit==3 || visit==6)?2:3;
     route.visit=visit;route.target_x_mm=1200;route.target_y_mm=300;
     ContestMission_Process();assert(State==M_HEADING && test_heading_starts==1);
+    assert(test_heading_source==(visit==7?0x0e:0x0d));
     ContestMission_Process();assert(State==M_HEADING && test_heading_processes==1);
     test_heading_done=true;ContestMission_Process();assert(State==M_RING_CLEAR);
     for(unsigned pass=0;pass<2;pass++)for(unsigned item=0;item<3;item++) {
@@ -131,5 +133,11 @@ int main(void){
   cancel_stop.tx_complete=cancel_stop.wheels_stopped=true;motion.state=CHASSIS_MOTION_DONE;
   ContestMission_Process();assert(State==M_CANCELLED && probe_turn_calls==1 && !ContestMission_Continue());
   assert(!ContestMission_StartHeadingProbe(2,0,5));assert(!ContestMission_StartHeadingProbe(2,1,2));
+  fixture(M_IDLE);route.state="idle";cancel_defer=false;
+  assert(ContestMission_StartHeadingTestSource(3,5,0x0e));
+  for(unsigned i=0;i<5;i++)ContestMission_Process();
+  assert(test_heading_source==0x0e && strstr(report,"heading_source=line"));
+  test_heading_done=true;ContestMission_Process();assert(State==M_DONE);
+  assert(!ContestMission_StartHeadingTestSource(3,5,0x01));
   puts("mission heading: once per station arrival, no per-ring repeat, independent probes PASS");
 }

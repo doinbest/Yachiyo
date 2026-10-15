@@ -12,6 +12,7 @@ static const uint8_t dirs[4] = {
     CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR, CHASSIS_MOTOR_REAR_LEFT_FORWARD_DIR,
     CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR, CHASSIS_MOTOR_FRONT_RIGHT_FORWARD_DIR};
 static ChassisLocalization_Status_t status;
+static ChassisObserver_History_t feedback_history;
 static uint32_t last_observe;
 
 void ChassisLocalization_Init(void)
@@ -50,7 +51,7 @@ bool ChassisLocalization_ConfirmPositionUnits(uint32_t value)
   if (status.units_per_rev != value)
   {
     status.units_per_rev = value;
-    status.observer.feedback_baseline = status.observer.feedback_valid = false;
+    ChassisObserver_FeedbackReset(&status.observer);
     status.feedback_valid = false;
     status.generation++;
   }
@@ -63,13 +64,15 @@ void ChassisLocalization_Process(void)
   static Mecanum_Status_t tx;
   static ChassisObserver_Feedback_t sample;
   uint32_t now = HAL_GetTick();
-  bool fresh = true, changed = true, lost;
+  bool fresh = true, lost;
   bool previously_valid = status.feedback_valid;
   float rpm[4];
   unsigned i;
   ChassisMotion_StatusGet(&motion);
   sample.yaw_valid = motion.heading_valid && motion.map_anchor_valid && status.origin_valid;
   sample.yaw_rad = motion.map_yaw_rad;
+  sample.yaw_ms = motion.heading_sample_tick;
+  sample.yaw_time_valid = true;
   lost = status.origin_valid && !motion.map_anchor_valid;
   if (lost)
     status.origin_valid = false;
@@ -85,8 +88,6 @@ void ChassisLocalization_Process(void)
     age = now - sample.time_ms[i];
     if (!sample.valid[i] || age > 600U)
       fresh = false;
-    if (sample.time_ms[i] == status.observer.previous_ms[i])
-      changed = false;
     if (!status.wheels[i].speed_valid || now - status.wheels[i].speed_ms > 600U)
       status.speed_valid = false;
   }
@@ -95,12 +96,11 @@ void ChassisLocalization_Process(void)
   /* Check loss on every loop, even when no complete new wheel group arrives. */
   if (!fresh)
   {
-    status.observer.feedback_valid = false;
-    status.observer.feedback_baseline = false;
+    ChassisObserver_FeedbackReset(&status.observer);
   }
   if ((uint32_t)(now - last_observe) >= 20U)
   {
-    bool had_baseline = status.observer.feedback_baseline;
+    uint32_t previous_feedback_ms=status.observer.feedback_ms;
     last_observe = now;
     Mecanum_StatusGet(&tx);
     for (i = 0; i < 4; i++)
@@ -110,14 +110,13 @@ void ChassisLocalization_Process(void)
     ChassisObserver_Command(&status.observer, &geometry, rpm, now, tx.sent_ms,
         !tx.locked && tx.sent_velocity_valid &&
         (tx.stage == MECANUM_STAGE_STOPPED || (tx.sent_ms && now - tx.sent_ms <= 600U)));
-    /* A partial replacement mixes two polling rounds. Validate group skew only
-     * when all four positions are new; individual age limits still apply above. */
-    if (!had_baseline || changed || !fresh)
-      ChassisObserver_Feedback(&status.observer, &geometry, &sample);
-    if (had_baseline && changed && status.observer.feedback_valid)
+    /* Retain heading at 20 ms cadence; the observer waits for a complete wheel
+     * group and interpolates all positions and heading to one common time. */
+    ChassisObserver_Feedback(&status.observer, &geometry, &sample,&feedback_history);
+    if (status.observer.feedback_valid && status.observer.feedback_ms!=previous_feedback_ms)
     {
       status.feedback_sequence++;
-      status.feedback_tick = now;
+      status.feedback_tick = status.observer.feedback_ms;
     }
   }
   status.feedback_valid = fresh && status.observer.feedback_valid;
@@ -131,9 +130,8 @@ void ChassisLocalization_HeadingSync(float yaw)
   status.observer.command.yaw_rad=remainderf(status.observer.command.yaw_rad+delta,2*CHASSIS_MODEL_PI);
   status.observer.feedback.yaw_rad=yaw;
   status.observer.previous_yaw=yaw;
-  /* Flush wheel baseline at the verified stationary boundary, retaining odometry. */
-  for(unsigned i=0;i<4;i++) {
-    status.observer.previous_position[i]=dirs[i]?-status.wheels[i].position_raw:status.wheels[i].position_raw;
-    status.observer.previous_ms[i]=status.wheels[i].position_ms;
-  }
+  /* The old heading history belongs to the previous map mapping. Retain pose,
+   * rebuild measured baselines at this verified stationary boundary. */
+  ChassisObserver_FeedbackReset(&status.observer);
+  status.feedback_valid=false;
 }

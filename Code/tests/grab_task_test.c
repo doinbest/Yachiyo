@@ -13,6 +13,14 @@ static uint32_t clock_ms;
 static MechanicalArm_EventTypeDef pending;
 static bool pending_valid, move_arrives = true, camera_valid = true, imu_valid = true;
 static float physical[3], destination[3];
+static bool arrival_reply_enabled;
+bool MotorBus_PositionReached(uint8_t id,uint32_t accepted)
+{
+ unsigned i=id==5?2:id==6?1:0;
+ return arrival_reply_enabled && (int32_t)(clock_ms-accepted)>=0 && fabsf(physical[i]-destination[i])<.01f;
+}
+
+
 static unsigned positions, closures, openings, stops, camera_requests, velocity_requests;
 static unsigned grip_custom_calls;
 static float grip_custom_duty;
@@ -258,7 +266,7 @@ bool Mecanum_FeedbackGet(unsigned wheel, Mecanum_Feedback_t *out)
   out->speed_rpm = wheel_moving ? 30 : 0; out->state_flags = wheel_state_flags[wheel]; return true;
 }
 bool Mecanum_Velocity_Request(float f, float l, float yaw, uint8_t acc)
-{ (void)f; (void)l; (void)yaw; (void)acc; velocity_requests++; bus.stage = MECANUM_STAGE_SENT; return true; }
+{ (void)f; (void)l; (void)yaw; (void)acc; if(f==0 && l==0 && yaw==0){bus.tx_complete=bus.sent_velocity_valid=true;memset(bus.sent_rpm,0,sizeof bus.sent_rpm);} velocity_requests++; bus.stage = MECANUM_STAGE_SENT; return true; }
 
 static void setting(const char *key, const char *value)
 {
@@ -270,6 +278,7 @@ static void reset(void)
   accepted_log[0]=progress_log[0]=0;
   home_error_log[0]=0;home_submit_result=MECHANICAL_ARM_RESULT_NONE;
   memset(&home_bus_diag,0,sizeof home_bus_diag);home_bus_diag.reason="none";
+  arrival_reply_enabled=false;
   clock_ms = 1000; pending_valid = false; positions = closures = openings = stops = 0;
   grip_custom_calls=0;grip_custom_duty=0;
   last_stop_axis=MECHANICAL_ARM_AXIS_ALL;
@@ -510,7 +519,7 @@ static void boot_defaults_start_align_without_settings(void)
   assert(GrabTask_Start("align"));
   run_to(GRAB_ALIGN,180,1);
   assert(camera_requests==1 && Axes[0].target==0 && Axes[1].target==0);
-  assert(!closures && base_moves==1 && fabsf(physical[2]-130)<.15f);
+  assert(!closures && base_moves==1 && fabsf(physical[2]-GRAB_BASE_WORK_OFFSET_DEG)<.15f);
   run_to(GRAB_HOLD,250,2);
   assert(!closures && base_moves==1 && !strcmp(status().reason,"color_aligned_low"));
   status_write(false); assert(strstr(output,"model=initial"));
@@ -1332,7 +1341,7 @@ static void ring_no_preextension(void)
   base_arrives=false;
   assert(GrabTask_Command(3,cmd));
   for(unsigned i=0;i<200 && !base_moves;i++)step(true,1,0,0);
-  assert(base_moves==1 && fabsf(destination[2]-130)<.2f);
+  assert(base_moves==1 && fabsf(destination[2]-GRAB_BASE_WORK_OFFSET_DEG)<.2f);
   for(unsigned i=0;i<40;i++)step(true,1,0,0);
   assert(fabsf(destination[0])<.2f && !camera_requests);
   base_arrives=true;physical[2]=destination[2];

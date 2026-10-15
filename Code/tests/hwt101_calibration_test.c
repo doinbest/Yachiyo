@@ -73,7 +73,7 @@ static void until_verify(void)
 }
 static void finish(void)
 {
-  for(unsigned i=0;i<4000 && HWT101_Cal_IsBusy();i++)sample(10,0);
+  for(unsigned i=0;i<7000 && HWT101_Cal_IsBusy();i++)sample(10,0);
   assert(!HWT101_Cal_IsBusy());
 }
 int main(void)
@@ -169,7 +169,8 @@ int main(void)
   setup(UINT32_MAX-3000);assert(HWT101_Cal_VerifyStart(5000));advance(5500,0.1f);
   assert(!snapshot().verified && !strcmp(snapshot().result,"FAIL") && writes==2 && zeros==1 && saves==0);
   setup(100);assert(HWT101_Cal_VerifyStart(5000));until_verify();sample(10,0);sample(301,0);
-  assert(!snapshot().verified && !strcmp(snapshot().reason,"sample_gap"));
+  assert(snapshot().busy && snapshot().read_recovering && !snapshot().verified);
+  finish();assert(snapshot().verified && zeros==1);
 
   /* Validation resets yaw once, but never changes bias or subtracts the slope. */
   setup(100);assert(HWT101_Cal_VerifyStart(30000));advance(30500,0.005f);
@@ -193,32 +194,35 @@ int main(void)
   assert(!snapshot().verified && saves==0 && regs[0x48]==0);
 
   setup(100);assert(HWT101_Cal_VerifyStart(30000));until_verify();sample(10,0);sample(301,0);
-  assert(!strcmp(snapshot().reason,"sample_gap") && snapshot().max_gap_ms==301);
+  assert(snapshot().read_recovering && snapshot().max_gap_ms==301);
+  finish();assert(snapshot().verified && zeros==1);
   setup(100);assert(HWT101_Cal_VerifyStart(30000));until_verify();sample(10,0);tick+=301;HWT101_Cal_Process();
-  assert(!strcmp(snapshot().reason,"stale"));
+  assert(snapshot().read_recovering && snapshot().busy);
+  finish();assert(snapshot().verified && zeros==1);
   setup(100);assert(HWT101_Cal_VerifyStart(30000));until_verify();sample(10,0);sample(100,6);
   assert(!strcmp(snapshot().reason,"motion"));
   setup(100);assert(HWT101_Cal_VerifyStart(30000));until_verify();sample(10,0);comm.i2c_error_count++;sample(10,0);
-  assert(!snapshot().verified && !strcmp(snapshot().reason,"i2c"));
+  assert(!snapshot().verified && snapshot().read_recovering);
+  finish();assert(snapshot().verified && !saves);
 
   setup(100);assert(HWT101_Cal_Start());advance(1000,0);HWT101_Cal_Cancel();finish();
   assert(regs[0x48]==0 && exits==1 && saves==0 && !snapshot().verified);
-  /* Abort recovery waits for the driver's one-second reprobe/local BUSY recovery. */
+  /* Read recovery keeps the native run alive while the driver reprobes. */
   setup(100);assert(HWT101_Cal_Start());advance(1000,0);
   comm.i2c_error_count++;comm.last_hal=HAL_TIMEOUT;comm.hal_error=0x20U;
   comm.hal_state=0x24U;comm.fault_operation=1;comm.fault_register=0x3f;
   comm.fault_ms=tick;ready=false;sample(10,0);
   advance(1500,0);
-  assert(snapshot().busy && snapshot().state==HWT101_CAL_RESTORING && exits==0);
+  assert(snapshot().busy && snapshot().state==HWT101_CAL_CALIBRATING && exits==0);
   ready=true;finish();
-  assert(snapshot().state==HWT101_CAL_FAILED && snapshot().normal_mode_confirmed);
-  assert(!strcmp(snapshot().reason,"i2c") && !saves && !snapshot().verified);
+  assert(snapshot().state==HWT101_CAL_DONE && snapshot().normal_mode_confirmed);
+  assert(saves==1 && snapshot().verified && starts==1 && zeros==1);
   assert(!strcmp(snapshot().first_reason,"i2c") && snapshot().first_hal==HAL_TIMEOUT);
   assert(snapshot().first_hal_error==0x20U && snapshot().first_hal_state==0x24U);
   assert(snapshot().first_operation==1 && snapshot().first_register==0x3f);
   setup(100);assert(HWT101_Cal_Start());advance(1000,0);
   comm.i2c_error_count++;comm.last_hal=HAL_TIMEOUT;ready=false;sample(10,0);
-  advance(5100,0);
+  advance(11100,0);
   assert(!snapshot().busy && !snapshot().normal_mode_confirmed && !saves);
   assert(!strcmp(snapshot().reason,"normal_mode_unconfirmed"));
   assert(!strcmp(snapshot().first_reason,"i2c") && snapshot().first_hal==HAL_TIMEOUT);
@@ -226,7 +230,7 @@ int main(void)
   setup(UINT32_MAX-1500);assert(HWT101_Cal_Start());advance(1000,0);
   comm.i2c_error_count++;ready=false;sample(10,0);advance(2000,0);
   assert(snapshot().busy);ready=true;finish();
-  assert(snapshot().normal_mode_confirmed && !snapshot().verified && !saves);
+  assert(snapshot().normal_mode_confirmed && snapshot().verified && saves==1);
   setup(100);fail_write_reg=0x48;assert(HWT101_Cal_Start());finish();
   assert(starts==1 && exits==3 && !strcmp(snapshot().reason,"normal_mode_unconfirmed"));
   fail_write_reg=-1;HWT101_Cal_Cancel();finish();assert(regs[0x48]==0 && snapshot().normal_mode_confirmed);

@@ -25,7 +25,7 @@ static unsigned overlapping_moves,busy_moves,last_base_moves;
 static unsigned overlap_pauses;
 static bool overlap_in_flight;
 static uint32_t base_due,motion_due;
-static bool integration_mission_enabled;
+static bool integration_mission_enabled,standalone_without_origin;
 static bool expected_raised;
 static unsigned raised_ring,raised_pick,raised_stack,stack_camera_requests;
 static const char *paused_route;
@@ -62,7 +62,7 @@ void ChassisMotion_StatusGet(ChassisMotion_Status_t *out){*out=motion;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *out)
 {memset(out,0,sizeof *out);out->origin_valid=out->feedback_valid=out->speed_valid=true;
  out->feedback_tick=clock_ms;out->origin=(ChassisModel_Pose_t){2250,150,CHASSIS_MODEL_PI};
- out->observer.feedback=out->origin;}
+ out->observer.feedback=out->origin;if(standalone_without_origin)out->origin_valid=false;}
 bool ChassisLocalization_Origin(float x,float y,float yaw)
 {(void)x;(void)y;(void)yaw;assert(false);return false;}
 void ContestScreen_TaskCodeClear(void){displayed[0]=0;}
@@ -121,7 +121,7 @@ static void visit(unsigned id,unsigned number)
 }
 static void run_match(bool raised)
 {
- integration_mission_enabled=false;expected_raised=raised;
+ integration_mission_enabled=false;standalone_without_origin=false;expected_raised=raised;
  resumed=stored=placed=pause_count=overlapping_moves=busy_moves=last_base_moves=overlap_pauses=0;
  raised_ring=raised_pick=raised_stack=0;overlap_in_flight=false;base_due=motion_due=0;paused_route=NULL;
  memset(&route,0,sizeof route);memset(&motion,0,sizeof motion);
@@ -155,4 +155,35 @@ static void run_match(bool raised)
  ContestMission_Report();assert(strstr(output,raised?"align=raised":"align=lowered"));
  puts("mission + production grab/tracking integration: two batches, real action states, 12 stored/12 placed PASS");
 }
-int main(void){run_match(false);run_match(true);return 0;}
+static void standalone_ring_tray_place(void)
+{
+ for(uint8_t slot=1;slot<=3;slot++){
+  integration_mission_enabled=false;standalone_without_origin=true;expected_raised=true;
+  memset(&route,0,sizeof route);memset(&motion,0,sizeof motion);
+  route.state="cancelled";route.reason="cancelled";motion.state=CHASSIS_MOTION_ERROR;motion.stop_confirmed=true;
+  reset();configure(true);setting("x_min","0");setting("x_max","100");setting("z_min","-150");setting("z_max","0");
+  setting("z_observe","0");setting("z_car_lift","0");setting("z_proc_place","-140");
+  RearBase=37;RearReferenceValid=true;physical[2]=RearBase+GRAB_BASE_WORK_OFFSET_DEG;
+  physical[0]=42;tray_inventory[slot-1]=(Turntable_Inventory_t){TURNTABLE_UNKNOWN,0};
+  ContestMission_Init();assert(!ContestMission_StartRingTake(slot)); /* An aligned ring is required. */
+  assert(GrabTask_AlignStart(11,0,true));run_to(GRAB_HOLD,600,0);
+  assert(!closures);assert(ContestMission_StartRingTake(slot));
+  unsigned requests=0,closed=closures,opened=0;bool pickup_paused=false,descent_paused=false,release_paused=false;
+  for(unsigned i=0;i<3000 && ContestMission_IsBusy();i++){
+   ContestMission_Process();step(true,0,0,0);
+   if(!strcmp(status().operation,"car_pick")){assert(AlignedPlace.valid && AlignedPlace.ring==2);requests=camera_requests;}
+   if(PrealignedPlaceActive){assert(ActiveColor==0 && camera_requests==requests);if(!opened)opened=openings;
+    if(status().state==GRAB_DESCEND && !descent_paused){ContestMission_Stop();descent_paused=true;}}
+   if(status().state==GRAB_CLOSE && !pickup_paused){ContestMission_Stop();pickup_paused=true;}
+   if(status().state==GRAB_RELEASE && !release_paused){assert(physical[1]==-140);ContestMission_Stop();release_paused=true;}
+   if(ContestMission_CanConfigure())assert(ContestMission_Continue());
+  }
+  assert(!ContestMission_IsBusy() && !TrackHeld && closures==closed+1 && !AlignedPlace.valid);
+  assert(pickup_paused && descent_paused && release_paused && openings==opened+1);
+  assert(tray_inventory[slot-1].state==TURNTABLE_EMPTY && physical[1]==0);
+  assert(fabsf(physical[0]-42)<.1f && fabsf(physical[2]-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))<.1f);
+  ContestMission_Report();assert(strstr(output,"mode=ring_place") && strstr(output,"ring_pickplace_complete"));
+ }
+ puts("standalone ring tray place: selected tray without inventory, fresh capture, no held vision, pauses and one release PASS");
+}
+int main(void){run_match(false);run_match(true);standalone_ring_tray_place();return 0;}

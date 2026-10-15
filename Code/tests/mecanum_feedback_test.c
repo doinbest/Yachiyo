@@ -20,7 +20,7 @@ static uint32_t reply_due, reply_delay;
 static ChassisMotion_Status_t motion;
 bool ChassisRoute_IsBusy(void) { return false; }
 bool ChassisMotion_IsBusy(void) { return false; }
-void ChassisMotion_StatusGet(ChassisMotion_Status_t *out) { *out = motion; }
+void ChassisMotion_StatusGet(ChassisMotion_Status_t *out) { *out = motion;out->heading_sample_tick=tick; }
 bool ChassisMotion_AnchorSet(float yaw)
 {
   motion.heading_valid = motion.map_anchor_valid = true;
@@ -335,6 +335,21 @@ int main(void)
     assert(tick - f.speed_ms < 600 && tick - f.position_ms < 600);
   }
   for(unsigned phase=0;phase<3;phase++)select_with_outstanding_feedback(phase);
+  /* A normal position group delays only the next velocity batch, never FE.
+   * Stop halfway through ID1..4 and prove later explicit motion still works. */
+  reply_delay=2;
+  assert(Mecanum_Velocity_Request(100,0,0,0));
+  for(unsigned i=0;i<2000 && !(reply_pending && reply_function==0x36 && reply_address==2);i++) step();
+  assert(reply_pending && reply_function==0x36 && reply_address==2);
+  saved=stop_count;assert(Mecanum_Test_Stop());
+  for(unsigned i=0;i<800;i++) step();
+  Mecanum_StatusGet(&status);
+  assert(stop_count==saved+4 && !status.locked && status.tx_complete);
+  assert(Mecanum_Velocity_Request(0,0,0,0));
+  for(unsigned i=0;i<200;i++) step();
+  Mecanum_StatusGet(&status);
+  assert(status.tx_complete && status.sent_velocity_valid && !status.locked);
+  puts("feedback position group: urgent stop and later explicit command PASS");
   puts("mecanum_feedback_test: opt-in single wheel, signed speed, full 32-bit magnitude, "
        "validity/timestamps OK");
   return 0;

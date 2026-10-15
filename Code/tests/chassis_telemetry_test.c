@@ -61,9 +61,13 @@ int main(void)
   tick=2200;ChassisLocalization_Process();ChassisTelemetry_Process();assert(strstr(frame,"\"v\":2"));
   assert(strlen(frame)<1000);assert(strstr(frame,"-4294967295"));assert(strstr(frame,"\"route\":[\"waiting\",\"arrived\",2,9"));assert(strstr(frame,"\"dropped\":7"));puts(frame);
   assert(strstr(frame,"\"route_meta\":") && strstr(frame,"\"phase_target\":["));
+  assert(strstr(frame,"\"applied\":[") && strstr(frame,"\"feedback_time_ms\":"));
+  {char *feedback[]={"chassis","feedback"};assert(ChassisTelemetry_Command(2,feedback));
+   assert(strstr(reply,"query_ms=") && strstr(reply,"speed_target="));}
   {char *snapshot[]={"chassis","snapshot"};assert(ChassisTelemetry_Command(2,snapshot));
    assert(strstr(reply,"\"v\":1") && strstr(reply,"\"position_valid\":[false,false,false,false]"));
    assert(strstr(reply,"\"stop_confirmed\":true"));
+   assert(strstr(reply,"\"applied\":[") && strstr(reply,"\"feedback_time_ms\":"));
    assert(strstr(reply,"\"route_meta\":") && strstr(reply,"\"phase_target\":["));
    printf("wire bytes compact=%u detailed=%u\n",(unsigned)strlen(frame),(unsigned)strlen(reply));
    assert(strlen(frame)*10 < strlen(reply)*7);}
@@ -77,8 +81,14 @@ int main(void)
   frame[0]=0;tick=100;ChassisTelemetry_Process();assert(!frame[0]);
   tick=2200;tx_ready=false;ChassisTelemetry_Process();assert(!frame[0]);
   tx_ready=true;ChassisTelemetry_Process();assert(frame[0]);
-  {char *task[]={"chassis","task"};motion_fixture.distance_mode=true;assert(ChassisTelemetry_Command(2,task));
-   assert(strstr(reply,"error_mm=") && strstr(reply,"stop_confirmed="));motion_fixture.distance_mode=false;}
+  {char *task[]={"chassis","task"};motion_fixture.distance_mode=true;motion_fixture.profile=CHASSIS_PROFILE_LINEAR;
+   motion_fixture.linear_decel_mm_s2=250;motion_fixture.curve_period_ms=5;motion_fixture.linear_accel_mm_s2=800;motion_fixture.cosine_k=120;motion_fixture.heading_kp=.1f;motion_fixture.heading_kd=.01f;
+   assert(ChassisTelemetry_Command(2,task));
+   assert(strstr(reply,"error_mm=") && strstr(reply,"stop_confirmed=") && strstr(reply,"accel_mm_s2=800.0"));
+   assert(strstr(reply,"cosine_k=0 heading_kp=0.100000 heading_kd=0.010000"));
+   assert(strstr(reply,"curve_period_ms=5 control_period_ms=1 decel_mm_s2=250.0"));
+   motion_fixture.profile=CHASSIS_PROFILE_COSINE;assert(ChassisTelemetry_Command(2,task));
+   assert(strstr(reply,"accel_mm_s2=0.0 cosine_k=120"));motion_fixture.distance_mode=false;}
   {char *task[]={"chassis","task"};motion_fixture.requested.mode=CHASSIS_MOTION_HOLD_CURRENT;
    motion_fixture.requested.heading_deg=12.5f;assert(ChassisTelemetry_Command(2,task));
    assert(strstr(reply,"mode=2 target_deg=12.50") && strstr(reply,"yaw_valid="));

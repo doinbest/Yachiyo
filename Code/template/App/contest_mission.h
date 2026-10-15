@@ -22,10 +22,14 @@ typedef struct {
 bool ContestMission_Start(const RadarPlan_t *plan,const ContestMission_Request_t *request);
 /** @brief 右下至原料台，蓝色入第一仓并后向收回；不改二维码。 */
 bool ContestMission_StartSingle(float speed);
+/** Complete the currently aligned ring using a selected tray; no route/QR/inventory initialization. */
+bool ContestMission_StartRingTake(uint8_t slot);
 /** Independent test after grab pose work; 2=processing, 3=temporary, 1..10 deg/s. */
 bool ContestMission_StartHeadingTest(unsigned station,float speed_deg_s);
+bool ContestMission_StartHeadingTestSource(unsigned station,float speed_deg_s,uint8_t source);
 /** Single turn by received image angle times polarity (+1/-1), at 5..10 deg/s. Console default: -1. */
 bool ContestMission_StartHeadingProbe(unsigned station,float polarity,float speed_deg_s);
+bool ContestMission_StartHeadingProbeSource(unsigned station,float polarity,float speed_deg_s,uint8_t source);
 void ContestMission_Process(void);
 void ContestMission_Stop(void);
 /** End this match after feedback-confirmed stopping; no stage can be resumed. */

@@ -12,13 +12,14 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.equal(GRAB_FORM_DEFAULTS.z_rough_align,-100);
   assert.equal(GRAB_FORM_DEFAULTS.z_temp_align,-100);
   assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-110);
-  assert.equal(grabParameters.length,66);
-  for(const key of ['head_proc_zero','head_proc_gain','head_temp_zero','head_temp_gain','head_tol','head_spread','head_settle_ms','head_proc_turn','head_temp_turn'])assert.ok(!(key in GRAB_FORM_DEFAULTS));
+  assert.equal(grabParameters.length,68);
+  for(const key of ['head_proc_zero','head_proc_gain','head_temp_zero','head_temp_gain','head_line_zero','head_line_gain','head_tol','head_spread','head_settle_ms','head_proc_turn','head_temp_turn'])assert.ok(!(key in GRAB_FORM_DEFAULTS));
   assert.ok(!grabParameters.some(p=>['ref_u','ref_v'].includes(p.key)));
   assert.ok(!('ref_u' in GRAB_FORM_DEFAULTS) && !('ref_v' in GRAB_FORM_DEFAULTS));
-  assert.equal(new Set(grabParameters.map(p=>p.key)).size,66);
+  assert.equal(new Set(grabParameters.map(p=>p.key)).size,68);
   assert.equal(GRAB_FORM_DEFAULTS.track_pick_tol_px,100);
-  assert.equal(GRAB_FORM_DEFAULTS.track_pick_hold_ms,10);
+  assert.equal(GRAB_FORM_DEFAULTS.arrival_hold_ms,200);
+  assert.equal(GRAB_FORM_DEFAULTS.track_pick_hold_ms,0);
   assert.equal(buildCommand('grab-set-track_pick_tol_px',{value:8}),'grab set track_pick_tol_px 8');
   assert.equal(buildCommand('grab-set-track_pick_tol_px',{value:100}),'grab set track_pick_tol_px 100');
   assert.equal(buildCommand('grab-set-track_pick_hold_ms',{value:0}),'grab set track_pick_hold_ms 0');

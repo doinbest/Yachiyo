@@ -23,9 +23,9 @@ int main(void)
   route_busy = false; motion_busy = true; Steer_SetDuty(8.0f); assert(timer.compare == 1500);
   motion_busy = false; Steer_SetDuty(8.0f); assert(timer.compare == 1600);
   Steer_SignalOff(); assert(timer.compare == 0);
-  Arm_GripperSet(ARM_GRIPPER_OPEN); assert(timer.compare == 2500);
+  Arm_GripperSet(ARM_GRIPPER_OPEN); assert(timer.compare == 2450);
   Arm_GripperSet(ARM_GRIPPER_CATCH); assert(timer.compare == 1920);
-  Arm_GripperSet(ARM_GRIPPER_IDLE); assert(timer.compare == 2500);
+  Arm_GripperSet(ARM_GRIPPER_IDLE); assert(timer.compare == 2450);
   Arm_GripperDutySet(9.6f); assert(timer.compare == 1920);
   puts("steer_route_guard_test: OK"); return 0;
 }

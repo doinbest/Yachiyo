@@ -17,6 +17,7 @@ typedef enum
   MOTOR_BUS_GUARD,
   MOTOR_BUS_TURNTABLE,
   MOTOR_BUS_PROBE,
+  MOTOR_BUS_POSITION_CONFIG,
   MOTOR_BUS_OWNER_COUNT
 } MotorBus_Owner_t;
 typedef enum
@@ -91,6 +92,12 @@ typedef struct
 /** @brief Main-loop RAM snapshot; timestamps/durations in MCU milliseconds. */
 void MotorBus_TimingGet(MotorBus_Timing_t *out);
 bool MotorBus_EventGet(MotorBus_Owner_t owner, MotorBus_Event_t *event);
+/* IDs5..8: read/preserve parameters, select Both in RAM, then verify.
+ * Returns 1 ready, 0 pending, -1 failed; no motion is sent by this helper. */
+int MotorBus_PositionReplyEnsure(uint8_t address);
+/* Matching FD/9F after the latest transmitted position command. Receive/02,
+ * stops, HOME and superseded position targets never establish completion. */
+bool MotorBus_PositionReached(uint8_t address, uint32_t accepted_ms);
 bool MotorBus_OwnerBusy(MotorBus_Owner_t owner);
 /** @brief True only while this owner has an on-wire/waiting transaction. */
 bool MotorBus_OwnerInFlight(MotorBus_Owner_t owner);

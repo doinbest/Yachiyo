@@ -167,6 +167,10 @@ static void compact_state(uint32_t now, const ChassisMotion_Status_t *m,
       boolean(ChassisMotion_IsBusy()),state,m->reason?m->reason:"none",(unsigned long)m->action_id,
       (double)m->target_x_mm,(double)m->target_y_mm,(double)m->target_map_yaw_deg,
       (double)m->error_x_mm,(double)m->error_y_mm,(double)m->error_heading_deg,boolean(l->feedback_valid),boolean(m->stop_confirmed));
+  append("\"applied\":[%lu,%lu,%s,[%ld,%ld,%ld,%ld]],\"feedback_time_ms\":%lu,",
+    (unsigned long)tx->sent_sequence,(unsigned long)tx->sent_ms,boolean(tx->sent_velocity_valid),
+    (long)tx->sent_rpm[0],(long)tx->sent_rpm[1],(long)tx->sent_rpm[2],(long)tx->sent_rpm[3],
+    (unsigned long)l->observer.feedback_ms);
   append("\"tx\":[%lu,%u,%u,%u,%s,%s,%u],\"dropped\":%lu}\r\n",
     (unsigned long)tx->sequence,(unsigned)tx->stage,(unsigned)tx->error,(unsigned)tx->ack_profile,
     boolean(tx->tx_complete),boolean(tx->acknowledged),(unsigned)tx->acknowledged_wheels,(unsigned long)ConsoleTx_Dropped());
@@ -205,6 +209,10 @@ static void emit_state(bool detailed)
          (double)motion.body_target.vx_mm_s, (double)motion.body_target.vy_mm_s,
          (double)motion.body_target.omega_rad_s, motion.rpm_command[0], motion.rpm_command[1],
          motion.rpm_command[2], motion.rpm_command[3]);
+  append("\"applied\":[%lu,%lu,%s,[%ld,%ld,%ld,%ld]],\"feedback_time_ms\":%lu,",
+    (unsigned long)tx.sent_sequence,(unsigned long)tx.sent_ms,boolean(tx.sent_velocity_valid),
+    (long)tx.sent_rpm[0],(long)tx.sent_rpm[1],(long)tx.sent_rpm[2],(long)tx.sent_rpm[3],
+    (unsigned long)localization.observer.feedback_ms);
   append("\"feedback\":{\"rpm\":[%ld,%ld,%ld,%ld],\"pos\":[%lld,%lld,%lld,%lld],",
          (long)f[0].speed_rpm, (long)f[1].speed_rpm, (long)f[2].speed_rpm, (long)f[3].speed_rpm,
          (long long)f[0].position_raw, (long long)f[1].position_raw, (long long)f[2].position_raw,
@@ -336,12 +344,16 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
       {
         (void)Mecanum_FeedbackGet(i, &feedback);
         (void)snprintf(text, sizeof(text),
-          "OK wheel=%u raw_rpm=%ld raw_units=%lld flags=0x%02X valid=%u,%u,%u rx_ms=%lu,%lu,%lu\r\n",
+          "OK wheel=%u raw_rpm=%ld raw_units=%lld flags=0x%02X valid=%u,%u,%u rx_ms=%lu,%lu,%lu "
+          "query_ms=%lu,%lu speed_target=%u,%lu,%lu,%ld\r\n",
           i + 1U, (long)feedback.speed_rpm, (long long)feedback.position_raw,
           feedback.state_flags, (unsigned)feedback.speed_valid,
           (unsigned)feedback.position_valid, (unsigned)feedback.state_valid,
           (unsigned long)feedback.speed_ms, (unsigned long)feedback.position_ms,
-          (unsigned long)feedback.state_ms);
+          (unsigned long)feedback.state_ms,(unsigned long)feedback.speed_tx_ms,
+          (unsigned long)feedback.position_tx_ms,(unsigned)feedback.speed_target_valid,
+          (unsigned long)feedback.speed_target_sequence,(unsigned long)feedback.speed_target_ms,
+          (long)feedback.speed_target_rpm);
         reply(text);
       }
       return true;
@@ -424,11 +436,15 @@ bool ChassisTelemetry_Command(unsigned n, char *t[])
         localization.feedback_valid?1:0,status.stop_confirmed?1:0);
       reply(text);
       (void)snprintf(text,sizeof(text),
-        "OK chassis test_result id=%lu state=%u profile=%s elapsed_ms=%lu peak_mm_s=%.3f error_mm=%.3f stop_ms=%lu stop_confirmed=%u\r\n",
+        "OK chassis test_result id=%lu state=%u profile=%s elapsed_ms=%lu peak_mm_s=%.3f error_mm=%.3f stop_ms=%lu stop_confirmed=%u accel_mm_s2=%.1f cosine_k=%u heading_kp=%.6f heading_kd=%.6f curve_period_ms=%u control_period_ms=%u decel_mm_s2=%.1f\r\n",
         (unsigned long)status.action_id,(unsigned)status.state,ChassisMotion_ProfileName(status.profile),
         (unsigned long)status.elapsed_ms,(double)status.peak_mm_s,
         (double)hypotf(status.error_x_mm,status.error_y_mm),(unsigned long)status.stop_ms,
-        status.stop_confirmed?1:0);
+        status.stop_confirmed?1:0,status.profile==CHASSIS_PROFILE_LINEAR?(double)status.linear_accel_mm_s2:0.0,
+        status.profile==CHASSIS_PROFILE_COSINE?(unsigned)status.cosine_k:0U,
+        (double)status.heading_kp,(double)status.heading_kd,
+        (unsigned)status.curve_period_ms,(unsigned)CHASSIS_MOTION_PERIOD_MS,
+        status.profile==CHASSIS_PROFILE_LINEAR?(double)status.linear_decel_mm_s2:0.0);
       reply(text);
     }
     return true;

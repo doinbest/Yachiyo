@@ -60,6 +60,21 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_test_preparation_allows_only_explicit_local_origin_and_still_blocks_motion(self):
+        port = self.connect()
+        self.bridge.preparation(True, 'single-test')
+        self.bridge.send('chassis origin 0 0 0', owner='single-test')
+        wait_for(lambda: bool(port.writes))
+        self.assertEqual(port.writes[0][1], b'chassis origin 0 0 0\r\n')
+        for command, owner in [('chassis test 1000 0 500 cosine', 'single-test'),
+                               ('chassis origin 0 0 0', 'other-page'),
+                               ('chassis origin 0 0 90', 'single-test')]:
+            with self.assertRaises(ValueError):
+                self.bridge.send(command, owner=owner)
+        self.bridge.preparation(False, 'single-test')
+        with self.assertRaises(ValueError):
+            self.bridge.send('chassis origin 0 0 0', owner='single-test')
+
     def test_scoped_stop_rejects_late_http_start_but_accepts_new_click(self):
         port = self.connect()
         old = self.bridge.status().get('command_epoch', 0)
@@ -678,7 +693,8 @@ class BridgeTests(unittest.TestCase):
             result = post('send', {'command':'chassis origin 2250 150 180', 'owner':'page-one',
                                    'command_epoch':self.bridge.status()['command_epoch']})
             self.assertTrue(result['queued'])
-            wait_for(lambda: bool(port.writes))
+            wait_for(lambda: any(e['kind']=='tx' and e.get('request_id')==result['request_id']
+                                 for e in self.bridge.events))
             self.assertEqual(port.writes[0][1], b'chassis origin 2250 150 180\r\n')
             self.assertTrue(any(e['kind']=='tx' and e.get('request_id')==result['request_id'] for e in self.bridge.events))
             for command, owner in [('chassis origin 2250 150 180', 'page-two'),

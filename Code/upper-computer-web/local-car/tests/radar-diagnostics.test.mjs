@@ -37,7 +37,7 @@ const stopSource=app.slice(app.indexOf('async function requestStop(){'),app.inde
 test('global stop cancels an active radar page read before waiting for the stop response',async()=>{
   const wires=[],elements=new Map();let finishStop;
   const exchange=new RadarExchange({timeoutMs:40,send:async wire=>{wires.push(wire);return true;}});
-  const context={radarExchange:exchange,presetCancelled:false,paramsView:null,prepView:null,stackingPanel:null,
+  const context={radarExchange:exchange,presetCancelled:false,paramsView:null,prepView:null,stackingPanel:null,chassisTestSession:null,chassisTestResult:null,stopRecovery:null,
     attempts:{supersede(){}},appendLog(){},communicationError(){},
     $:id=>{if(!elements.has(id))elements.set(id,{textContent:'',dataset:{}});return elements.get(id);},
     bridge:{stop:()=>new Promise(resolve=>{finishStop=resolve;})}};
@@ -64,7 +64,7 @@ function receiver(raw=false){
     $:id=>{if(!elements.has(id))elements.set(id,{textContent:''});return elements.get(id);},
     renderStatus(){},updateControls(){},appendLog:(direction,text)=>logs.push({direction,text}),
     chineseLogs:()=>!raw,radarExchange:{busy:false},paramsView:null,bootProgress:()=>'',bootStage:'',
-    wheelView:null,mapView:null,qrView:null,prepView:null,moduleForWire
+    wheelView:null,mapView:null,qrView:null,prepView:null,stopRecovery:null,moduleForWire
   };
   vm.createContext(context);vm.runInContext(receiveSource,context);
   return {receive:context.receive,model,live,logs,elements,status:context.status};
@@ -93,7 +93,7 @@ test('live stop remains available during preparation, queued writes and paramete
   const preparationSource=app.slice(app.indexOf('const preparationStop='),app.indexOf('\nasync function requestStop('));
   const controlSource=app.slice(app.indexOf('function canSend(wire){'),app.indexOf('\nfunction updateControls('));
   const context={readOnlyCommand,scopedStopCommand,routeLocked:false,bridge:{connected:true,disconnecting:false},
-    applyingGrabPreset:false,parameterBusy:true,sending:true,stopped:()=>true,prepView:{busy:true,pending:true}};
+    applyingGrabPreset:false,parameterBusy:true,sending:true,stopped:()=>true,prepView:{busy:true,pending:true},chassisTestSession:null,stopRecovery:null};
   vm.createContext(context);vm.runInContext(preparationSource+'\n'+controlSource,context);
   assert.equal(context.canSend('radar live stop'),true);
   assert.equal(context.canSend('radar live start lower'),false);

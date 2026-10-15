@@ -1,0 +1,21 @@
+const fs=require('fs');
+const {chromium}=require('C:/Users/xjx/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+(async()=>{
+ const browser=await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});
+ const page=await browser.newPage({viewport:{width:760,height:1200}}),errors=[];
+ page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(require('url').pathToFileURL(require('path').resolve('output/raw-entry-rpm-preview.html')).href);
+ const frame=page.frameLocator('iframe');
+ await frame.locator('#rr-speed').selectOption('250');
+ await frame.locator('#rr-turn').selectOption('40');
+ await frame.locator('#rr-seek').fill('600');
+ await frame.locator('#rr-seek').dispatchEvent('input');
+ console.log('selected',await frame.locator('#rr-time').innerText(),await frame.locator('#rr-live').innerText());
+ await page.screenshot({path:'output/raw-entry-rpm-preview.png',fullPage:true});
+ await page.setViewportSize({width:360,height:1100});
+ await frame.locator('#rr-speed').selectOption('300');
+ const dims=await frame.locator('#raw-rpm-preview').evaluate(el=>({width:el.clientWidth,scroll:el.scrollWidth,polygons:el.querySelectorAll('polygon').length}));
+ if(errors.length||dims.scroll>dims.width+1||dims.polygons!==6)throw Error(JSON.stringify({errors,dims}));
+ console.log('browser check PASS',dims);
+ await browser.close();
+})();

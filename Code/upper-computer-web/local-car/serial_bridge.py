@@ -25,7 +25,7 @@ READ_COMMAND = re.compile(
     r'radar (?:status|get|(?:result|ack) \d+|probe(?: status)?|nav status|start status|debug status|live status|fetch (?:map|path|points|cloud|stable|params|raw|evidence) \d+ \d+)|map status)')
 PREPARATION_COMMAND = re.compile(
     r'(?:chassis (?:units 65536|feedback (?:0|on)|'
-    r'origin 2250 150 180|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')
+    r'origin (?:2250 150 180|0 0 0)|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')
 CANCEL_COMMAND = re.compile(r'(?:bus recover|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab mission (?:pause|stop)|grab (?:track|qr) stop|(?:camera|grab) stop)')
 PRIORITY_STOP = re.compile(r'(?:radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab mission (?:pause|stop)|grab (?:track|qr) stop|(?:camera|grab) stop)')
 TERMINAL_STOP = {'confirmed', 'timeout', 'disconnected'}

@@ -37,7 +37,7 @@ test('old firmware uses ASCII lines with CRLF, never the newer # protocol', () =
 test('gripper presets show the calibrated pulse widths and keep the wire commands', () => {
   assert.equal(buildCommand('grip-open'), 'grip open');
   assert.equal(buildCommand('grip-catch'), 'grip catch');
-  assert.match(commands.find(c => c.id === 'grip-open').label, /2500 µs/);
+  assert.match(commands.find(c => c.id === 'grip-open').label, /2450 µs/);
   assert.match(commands.find(c => c.id === 'grip-catch').label, /1920 µs/);
   assert.equal(commands.find(c => c.id === 'grip-duty').fields[0].value, 9.6);
   assert.match(commands.find(c => c.id === 'grip-duty').note, /1920 µs = 9.6%/);
@@ -45,7 +45,7 @@ test('gripper presets show the calibrated pulse widths and keep the wire command
 test('reject missing distance, injection, too-long lines and non-finite values', () => {
   for (const value of ['', 'NaN', 'Infinity', '0', '201', '1.5'])
     assert.throws(() => buildCommand('move', {direction:'backward', distance:value}));
-  for (const value of ['help\nstop all', 'help\rstop all', '中文', 'x'.repeat(96), 'a b c d e f g h i j k'])
+  for (const value of ['help\nstop all', 'help\rstop all', '中文', 'x'.repeat(96), 'a b c d e f g h i j k l'])
     assert.throws(() => frameCommand(value));
   assert.throws(() => buildCommand('pos', {axis:'all', degree:'10'}));
   assert.throws(() => buildCommand('pos', {axis:'x', degree:'361'}));
@@ -104,3 +104,10 @@ test('accepted is not completion and state is reported only from explicit feedba
   assert.match(describeGrabRoute(parseGrabRouteStatus(line)),/第一层同色物料/);
   assert.doesNotMatch(formatTerminalLine(line),/未识别/);
  });
+
+test('standalone ring placement reports its ring, tray and own completion',()=>{
+  const snapshot=state=>parseGrabRouteStatus(`OK grab route state=${state} mode=ring_place slot=3 ring=2 reason=ring_pickplace_complete`);
+  assert.equal(describeGrabRoute(snapshot('car_pick')),'编号环自动放置 · 2号环 · 3号料盘 · 车仓取出并保持');
+  assert.equal(describeGrabRoute(snapshot('done')),'编号环自动放置 · 2号环 · 3号料盘 · 取仓放置完成');
+  assert.match(describeGrabRoute(snapshot('bus_recovery_wait')),/编号环自动放置.*总线恢复待处理/);
+});

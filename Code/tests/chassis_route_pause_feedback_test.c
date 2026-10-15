@@ -37,3 +37,5 @@ int main(void)
  assert(!status().stop_confirmed && route_status().stop_confirmed && !strcmp(route_status().state,"paused"));
  puts("production route/motion pause: fresh stop monitor confirms pause without arrival bit PASS");
 }
+
+bool GrabTask_QrDepartureActive(void){return false;}

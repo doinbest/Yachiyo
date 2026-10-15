@@ -40,12 +40,15 @@ HAL_StatusTypeDef HAL_UART_DMAStop(UART_HandleTypeDef *u)
   (void)u;
   return HAL_OK;
 }
+
+#include "motor_arrival_fixture.h"
 int main(void)
 {
   MechanicalArm_EventTypeDef e;
   uint8_t other[] = {1, 0x35, 0x6b}, ack[] = {5, 0xf3, 2, 0x6b};
   assert(MotorBus_Init(&uart) == HAL_OK);
   assert(MechanicalArm_Init(&uart) == HAL_OK);
+  fixture_both_modes(&uart,&tick);
   /* Base direction HOME: read, preserve settings, set negative direction,
    * verify, then HOME. Driver names need not match the installed top view. */
   {

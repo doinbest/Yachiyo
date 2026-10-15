@@ -40,7 +40,7 @@ export function mountMission({root,send,canSend}){
   alignment.setAttribute('aria-describedby','mission-align-note');alignmentField.append(alignment,alignmentNote);fields.append(alignmentField);
   const visualHeading=field('视觉航向矫正',make('select',undefined,undefined,'mission-visual-heading'));
   for(const [value,text] of [['off','关闭 · 原流程'],['on','开启 · 测试']]){const o=make('option',text);o.value=value;visualHeading.append(o);}visualHeading.value='off';
-  setup.append(make('p','开启后每次进入加工区、暂存区时仅核验一次航向，区内换环及加工取回不重复；每件位置对准照常执行。观测最多5秒，接受间断但一致的3帧，证据不足跳过。尚未标定时只观测，不自动改角或转车；暂停继续保留本轮选择。','form-note'));
+  setup.append(make('p','开启后每次进站仅核验一次：加工区及暂存第一批用色环，暂存第二批码垛用前方黑线；区内换环及加工取回不重复；每件位置对准照常执行。观测最多5秒，接受间断但一致的3帧，证据不足跳过。尚未标定时只观测，不自动改角或转车；暂停继续保留本轮选择。','form-note'));
   const speed=field('路线速度 / mm/s',make('input'));speed.type='number';speed.value='1000';speed.min='10';speed.max='5000';
   const turnSpeed=field('转向速度 / °/s',make('input'));turnSpeed.type='number';turnSpeed.value='100';turnSpeed.min='5';turnSpeed.max='500';
   const profile=field('底盘加减速',make('select',undefined,undefined,'mission-profile'));
@@ -78,14 +78,14 @@ export function mountMission({root,send,canSend}){
   const timeline=make('ol',undefined,'mission-timeline');const steps=['实际扫码','第一批搬运','第二批码垛','返回起点'].map(t=>{const li=make('li',t);timeline.append(li);return li;});progress.append(timeline);
   const reason=make('p','状态以设备报告为准。暂停保留进度，明确点击继续才恢复；停止结束本轮。','form-note');progress.append(reason);root.append(progress);
   const prep=make('details',undefined,'vision-card mission-preflight');prep.append(make('summary','工位高度配置'));
-  const link=make('a','配置工位高度 →');link.href='#params/material/z_rough_align';prep.append(link,make('p','粗加工先空爪对准编号环并停稳，再保存X/Z回仓取料。1/2号盘夹取后提起并伸X30mm，3号盘保持收回；转回128°、恢复对准位置后下降放置。各工位高度按实物设置，缺项到该阶段填写后继续。','form-note'));root.append(prep);
+  const link=make('a','配置工位高度 →');link.href='#params/material/z_rough_align';prep.append(link,make('p','粗加工先空爪对准编号环并停稳，再保存X/Z回仓取料。1/2号盘夹取后提起并伸X30mm，3号盘保持收回；转回127.5°、恢复对准位置后下降放置。各工位高度按实物设置，缺项到该阶段填写后继续。','form-note'));root.append(prep);
   function updateAll(){code.disabled=source.value!=='fixed';profile.disabled=pending||profilePending||!!snapshot&&!['idle','done','error','cancelled'].includes(snapshot.state);controls.forEach(fn=>fn());}
   for(const e of [source,code,speed,turnSpeed,start,radar,alignment,visualHeading,profile]){e.addEventListener('input',updateAll);e.addEventListener('change',updateAll);}
   function render(){
     adoptedProfile.textContent=({linear:'线性 · 300 mm/s²',cosine:'余弦 · K200 / 400 ms'})[snapshot?.profile]||'设备未报告';
     adoptedHeading.textContent=snapshot?.visual_heading==='on'?'开启 · 测试':snapshot?.visual_heading==='off'?'关闭':'设备未报告';
     const imageAngle=Number(snapshot?.heading_image),observationZ=Number(snapshot?.heading_z);
-    headingResult.textContent=snapshot?.heading_result?`${reasonText(snapshot.heading_result)}${Number.isFinite(imageAngle)?` · 图像角 ${imageAngle.toFixed(2)}°`:''}${Number.isFinite(observationZ)?` · 观察Z ${observationZ.toFixed(2)} mm`:''}`:'尚无航向核验结果';
+    headingResult.textContent=snapshot?.heading_result?`${snapshot.heading_source==='line'?'黑线 · ':snapshot.heading_source==='ring'?'色环 · ':''}${reasonText(snapshot.heading_result)}${Number.isFinite(imageAngle)?` · 图像角 ${imageAngle.toFixed(2)}°`:''}${Number.isFinite(observationZ)?` · 观察Z ${observationZ.toFixed(2)} mm`:''}`:'尚无航向核验结果';
     adoptedAlignment.textContent=['lowered','raised'].includes(snapshot?.align)?deviceText(snapshot.align):'设备未报告';
     if(snapshot){heading.textContent=describeGrabRoute(snapshot);scanned.textContent=snapshot.scan_code&&snapshot.scan_code!=='none'?snapshot.scan_code:'等待本轮扫码';adopted.textContent=snapshot.exec_code&&snapshot.exec_code!=='none'?snapshot.exec_code:'扫码后采用';counts.textContent=`入仓 ${snapshot.stored??0} / 12 · 放置 ${snapshot.placed??0} / 12`;position.textContent=`第 ${snapshot.batch??'—'} 批 · 第 ${snapshot.item??'—'} 件 · 仓 ${snapshot.slot??'—'} · 目标环 ${snapshot.ring??'—'}`;
       badge.textContent=({idle:'待开始',cancelled:'本轮已结束',cancelling:'正在结束本轮',cancel_wait:'结束中 · 停车待确认',bus_recovery_stopping:'通信异常 · 停车中',bus_recovering:'总线恢复中',bus_recovery_verify:'恢复后确认停稳',bus_recovery_wait:'总线恢复待处理',bus_recovery_retry:'通信重试中',stop_wait:'停车待恢复',paused:'已暂停',stopping:'正在暂停',config_wait:'等待配置',done:'已完成',error:'需处理'})[snapshot.state]||'执行中';

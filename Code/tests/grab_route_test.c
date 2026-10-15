@@ -27,9 +27,14 @@ bool GrabTask_QrReady(float *y){*y=1200;return ready;}
 bool GrabTask_QrScanStart(uint32_t seq){(void)seq;task_busy=1;grab_status.state=GRAB_QR_SCAN;grab_status.reason="qr_wait";return true;}
 bool ChassisRoute_QrTestStart(float speed,float y){assert(y==1200);route_speed=speed;route.state="running";starts++;return true;}
 static unsigned heading_station,heading_calls;
+static uint8_t heading_source;
 static float heading_speed,heading_delta;
 bool ContestMission_StartHeadingProbe(unsigned station,float delta,float speed){heading_station=station;heading_delta=delta;heading_speed=speed;heading_calls++;return true;}
 bool ContestMission_StartHeadingTest(unsigned station,float speed){heading_station=station;heading_speed=speed;heading_calls++;return true;}
+bool ContestMission_StartHeadingTestSource(unsigned station,float speed,uint8_t source){heading_source=source;return ContestMission_StartHeadingTest(station,speed);}
+bool ContestMission_StartHeadingProbeSource(unsigned station,float delta,float speed,uint8_t source){heading_source=source;return ContestMission_StartHeadingProbe(station,delta,speed);}
+static unsigned ring_take_slot;
+bool ContestMission_StartRingTake(uint8_t slot){ring_take_slot=slot;return slot>=1 && slot<=3;}
 static unsigned single_starts;
 static bool single_accept=true;
 bool ContestMission_StartSingle(float speed){single_starts++;route_speed=speed;return single_accept;}
@@ -69,6 +74,9 @@ static void setup(void){memset(&route,0,sizeof(route));memset(&grab_status,0,siz
 int main(void)
 {
   setup();
+  char *ring_take[]={"grab","ring","take","2"};
+  assert(GrabRoute_Command(4,ring_take) && ring_take_slot==2);
+  ring_take[3]="4";assert(GrabRoute_Command(4,ring_take) && strstr(reply,"invalid_slot"));
   char *profile_qr[]={"grab","mission","qr","1000","100","lower","fixed","raised","cosine"};
   assert(GrabRoute_Command(9,profile_qr) && mission_starts==1);
   assert(mission_request.profile==CHASSIS_PROFILE_COSINE);
@@ -77,7 +85,9 @@ int main(void)
   profile_qr[8]="unknown";assert(GrabRoute_Command(9,profile_qr) && mission_starts==2 && strstr(reply,"profile_required"));
   mission_starts=0;
   setup();
-  char *hp[]={"grab","heading","proc","5"};assert(GrabRoute_Command(4,hp));assert(heading_calls==1 && heading_station==2 && heading_speed==5);
+  char *hp[]={"grab","heading","proc","5"};assert(GrabRoute_Command(4,hp));assert(heading_calls==1 && heading_station==2 && heading_speed==5 && heading_source==0x0d);
+  char *hl[]={"grab","heading","temp","5","line"};assert(GrabRoute_Command(5,hl));assert(heading_source==0x0e && heading_station==3);
+  heading_calls=1;
   char *ht[]={"grab","heading","temp"};assert(GrabRoute_Command(3,ht));assert(heading_calls==2 && heading_station==3 && heading_speed==5);
   char *trial[]={"grab","heading","angle","temp","-1","5"};assert(GrabRoute_Command(6,trial));assert(heading_calls==3 && heading_station==3 && heading_delta==-1 && heading_speed==5);
   char *default_trial[]={"grab","heading","angle","proc"};assert(GrabRoute_Command(4,default_trial));assert(heading_calls==4 && heading_station==2 && heading_delta==-1 && heading_speed==5);
@@ -178,3 +188,7 @@ int main(void)
   assert(GrabRoute_Command(3,vh) && !mission_request.visual_heading_enabled);
   puts("grab_route_test: PASS (fixed/planned semantic visits, 1000ms, screen TX, pick, cancel)");
 }
+
+bool GrabTask_QrScanCompetitionStart(uint32_t baseline){return GrabTask_QrScanStart(baseline);}
+void GrabTask_NextRawColorSet(uint8_t color){(void)color;}
+bool GrabTask_QrDepartStart(void){return false;}

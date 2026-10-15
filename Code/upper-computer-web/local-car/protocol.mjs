@@ -43,7 +43,7 @@ export const grabParameters = [
   ...[['body_speed','底盘速度上限'],['x_speed','X 视觉对准速度上限'],['x_transfer_speed','X 正式取放 / 入仓测试速度'],['z_speed','Z 速度上限']].map(([key,label])=>({key,label:`${label} / mm·s⁻¹`,group:'控制与运动边界'})),
   {key:'z_pick_speed',label:'物料夹取下降速度 / mm·s⁻¹',group:'控制与运动边界'},
   {key:'track_pick_tol_px',label:'追踪夹取误差窗口 / ±px',group:'反馈与抓取条件'},
-  {key:'track_pick_hold_ms',label:'追踪夹取连续保持时间 / ms',group:'反馈与抓取条件'},
+  {key:'track_pick_hold_ms',label:'高位下降窗口保持时间 / ms',group:'反馈与抓取条件'},
   {key:'track_store_drop_mm',label:'追踪入仓从转移高度下降 / mm',group:'取放场景'},
   {key:'car_pick_drop_mm',label:'车仓取出并保持的下降 / mm',group:'取放场景'},
   {key:'accel',label:'平移加速度上限 / mm·s⁻²',group:'控制与运动边界'},
@@ -53,7 +53,7 @@ export const grabParameters = [
   {key:'x_weight',label:'X 分配权重',group:'控制与运动边界'},
   ...['z_rough_align','z_temp_align','z_car_lift','z_proc_place','z_stack_place','base_car_offset'].map(key=>({key,label:({z_rough_align:'粗加工视觉对准Z',z_temp_align:'暂存视觉对准Z',z_car_lift:'车载取出提起Z',z_proc_place:'加工取放 / 第一层暂存Z',z_stack_place:'暂存第二层释放Z',base_car_offset:'车载Base偏转角'})[key],group:'取放场景'})),
   ...[['qr_scan_y','二维码接近点 Y / mm'],['qr_z_min','扫码下降最低 Z / mm'],['qr_z_speed','扫码下降速度 / mm·s⁻¹'],['qr_wait_ms','到位后扫码等待 / ms']].map(([key,label])=>({key,label,group:'二维码测试'})),
-  ...[['head_proc_zero','加工图像零角 / °'],['head_proc_gain','加工车体角 / 图像角'],['head_temp_zero','暂存图像零角 / °'],['head_temp_gain','暂存车体角 / 图像角'],['head_tol','航向完成容差 / °'],['head_spread','航向观测波动范围 / °'],['head_settle_ms','停稳后接收隔离时间 / ms'],['head_proc_turn','加工已验证可转范围 / ±°'],['head_temp_turn','暂存已验证可转范围 / ±°']].map(([key,label])=>({key,label,group:'航向实测标定'})),
+  ...[['head_proc_zero','加工色环图像零角 / °'],['head_proc_gain','加工色环车体角 / 图像角'],['head_temp_zero','暂存色环图像零角 / °'],['head_temp_gain','暂存色环车体角 / 图像角'],['head_line_zero','码垛黑线图像零角 / °'],['head_line_gain','码垛黑线车体角 / 图像角'],['head_tol','航向完成容差 / °'],['head_spread','航向观测波动范围 / °'],['head_settle_ms','停稳后接收隔离时间 / ms'],['head_proc_turn','加工已验证可转范围 / ±°'],['head_temp_turn','暂存已验证可转范围 / ±°']].map(([key,label])=>({key,label,group:'航向实测标定'})),
 ].map(p=>({...p,...GRAB_PARAMETER_METADATA[p.key]}));
 export const turntableParameters=[
   ...[['slot1_deg','第一仓位 / °'],['slot2_deg','第二仓位 / °'],['slot3_deg','第三仓位 / °']].map(([key,label])=>({key,label,min:-360,max:360,readOnly:key==='slot1_deg'})),
@@ -74,6 +74,7 @@ export const commands = [
   command('camera-ring','vision','仅识别编号环 · 不运动','camera ring {ring}',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']])],'只请求所选数字同心圆的坐标；不移动底盘或机械臂。'),
   command('grab-ring-align-options','vision','编号环视觉对准','grab align ring {ring} {z}',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']]),choice('height','对准高度',[['raised','高位对准 · Z=0'],['lowered','下降对准 · 仅对照测试']]),number('z','下降对准 Z 绝对高度 / mm',-100,-150,0,1),choice('finish','完成后动作',[['stay','保持对准高度'],['raise','抬回上限 · 默认Z=0']])],'对准高度和完成后的抬升分别选择；高位模式忽略下降高度输入。'),
   command('grab-ring-align','vision','底盘 + X 对准所选编号环','grab align ring {ring} {z}',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']]),number('z','对准时Z绝对高度 / mm',-100,-150,0,1)],'Z最高处识别编号，先底盘和X横向接近，再随环心接近准心逐步下降；靠画面边缘时暂缓下降。完成后停止视觉控制、Z抬至最高，再手动装料。DX/DY各≤1像素。'),
+  command('grab-ring-take','vision','编号环自动取仓放置','grab ring take {slot}',[choice('slot','取料仓位',[['1','1号料盘'],['2','2号料盘'],['3','3号料盘']])],'先完成上方编号环对准并保持空爪。STM32重新核验停稳与视觉，保存实际X/Z，再从所选料盘取料，Base转回作业方向、恢复X并按比赛z_proc_place下降释放、提起；无需颜色或库存登记。'),
   command('grab-ring-place','vision','下降放置并提起','grab ring place {z}',[number('z','放置Z绝对位置 / mm（可调整）',-150,-150,-0.1,0.1)],'先完成所选环对准，人工放入物料并闭合夹爪。仅Z下降、反馈到位后松爪，再提起至观察高度；不取仓、不改变库存。'),
   command('grab-ring-align-stay','vision','对准后保持低位','grab align ring {ring} {z} stay',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']]),number('z','对准时Z绝对高度 / mm',-100,-150,0,1)],'按所设高度渐进下降，对准完成后保持低位，仅继续识别编号环供观察。'),
   command('grab-stack-align','vision','码垛视觉对准','grab stack align {color}',[choice('color','下层物料颜色',grabColorOptions,'3')],'Z保持最高，直接按视觉DX/DY对准并停稳后等待装料；补偿由香橙派完成。'),
@@ -85,7 +86,7 @@ export const commands = [
   command('grab-pick-slot','vision','指定仓位视觉夹取','grab start pick {color} {slot}',[choice('color','物料颜色',grabColorOptions,'3'),choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']])]),
   command('grab-store-proc','vision','粗加工取回入仓','grab store proc {slot} {color}',[choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('color','物料颜色',grabColorOptions,'3')]),
   command('grab-take','vision','车载取出并释放','grab take {slot} {scene}',[choice('slot','取出仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('scene','释放场景',[['rough','粗加工'],['temp1','暂存第一层'],['temp2','暂存第二层']])]),
-  command('grab-take-work','vision','车仓夹取并转到作业朝向','grab take {slot} work {depth}',[choice('slot','夹取几号料盘',[['1','1号料盘'],['2','2号料盘'],['3','3号料盘']]),number('depth','下降 / 等量上升距离 / mm',GRAB_FORM_DEFAULTS.car_pick_drop_mm,0.1,150,0.1)],'按所选料盘直接取出，无需登记库存或颜色。提起收X，ID8先分度到位，Base回车仓参考；等待取料开口稳定（默认300 ms），默认下降40mm闭爪，再上升40mm。1/2号盘提起同时向外伸X30mm，3号盘保持收回；两轴到位后Base转到参考+130°并保持闭爪。已中断时选择原仓显式继续，保留本次绝对目标；完成后仓位置空。'),
+  command('grab-take-work','vision','车仓夹取并转到作业朝向','grab take {slot} work {depth}',[choice('slot','夹取几号料盘',[['1','1号料盘'],['2','2号料盘'],['3','3号料盘']]),number('depth','下降 / 等量上升距离 / mm',GRAB_FORM_DEFAULTS.car_pick_drop_mm,0.1,150,0.1)],'按所选料盘直接取出，无需登记库存或颜色。提起收X，ID8先分度到位，Base回车仓参考；等待取料开口稳定（默认300 ms），默认下降40mm闭爪，再上升40mm。1/2号盘提起同时向外伸X30mm，3号盘保持收回；两轴到位后Base转到参考+127.5°并保持闭爪。已中断时选择原仓显式继续，保留本次绝对目标；完成后仓位置空。'),
   command('grab-return','vision','返回外侧观察姿态','grab return'),
   command('grab-base-pos','vision','手动 Base 转到转盘','pos base {degree}',[number('degree','Base 电机轴相对角度 / °',-180,-360,360,0.1)],'自动取放已包含转向，此处仅用于手动定位。默认相对转动 −180°，每次执行都会再转一次，已在转盘方向时无需重复。若抓取处于 hold，先结束本次抓取并确认停止，再操作 Base。'),
   ...[['fixed','固定位置抓取'],['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}`,'vision',label,mode==='align'?'grab align color 3 0':`grab start ${mode}`)),
@@ -112,9 +113,9 @@ export const commands = [
   command('zero','arm','当前位置计数清零','zero {axis}',[axis(true)],'只清除当前位置计数，不执行回零运动。'),
   command('config-get','arm','读取运动配置','config {axis}',[axis(true)]),
   command('config-set','arm','设置运动配置','config {axis} {rpm} {acc} {limit}',[axis(true),number('rpm','速度 / RPM',30,1,3000),number('acc','加速度参数',20,1,255),number('limit','脉冲限制',3200,0,3200)],'配置只保存在 RAM，复位后恢复默认；只有单独 Z 轴允许 limit=0。'),
-  ...[['open','打开 · 2500 µs'],['catch','夹取 · 1920 µs'],['idle','待机松开 · 2500 µs']].map(([id,label]) => command(`grip-${id}`,'grip',label,`grip ${id}`)),
-  command('grip-pulse','grip','自定义夹爪脉宽','grip duty {duty}',[number('pulse','脉宽 / μs',2120,500,2500,1)],'车仓取料开口实测2120 μs；默认打开2500 μs、夹取1920 μs保留。仅点击应用时改变当前开口，输入值不改写任务参数。'),
-  command('grip-duty','grip','手动设置占空比','grip duty {duty}',[number('duty','PWM 占空比 / %',9.6,2.5,12.5,0.1)],'50 Hz PWM；打开2500 µs = 12.5%，夹取1920 µs = 9.6%。'),
+  ...[['open','打开 · 2450 µs'],['catch','夹取 · 1920 µs'],['idle','待机松开 · 2450 µs']].map(([id,label]) => command(`grip-${id}`,'grip',label,`grip ${id}`)),
+  command('grip-pulse','grip','自定义夹爪脉宽','grip duty {duty}',[number('pulse','脉宽 / μs',2450,500,2500,1)],'自动打开统一2450 μs，夹取1920 μs。仅点击应用时改变当前开口，输入值不改写任务参数。'),
+  command('grip-duty','grip','手动设置占空比','grip duty {duty}',[number('duty','PWM 占空比 / %',9.6,2.5,12.5,0.1)],'50 Hz PWM；打开2450 µs = 12.25%，夹取1920 µs = 9.6%。'),
   command('lidar-servo-out','arm','转出扫描 · 2450 μs','lidarservo out',[],'用户实测 TD-8125MG 雷达盘转出脉宽2450 μs；出发前转出，确认机构稳定后扫描地图。'),
   command('lidar-servo-in','arm','收回车内 · 1450 μs','lidarservo in',[],'用户实测 TD-8125MG 雷达盘收回脉宽1450 μs；扫描完成后收回，再出发。'),
   command('lidar-servo-pulse','arm','设置雷达舵机脉宽','lidarservo pulse {pulse}',[number('pulse','脉宽 / μs',1450,500,5000,1)],'手动脉宽调试；实测转出2450 μs、收回1450 μs。仅点击应用才动作。'),
@@ -147,7 +148,7 @@ export const commands = [
     '任务空闲时单次读取，不运动、不改参数。当前车使用Emm布局与65536反馈单位/圈；停止锁定期间可读。'),
   command('bus-test-stop','system','结束单电机测试','bus test stop',[],'结束通信测试；实际停车使用停车入口。'),
   command('help','system','固件指令帮助','help'),
-  command('chassis-test','chassis','路线加速度 · 单段位移','chassis test {forward} {left} {speed} {profile}',[choice('direction','相对车头方向',[['forward','↑ 前进'],['back','↓ 后退'],['left','← 左移'],['right','→ 右移'],['fl','↖ 左前'],['fr','↗ 右前'],['bl','↙ 左后'],['br','↘ 右后']],'forward'),number('distance','合位移 / mm',500,1,3000,1),number('speed','目标合速度 / mm/s',1000,10,5000,1),choice('profile','底盘加减速',[['linear','线性 · 300 mm/s²'],['cosine','余弦 · K200 / 400 ms']],'linear')],'选择直线加减速方式，短距离自动降低峰值速度。保持起步朝向，斜移距离为合距离；运行到目标并确认停稳后结束。'),
+  command('chassis-test','chassis','路线加速度 · 单段位移','chassis test {forward} {left} {speed} {profile}',[choice('direction','相对车头方向',[['forward','↑ 前进'],['back','↓ 后退'],['left','← 左移'],['right','→ 右移'],['fl','↖ 左前'],['fr','↗ 右前'],['bl','↙ 左后'],['br','↘ 右后']],'forward'),number('distance','合位移 / mm',500,1,3000,1),number('speed','目标合速度 / mm/s',1000,10,5000,1),choice('profile','底盘加减速',[['linear','线性 · 自定加速度'],['cosine','余弦 · 自定K值']],'linear'),number('accel','线性起步加速度 / mm/s²',500,10,5000,1),number('decel','线性停车减速度 / mm/s²',300,10,5000,1),number('cosine_k','余弦K值（过渡时间=K×2 ms）',200,10,2000,1),number('curve_period_ms','曲线更新周期 / ms',1,1,100,1),number('heading_kp','航向P / (rad/s)/°',0.02,0,1,0.001),number('heading_kd','航向D / (rad/s)/(°/s)',0,0,1,0.001)],'选择直线加减速方式，短距离自动降低峰值速度。保持起步朝向，斜移距离为合距离；运行到目标并确认停稳后结束。'),
   command('chassis-run','chassis','平移与转向测试','chassis run {vx} {vy} {omega} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-300,300,0.1),number('vy','左向速度 / mm·s⁻¹',0,-300,300,0.1),number('omega_deg','逆时针角速度 / °·s⁻¹',0,-500,500,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'角速度输入单位为 °/s，网页上限500；网页自动换算为固件rad/s。角速度为 0 时自动保持起步航向，需要 IMU 验证通过；非 0 时执行给定转向。起步和停车各 500 ms；总时长为保持时间加 1 秒。'),
   command('chassis-heading','chassis','航向保持测试','chassis heading {vx} {vy} {heading} {hold_ms}',[number('vx','前向速度 / mm·s⁻¹',0,-300,300,0.1),number('vy','左向速度 / mm·s⁻¹',0,-300,300,0.1),number('heading','HWT101 模块目标角度 / °','',-180,180,0.1),number('seconds','保持时间 / s',1,0.1,59,0.1)],'需本次启动验证通过；目标角度不是地图角度。起步和停车各 500 ms。'),
   command('chassis-turn','chassis','原地转到地图航向','chassis turn {heading}',[number('heading','地图绝对航向 / °','',-180,180,0.1)],'地图从 +X 逆时针，范围 -180～180°；显式执行后原地转向，按新鲜航向反馈完成。与模块航向保持测试分别使用。'),
@@ -211,12 +212,12 @@ export function frameCommand(text) {
   if (typeof text !== 'string' || /[^\x20-\x7e\t]/.test(text)) throw new Error('仅允许单行 ASCII 命令，不能包含换行。');
   const line = text.trim();
   if (!line || line.length > 95) throw new Error('命令长度必须为 1～95 字节。');
-  if (line.split(/\s+/).length > 10) throw new Error('固件最多接受 10 个字段。');
+  if (line.split(/\s+/).length > 11) throw new Error('固件最多接受 11 个字段。');
   return line + '\r\n';
 }
 
 export function buildCommand(id, values = {}) {
-  if(id==='chassis-test')values={profile:'linear',...values};
+  if(id==='chassis-test'){const legacyAccel=values.accel;values={profile:'linear',accel:500,cosine_k:200,curve_period_ms:1,heading_kp:0.02,heading_kd:0,...values};if(values.decel===undefined)values.decel=legacyAccel??300;if(values.profile==='cosine')values.accel=values.decel=300;else values.cosine_k=200;}
   // A high alignment uses absolute Z=0; the inactive lower-height draft is ignored.
   if(id==='grab-ring-align-options' && values.height==='raised')values={...values,z:'0'};
   const definition = commands.find(c => c.id === id);
@@ -263,7 +264,8 @@ export function buildCommand(id, values = {}) {
     const line=`grab align ring ${checked.ring} ${checked.z}${checked.finish==='stay'?' stay':''}`;
     frameCommand(line);return line;
   }
-  const line = definition.template.replace(/\{(\w+)\}/g, (_,key) => checked[key]);
+  let line = definition.template.replace(/\{(\w+)\}/g, (_,key) => checked[key]);
+  if(id==='chassis-test'){line+=` ${Number(checked.profile==='linear'?checked.accel:checked.cosine_k)} ${Number(checked.heading_kp)} ${Number(checked.heading_kd)}`;if(Number(checked.curve_period_ms)!==1||(checked.profile==='linear'&&Number(checked.decel)!==Number(checked.accel)))line+=` ${Number(checked.curve_period_ms)}`;if(checked.profile==='linear'&&Number(checked.decel)!==Number(checked.accel))line+=` ${Number(checked.decel)}`;}
   frameCommand(line);
   return line;
 }
@@ -387,9 +389,10 @@ export function parseGrabRouteStatus(line) {
 export function describeGrabRoute(r) {
   if(r?.mode==='heading')return `独立航向测试 · ${reasonText(r.reason||r.heading_result||r.state)}`;
   if(r?.mode==='single'){const stage=({stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',car_pick:'车仓取出并保持',held_place:'持料视觉对准',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向姿态',driving:'行驶中',prepare_transfer:'准备抓取',transfer:'抓取入仓',prepare_departure:'准备收回',leaving:'收回朝后',config_wait:`等待补齐 ${describeGrabMissing(r.reason)} 后继续本件`,done:'入仓及收回完成',error:'任务故障',cancelled:'已取消'})[r.state]||r.state;return `蓝色首件 · 第一仓 · ${stage}`;}
-  if(r?.mode!=='mission')return `组合路线：${({idle:'空闲',driving:'行驶中',scan_wait:'扫码等待 1 秒',display_wait:'等待屏幕发送',handoff:'物料台已交接',error:'路线故障',cancelled:'已取消',done:'首件任务完成'})[r?.state]||r?.state||'未报告'}`;
+  if(!['mission','ring_place'].includes(r?.mode))return `组合路线：${({idle:'空闲',driving:'行驶中',scan_wait:'扫码等待 1 秒',display_wait:'等待屏幕发送',handoff:'物料台已交接',error:'路线故障',cancelled:'已取消',done:'首件任务完成'})[r?.state]||r?.state||'未报告'}`;
   const stage=({cancelling:'正在结束本轮',cancel_wait:'结束中 · 停车尚未确认',stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',empty_ring_align:'空爪对准目标编号环',empty_material_align:'空爪对准第一层同色物料',car_pick:'车仓取出并保持',held_place:'放置所取物料',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向行驶姿态',driving:'行驶中',ring_clear:'抬升收回',ring_move:'移动到指定环',transfer:'单件取放',leaving:'恢复后向姿态',return_center:'返回工位中心',config_wait:'等待补齐参数',done:'两批任务结束',error:'任务故障',cancelled:'已取消',prepare_ring:'准备换环',prepare_departure:'准备离站',prepare_transfer:'准备下一件取放'})[r.state]||r.state;
   const recoveryStage=({bus_recovery_stopping:'通信异常 · 保留进度停车',bus_recovering:'恢复电机总线',bus_recovery_verify:'恢复后确认停稳',bus_recovery_wait:'总线恢复待处理',bus_recovery_retry:'通信恢复重试'})[r.state];
+  if(r?.mode==='ring_place')return `编号环自动放置 · ${r.ring??'—'}号环 · ${r.slot??'—'}号料盘 · ${r.state==='done'?'取仓放置完成':recoveryStage||stage}`;
   return `${r.batch===2?'第二批':'第一批'} · 第 ${r.item??'—'} 件 · ${recoveryStage||stage}${r.state==='config_wait'?`：补齐 ${describeGrabMissing(r.reason)} 后继续本件`:''}`;
 }
 

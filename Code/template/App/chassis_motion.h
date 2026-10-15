@@ -58,6 +58,11 @@ typedef struct
   uint32_t heading_sample_tick;
   uint32_t heading_revision; /* Map correction only, independent of origin generation. */
   ChassisMotion_Profile_t profile;
+  float linear_accel_mm_s2; /* Per-action translation acceleration. */
+  float linear_decel_mm_s2; /* Independent braking envelope and slowing slew. */
+  uint16_t curve_period_ms; /* Translation reference update; control remains 1ms. */
+  uint16_t cosine_k; /* Half-cosine transition duration = K * 2 ms. */
+  float heading_kp, heading_kd; /* rad/s per deg, and per (deg/s). */
   float peak_mm_s; /* Fresh wheel-feedback planar speed, never commanded speed. */
   uint32_t stop_ms; /* Final stop request to fresh standstill confirmation. */
 } ChassisMotion_Status_t;
@@ -96,6 +101,22 @@ void ChassisMotion_HoldStatusGet(ChassisMotion_HoldStatus_t *status);
  */
 bool ChassisMotion_MoveTo(float x_mm, float y_mm, float map_yaw_deg,
                           float max_speed_mm_s, uint32_t timeout_ms);
+typedef struct {
+  float linear_accel_mm_s2;
+  float linear_decel_mm_s2;
+  uint16_t cosine_k;
+  uint16_t curve_period_ms;
+  float heading_kp, heading_kd;
+} ChassisMotion_TestParameters_t;
+void ChassisMotion_TestParametersDefaults(ChassisMotion_TestParameters_t *parameters);
+/** @brief Per-action independent-test tuning; defaults do not persist to later tasks. */
+bool ChassisMotion_MoveToTuned(float x_mm, float y_mm, float map_yaw_deg, float max_speed_mm_s,
+                              const ChassisMotion_TestParameters_t *parameters, uint32_t timeout_ms);
+/** @brief Legacy symmetric test override, 10..5000 mm/s^2; next MoveTo uses default.
+ * Applies to linear translation; cosine retains its own transition model.
+ */
+bool ChassisMotion_MoveToAccel(float x_mm, float y_mm, float map_yaw_deg,
+                              float max_speed_mm_s, float accel_mm_s2, uint32_t timeout_ms);
 /** @brief 原地转至绝对地图航向，只输出角速度，不修正XY漂移。
  * @param map_yaw_deg 地图角度，-180..180 deg；+X为0，逆时针为正。
  * @param timeout_ms 同一动作及角度修正的总时限，20..400000 ms。
@@ -139,6 +160,7 @@ bool ChassisMotion_AnchorSet(float map_yaw_rad);
 void ChassisMotion_AnchorInvalidate(void);
 /** Internal half of ChassisHeading_Apply; preserves raw IMU unwrap. */
 bool ChassisMotion_AnchorCorrect(float map_yaw_rad);
-/** Station-only precision; ordinary turns retain their existing tolerance. */
+/** Station/visual precision: bypasses translation heading deadband;
+ * retains requested tolerance and fresh standstill confirmation. */
 bool ChassisMotion_TurnToPrecision(float yaw,float max_deg_s,float tolerance_deg,uint32_t timeout);
 #endif

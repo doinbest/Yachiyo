@@ -114,7 +114,7 @@ bool ChassisMotion_StopRequest(uint32_t token){assert(!token);cancel_stop.id++;c
 void ChassisMotion_StopStatusGet(ChassisStop_Status_t *out){*out=cancel_stop;}
 bool ChassisMotion_StopPending(void){return cancel_stop_pending;}
 bool GrabTask_QrPoseStart(void){qr_pose_calls++;grab.state=GRAB_COMPLETE;grab.result="qr_pose_ready";grab.stop_confirmed=true;return true;}
-bool GrabTask_PoseStart(bool work){assert(!GrabTask_IsBusy());if(reject_pose){reject_pose--;grab.reason="busy";return false;}pose_work=work;pose_calls++;grab.state=GRAB_ROUTE_POSE;grab.result="pending";return true;}
+bool GrabTask_PoseStart(bool work){if(GrabTask_IsBusy()){grab.reason="busy";return false;}if(reject_pose){reject_pose--;grab.reason="busy";return false;}pose_work=work;pose_calls++;grab.state=GRAB_ROUTE_POSE;grab.result="pending";return true;}
 bool GrabTask_PoseClearanceReady(void){return pose_clearance && grab.state==GRAB_ROUTE_POSE && !grab_resume_pending;}
 bool GrabTask_StoreFinishTravel(void){assert(grab.state==GRAB_PREPARE && !strcmp(grab.operation,"store"));store_travel_calls++;return true;}
 bool GrabTask_TransferStart(const char *op,const char *scene,uint8_t slot,uint8_t color)
@@ -156,6 +156,8 @@ bool GrabTask_AlignPlaceStart(const char *scene,uint8_t ring)
 {assert((!strcmp(scene,"rough") || !strcmp(scene,"temp1") || !strcmp(scene,"temp2")) && ring>=1 && ring<=(!strcmp(scene,"temp2")?6:3));
  if(reject_transfer){grab.reason="config_missing";grab.missing="z_proc_place";return false;}
  ring_captured=false;ring_aligns++;grab.state=GRAB_PREPARE;grab.operation=!strcmp(scene,"temp2")?"empty_material_align":"empty_ring_align";grab.result="pending";return true;}
+bool GrabTask_RingTakePrepare(uint8_t *ring){*ring=2;return GrabTask_RingManualAllowed();}
+bool GrabTask_RingManualAllowed(void){return grab.state==GRAB_HOLD && grab.stop_confirmed;}
 bool GrabTask_AlignPlaceCapture(void)
 {assert(grab.state==GRAB_HOLD && !strcmp(grab.result,"aligned"));if(alignment_blocked)return false;
  ring_captured=true;ring_captures++;grab.state=GRAB_COMPLETE;return true;}
@@ -276,3 +278,9 @@ int main(void)
   puts("contest_mission_test: PASS (two batches, all placed before takeback, color-matched stack, stop)");
   return 0;
 }
+
+bool GrabTask_QrDepartureActive(void){return false;}
+
+bool GrabTask_QrScanCompetitionStart(uint32_t baseline){return GrabTask_QrScanStart(baseline);}
+void GrabTask_NextRawColorSet(uint8_t color){(void)color;}
+bool GrabTask_QrDepartStart(void){if(grab.state==GRAB_COMPLETE && !strcmp(grab.result,"travel_ready"))return true;qr_scanning=false;pose_work=false;pose_calls++;grab.state=GRAB_ROUTE_POSE;grab.result="pending";return true;}

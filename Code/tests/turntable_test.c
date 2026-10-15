@@ -70,13 +70,15 @@ static void run(void)
 }
 static void command(unsigned n,char *args[])
 { console[0]=0;assert(Turntable_Command(n,args)); }
+
+#include "motor_arrival_fixture.h"
 int main(void)
 {
   Turntable_Status_t s;Turntable_Inventory_t inv;
   char *get[]={"turntable","get","slot2_deg"};
   char *set[]={"turntable","set","slot2_deg","270"};
   char *empty[]={"turntable","inventory","empty"};
-  assert(MotorBus_Init(&uart)==HAL_OK);Turntable_Init();
+  assert(MotorBus_Init(&uart)==HAL_OK);fixture_both_modes(&uart,&tick);Turntable_Init();
   /* The coordinator releases startup once; no early traffic before that gate. */
   for(unsigned i=0;i<10;i++) {
     Turntable_BootHomeProcess(false);step();

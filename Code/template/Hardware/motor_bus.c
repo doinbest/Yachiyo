@@ -42,6 +42,56 @@ static unsigned next_owner;
 static bool chassis_yield;
 static uint32_t chassis_yield_mask;
 static MotorBus_Timing_t timing;
+static uint8_t position_reply_mode[8], position_config_id, position_config_phase;
+static bool position_config_pending;
+static uint8_t position_config[33];
+static struct { bool active, reached; uint32_t tx_ms; } position_motion[8];
+static void PositionConfigProcess(void);
+
+int MotorBus_PositionReplyEnsure(uint8_t address)
+{
+  if(address<5 || address>8)return -1;
+  if(position_reply_mode[address-1]==2)return 1;
+  if(position_reply_mode[address-1]==3)return -1;
+  position_reply_mode[address-1]=1;
+  return 0;
+}
+bool MotorBus_PositionReached(uint8_t address,uint32_t accepted_ms)
+{
+  return address>=5 && address<=8 && position_motion[address-1].active &&
+    position_motion[address-1].reached &&
+    (int32_t)(position_motion[address-1].tx_ms-accepted_ms)>=0;
+}
+static void PositionConfigProcess(void)
+{
+  MotorBus_Event_t event;
+  if(position_config_pending && MotorBus_EventGet(MOTOR_BUS_POSITION_CONFIG,&event)) {
+    position_config_pending=false;
+    bool valid=event.result==MOTOR_BUS_REPLY &&
+      (position_config_phase==1 ? event.length==4 && event.data[2]==2 :
+       event.length==33 && event.data[2]==33 && event.data[3]==21);
+    if(!valid) { position_reply_mode[position_config_id-1]=event.result==MOTOR_BUS_CANCELLED?0:3;position_config_id=0;return; }
+    if(position_config_phase==0) {
+      memcpy(position_config,event.data,33);
+      if(position_config[22]==3) {position_reply_mode[position_config_id-1]=2;position_config_id=0;return;}
+      position_config[1]=0x48;position_config[2]=0xd1;position_config[3]=0;
+      position_config[22]=3;position_config_phase=1;
+    } else if(position_config_phase==1)position_config_phase=2;
+    else {
+      position_reply_mode[position_config_id-1]=memcmp(position_config+4,event.data+4,28)?3:2;
+      position_config_id=0;return;
+    }
+  }
+  if(position_config_pending || quarantined || MotorBus_ProbeActive())return;
+  if(!position_config_id)for(unsigned i=4;i<8;i++)if(position_reply_mode[i]==1) {
+    position_config_id=(uint8_t)(i+1);position_config_phase=0;break;
+  }
+  if(!position_config_id)return;
+  const uint8_t read[]={position_config_id,0x42,0x6c,0x6b};
+  bool write=position_config_phase==1;
+  if(MotorBus_Submit(MOTOR_BUS_POSITION_CONFIG,write?position_config:read,
+       write?33:4,write?4:33,0,false))position_config_pending=true;
+}
 #ifndef MOTOR_BUS_REPLY_SETTLE_MS
 #define MOTOR_BUS_REPLY_SETTLE_MS 2U
 #endif
@@ -250,6 +300,8 @@ bool MotorBus_SubmitReplyTo(MotorBus_Owner_t owner,const uint8_t *data,uint8_t l
   memcpy(s->data, data, length);
   s->length = length;
   s->reply_length = reply_length;
+  if(data[0]>=1 && data[0]<=8 && data[1]==0xfd)
+    position_motion[data[0]-1U].active=position_motion[data[0]-1U].reached=false;
   s->reply_address=reply_address; s->queued_ms=HAL_GetTick();
   if(reply_address>=1 && reply_address<=8)timing.id[reply_address-1].requests++;
   s->token = token;
@@ -436,7 +488,21 @@ static void ParseByte(uint8_t value, uint32_t arrival_ms)
       memmove(parse, parse + 1, --parse_length);
       continue;
     }
-    if((parse[1]==0xfe || parse[1]==0x9c) && length==4 &&
+    if(length==4 && parse[1]==0xfd && parse[2]==0x9f) {
+      unsigned id=parse[0]-1U;
+      if(position_motion[id].active && (int32_t)(arrival_ms-position_motion[id].tx_ms)>=0) {
+        position_motion[id].reached=true;
+        reply_complete_ms=arrival_ms;reply_complete_valid=true;
+        /* Completion is stronger evidence than a missing Receive ACK, but
+         * only the same on-wire FD can consume it; unrelated queries cannot. */
+        if(running && waiting_reply && !quarantined && active.data[1]==0xfd &&
+           active.reply_address==parse[0] && (int32_t)(arrival_ms-started_ms)>=0 &&
+           (uint32_t)(arrival_ms-started_ms)<MOTOR_BUS_TIMEOUT_MS) {
+          Complete(MOTOR_BUS_REPLY,parse,4);slots[active_owner].event.tick_ms=arrival_ms;
+        }
+      }
+    }
+    else if((parse[1]==0xfe || parse[1]==0x9c) && length==4 &&
        urgent_drain[parse[0]-1U][parse[1]==0x9c?1:0]) {
       urgent_drain[parse[0]-1U][parse[1]==0x9c?1:0]--;timing.drained++;
       MotorBus_IdTiming_t *t=&timing.id[parse[0]-1U];t->reply_ms=arrival_ms;
@@ -447,6 +513,7 @@ static void ParseByte(uint8_t value, uint32_t arrival_ms)
         (length == drain_length || (length==4 && (parse[2]==0xe2 || parse[2]==0xee))))
     { drain_pending = false; timing.drained++; }
     else if (running && waiting_reply &&
+        (int32_t)(arrival_ms-started_ms)>=0 &&
         (int32_t)(arrival_ms-started_ms)<(int32_t)MOTOR_BUS_TIMEOUT_MS &&
         (!quarantined || RecoveryRequest(active_owner) ||
          ProbeRead(active_owner,active.data,active.length,active.reply_length) || (diagnostic_reads &&
@@ -536,6 +603,16 @@ io_processed:
   {
     tx_done = false;
     active_tx_completed = true;
+    if(active.data[0]>=1 && active.data[0]<=8) {
+      unsigned id=active.data[0]-1U;
+      if(active.data[1]==0xfd) {
+        position_motion[id].active=true;position_motion[id].reached=false;
+        position_motion[id].tx_ms=tx_done_ms;
+      } else if(active.data[1]==0xfe || active.data[1]==0x9a || active.data[1]==0x9c ||
+                active.data[1]==0x0a || active.data[1]==0xf3) {
+        position_motion[id].active=position_motion[id].reached=false;
+      }
+    }
     if(active.reply_address>=1 && active.reply_address<=8)timing.id[active.reply_address-1].tx_ms=tx_done_ms;
     if(Urgent(active.data,active.length,active.priority)) {
       unsigned k=active.data[1]==0x9c?1:0;
@@ -593,6 +670,7 @@ io_processed:
     Complete(MOTOR_BUS_TIMEOUT, NULL, 0);
   }
   RecoveryProcess();
+  PositionConfigProcess();
   for(unsigned id=0;id<8;id++)for(unsigned k=0;k<2;k++)
     if(urgent_drain[id][k] && now-urgent_started[id][k]>=MOTOR_BUS_TIMEOUT_MS) {
       timing.id[id].timeouts+=urgent_drain[id][k];
@@ -653,12 +731,8 @@ io_processed:
       tx_done = false;
       started_ms = now;
       active_tx_completed = false;
-      /* Discard pre-command bytes; only replies after this request can match. */
-      if (!drain_pending && !UrgentPending())
-      {
-        parse_length = 0;
-        rx_read = rx_write;
-      }
+      /* Preserve partial asynchronous 9F frames across a query submission;
+       * ordinary replies still require a reception timestamp after this TX. */
       if (quarantined && (!active.priority || active.reply_length) && !RecoveryRequest(active_owner) &&
           !ProbeRead(active_owner,active.data,active.length,active.reply_length) &&
           !(diagnostic_reads && FeedbackRead(active_owner, active.data,
@@ -758,6 +832,9 @@ bool MotorBus_RecoverAfterReset(void)
   diagnostic_reads = false;
   quarantined = false;
   memset(&first_fault, 0, sizeof(first_fault));
+  memset(position_motion,0,sizeof position_motion);
+  memset(position_reply_mode,0,sizeof position_reply_mode);
+  position_config_id=position_config_phase=0;position_config_pending=false;
   return true;
 }
 
@@ -906,6 +983,9 @@ static void RecoveryProcess(void)
         RecoveryEvidence(&recovery);
         recovery.active=false;recovery.success=true;recovery.reason="complete";
         quarantined=false;reserved_owner=MOTOR_BUS_OWNER_COUNT;
+        memset(position_motion,0,sizeof position_motion);
+        memset(position_reply_mode,0,sizeof position_reply_mode);
+        position_config_id=position_config_phase=0;position_config_pending=false;
         /* Preserve first_fault for diagnosis; locked reports current state. */
         return;
       }

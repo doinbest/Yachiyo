@@ -332,7 +332,7 @@ int main(void)
   assert(fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f && homes==3);
   assert(isfinite(Config[C_J00]) && isfinite(Config[C_J11]));
   /* All ID8 slots share the same Base rear-home loading direction; repeated
-   * store/take cycles must return to the same 130-degree outside anchor. */
+   * store/take cycles must return to the same 127.5-degree outside anchor. */
   setting("z_proc_place","-6");
 
   for(unsigned pass=0;pass<4;pass++) for(unsigned slot=1;slot<=3;slot++)
@@ -354,5 +354,5 @@ int main(void)
   run_to(GRAB_COMPLETE,600,0);assert(fabsf(physical[2]-397)<.15f && homes==3);
   GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_BASE);
   assert(!GrabTask_PoseStart(false));
-  puts("grab_pose_test: PASS (rear-home car direction, +130 work geometry, preserved model)");
+  puts("grab_pose_test: PASS (rear-home car direction, +127.5 work geometry, preserved model)");
 }

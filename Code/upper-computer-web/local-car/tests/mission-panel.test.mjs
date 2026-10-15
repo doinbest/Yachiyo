@@ -159,6 +159,8 @@ test('heading switch is independent, bounded, locked by device and passive',asyn
  assert.match(f.get('mission-adopted-heading').textContent,/开启/);
  assert.match(f.get('mission-heading-result').textContent,/未标定/);
  assert.match(f.get('mission-heading-result').textContent,/观察Z 0.00 mm/);
+ f.panel.receive(parseGrabRouteStatus('OK grab route state=paused mode=mission visual_heading=on heading_source=line heading_result=heading_uncalibrated heading_image=0.50 heading_z=0.00'));
+ assert.match(f.get('mission-heading-result').textContent,/黑线/);
  f.get('mission-visual-heading').value='off';f.get('mission-visual-heading').change();
  assert.match(f.get('mission-adopted-heading').textContent,/开启/);
  await f.get('mission-continue').onclick();assert.equal(f.wires.at(-1),'grab mission continue');

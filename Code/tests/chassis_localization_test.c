@@ -13,7 +13,7 @@ uint32_t HAL_GetTick(void) { return tick; }
 bool Mecanum_IsBusy(void) { return bus_busy; }
 bool ChassisMotion_IsBusy(void) { return motion_busy; }
 bool ChassisRoute_IsBusy(void) { return route_busy; }
-void ChassisMotion_StatusGet(ChassisMotion_Status_t *out) { *out = motion; }
+void ChassisMotion_StatusGet(ChassisMotion_Status_t *out) { *out = motion;out->heading_sample_tick=tick; }
 bool ChassisMotion_AnchorSet(float yaw)
 {
   if (!motion.heading_valid) return false;

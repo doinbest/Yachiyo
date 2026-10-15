@@ -11,6 +11,19 @@ static float speed(void)
   ChassisMotion_Status_t s=status();
   return hypotf(s.body_target.vx_mm_s,s.body_target.vy_mm_s);
 }
+static float brake_trigger_with_age(unsigned age)
+{
+  setup();assert(ChassisMotion_ProfileSet(CHASSIS_PROFILE_COSINE));
+  assert(ChassisMotion_MoveTo(1200,6000,90,1000,60000));
+  for(unsigned now=120;now<=500;now+=20){sample(now);ChassisMotion_Process();}
+  location.observer.feedback.y_mm=5500;
+  for(unsigned now=520;now<=800;now+=20){
+    sample(now);location.feedback_tick=now-age;
+    for(unsigned i=0;i<4;i++)location.wheels[i].position_ms=location.wheels[i].speed_ms=now-age;
+    ChassisMotion_Process();
+  }
+  return speed();
+}
 int main(void)
 {
   (void)zero_dispatched;
@@ -42,7 +55,8 @@ int main(void)
   setup();assert(ChassisMotion_ProfileSet(CHASSIS_PROFILE_COSINE));assert(ChassisMotion_MoveTo(1200,6000,90,1000,60000));
   for(unsigned now=120;now<=500;now+=20){sample(now);ChassisMotion_Process();}
   location.observer.feedback.y_mm=5900;sample(520);ChassisMotion_Process();
-  float fresh=speed();assert(fresh<400 && fresh>50);
+  /* A new position starts continuous braking, not a one-tick speed collapse. */
+  float fresh=speed();assert(fresh<1000 && fresh>900);
   sample(540);
   for(unsigned i=0;i<4;i++)location.wheels[i].position_ms=location.wheels[i].speed_ms=340;
   ChassisMotion_Process();assert(speed()<fresh);
@@ -61,5 +75,9 @@ int main(void)
     sample(0xFFFFFFF0U+elapsed);ChassisMotion_Process();
   }
   assert(fabsf(speed()-146.4466f)<.05f);
+  /* Old feedback must constrain convergence; one fresh packet cannot release it. */
+  float fresh_limit=brake_trigger_with_age(0),old_limit=brake_trigger_with_age(200);
+  assert(fresh_limit>500 && old_limit<fresh_limit-100);
+  sample(820);ChassisMotion_Process();assert(speed()<=old_limit+.01f);
   puts("chassis_cosine_distance_test: PASS");
 }

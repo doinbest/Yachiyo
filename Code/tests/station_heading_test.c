@@ -13,12 +13,15 @@ static StationHeading_Config_t config;
 static ChassisMotion_Status_t motion;
 static ChassisStop_Status_t independent_stop;
 static unsigned requests,commits,turns;
+static uint8_t requested_source;
 static bool ready=true,accept=true;
 static HAL_StatusTypeDef camera_start_result;
 uint32_t HAL_GetTick(void){return tick;}
 bool GrabTask_HeadingReady(void){return ready;}
 void GrabTask_HeadingConfigGet(unsigned station,StationHeading_Config_t *out){(void)station;*out=config;}
 HAL_StatusTypeDef Camera_PoseStart(void){requests++;if(camera_start_result!=HAL_OK)return camera_start_result;memset(&frame,0,sizeof frame);frame.Active=1;return HAL_OK;}
+HAL_StatusTypeDef Camera_PoseStartSource(uint8_t source){HAL_StatusTypeDef r=Camera_PoseStart();requested_source=frame.Target=source;return r;}
+void GrabTask_LineHeadingConfigGet(StationHeading_Config_t *out){*out=config;out->zero_deg=NAN;out->gain=NAN;}
 void Camera_PoseSnapshotGet(Camera_PoseSnapshot_t *out){*out=frame;}
 void Camera_RequestStop(void){frame.Active=0;}
 void Mecanum_Feedback_Enable(bool enable){(void)enable;}
@@ -88,6 +91,16 @@ static void intermittent_samples(void)
   tick=5000;assert(StationHeading_Process());assert(!commits && !turns);
 }
 int main(void){
+  reset();StationHeading_BeginSource(3,90,5,0x0e);assert(!StationHeading_Process());
+  assert(requested_source==0x0e);
+  /* Ring calibration never silently authorizes an uncalibrated black-line turn. */
+  assert(!sample(50,1));assert(!sample(50,0));assert(sample(50,1));
+  assert(!strcmp(StationHeading_Reason(),"heading_uncalibrated") && !commits && !turns);
+  StationHeading_BeginSource(3,90,5,0x0e);assert(!StationHeading_Process());
+  frame.Target=0x0d;assert(!sample(50,1));assert(!sample(50,1));assert(!sample(50,1));
+  frame.Target=0x0e;assert(!sample(50,0));assert(!sample(50,1));assert(sample(50,0));
+  StationHeading_Pause();StationHeading_Begin(2,180,10);StationHeading_Process();
+  assert(requested_source==0x0d);
   intermittent_samples();
   /* Trial observations must not apply an already configured correction. */
   reset();StationHeading_ObserveBegin(2,180,5);StationHeading_Process();

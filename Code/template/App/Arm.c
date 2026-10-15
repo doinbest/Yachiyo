@@ -10,7 +10,7 @@ static const float Arm_GripperCatchDuty = (float)ARM_GRIPPER_CATCH_PULSE_US / 20
  *函数简介:夹爪状态设置
  *参数说明:Status  夹爪目标状态
  *返回类型:无
- *备注:50Hz PWM下，待机/松开为2500us(12.5%)，抓紧为1920us(9.6%)
+ *备注:50Hz PWM下，待机/松开为2450us(12.25%)，抓紧为1920us(9.6%)
  */
 void Arm_GripperSet(Arm_GripperStatusTypeDef Status)
 {

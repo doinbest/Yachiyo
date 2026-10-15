@@ -50,6 +50,12 @@ void GrabTask_Init(void);
 bool GrabTask_QrReady(float *scan_y);
 /** After chassis-confirmed arrival: wait, then move Z only until new UART code. */
 bool GrabTask_QrScanStart(uint32_t initial_sequence);
+bool GrabTask_QrScanCompetitionStart(uint32_t initial_sequence);
+/* Competition-only handoff: leave QR search without stopping chassis/ID8. */
+bool GrabTask_QrDepartStart(void);
+bool GrabTask_QrDepartureActive(void);
+/* Schedule recognition of the next raw item while this item returns. */
+void GrabTask_NextRawColorSet(uint8_t color);
 /** @brief Launch Z/X collision and Base near HOME without waiting for other axes to finish.
  * Completion requires 0x3B flags and feedback: X/Z zero + reached, Base stable + enabled.
  * Base near-home does not imply numerical zero. Boot also waits for ID8's independent HOME
@@ -80,15 +86,16 @@ bool GrabTask_VisualResponseSet(float forward_dx,float forward_dy,float x_dx,flo
 /** @brief 只读检查所选模式标定完整性和数值/机械边界，不访问硬件。 */
 bool GrabTask_ConfigReady(const char *mode);
 #define GRAB_TASK_POSE 1
-/** @brief 从后向锚点切换姿态；按新鲜停稳反馈补齐抬Z/收X/转Base，work为后向参考+130°。
+/** @brief 从后向锚点切换姿态；按新鲜停稳反馈补齐抬Z/收X/转Base，work为后向参考+127.5°。
  * 手动Base就近回零已受理时，先局部验证该轴参考，再衔接准备；停止取消衔接。
- * @return 受理；work_ready前打开夹爪2500us；travel_ready保持夹爪，不重新回零。
+ * @return 受理；work_ready前打开夹爪2450us；travel_ready保持夹爪，不重新回零。
  */
 bool GrabTask_PoseStart(bool work);
 /** Fresh X-retracted/Z-lifted proof during a pose switch; Base may still move.
  * Includes QR pose. Does not mean the complete pose is ready; false while paused or in other tasks. */
 bool GrabTask_PoseClearanceReady(void);
 void GrabTask_HeadingConfigGet(unsigned station,StationHeading_Config_t *out);
+void GrabTask_LineHeadingConfigGet(StationHeading_Config_t *out);
 /** Refresh stationary Base/X/Z evidence without moving or opening the claw. */
 bool GrabTask_HeadingReady(void);
 /** Match QR approach: retracted arm, Base clockwise +35 deg from rear reference. */
@@ -103,6 +110,8 @@ void GrabTask_ReferenceInvalidate(MechanicalArm_AxisTypeDef axis);
 bool GrabTask_IsBusy(void);
 /** @brief 兼容命名：所有静态对准的停稳HOLD允许人工夹爪、独立调高/松爪。 */
 bool GrabTask_RingManualAllowed(void);
+/** Adopt a completed empty-claw numbered-ring test for fresh capture and automatic tray placement. */
+bool GrabTask_RingTakePrepare(uint8_t *ring);
 /** @brief 取消自动推进并请求停车；重复请求保留停稳证据，保持夹爪输出与Z使能，检查状态确认停车。 */
 void GrabTask_Stop(void);
 /** Cancel an owned task and discard its paused continuation; preserve claw output. */

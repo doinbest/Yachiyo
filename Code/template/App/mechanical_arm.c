@@ -176,6 +176,10 @@ static HAL_StatusTypeDef MechanicalArm_CurrentCommandSend(void)
     break;
 
   case MECHANICAL_ARM_ACTION_POSITION:
+    {
+      int ready=MotorBus_PositionReplyEnsure(AxisConfig->MotorId);
+      if(ready!=1)return ready<0?HAL_ERROR:HAL_BUSY;
+    }
     MechanicalArm_Request.ExpectedFunction = 0xFDU;
     Direction = AxisConfig->PositiveDirection;
     if (MechanicalArm_Request.PositionPulses < 0)
@@ -444,7 +448,7 @@ static void MechanicalArm_ResponseProcess(const uint8_t *Response)
     MechanicalArm_Request.StateFlags[(uint8_t)MechanicalArm_Request.CurrentAxis] = MotorCode;
     MechanicalArm_Request.SuccessMask |= AxisMask;
   }
-  else if (MotorCode == 0x02U)
+  else if (MotorCode == 0x02U || (MechanicalArm_Request.Action==MECHANICAL_ARM_ACTION_POSITION && MotorCode==0x9fU))
   {
     MechanicalArm_Request.SuccessMask |= AxisMask;
   }
@@ -509,6 +513,8 @@ HAL_StatusTypeDef MechanicalArm_Init(UART_HandleTypeDef *huart)
   MechanicalArm_Uart = huart;
   MechanicalArm_State = MECHANICAL_ARM_STATE_IDLE;
   MechanicalArm_EventReady = 0;
+  /* Both is required by fixed FD moves, not HOME or initialization. Prepare it
+   * lazily in CurrentCommandSend so early configuration cannot cancel boot HOME. */
   MechanicalArm_StopPendingMask=MechanicalArm_StopMask=0;
   memset(&MechanicalArm_Request, 0, sizeof(MechanicalArm_Request));
   memset(&MechanicalArm_Event, 0, sizeof(MechanicalArm_Event));
