@@ -30,6 +30,7 @@ static uint32_t StartUnits;
 static RadarPlan_Point_t Planned[RADAR_PLAN_MAX_POINTS-1U];
 static unsigned PlannedCount, PhaseIndex;
 static ChassisRoute_Profile_t Profile;
+static float PhaseAccel[CHASSIS_ROUTE_PROFILE_MAX_PHASES];
 static bool Pending;
 static unsigned PendingIndex;
 static ChassisRoute_Phase_t PendingPhase;
@@ -92,7 +93,13 @@ static bool submit_phase(const ChassisRoute_Phase_t *phase)
   if(!strcmp(phase->direction,"curve"))
     ok=ChassisMotion_PathStart(&Curve,phase->speed_mm_s,TaskOptions.turn_speed_deg_s,timeout,CurveProgress);
   else if(phase->turn) ok=TaskRoute?ChassisMotion_TurnToSpeed(phase->yaw_deg,TaskOptions.turn_speed_deg_s,timeout):ChassisMotion_TurnTo(phase->yaw_deg,timeout);
-  else ok=ChassisMotion_MoveTo(phase->x_mm,phase->y_mm,phase->yaw_deg,phase->speed_mm_s,timeout);
+  else if(TaskRoute && ChassisMotion_ProfileGet()==CHASSIS_PROFILE_LINEAR){
+    ChassisMotion_TestParameters_t tuning;
+    ChassisMotion_TestParametersDefaults(&tuning);
+    tuning.linear_accel_mm_s2=PendingIndex<Profile.count?PhaseAccel[PendingIndex]:CHASSIS_DISTANCE_ACCEL_MM_S2;
+    tuning.linear_decel_mm_s2=CHASSIS_MISSION_DECEL_MM_S2;
+    ok=ChassisMotion_MoveToTuned(phase->x_mm,phase->y_mm,phase->yaw_deg,phase->speed_mm_s,&tuning,timeout);
+  }else ok=ChassisMotion_MoveTo(phase->x_mm,phase->y_mm,phase->yaw_deg,phase->speed_mm_s,timeout);
   Submitting=false;
   ChassisMotion_StatusGet(&Motion);
   if(!ok) {
@@ -210,6 +217,8 @@ static bool submit(unsigned index)
     if(!ChassisPath_Build(&Curve,kind,from.x_mm,from.y_mm,to.x_mm,to.y_mm,RouteSpeed))return false;
     Profile.nominal_time_s=Curve.length/RouteSpeed+180/TaskOptions.turn_speed_deg_s+5;
   }
+  ChassisRouteProfile_ApplyTaskLinear(&from,&to,&Profile,
+    TaskRoute && ChassisMotion_ProfileGet()==CHASSIS_PROFILE_LINEAR,PhaseAccel);
   LegStartTick=HAL_GetTick();
   LegBudget=(uint32_t)fminf(CHASSIS_DISTANCE_MAX_TIMEOUT_MS,
                fmaxf(CHASSIS_DISTANCE_TIMEOUT_MS,2000.0f*Profile.nominal_time_s+10000.0f));

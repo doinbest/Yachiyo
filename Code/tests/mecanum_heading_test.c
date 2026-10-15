@@ -120,8 +120,8 @@ int main(void)
   pump(60);assert(sends==4 && last_acc==20);
   assert(!ChassisMotion_VelocityStart(20,0,0));
   reading(-179);pump(20);ChassisMotion_HoldStatusGet(&status);
-  /* Default P=.02, D=0: the wrapped -2 degree error produces -.04 rad/s. */
-  assert(status.active && fabsf(status.output_rad_s+.04f)<.0001f);
+  /* Default P=.1, D=0: the wrapped -2 degree error produces -.2 rad/s. */
+  assert(status.active && fabsf(status.output_rad_s+.2f)<.0001f);
   reading(-150);pump(20);ChassisMotion_HoldStatusGet(&status);
   assert(fabsf(status.output_rad_s+.5f)<.0001f);
   valid=false;ChassisMotion_Process();ChassisMotion_HoldStatusGet(&status);

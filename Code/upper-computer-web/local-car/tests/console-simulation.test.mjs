@@ -89,7 +89,7 @@ test('standalone chassis test remains passive until submit and respects stop loc
   distance.value='1000';distance.oninput();assert.deepEqual(f.wires,[]);
   profile.value='cosine';profile.onchange();assert.deepEqual(f.wires,[]);
   form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
-  assert.deepEqual(f.wires,['chassis test 0 1000 1000 cosine 200 0.02 0']);
+  assert.deepEqual(f.wires,['chassis test 0 1000 1000 cosine 200 0.1 0']);
   f.sim.configure({stopLatched:true});distance.value='500';distance.oninput();
   form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(f.wires.length,1);
@@ -100,7 +100,7 @@ test('single-test form delegates one asymmetric motion to its lifecycle',async()
  f.sim.controlForm('chassis-test',{compact:true,onExecute:w=>started.push(w),isBusy:()=>busy});
  const form=f.elements.find(e=>e.tag==='form');
  form.onsubmit({preventDefault(){}});
- assert.deepEqual(started,['chassis test 500 0 1000 linear 500 0.02 0 1 300']);assert.deepEqual(f.wires,[]);
+ assert.deepEqual(started,['chassis test 500 0 1000 linear 500 0.1 0 1 300']);assert.deepEqual(f.wires,[]);
  busy=true;form.onsubmit({preventDefault(){}});assert.equal(started.length,1);
 });
 test('deceleration input is independent and inactive under cosine',()=>{
@@ -108,7 +108,7 @@ test('deceleration input is independent and inactive under cosine',()=>{
  const form=f.elements.find(e=>e.tag==='form'),decel=f.$('chassis-test-decel'),profile=f.$('chassis-test-profile');
  const label=f.elements.find(e=>e.tag==='label'&&e.children.includes(decel));
  assert.equal(Number(decel.value),300);decel.value='250';decel.oninput();form.onsubmit({preventDefault(){}});
- assert.equal(started.at(-1),'chassis test 500 0 1000 linear 500 0.02 0 1 250');
+ assert.equal(started.at(-1),'chassis test 500 0 1000 linear 500 0.1 0 1 250');
  profile.value='cosine';profile.onchange();assert.equal(decel.disabled,true);assert.equal(label.hidden,true);
  profile.value='linear';profile.onchange();assert.equal(decel.value,'250');assert.equal(decel.disabled,false);
 });
@@ -117,9 +117,9 @@ test('linear acceleration input is per test and cosine hides it without losing i
  const form=f.elements.find(e=>e.tag==='form'),accel=f.$('chassis-test-accel'),profile=f.$('chassis-test-profile');
  const label=f.elements.find(e=>e.tag==='label'&&e.children.includes(accel));
  accel.value='800';accel.oninput();assert.deepEqual(started,[]);assert.deepEqual(f.wires,[]);
- form.onsubmit({preventDefault(){}});assert.equal(started.at(-1),'chassis test 500 0 1000 linear 800 0.02 0 1 300');
+ form.onsubmit({preventDefault(){}});assert.equal(started.at(-1),'chassis test 500 0 1000 linear 800 0.1 0 1 300');
  profile.value='cosine';profile.onchange();assert.equal(accel.disabled,true);assert.equal(label.hidden,true);
- form.onsubmit({preventDefault(){}});assert.equal(started.at(-1),'chassis test 500 0 1000 cosine 200 0.02 0');
+ form.onsubmit({preventDefault(){}});assert.equal(started.at(-1),'chassis test 500 0 1000 cosine 200 0.1 0');
  profile.value='linear';profile.onchange();assert.equal(label.hidden,false);assert.equal(accel.value,'800');
  accel.value='0';accel.oninput();form.onsubmit({preventDefault(){}});assert.equal(started.length,2);
 });

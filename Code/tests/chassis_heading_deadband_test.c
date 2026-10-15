@@ -25,6 +25,8 @@ int main(void)
   /* Beyond the deadband, use the original error without subtracting its width. */
   begin(.1f,0);assert(fabsf(observe(120,.11f)+.011f)<.0001f);
   begin(.1f,0);assert(fabsf(observe(120,-.11f)-.011f)<.0001f);
+  begin(.1f,0);assert(observe(120,.1002f)<0);
+  begin(.1f,0);assert(observe(120,-.1002f)>0);
   /* Old D history is cleared in the deadband, not replayed on the next exit. */
   begin(.1f,.01f);(void)observe(120,.5f);assert(observe(140,.05f)==0);
   assert(fabsf(observe(160,.2f)+.045f)<.0001f);

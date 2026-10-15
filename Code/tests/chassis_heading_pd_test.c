@@ -22,43 +22,43 @@ static void begin_heading(float yaw, float target, uint32_t now)
 
 int main(void)
 {
-  /* Restored pure P: one degree produces .02 rad/s, without D damping. */
+  /* Restored pure P: one degree produces .1 rad/s, without D damping. */
   begin_heading(0,1,100);
-  reading(120,0);ChassisMotion_Process();near(sent_omega,.02f);
+  reading(120,0);ChassisMotion_Process();near(sent_omega,.1f);
   near(sent_vx,1000);
 
   /* Measured yaw rate does not contribute with D disabled. */
   reading(140,.2f);ChassisMotion_Process();
-  near(sent_omega,.016f);
+  near(sent_omega,.08f);
   float held=sent_omega;
   tick=160;ChassisMotion_Process();near(sent_omega,held);
   /* New sample interval is 60ms; repeated control ticks did not filter it. */
   reading(200,.2f);ChassisMotion_Process();
-  near(sent_omega,.016f);
+  near(sent_omega,.08f);
 
   /* Use sample timestamps, even if foreground consumption is delayed. */
   begin_heading(0,1,100);reading(120,0);ChassisMotion_Process();
   reading(140,.2f);tick=160;ChassisMotion_Process();
-  near(sent_omega,.016f);
+  near(sent_omega,.08f);
 
   /* Only angle error changes correction; output still clips at .5. */
   begin_heading(0,1,100);reading(120,-.2f);ChassisMotion_Process();
-  near(sent_omega,.024f);
-  begin_heading(0,10,100);reading(120,0);ChassisMotion_Process();near(sent_omega,.2f);
+  near(sent_omega,.12f);
+  begin_heading(0,10,100);reading(120,0);ChassisMotion_Process();near(sent_omega,.5f);
   begin_heading(0,30,100);reading(120,0);ChassisMotion_Process();near(sent_omega,.5f);
   begin_heading(0,-30,100);reading(120,0);ChassisMotion_Process();near(sent_omega,-.5f);
 
   /* Wrapped yaw and millisecond counter wrap do not create false derivatives. */
   begin_heading(179,179,100);reading(200,-179);ChassisMotion_Process();
-  near(sent_omega,-.04f);
+  near(sent_omega,-.2f);
   begin_heading(0,1,0xfffffff0U);reading(4,.2f);ChassisMotion_Process();
-  near(sent_omega,.016f);
+  near(sent_omega,.08f);
 
   /* Cancelling and starting another task must not retain the old D state. */
   assert(ChassisMotion_Stop(0));complete_stop();reading(24,.2f);
   ChassisMotion_Target_t t;ChassisMotion_TargetDefaults(&t);
   t.mode=CHASSIS_MOTION_HEADING;t.heading_deg=1.2f;t.transition_ms=0;
-  assert(ChassisMotion_Start(&t));reading(44,.2f);ChassisMotion_Process();near(sent_omega,.02f);
+  assert(ChassisMotion_Start(&t));reading(44,.2f);ChassisMotion_Process();near(sent_omega,.1f);
 
   /* A zero-time new sample cannot divide by zero or overwrite the held output. */
   held=sent_omega;angle.update_count++;tick=64;
@@ -79,6 +79,6 @@ int main(void)
     ChassisMotion_Process();
   }
   assert(status().state==CHASSIS_MOTION_RUNNING);near(sent_omega,.1f);
-  puts("heading pure P .02: zero D contribution, cached samples, wrap, reset, .5 ceiling and independent turns PASS");
+  puts("heading pure P .1: zero D contribution, cached samples, wrap, reset, .5 ceiling and independent turns PASS");
   return 0;
 }

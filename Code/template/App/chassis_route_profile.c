@@ -198,3 +198,35 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan
   out->final_yaw_deg=work;
   return true;
 }
+
+void ChassisRouteProfile_ApplyTaskLinear(const RadarPlan_Point_t *from,
+                                         const RadarPlan_Point_t *to,
+                                         ChassisRoute_Profile_t *profile,bool linear,
+                                         float *accels)
+{
+  float x=from->x_mm,y=from->y_mm;
+  for(unsigned i=0;i<profile->count;i++){
+    ChassisRoute_Phase_t *phase=&profile->phases[i];
+    float length=hypotf(phase->x_mm-x,phase->y_mm-y);
+    accels[i]=CHASSIS_DISTANCE_ACCEL_MM_S2;
+    if(linear && !phase->turn && strcmp(phase->direction,"curve") && phase->speed_mm_s>50){
+      float cap=CHASSIS_MISSION_TRANSIT_MM_S;
+      accels[i]=CHASSIS_MISSION_LOADED_ACCEL_MM_S2;
+      if((to->station==5U && to->visit==1U) ||
+         (from->station==5U && from->visit==1U && to->x_mm==2100 && to->y_mm==2100)){
+        cap=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
+        accels[i]=CHASSIS_MISSION_EMPTY_ACCEL_MM_S2;
+      }else if(to->station==4U && to->visit==2U)
+        cap=CHASSIS_MISSION_RAW_LATERAL_MM_S;
+      else if(to->station==2U)cap=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
+      if(length<=300 && !strcmp(phase->direction,"diagonal")){
+        cap=CHASSIS_MISSION_SHORT_MM_S;
+        accels[i]=CHASSIS_MISSION_SHORT_ACCEL_MM_S2;
+      }
+      float speed=fminf(phase->speed_mm_s,cap);
+      profile->nominal_time_s+=length*(1/speed-1/phase->speed_mm_s);
+      phase->speed_mm_s=speed;
+    }
+    x=phase->x_mm;y=phase->y_mm;
+  }
+}

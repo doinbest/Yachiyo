@@ -115,6 +115,8 @@ static void print_profile(const RadarPlan_Point_t *points,unsigned count,float s
     const RadarPlan_Point_t *to=&points[segment];
     if(!(task?ChassisRouteProfile_BuildTaskEntry(&points[segment-1U],to,yaw,speed,first_scan_leg,continuous_entry,&profile):
         ChassisRouteProfile_Build(&points[segment-1U],to,yaw,speed,first_scan_leg,&profile))) break;
+    float accels[CHASSIS_ROUTE_PROFILE_MAX_PHASES];
+    ChassisRouteProfile_ApplyTaskLinear(&points[segment-1U],to,&profile,task && !continuous_entry,accels);
     for(index=0U;index<profile.count;index++) {
       const ChassisRoute_Phase_t *phase=&profile.phases[index];
       printf("%s{\"kind\":\"%s\",\"phase\":\"%s\",\"direction\":\"%s\",\"segment\":%u,"

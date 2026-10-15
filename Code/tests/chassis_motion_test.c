@@ -73,7 +73,7 @@ int main(void)
   assert(ChassisMotion_HoldStart(-30,1000));assert(sent_vx==-30);
   assert(!status().map_anchor_valid && status().requested.heading_deg==179);
   ChassisMotion_HoldStatus_t hs;ChassisMotion_HoldStatusGet(&hs);assert(hs.active);
-  reading(20,-179);ChassisMotion_Process();assert(fabsf(sent_omega+.04f)<.00001f);
+  reading(20,-179);ChassisMotion_Process();assert(fabsf(sent_omega+.2f)<.00001f);
   reading(160,-179);ChassisMotion_Process();assert(ChassisMotion_IsBusy() && !stops);
   for(unsigned ms=180;ms<=1000;ms+=20){reading(ms,-179);ChassisMotion_Process();}
   complete_stop();ChassisMotion_HoldStatusGet(&hs);assert(!hs.active && !strcmp(hs.reason,"complete"));
@@ -131,9 +131,9 @@ int main(void)
   reset();assert(ChassisMotion_Start(&t));tick=20;ChassisMotion_Process();assert(ChassisMotion_Stop(0));assert(stops==1);complete_stop();assert(!strcmp(status().reason,"cancelled"));
   reset();assert(ChassisMotion_Start(&t));tick=20;ChassisMotion_Process();bus.stage=MECANUM_STAGE_FAULT;ChassisMotion_Process();assert(stops==1&&status().state==CHASSIS_MOTION_STOPPING);complete_stop();assert(status().state==CHASSIS_MOTION_ERROR&&!strcmp(status().reason,"bus_fault"));
   reset();valid=true;reading(0,179);assert(ChassisMotion_AnchorSet(1));t.mode=CHASSIS_MOTION_HEADING;t.heading_deg=179;t.transition_ms=0;
-  assert(ChassisMotion_Start(&t));reading(20,-179);ChassisMotion_Process();assert(fabsf(status().current_deg-181)<.001f);assert(fabsf(sent_omega+.04f)<.0001f);
+  assert(ChassisMotion_Start(&t));reading(20,-179);ChassisMotion_Process();assert(fabsf(status().current_deg-181)<.001f);assert(fabsf(sent_omega+.2f)<.0001f);
   assert(fabsf(status().map_yaw_rad-(1+2*CHASSIS_MODEL_PI/180))<.0001f);
-  tick=40;ChassisMotion_Process();assert(fabsf(sent_omega+.04f)<.0001f); /* same sample retains heading output */
+  tick=40;ChassisMotion_Process();assert(fabsf(sent_omega+.2f)<.0001f); /* same sample retains heading output */
   valid=false;ChassisMotion_Process();assert(!status().heading_valid&&!status().map_anchor_valid);assert(stops==1);complete_stop();assert(status().state==CHASSIS_MOTION_ERROR);
   reset();valid=true;reading(0,0);assert(ChassisMotion_AnchorSet(0));t.mode=CHASSIS_MOTION_ANGULAR_VELOCITY;assert(ChassisMotion_Start(&t));reading(20,NAN);ChassisMotion_Process();assert(!status().map_anchor_valid); /* direct omega doesn't require IMU */
   assert(status().state==CHASSIS_MOTION_RUNNING);ChassisMotion_Stop(0);complete_stop();

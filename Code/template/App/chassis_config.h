@@ -65,7 +65,7 @@
 
 /* 独立补偿直行测试：先核对正方向，再进行落地调试。 */
 #define CHASSIS_HEADING_TEST_YAW_SIGN      1.0f /* HWT逆时针角度增大用+1，否则-1。 */
-#define CHASSIS_HEADING_TEST_KP            0.02f /* Pure P, rad/s per degree of error. */
+#define CHASSIS_HEADING_TEST_KP            0.10f /* Pure P, rad/s per degree of error. */
 #define CHASSIS_HEADING_TEST_KD            0.00f /* D disabled for the P-only comparison. */
 #define CHASSIS_HEADING_RATE_FILTER_MS     40U
 #define CHASSIS_HEADING_DEADBAND_DEG       0.10f /* Translation/heading hold only; precision turns bypass. */
@@ -112,6 +112,14 @@
  * Curved-path vector tracking retains its separately validated slew limit. */
 #define CHASSIS_DISTANCE_COSINE_K         200U
 #define CHASSIS_DISTANCE_ACCEL_MM_S2     300.0f
+/* Formal linear mission: user-selected rates; full loaded-route validation pending. */
+#define CHASSIS_MISSION_EMPTY_ACCEL_MM_S2 1000.0f
+#define CHASSIS_MISSION_LOADED_ACCEL_MM_S2 800.0f
+#define CHASSIS_MISSION_SHORT_ACCEL_MM_S2 500.0f
+#define CHASSIS_MISSION_DECEL_MM_S2        300.0f
+#define CHASSIS_MISSION_TRANSIT_MM_S       800.0f
+#define CHASSIS_MISSION_RAW_LATERAL_MM_S   700.0f
+#define CHASSIS_MISSION_SHORT_MM_S         300.0f
 #define CHASSIS_TEST_ACCEL_MIN_MM_S2     10.0f
 #define CHASSIS_TEST_ACCEL_MAX_MM_S2     5000.0f
 #define CHASSIS_TEST_COSINE_K_MIN         10U

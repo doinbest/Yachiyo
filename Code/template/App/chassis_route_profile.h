@@ -53,4 +53,11 @@ bool ChassisRouteProfile_BuildTaskEntry(const RadarPlan_Point_t *from,
                                       bool first_scan_leg,bool continuous_entry,
                                       ChassisRoute_Profile_t *out);
 
+/** Apply formal linear speed caps and per-phase acceleration; shared by preview.
+ * Passing false preserves the generated speeds and selects default300 rates. */
+void ChassisRouteProfile_ApplyTaskLinear(const RadarPlan_Point_t *from,
+                                       const RadarPlan_Point_t *to,
+                                       ChassisRoute_Profile_t *profile,bool linear,
+                                       float *accels);
+
 #endif

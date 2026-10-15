@@ -2,7 +2,7 @@
   "keil": {
     "project": "Code/template/MDK-ARM/template.uvprojx",
     "target": "template",
-    "log_dir": ".embeddedskills/asymmetric-linear/build"
+    "log_dir": ".embeddedskills/mission-speed/build"
   },
   "eide": {
     "project": "Code/template/MDK-ARM/eide",

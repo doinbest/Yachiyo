@@ -41,7 +41,7 @@ static void linear_entry(void)
     ChassisRoute_TaskOptions_t options={true,1250,50,RADAR_START_LOWER};
     assert(ChassisRoute_TaskStartEx(NULL,1000,&options));
     assert(!last_turn && motion.target_x_mm==2100 && motion.target_y_mm==300 && motion.target_map_yaw_deg==180);
-    assert(last_speed==1000 && qr_pose_calls==calls);
+    assert(last_speed==300 && motion.linear_accel_mm_s2==500 && qr_pose_calls==calls);
     for(unsigned phase=0;phase<3;phase++){
       if(phase==paused_phase){
         float x=motion.target_x_mm,y=motion.target_y_mm,yaw=motion.target_map_yaw_deg;

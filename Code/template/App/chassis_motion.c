@@ -61,7 +61,9 @@ static float heading_update(float current)
     /* Suppress small heading noise in ordinary translation/heading hold.
      * turn_only above, including visual precision correction, has no deadband.
      * Reset measured-rate history so old D damping cannot leak across the zone. */
-    if(fabsf(error)<=CHASSIS_HEADING_DEADBAND_DEG)
+    /* Degree/radian conversion and accumulated float deltas can put nominal
+     * +/-0.1 just outside the inclusive boundary; this is below IMU resolution. */
+    if(fabsf(error)<=CHASSIS_HEADING_DEADBAND_DEG+0.0001f)
     {
       heading_rate_reset();
       output=0;

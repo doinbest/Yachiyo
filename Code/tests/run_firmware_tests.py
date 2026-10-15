@@ -89,6 +89,7 @@ if __name__ == "__main__":
     build_test("chassis_task_route_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
     build_test("chassis_route_continuity_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
     build_test("chassis_route_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
+    build_test("chassis_mission_speed_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
     build_test("grab_route_test", "template/App/GrabRoute.c", "template/Hardware/QR.c")
     build_test("mission_navigation_test", "template/App/mission_navigation.c")
     build_test("contest_mission_test", "template/App/contest_mission.c", "template/Hardware/QR.c")
