@@ -58,6 +58,27 @@ extern "C"
     uint32_t PulseLimit;
   } MechanicalArm_ConfigTypeDef;
 
+  typedef enum
+  {
+    MECHANICAL_ARM_HOME_NONE = 0,
+    MECHANICAL_ARM_HOME_PARAMS_READ,
+    MECHANICAL_ARM_HOME_PARAMS_WRITE,
+    MECHANICAL_ARM_HOME_PARAMS_VERIFY,
+    MECHANICAL_ARM_HOME_TRIGGER
+  } MechanicalArm_HomeStageTypeDef;
+
+  /* Last subtransaction only; independent of the requested HOME's TX/ACK.
+   * Reply stores up to 18 bytes; ReplyLength is the actual matched length.
+   * BusResult is a MotorBus_Result_t, valid only with BusEventValid. */
+  typedef struct
+  {
+    uint32_t UartError, WireTxMs;
+    MechanicalArm_HomeStageTypeDef HomeStage;
+    uint8_t Function, BusEventValid, BusResult;
+    uint8_t WireTransmitted, ReplyReceived, ReplyLength, Reply[18];
+    uint8_t VerifyMismatch, VerifyOffset, VerifyExpected, VerifyActual;
+  } MechanicalArm_DiagnosticTypeDef;
+
   typedef struct
   {
     MechanicalArm_ActionTypeDef Action;
@@ -77,8 +98,9 @@ extern "C"
     uint8_t SuccessMask;
     uint8_t FailureMask;
     uint8_t Transmitted;  /* Complete TX observed; never inferred from accepted request. */
-    uint8_t Acknowledged; /* Matched reply; stop uses TX-only and leaves this zero. */
+    uint8_t Acknowledged; /* Matched reply only; None actions leave this zero. */
     uint8_t StopIdMask; /* Priority STOP targets, bit0=ID1; 0xFF only for true ALL. */
+    MechanicalArm_DiagnosticTypeDef Diagnostic;
   } MechanicalArm_EventTypeDef;
 
   HAL_StatusTypeDef MechanicalArm_Init(UART_HandleTypeDef *huart);
@@ -87,13 +109,20 @@ extern "C"
   MechanicalArm_ResultTypeDef MechanicalArm_Disable(MechanicalArm_AxisTypeDef Axis);
   MechanicalArm_ResultTypeDef MechanicalArm_Position(MechanicalArm_AxisTypeDef Axis,
                                                      int32_t Pulses);
-  /* Explicit speed and driver acceleration gear (1..255) for this request;
+  /* Explicit speed and driver acceleration gear (X/Z:0..255, Base:1..255);
+   * X/Z gear0 means direct-speed operation without the drive ramp;
    * saved axis configuration and homing parameters are not changed. */
   MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef Axis,
                                                        int32_t Position, uint16_t SpeedRpm,
                                                        uint8_t Acceleration,
                                                        MechanicalArm_PositionModeTypeDef Mode);
   MechanicalArm_ResultTypeDef MechanicalArm_PositionRead(MechanicalArm_AxisTypeDef Axis);
+  /* Dynamic X absolute lookahead: verified None, advance on actual TX complete.
+   * Fixed positions share the same mode; arrival still needs real feedback. */
+  MechanicalArm_ResultTypeDef MechanicalArm_PositionTrackingEx(MechanicalArm_AxisTypeDef Axis,
+                                                       int32_t Position,uint16_t SpeedRpm,
+                                                       uint8_t Acceleration,
+                                                       MechanicalArm_PositionModeTypeDef Mode);
   MechanicalArm_ResultTypeDef MechanicalArm_SpeedRead(MechanicalArm_AxisTypeDef Axis);
   MechanicalArm_ResultTypeDef MechanicalArm_StateRead(MechanicalArm_AxisTypeDef Axis);
   /** @brief Read Emm 0x3B homing flags into StateFlags[Axis]; single axis only. */

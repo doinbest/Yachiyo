@@ -21,3 +21,11 @@ test('malformed compact arrays clear state rather than inventing valid feedback'
   t.accept(line(bad),200);assert.equal(t.state,null);assert.equal(t.feedback,null);
  }
 });
+test('applied batch and common measurement time survive compact expansion',()=>{
+ const t=model(),s=structuredClone(state);
+ s.applied=[7,970,true,[100,100,100,100]];s.feedback_time_ms=990;
+ t.accept(line(s),100);
+ assert.deepEqual(t.state.applied,s.applied);
+ assert.equal(t.state.feedback_time_ms,990);
+ assert.equal(t.feedback.x_mm,10);
+});

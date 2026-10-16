@@ -26,10 +26,10 @@ static void zero_dispatched(uint32_t now)
   assert(stops==previous_stops+1);bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;
   bus.tx_complete=true;bus.sent_ms=now;
 }
-#ifndef CHASSIS_DISTANCE_TEST_HELPERS_ONLY
+#if !defined(CHASSIS_DISTANCE_TEST_HELPERS_ONLY) || defined(CHASSIS_DISTANCE_TEST_ENABLE_PLANT)
 /* Delayed wheel feedback and first-order motor response, no endpoint snapping. */
 static ChassisMotion_Profile_t plant_profile;
-static void delayed_plant(float length, float speed, unsigned delay_steps, bool disturb)
+static void delayed_plant_tuned(float length, float speed, unsigned delay_steps, bool disturb,float accel,float decel)
 {
   const unsigned directions[4]={CHASSIS_MOTOR_FRONT_LEFT_FORWARD_DIR,
       CHASSIS_MOTOR_REAR_LEFT_FORWARD_DIR,CHASSIS_MOTOR_REAR_RIGHT_FORWARD_DIR,
@@ -38,7 +38,8 @@ static void delayed_plant(float length, float speed, unsigned delay_steps, bool 
   float position=0, velocity=0, peak=0, sampled_peak=0, overshoot=0, reverse=0;
   unsigned step_index=0;bool pushed=false;
   setup();assert(ChassisMotion_ProfileSet(plant_profile));location.observer.feedback.y_mm=-4000;
-  assert(ChassisMotion_MoveTo(1200,-4000+length,90,speed,200000));
+  if(accel>0){ChassisMotion_TestParameters_t p;ChassisMotion_TestParametersDefaults(&p);p.linear_accel_mm_s2=accel;p.linear_decel_mm_s2=decel;assert(ChassisMotion_MoveToTuned(1200,-4000+length,90,speed,&p,200000));}
+  else assert(ChassisMotion_MoveTo(1200,-4000+length,90,speed,200000));
   for(unsigned now=120;now<190000 && ChassisMotion_IsBusy();now+=20)
   {
     float wanted=status().body_target.vx_mm_s;
@@ -86,6 +87,10 @@ static void delayed_plant(float length, float speed, unsigned delay_steps, bool 
   if(disturb)assert(pushed && stops>=2);
   if(length>10000)assert(peak>=990); /* actual modeled speed, not just command acceptance */
 }
+static void delayed_plant(float length,float speed,unsigned delay_steps,bool disturb)
+{delayed_plant_tuned(length,speed,delay_steps,disturb,0,0);}
+#endif
+#ifndef CHASSIS_DISTANCE_TEST_HELPERS_ONLY
 int main(void)
 {
   /* Three new quiet groups complete arrival without an extra dwell timer. */

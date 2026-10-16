@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-颜色粗定位/色环精定位 + 数字同心圆定位 + 三环姿态纠偏程序。
+颜色粗定位/色环精定位 + 数字同心圆定位 + 三环/码堆姿态纠偏程序。
 
 颜色命令沿用原程序的 HSV 粗定位与色环精定位流程；数字命令先在
 整幅灰度图中识别数字 1、2、3 并输出粗中心，对准后再在准心附近
-使用 Hough 多重同心圆精定位。颜色模式沿用可配置准心（默认 372,345），
-数字同心圆和三环姿态模式固定使用现场记录的准心（386,345）；三种模式
-共用 B2 通信协议。
+使用 Hough 多重同心圆精定位。颜色模式沿用可配置准心（默认 357,324），
+数字同心圆和三环姿态模式固定使用现场记录的准心（367,316）。
+所有模式沿用B2帧；色环0D与码堆黑线0E使用独立请求及回复目标。
 
 摄像头固定请求 V4L2 + MJPG，默认 640x480、120 FPS。
 采集线程持续覆盖最新帧，主线程不会处理摄像头积压的旧帧。
@@ -31,7 +31,11 @@ Color：
     0x0C 数字 3 所在的同心圆
 
 三环姿态：
-    0x0D 三环中心连线姿态；参考中环中心 (386,345)，参考角度 0°
+    0x0D 三环中心连线姿态；参考中环中心 (367,316)，参考角度 0°
+
+码堆姿态：
+    0x0E 检测色环前方、画面底部横穿左右的黑线。
+    与0x0D共用图像参考角（默认视觉X轴0°），右端向下为正。
 
 坐标发送帧固定为 14 字节：
     FF B2 Command Valid CX_H CX_L CY_H CY_L DX_H DX_L DY_H DY_L SUM FE
@@ -46,6 +50,11 @@ Color：
     EX, EY, EA_X100, STOP
     EA_X100：R1 到 R3 连线角度误差乘 100
     STOP：角度误差绝对值不超过 5° 时为 1，否则为 0
+
+0x0E 复用同一种姿态帧，前两个16位槽固定为0，后两个槽为：
+    EA_X100, STOP
+    漏检时Valid=0且四槽全零，历史线仅用于显示；重获后重新三帧确认。
+    图像参考角相同不表示透视/车体角映射已经实测标定。
 
 按 q 或 Esc 退出。
 """
@@ -75,6 +84,7 @@ CAMERA_DIGIT_RING_1 = 0x0A
 CAMERA_DIGIT_RING_2 = 0x0B
 CAMERA_DIGIT_RING_3 = 0x0C
 CAMERA_THREE_RING_POSE = 0x0D
+CAMERA_PILE_LINE_POSE = 0x0E
 
 VALID_COLOR_IDS = {
     CAMERA_COLOR_RED,
@@ -94,7 +104,7 @@ DIGIT_RING_COMMAND_TO_DIGIT = {
 VALID_COMMAND_IDS = (
     VALID_COLOR_IDS
     | set(DIGIT_RING_COMMAND_TO_DIGIT)
-    | {CAMERA_THREE_RING_POSE}
+    | {CAMERA_THREE_RING_POSE, CAMERA_PILE_LINE_POSE}
 )
 
 COLOR_NAMES = {
@@ -112,6 +122,7 @@ COMMAND_NAMES = {
     CAMERA_DIGIT_RING_2: "digit_ring_2",
     CAMERA_DIGIT_RING_3: "digit_ring_3",
     CAMERA_THREE_RING_POSE: "three_ring_pose",
+    CAMERA_PILE_LINE_POSE: "pile_line_pose",
 }
 
 DRAW_COLORS = {
@@ -203,14 +214,28 @@ DIGIT_COARSE_REFERENCE_AREA = 640.0 * 480.0
 DIGIT_COARSE_MIN_AREA_640X480 = 350.0
 DIGIT_COARSE_RING_MIN_COUNT = 2
 DIGIT_COARSE_RING_CENTER_TOLERANCE = 20.0
-COLOR_REFERENCE_CENTER_X = 372
-COLOR_REFERENCE_CENTER_Y = 345
-DIGIT_RING_REFERENCE_CENTER_X = 386
-DIGIT_RING_REFERENCE_CENTER_Y = 345
-THREE_RING_REFERENCE_CENTER_X = 386
-THREE_RING_REFERENCE_CENTER_Y = 345
+COLOR_REFERENCE_CENTER_X = 357
+COLOR_REFERENCE_CENTER_Y = 324
+DIGIT_RING_REFERENCE_CENTER_X = 367
+DIGIT_RING_REFERENCE_CENTER_Y = 316
+THREE_RING_REFERENCE_CENTER_X = 367
+THREE_RING_REFERENCE_CENTER_Y = 316
 THREE_RING_REFERENCE_YAW_DEG = 0.0
 THREE_RING_ANGLE_DEADZONE_DEG = 5.0
+PILE_LINE_ROI_TOP_RATIO = 0.70
+PILE_LINE_ROI_BOTTOM_RATIO = 0.97
+PILE_LINE_MIN_SPAN_RATIO = 0.70
+PILE_LINE_SIDE_MARGIN_RATIO = 0.15
+PILE_LINE_MAX_ABS_ANGLE_DEG = 30.0
+PILE_LINE_MAX_GRAY = 145
+PILE_LINE_MIN_DARK_SUPPORT_RATIO = 0.75
+PILE_LINE_PROFILE_RADIUS = 32
+PILE_LINE_MIN_BLACK_CONTRAST = 20.0
+PILE_LINE_MIN_BLACK_BAND_SUPPORT_RATIO = 0.60
+PILE_LINE_ANGLE_DEADZONE_DEG = 5.0
+PILE_LINE_STABLE_FRAMES = 3
+PILE_LINE_MAX_ANGLE_JITTER_DEG = 2.0
+PILE_LINE_MAX_MISSED_FRAMES = 2
 DIGIT_RING_SWITCH_TOLERANCE = 20
 DIGIT_RING_ALIGNED_CONFIRM_FRAMES = 3
 DIGIT_RING_ROI_HALF_SIZE = 110
@@ -362,13 +387,15 @@ def select_target_ring(valid_groups, target_digit):
 
 
 def resolve_command_mode(command):
-    """把统一 B2 命令映射到颜色、数字圆环或三环姿态模式。"""
+    """把统一 B2 命令映射到颜色、数字圆环或姿态模式。"""
     if command in VALID_COLOR_IDS:
         return "color", command
     if command in DIGIT_RING_COMMAND_TO_DIGIT:
         return "digit_ring", DIGIT_RING_COMMAND_TO_DIGIT[command]
     if command == CAMERA_THREE_RING_POSE:
         return "three_ring_pose", None
+    if command == CAMERA_PILE_LINE_POSE:
+        return "pile_line_pose", None
     raise ValueError(f"不支持的 B2 命令：0x{command:02X}")
 
 
@@ -380,15 +407,43 @@ def build_three_ring_pose_detection(
     ),
     reference_yaw_deg=THREE_RING_REFERENCE_YAW_DEG,
     deadzone_deg=THREE_RING_ANGLE_DEADZONE_DEG,
+    r2_center=None,
+    ring_labels=None,
 ):
-    """由三个圆心计算中环位置误差、连线角度误差和停止标志。"""
-    ordered = tuple(
-        sorted(
-            ((float(x), float(y)) for x, y in centers),
-            key=lambda point: point[0],
-        )
+    """由两或三个圆心计算中环位置误差、连线角度误差和停止标志。"""
+    normalized_centers = tuple(
+        (float(x), float(y)) for x, y in centers
     )
-    first, middle, third = ordered
+    if len(normalized_centers) not in (2, 3):
+        raise ValueError("姿态计算需要两个或三个圆心")
+
+    if ring_labels is None:
+        ordered = tuple(sorted(
+            normalized_centers,
+            key=lambda point: point[0],
+        ))
+        labels = (
+            ("R1", "R2", "R3")
+            if len(ordered) == 3
+            else ("R1", "R2")
+        )
+    else:
+        labels = tuple(str(label) for label in ring_labels)
+        if len(labels) != len(normalized_centers):
+            raise ValueError("圆环标签数量必须与圆心数量一致")
+        ordered_items = sorted(
+            zip(normalized_centers, labels),
+            key=lambda item: item[0][0],
+        )
+        ordered = tuple(item[0] for item in ordered_items)
+        labels = tuple(item[1] for item in ordered_items)
+    first, third = ordered[0], ordered[-1]
+    if r2_center is None:
+        if "R2" not in labels:
+            raise ValueError("姿态计算结果中必须包含R2")
+        middle = ordered[labels.index("R2")]
+    else:
+        middle = tuple(float(value) for value in r2_center)
     yaw_deg = math.degrees(
         math.atan2(third[1] - first[1], third[0] - first[0])
     )
@@ -406,6 +461,8 @@ def build_three_ring_pose_detection(
         "target": "three_ring_pose",
         "center": (center_x, center_y),
         "ring_centers": ordered,
+        "ring_count": len(ordered),
+        "ring_labels": labels,
         "station_yaw_deg": float(yaw_deg),
         "angle_error_deg": float(angle_error_deg),
         "angle_error_cdeg": int(round(angle_error_deg * 100.0)),
@@ -1741,14 +1798,502 @@ def _select_three_ring_triple(candidates, image_width):
             for item in ordered
         ),
         "ellipses": tuple(item["ellipse"] for item in ordered),
+        "ring_labels": ("R1", "R2", "R3"),
+        "r2_center": tuple(
+            float(value) for value in ordered[1]["center"]
+        ),
         "confidence": float(confidence),
         "collinearity": float(collinearity),
         "perspective": float(perspective),
     }
 
 
+def _select_two_ring_pair(candidates, image_width, reference_center):
+    """选择包含R2的相邻两环；跨度过大的R1+R3组合会被拒绝。"""
+    reference = np.asarray(reference_center, dtype=np.float64)
+    best = None
+    for pair in combinations(candidates, 2):
+        ordered = tuple(sorted(pair, key=lambda item: item["center"][0]))
+        first_center = np.asarray(ordered[0]["center"], dtype=np.float64)
+        second_center = np.asarray(ordered[1]["center"], dtype=np.float64)
+        spacing = float(np.linalg.norm(second_center - first_center))
+        if not image_width * 0.08 <= spacing <= image_width * 0.42:
+            continue
+
+        mean_diameter = float(np.mean([
+            item["effective_diameter"] for item in ordered
+        ]))
+        diameter_spacing_ratio = mean_diameter / spacing
+        if not 0.32 <= diameter_spacing_ratio <= 1.10:
+            continue
+
+        reference_distances = tuple(
+            float(np.linalg.norm(np.asarray(item["center"]) - reference))
+            for item in ordered
+        )
+        if math.isclose(
+            reference_distances[0],
+            reference_distances[1],
+            abs_tol=1e-6,
+        ):
+            continue
+        r2_index = int(np.argmin(reference_distances))
+        labels = (
+            ("R1", "R2")
+            if r2_index == 1
+            else ("R2", "R3")
+        )
+
+        support = min(item["support"] for item in ordered) / 10.0
+        bands = min(item["diameter_bands"] for item in ordered) / 6.0
+        spacing_quality = math.exp(
+            -0.35 * abs(math.log(diameter_spacing_ratio / 0.50))
+        )
+        confidence = min(
+            1.0,
+            0.40 * spacing_quality
+            + 0.30 * min(support, 1.0)
+            + 0.30 * min(bands, 1.0),
+        )
+        score = (
+            reference_distances[r2_index] / max(float(image_width), 1.0)
+            + abs(math.log(diameter_spacing_ratio / 0.50))
+            - 0.01 * sum(item["support"] for item in ordered)
+        )
+        if best is None or score < best[0]:
+            best = (
+                score,
+                ordered,
+                labels,
+                r2_index,
+                confidence,
+                diameter_spacing_ratio,
+            )
+
+    if best is None:
+        return None
+    _, ordered, labels, r2_index, confidence, ratio = best
+    return {
+        "centers": tuple(
+            tuple(float(value) for value in item["center"])
+            for item in ordered
+        ),
+        "ellipses": tuple(item["ellipse"] for item in ordered),
+        "ring_labels": labels,
+        "r2_center": tuple(
+            float(value) for value in ordered[r2_index]["center"]
+        ),
+        "confidence": float(confidence),
+        "diameter_spacing_ratio": float(ratio),
+    }
+
+
+def _measure_black_line_band_support(
+    gray,
+    line_points,
+    profile_radius=PILE_LINE_PROFILE_RADIUS,
+    maximum_line_gray=PILE_LINE_MAX_GRAY,
+    minimum_contrast=PILE_LINE_MIN_BLACK_CONTRAST,
+):
+    """测量候选线是否是被较亮背景从上下夹住的黑色细带。"""
+    (x1, y1), (x2, y2) = line_points
+    delta_x = float(x2 - x1)
+    delta_y = float(y2 - y1)
+    line_length = max(math.hypot(delta_x, delta_y), 1.0)
+    normal_x = -delta_y / line_length
+    normal_y = delta_x / line_length
+    sample_count = 64
+    valid_count = 0
+    radius = max(8, int(profile_radius))
+
+    for line_ratio in np.linspace(0.05, 0.95, sample_count):
+        base_x = x1 + line_ratio * delta_x
+        base_y = y1 + line_ratio * delta_y
+        profile = []
+        for offset in range(-radius, radius + 1):
+            sample_x = int(round(base_x + normal_x * offset))
+            sample_y = int(round(base_y + normal_y * offset))
+            sample_x = max(0, min(gray.shape[1] - 1, sample_x))
+            sample_y = max(0, min(gray.shape[0] - 1, sample_y))
+            profile.append(float(gray[sample_y, sample_x]))
+
+        profile = np.convolve(
+            np.asarray(profile, dtype=np.float32),
+            np.asarray((0.25, 0.50, 0.25), dtype=np.float32),
+            mode="same",
+        )
+        # Hough可能落在黑带任一边缘。沿法向找到完整暗带，再检查其
+        # 两侧背景；不把固定±6像素当成所有观察高度下的黑带宽度。
+        dark = profile <= float(maximum_line_gray)
+        index = 0
+        while index < len(profile):
+            if not dark[index]:
+                index += 1
+                continue
+            start = index
+            while index < len(profile) and dark[index]:
+                index += 1
+            end = index
+            if start < 4 or end + 4 > len(profile):
+                continue
+            if start > radius + 6 or end - 1 < radius - 6:
+                continue
+            line_gray = float(np.median(profile[start:end]))
+            upper_gray = float(np.median(profile[start - 4:start - 1]))
+            lower_gray = float(np.median(profile[end + 1:end + 4]))
+            if min(upper_gray, lower_gray) - line_gray >= float(minimum_contrast):
+                valid_count += 1
+                break
+
+    return valid_count / max(sample_count, 1)
+
+
+def _extract_pile_line(
+    frame,
+    roi_top_ratio=PILE_LINE_ROI_TOP_RATIO,
+    roi_bottom_ratio=PILE_LINE_ROI_BOTTOM_RATIO,
+    minimum_span_ratio=PILE_LINE_MIN_SPAN_RATIO,
+    side_margin_ratio=PILE_LINE_SIDE_MARGIN_RATIO,
+    maximum_abs_angle_deg=PILE_LINE_MAX_ABS_ANGLE_DEG,
+):
+    """在画面底部选择横跨左右两侧的最长近水平黑线。"""
+    height, width = frame.shape[:2]
+    roi_top = max(0, min(height - 1, int(round(height * roi_top_ratio))))
+    roi_bottom = max(
+        roi_top + 1,
+        min(height, int(round(height * roi_bottom_ratio))),
+    )
+    full_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = full_gray[roi_top:roi_bottom, :]
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges_roi = cv2.Canny(blurred, 40, 120)
+    edges = np.zeros((height, width), dtype=np.uint8)
+    edges[roi_top:roi_bottom, :] = edges_roi
+
+    lines = cv2.HoughLinesP(
+        edges_roi,
+        1,
+        np.pi / 180.0,
+        threshold=max(20, int(round(width * 0.05))),
+        minLineLength=max(20, int(round(width * 0.25))),
+        maxLineGap=max(8, int(round(width * 0.12))),
+    )
+    if lines is None:
+        return None, edges, roi_top
+
+    minimum_span = float(width) * float(minimum_span_ratio)
+    left_limit = float(width) * float(side_margin_ratio)
+    right_limit = float(width) * (1.0 - float(side_margin_ratio))
+    segments = []
+    for x1, y1, x2, y2 in lines.reshape(-1, 4):
+        x1 = int(x1)
+        x2 = int(x2)
+        y1 = int(y1) + roi_top
+        y2 = int(y2) + roi_top
+        if x2 < x1:
+            x1, x2 = x2, x1
+            y1, y2 = y2, y1
+        span = float(x2 - x1)
+        if span < width * 0.20:
+            continue
+        angle_deg = math.degrees(math.atan2(y2 - y1, x2 - x1))
+        if abs(angle_deg) > float(maximum_abs_angle_deg):
+            continue
+        sample_count = max(16, min(96, int(round(span / 8.0))))
+        dark_sample_count = 0
+        for sample_index in range(sample_count):
+            ratio = sample_index / max(sample_count - 1, 1)
+            sample_x = int(round(x1 + ratio * (x2 - x1)))
+            sample_y = int(round(y1 + ratio * (y2 - y1))) - roi_top
+            x_start = max(0, sample_x - 2)
+            x_end = min(width, sample_x + 3)
+            y_start = max(0, sample_y - 3)
+            y_end = min(gray.shape[0], sample_y + 4)
+            patch = gray[y_start:y_end, x_start:x_end]
+            if patch.size and int(np.min(patch)) <= PILE_LINE_MAX_GRAY:
+                dark_sample_count += 1
+        dark_support_ratio = dark_sample_count / max(sample_count, 1)
+        if dark_support_ratio < PILE_LINE_MIN_DARK_SUPPORT_RATIO:
+            continue
+        slope = (y2 - y1) / max(float(x2 - x1), 1.0)
+        segments.append(
+            {
+                "points": ((x1, y1), (x2, y2)),
+                "angle_deg": float(angle_deg),
+                "length": math.hypot(x2 - x1, y2 - y1),
+                "center_y": y1 + (width * 0.5 - x1) * slope,
+                "dark_support_ratio": float(dark_support_ratio),
+            }
+        )
+
+    if not segments:
+        return None, edges, roi_top
+
+    y_tolerance = max(8.0, height * 0.025)
+    fitted_candidates = []
+    for seed in segments:
+        cluster = [
+            segment
+            for segment in segments
+            if abs(segment["angle_deg"] - seed["angle_deg"]) <= 4.0
+            and abs(segment["center_y"] - seed["center_y"]) <= y_tolerance
+        ]
+        all_points = [
+            point
+            for segment in cluster
+            for point in segment["points"]
+        ]
+        minimum_x = min(point[0] for point in all_points)
+        maximum_x = max(point[0] for point in all_points)
+        aggregate_span = float(maximum_x - minimum_x)
+        if (
+            aggregate_span < minimum_span
+            or minimum_x > left_limit
+            or maximum_x < right_limit
+        ):
+            continue
+
+        fit_points = np.asarray(all_points, dtype=np.float32).reshape(-1, 1, 2)
+        vx, vy, x0, y0 = (
+            float(value)
+            for value in cv2.fitLine(
+                fit_points,
+                cv2.DIST_L2,
+                0,
+                0.01,
+                0.01,
+            ).reshape(-1)
+        )
+        if abs(vx) < 1e-6:
+            continue
+        left_x = 0
+        right_x = width - 1
+        left_y = y0 + (left_x - x0) * vy / vx
+        right_y = y0 + (right_x - x0) * vy / vx
+        left_y = int(round(max(0.0, min(height - 1.0, left_y))))
+        right_y = int(round(max(0.0, min(height - 1.0, right_y))))
+        # 角度保留浮点拟合精度；整数端点只供绘图和黑带验证使用。
+        angle_deg = math.degrees(math.atan(vy / vx))
+        if abs(angle_deg) > float(maximum_abs_angle_deg):
+            continue
+        line_points = ((left_x, left_y), (right_x, right_y))
+        fitted_candidates.append(
+            {
+                "line_points": line_points,
+                "angle_deg": float(angle_deg),
+                "center": (
+                    int(round((left_x + right_x) / 2.0)),
+                    int(round((left_y + right_y) / 2.0)),
+                ),
+                "span_ratio": aggregate_span / max(float(width), 1.0),
+                "score": (
+                    aggregate_span,
+                    sum(segment["length"] for segment in cluster),
+                    float(np.mean([
+                        segment["dark_support_ratio"]
+                        for segment in cluster
+                    ])),
+                ),
+            }
+        )
+
+    if not fitted_candidates:
+        return None, edges, roi_top
+    for selected in sorted(
+        fitted_candidates,
+        key=lambda candidate: candidate["score"],
+        reverse=True,
+    ):
+        black_band_support_ratio = _measure_black_line_band_support(
+            full_gray,
+            selected["line_points"],
+        )
+        if black_band_support_ratio < PILE_LINE_MIN_BLACK_BAND_SUPPORT_RATIO:
+            continue
+        selected.pop("score", None)
+        selected["black_band_support_ratio"] = float(
+            black_band_support_ratio
+        )
+        return selected, edges, roi_top
+    return None, edges, roi_top
+
+
+class PileLinePoseDetector:
+    """用画面底部最长黑线相对视觉X轴的角度进行码堆姿态纠偏。"""
+
+    def __init__(
+        self,
+        reference_yaw_deg=THREE_RING_REFERENCE_YAW_DEG,
+        deadzone_deg=PILE_LINE_ANGLE_DEADZONE_DEG,
+        stable_frame_count=PILE_LINE_STABLE_FRAMES,
+        maximum_angle_jitter_deg=PILE_LINE_MAX_ANGLE_JITTER_DEG,
+        maximum_missed_frames=PILE_LINE_MAX_MISSED_FRAMES,
+        roi_top_ratio=PILE_LINE_ROI_TOP_RATIO,
+    ):
+        self.reference_yaw_deg = float(reference_yaw_deg)
+        self.deadzone_deg = float(deadzone_deg)
+        self.stable_frame_count = max(2, int(stable_frame_count))
+        self.maximum_angle_jitter_deg = float(maximum_angle_jitter_deg)
+        self.maximum_missed_frames = max(0, int(maximum_missed_frames))
+        self.roi_top_ratio = float(roi_top_ratio)
+        self.reset()
+
+    def reset(self):
+        self.samples = []
+        self.miss_count = 0
+        self.last_stable_detection = None
+
+    def _empty_detection(self, state):
+        return {
+            "detected": False,
+            "state": state,
+            "mode": "pile_line_pose",
+            "next_mode": "pile_line_pose",
+            "target": "pile_line_pose",
+            "center": None,
+            "line_points": (),
+            "station_yaw_deg": 0.0,
+            "angle_error_deg": 0.0,
+            "angle_error_cdeg": 0,
+            "stop_correction": False,
+            "error_x": 0,
+            "error_y": 0,
+            "area": 0.0,
+            "stable_count": len(self.samples),
+            "stable_required": self.stable_frame_count,
+            "miss_count": self.miss_count,
+            "span_ratio": 0.0,
+        }
+
+    def _build_detection(self, line_points, angle_deg, detected, state, span_ratio):
+        angle_error_deg = (
+            float(angle_deg) - self.reference_yaw_deg + 180.0
+        ) % 360.0 - 180.0
+        left, right = line_points
+        center = (
+            int(round((left[0] + right[0]) / 2.0)),
+            int(round((left[1] + right[1]) / 2.0)),
+        )
+        return {
+            "detected": bool(detected),
+            "state": state,
+            "mode": "pile_line_pose",
+            "next_mode": "pile_line_pose",
+            "target": "pile_line_pose",
+            "center": center,
+            "line_points": tuple(tuple(int(value) for value in point) for point in line_points),
+            "station_yaw_deg": float(angle_deg),
+            "angle_error_deg": float(angle_error_deg),
+            "angle_error_cdeg": int(round(angle_error_deg * 100.0)),
+            "stop_correction": bool(
+                detected and abs(angle_error_deg) <= self.deadzone_deg
+            ),
+            "error_x": 0,
+            "error_y": 0,
+            "area": 0.0,
+            "stable_count": len(self.samples),
+            "stable_required": self.stable_frame_count,
+            "miss_count": self.miss_count,
+            "span_ratio": float(span_ratio),
+        }
+
+    @staticmethod
+    def _draw_line(frame, line_points):
+        if not line_points:
+            return
+        left, right = line_points
+        center_y = int(round((left[1] + right[1]) / 2.0))
+        cv2.line(
+            frame,
+            (0, center_y),
+            (frame.shape[1] - 1, center_y),
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.line(frame, left, right, (0, 0, 255), 3, cv2.LINE_AA)
+        cv2.circle(frame, left, 5, (255, 0, 255), -1, cv2.LINE_AA)
+        cv2.circle(frame, right, 5, (255, 0, 255), -1, cv2.LINE_AA)
+
+    def process(self, frame):
+        result = frame.copy()
+        raw, edges, roi_top = _extract_pile_line(
+            frame,
+            roi_top_ratio=self.roi_top_ratio,
+        )
+        cv2.line(
+            result,
+            (0, roi_top),
+            (result.shape[1] - 1, roi_top),
+            (255, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+        if raw is None:
+            self.miss_count += 1
+            self.samples.clear()
+            if (
+                self.last_stable_detection is not None
+                and self.miss_count <= self.maximum_missed_frames
+            ):
+                detection = dict(self.last_stable_detection)
+                detection["state"] = "pile_line_holding"
+                detection["detected"] = False
+                detection["stop_correction"] = False
+                detection["stable_count"] = 0
+                detection["miss_count"] = self.miss_count
+                self._draw_line(result, detection["line_points"])
+                return result, edges, detection
+
+            self.samples.clear()
+            self.last_stable_detection = None
+            return result, edges, self._empty_detection("pile_line_search")
+
+        self.miss_count = 0
+        self.samples.append(raw)
+        self.samples = self.samples[-self.stable_frame_count:]
+        median_angle = float(np.median([
+            sample["angle_deg"] for sample in self.samples
+        ]))
+        median_points = tuple(
+            (
+                int(round(np.median([
+                    sample["line_points"][point_index][0]
+                    for sample in self.samples
+                ]))),
+                int(round(np.median([
+                    sample["line_points"][point_index][1]
+                    for sample in self.samples
+                ]))),
+            )
+            for point_index in (0, 1)
+        )
+        maximum_jitter = max(
+            abs(sample["angle_deg"] - median_angle)
+            for sample in self.samples
+        )
+        stable = (
+            len(self.samples) == self.stable_frame_count
+            and maximum_jitter <= self.maximum_angle_jitter_deg
+        )
+        detection = self._build_detection(
+            median_points,
+            median_angle,
+            stable,
+            "pile_line_detected" if stable else "pile_line_confirming",
+            float(np.median([
+                sample["span_ratio"] for sample in self.samples
+            ])),
+        )
+        if stable:
+            self.last_stable_detection = dict(detection)
+        self._draw_line(result, median_points)
+        return result, edges, detection
+
+
 class ThreeRingPoseDetector:
-    """识别三组同心圆，稳定后输出中环位置和R1到R3的姿态误差。"""
+    """优先识别三环；只见相邻两环时仍输出中环位置和姿态误差。"""
 
     def __init__(
         self,
@@ -1759,8 +2304,9 @@ class ThreeRingPoseDetector:
         reference_yaw_deg=THREE_RING_REFERENCE_YAW_DEG,
         deadzone_deg=THREE_RING_ANGLE_DEADZONE_DEG,
         stable_frame_count=3,
-        maximum_center_jitter_px=1.5,
+        maximum_center_jitter_px=4.0,
         minimum_confidence=0.90,
+        maximum_missed_frames=2,
     ):
         self.center_x = int(reference_center[0])
         self.center_y = int(reference_center[1])
@@ -1769,10 +2315,14 @@ class ThreeRingPoseDetector:
         self.stable_frame_count = max(2, int(stable_frame_count))
         self.maximum_center_jitter_px = float(maximum_center_jitter_px)
         self.minimum_confidence = float(minimum_confidence)
+        self.maximum_missed_frames = max(0, int(maximum_missed_frames))
         self.reset()
 
     def reset(self):
         self.samples = []
+        self.miss_count = 0
+        self.last_stable_detection = None
+        self.last_stable_ellipses = ()
 
     def _empty_detection(self, state, **extra):
         detection = {
@@ -1783,6 +2333,8 @@ class ThreeRingPoseDetector:
             "target": "three_ring_pose",
             "center": None,
             "ring_centers": (),
+            "ring_count": 0,
+            "ring_labels": (),
             "station_yaw_deg": 0.0,
             "angle_error_deg": 0.0,
             "angle_error_cdeg": 0,
@@ -1793,9 +2345,35 @@ class ThreeRingPoseDetector:
             "stable_count": len(self.samples),
             "stable_required": self.stable_frame_count,
             "confidence": 0.0,
+            "miss_count": self.miss_count,
         }
         detection.update(extra)
         return detection
+
+    def _hold_or_search(self, result, edges):
+        """短时漏检沿用最近稳定结果，连续超限后才解除锁定。"""
+        self.miss_count += 1
+        if (
+            self.last_stable_detection is not None
+            and self.miss_count <= self.maximum_missed_frames
+        ):
+            detection = dict(self.last_stable_detection)
+            detection["state"] = "three_ring_pose_holding"
+            detection["miss_count"] = self.miss_count
+            self._draw_observation(
+                result,
+                detection["ring_centers"],
+                self.last_stable_ellipses,
+                detection.get("ring_labels"),
+            )
+            self.draw_crosshair(result)
+            return result, edges, detection
+
+        self.samples.clear()
+        self.last_stable_detection = None
+        self.last_stable_ellipses = ()
+        self.draw_crosshair(result)
+        return result, edges, self._empty_detection("three_ring_search")
 
     def draw_crosshair(self, frame):
         cv2.drawMarker(
@@ -1808,20 +2386,25 @@ class ThreeRingPoseDetector:
         )
 
     @staticmethod
-    def _draw_observation(frame, centers, ellipses):
-        colors = ((0, 180, 255), (0, 255, 0), (255, 160, 0))
+    def _draw_observation(frame, centers, ellipses, ring_labels=None):
+        labels = tuple(ring_labels or (
+            f"R{index}" for index in range(1, len(centers) + 1)
+        ))
+        color_by_label = {
+            "R1": (0, 180, 255),
+            "R2": (0, 255, 0),
+            "R3": (255, 160, 0),
+        }
         points = []
-        for index, (center, ellipse, color) in enumerate(
-            zip(centers, ellipses, colors),
-            start=1,
-        ):
+        for center, ellipse, label in zip(centers, ellipses, labels):
+            color = color_by_label.get(label, (180, 180, 180))
             cv2.ellipse(frame, ellipse, color, 2, cv2.LINE_AA)
             point = tuple(int(round(value)) for value in center)
             points.append(point)
             cv2.drawMarker(frame, point, color, cv2.MARKER_CROSS, 24, 2)
             cv2.putText(
                 frame,
-                f"R{index}",
+                label,
                 (point[0] + 10, point[1] - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.60,
@@ -1843,15 +2426,47 @@ class ThreeRingPoseDetector:
         observations, edges = _three_ring_extract_observations(frame)
         candidates = _three_ring_candidates(observations)
         raw = _select_three_ring_triple(candidates, frame.shape[1])
+        if raw is None and len(candidates) == 2:
+            raw = _select_two_ring_pair(
+                candidates,
+                frame.shape[1],
+                (self.center_x, self.center_y),
+            )
         if raw is None or raw["confidence"] < self.minimum_confidence:
-            self.samples.clear()
-            self.draw_crosshair(result)
-            return result, edges, self._empty_detection("three_ring_search")
+            return self._hold_or_search(result, edges)
 
+        if self.last_stable_detection is not None:
+            current_by_label = dict(zip(
+                raw["ring_labels"],
+                raw["centers"],
+            ))
+            previous_by_label = dict(zip(
+                self.last_stable_detection["ring_labels"],
+                self.last_stable_detection["ring_centers"],
+            ))
+            common_labels = set(current_by_label) & set(previous_by_label)
+            if "R2" not in common_labels:
+                return self._hold_or_search(result, edges)
+            tracking_jitter = max(
+                point_distance(
+                    current_by_label[label],
+                    previous_by_label[label],
+                )
+                for label in common_labels
+            )
+            if tracking_jitter > self.maximum_center_jitter_px:
+                return self._hold_or_search(result, edges)
+
+        self.miss_count = 0
+        if (
+            self.samples
+            and self.samples[-1]["ring_labels"] != raw["ring_labels"]
+        ):
+            self.samples.clear()
         self.samples.append(raw)
         self.samples = self.samples[-self.stable_frame_count:]
         centers = []
-        for ring_index in range(3):
+        for ring_index in range(len(raw["centers"])):
             centers.append(
                 (
                     float(np.median([
@@ -1868,9 +2483,9 @@ class ThreeRingPoseDetector:
         maximum_jitter = max(
             point_distance(sample["centers"][ring_index], centers[ring_index])
             for sample in self.samples
-            for ring_index in range(3)
+            for ring_index in range(len(raw["centers"]))
         )
-        stable = (
+        stable = self.last_stable_detection is not None or (
             len(self.samples) == self.stable_frame_count
             and maximum_jitter <= self.maximum_center_jitter_px
         )
@@ -1880,6 +2495,8 @@ class ThreeRingPoseDetector:
             reference_center=(self.center_x, self.center_y),
             reference_yaw_deg=self.reference_yaw_deg,
             deadzone_deg=self.deadzone_deg,
+            r2_center=centers[raw["ring_labels"].index("R2")],
+            ring_labels=raw["ring_labels"],
         )
         detection["detected"] = bool(stable)
         detection["state"] = (
@@ -1892,11 +2509,20 @@ class ThreeRingPoseDetector:
         detection["confidence"] = float(
             np.median([sample["confidence"] for sample in self.samples])
         )
+        detection["miss_count"] = 0
         detection["stop_correction"] = bool(
             stable and detection["stop_correction"]
         )
+        if stable:
+            self.last_stable_detection = dict(detection)
+            self.last_stable_ellipses = tuple(raw["ellipses"])
 
-        self._draw_observation(result, centers, raw["ellipses"])
+        self._draw_observation(
+            result,
+            centers,
+            raw["ellipses"],
+            raw["ring_labels"],
+        )
         self.draw_crosshair(result)
         return result, edges, detection
 
@@ -2314,11 +2940,14 @@ class USBController:
                 continue
 
             with self.state_lock:
-                # 三环模式依赖连续三帧稳定窗口；下位机周期性重发0x0D时
+                # 姿态模式依赖连续三帧稳定窗口；下位机周期性重发命令时
                 # 只保持当前模式。其他旧命令仍沿用“每帧重新激活”的行为。
                 command_changed = (
                     command != self.active_command
-                    or command != CAMERA_THREE_RING_POSE
+                    or command not in {
+                        CAMERA_THREE_RING_POSE,
+                        CAMERA_PILE_LINE_POSE,
+                    }
                 )
                 self.active_command = command
                 if command_changed:
@@ -2390,7 +3019,7 @@ class USBController:
             return error
 
     def send_detection(self, command, detection):
-        """发送固定14字节结果帧；0x0D的四个数据槽承载三项误差和停止标志。"""
+        """发送固定14字节结果帧；姿态命令使用有符号误差与停止标志。"""
         if command not in VALID_COMMAND_IDS:
             return False
 
@@ -2428,6 +3057,28 @@ class USBController:
                 valid,
                 error_x,
                 error_y,
+                angle_error,
+                stop_correction,
+            )
+        elif command == CAMERA_PILE_LINE_POSE:
+            if valid:
+                angle_error = self.clamp_int16(
+                    detection.get("angle_error_cdeg", 0)
+                )
+                stop_correction = 1 if detection.get(
+                    "stop_correction", False
+                ) else 0
+            else:
+                angle_error = 0
+                stop_correction = 0
+            body = struct.pack(
+                ">BBBBhhhh",
+                0xFF,
+                self.TX_TYPE,
+                int(command),
+                valid,
+                0,
+                0,
                 angle_error,
                 stop_correction,
             )
@@ -2890,6 +3541,7 @@ def activate_command(
     color_detector,
     digit_ring_detector,
     three_ring_detector=None,
+    pile_line_detector=None,
 ):
     """切换统一 B2 命令，并清除其他检测模式留下的状态。"""
     mode, target = resolve_command_mode(command)
@@ -2897,18 +3549,32 @@ def activate_command(
         digit_ring_detector.reset()
         if three_ring_detector is not None:
             three_ring_detector.reset()
+        if pile_line_detector is not None:
+            pile_line_detector.reset()
         color_detector.set_color(target)
     elif mode == "digit_ring":
         color_detector.reset()
         if three_ring_detector is not None:
             three_ring_detector.reset()
+        if pile_line_detector is not None:
+            pile_line_detector.reset()
         digit_ring_detector.set_digit(target)
-    else:
+    elif mode == "three_ring_pose":
         if three_ring_detector is None:
             raise ValueError("三环姿态模式缺少检测器")
         color_detector.reset()
         digit_ring_detector.reset()
+        if pile_line_detector is not None:
+            pile_line_detector.reset()
         three_ring_detector.reset()
+    else:
+        if pile_line_detector is None:
+            raise ValueError("码堆黑线姿态模式缺少检测器")
+        color_detector.reset()
+        digit_ring_detector.reset()
+        if three_ring_detector is not None:
+            three_ring_detector.reset()
+        pile_line_detector.reset()
     return mode
 
 
@@ -2918,14 +3584,19 @@ def process_detection_mode(
     color_detector,
     digit_ring_detector,
     three_ring_detector,
+    pile_line_detector=None,
 ):
-    """运行当前已激活的检测器，并保持三种模式的返回格式一致。"""
+    """运行当前已激活的检测器，并保持各模式的返回格式一致。"""
     if active_mode == "color":
         return color_detector.process(frame)
     if active_mode == "digit_ring":
         return digit_ring_detector.process(frame)
     if active_mode == "three_ring_pose":
         return three_ring_detector.process(frame)
+    if active_mode == "pile_line_pose":
+        if pile_line_detector is None:
+            raise ValueError("码堆黑线姿态模式缺少检测器")
+        return pile_line_detector.process(frame)
     raise ValueError(f"未知检测模式：{active_mode}")
 
 
@@ -2989,6 +3660,22 @@ def draw_status(frame, detection, fps):
             + f"  Deadzone: +/-{THREE_RING_ANGLE_DEADZONE_DEG:.1f} deg  "
             f"Confidence: {detection.get('confidence', 0.0):.3f}"
         )
+    elif mode == "pile_line_pose":
+        lines[1] = (
+            "Mode: pile_line_pose  "
+            f"Stable: {detection.get('stable_count', 0)}/"
+            f"{detection.get('stable_required', PILE_LINE_STABLE_FRAMES)}"
+        )
+        lines.append(
+            f"Line angle: {detection.get('station_yaw_deg', 0.0):+.2f} deg  "
+            f"Angle error: {detection.get('angle_error_deg', 0.0):+.2f} deg"
+        )
+        lines.append(
+            "Correction: "
+            + ("STOP" if detection.get("stop_correction", False) else "RUN")
+            + f"  Deadzone: +/-{PILE_LINE_ANGLE_DEADZONE_DEG:.1f} deg  "
+            f"Span: {detection.get('span_ratio', 0.0) * 100.0:.0f}%"
+        )
     else:
         lines.append(f"Area: {detection['area']:.0f}")
     lines.append(f"FPS: {fps:.1f}")
@@ -3018,13 +3705,13 @@ def parse_arguments():
         "--center-x",
         type=int,
         default=COLOR_REFERENCE_CENTER_X,
-        help="颜色模式准心 X，默认 372；数字同心圆固定使用 386",
+        help="颜色模式准心 X，默认 357；数字同心圆固定使用 367",
     )
     parser.add_argument(
         "--center-y",
         type=int,
         default=COLOR_REFERENCE_CENTER_Y,
-        help="颜色模式准心 Y，默认 345；数字同心圆固定使用 345",
+        help="颜色模式准心 Y，默认 324；数字同心圆固定使用 316",
     )
     parser.add_argument(
         "--coarse-min-area",
@@ -3089,6 +3776,7 @@ def main():
 
     color_detector, digit_ring_detector = build_detectors(args)
     three_ring_detector = ThreeRingPoseDetector()
+    pile_line_detector = PileLinePoseDetector()
     active_mode = None
     usb = USBController(
         port=args.usb_port,
@@ -3119,7 +3807,8 @@ def main():
         )
         print(
             "等待 USB CDC 命令：FF B2 Command FF；"
-            "01-06=颜色，0A-0C=数字同心圆，0D=三环姿态"
+            "01-06=颜色，0A-0C=数字同心圆，"
+            "0D=三环姿态，0E=码堆黑线姿态"
         )
         print("按 q 或 Esc 退出")
 
@@ -3141,6 +3830,7 @@ def main():
                     color_detector,
                     digit_ring_detector,
                     three_ring_detector,
+                    pile_line_detector,
                 )
                 last_command_version = command_version
                 next_send_time = 0.0
@@ -3168,6 +3858,7 @@ def main():
                     color_detector,
                     digit_ring_detector,
                     three_ring_detector,
+                    pile_line_detector,
                 )
 
             if active_command is not None:

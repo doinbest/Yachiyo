@@ -11,27 +11,40 @@ static bool probe_accept=true;
 bool ChassisMotion_TurnToPrecision(float yaw,float speed,float tol,uint32_t timeout){assert(speed==5 && tol==.1f && timeout);if(!probe_accept){motion.reason="busy";return false;}probe_turn_calls++;probe_target=yaw;motion.state=CHASSIS_MOTION_RUNNING;motion.stop_confirmed=false;return true;}
 #include "../template/App/contest_mission.c"
 static void fixture(MissionState s){ContestMission_Init();State=s;Single=false;Station=2;WorkYaw=180;RouteOptions.turn_speed_deg_s=10;motion.state=CHASSIS_MOTION_DONE;motion.stop_confirmed=true;motion.reason="feedback_arrived";route.state="work";route.reason="station_work";grab.state=GRAB_COMPLETE;grab.result="work_ready";}
-extern unsigned test_heading_starts,test_heading_processes,test_heading_pauses;
+extern unsigned test_heading_starts,test_heading_processes,test_heading_pauses,test_heading_competition_starts;
+extern uint8_t test_heading_source;
 extern bool test_heading_done;
 extern float test_heading_image;
 extern const char *test_heading_result;
+static void processing_vision_waits_for_dock(void){
+  for(unsigned enabled=0;enabled<2;enabled++){
+    fixture(M_DRIVING);Request.visual_heading_enabled=enabled!=0;WorkReady=true;
+    route.station=2;route.visit=3;route.phase="work_dock";route.state="running";
+    route.target_x_mm=1200;route.target_y_mm=350;route.stop_confirmed=false;
+    ContestMission_Process();assert(State==M_DRIVING && !test_heading_starts);
+    route.state="station";ContestMission_Process();assert(State==M_DRIVING && !test_heading_starts);
+    route.stop_confirmed=true;ContestMission_Process();
+    assert(State==(enabled?M_HEADING:M_RING_CLEAR));assert(CenterY==350);
+    assert(test_heading_starts==enabled);
+  }
+}
 static void aligned_station_anchor(void){
   fixture(M_EMPTY_ALIGN);start_fixture_custom=true;tick=1000;
-  CenterX=1200;CenterY=380;Batch=Item=Pass=0;
+  CenterX=1200;CenterY=350;Batch=Item=Pass=0;
   Rings[0][0]=1;Rings[0][1]=2;Rings[0][2]=3;
   grab.state=GRAB_HOLD;grab.result="aligned";grab.stop_confirmed=true;
   localization.origin_valid=localization.feedback_valid=true;
-  localization.observer.feedback=(ChassisModel_Pose_t){1362,377,CHASSIS_MODEL_PI};
+  localization.observer.feedback=(ChassisModel_Pose_t){1362,347,CHASSIS_MODEL_PI};
   localization.feedback_valid=false;ContestMission_Process();
   assert(State==M_EMPTY_ALIGN && !RingAnchorValid);
   localization.feedback_valid=true;ContestMission_Process();assert(State==M_TRANSFER_REQUEST);
-  float x,y;Item=1;ring_target(&x,&y);assert(x==1212 && y==377);
-  Item=2;ring_target(&x,&y);assert(x==1062 && y==377);
-  Pass=1;Item=0;ring_target(&x,&y);assert(x==1362 && y==377);
+  float x,y;Item=1;ring_target(&x,&y);assert(x==1212 && y==347);
+  Item=2;ring_target(&x,&y);assert(x==1062 && y==347);
+  Pass=1;Item=0;ring_target(&x,&y);assert(x==1362 && y==347);
   /* A new station visit discards the prior visit's position correction. */
   State=M_DRIVING;WorkReady=true;route.state="station";route.stop_confirmed=true;
-  route.station=2;route.visit=6;route.target_x_mm=1200;route.target_y_mm=380;
-  Rings[1][0]=2;ContestMission_Process();ring_target(&x,&y);assert(x==1200 && y==380);
+  route.station=2;route.visit=6;route.target_x_mm=1200;route.target_y_mm=350;
+  Rings[1][0]=2;ContestMission_Process();ring_target(&x,&y);assert(x==1200 && y==350);
   /* Temporary ring progression preserves distance on map X, including stacking. */
   fixture(M_TRANSFER);Station=3;Batch=1;Item=0;Rings[1][0]=1;Colors[1][0]=5;FirstRing[5]=2;
   Colors[1][1]=1;FirstRing[1]=3;
@@ -47,8 +60,22 @@ static void aligned_station_anchor(void){
   unsigned prepared=pose_calls;ContestMission_Process();assert(pose_calls==prepared+1 && WorkStarted);
   start_fixture_custom=false;
 }
+static void scaled_local_move_keeps_parameters_and_busy_retry(void)
+{
+  extern float test_local_scaled_speed,test_local_scaled_accel,test_local_scaled_decel;
+  fixture(M_RING_MOVE);Speed=80;MotionScale=2;allowed_local_speed=100;
+  reject_move="busy";
+  assert(!local_move(123,456,"ring_position") && State==M_RING_MOVE);
+  assert(!strcmp(Reason,"busy"));
+  reject_move=NULL;
+  assert(local_move(123,456,"ring_position"));
+  assert(tx==123 && ty==456 && !strcmp(Reason,"ring_position"));
+  assert(test_local_scaled_speed==100 && test_local_scaled_accel==600 && test_local_scaled_decel==600);
+  MotionScale=1;allowed_local_speed=50;
+}
 int main(void){
-  aligned_station_anchor();
+  scaled_local_move_keeps_parameters_and_busy_retry();
+  processing_vision_waits_for_dock();aligned_station_anchor();
   /* One heading operation on each arrival, never on intra-station ring moves. */
   for(unsigned visit=3;visit<=7;visit++) {
     if(visit==5)continue; /* Raw station has no heading observation. */
@@ -56,6 +83,9 @@ int main(void){
     route.state="station";route.stop_confirmed=true;route.station=(visit==3 || visit==6)?2:3;
     route.visit=visit;route.target_x_mm=1200;route.target_y_mm=300;
     ContestMission_Process();assert(State==M_HEADING && test_heading_starts==1);
+    assert(test_heading_source==(visit==7?0x0e:0x0d));
+    assert(test_heading_competition_starts==1);
+    if(visit!=7)assert(StationHeading_TurnSpeed()==10);
     ContestMission_Process();assert(State==M_HEADING && test_heading_processes==1);
     test_heading_done=true;ContestMission_Process();assert(State==M_RING_CLEAR);
     for(unsigned pass=0;pass<2;pass++)for(unsigned item=0;item<3;item++) {
@@ -83,7 +113,7 @@ int main(void){
   assert(test_origin_x==0 && test_origin_y==0 && fabsf(test_origin_yaw-CHASSIS_MODEL_PI)<.001f);
   localization.feedback_valid=localization.speed_valid=true;
   for(unsigned i=0;i<5;i++)ContestMission_Process();
-  assert(State==M_HEADING && test_heading_starts==1);
+  assert(State==M_HEADING && test_heading_starts==1 && !test_heading_competition_starts);
   motion.stop_confirmed=false;ContestMission_Report();assert(strstr(report,"stop_confirmed=1"));
   test_heading_done=true;ContestMission_Process();assert(State==M_DONE);
   assert(starts==0 && transfers==0 && pose_calls==0 && inventory[0].state==TURNTABLE_OCCUPIED);
@@ -131,5 +161,11 @@ int main(void){
   cancel_stop.tx_complete=cancel_stop.wheels_stopped=true;motion.state=CHASSIS_MOTION_DONE;
   ContestMission_Process();assert(State==M_CANCELLED && probe_turn_calls==1 && !ContestMission_Continue());
   assert(!ContestMission_StartHeadingProbe(2,0,5));assert(!ContestMission_StartHeadingProbe(2,1,2));
+  fixture(M_IDLE);route.state="idle";cancel_defer=false;
+  assert(ContestMission_StartHeadingTestSource(3,5,0x0e));
+  for(unsigned i=0;i<5;i++)ContestMission_Process();
+  assert(test_heading_source==0x0e && strstr(report,"heading_source=line"));
+  test_heading_done=true;ContestMission_Process();assert(State==M_DONE);
+  assert(!ContestMission_StartHeadingTestSource(3,5,0x01));
   puts("mission heading: once per station arrival, no per-ring repeat, independent probes PASS");
 }

@@ -1,7 +1,11 @@
 #define main legacy_stop_main
 #define ChassisRoute_IsBusy Fixture_RouteBusy
 #define ChassisRoute_IsSubmitting Fixture_RouteSubmitting
+#define GrabTask_PoseClearanceReady CommonMotionPoseReady
+#define GrabTask_QrDepartureActive CommonMotionQrDeparture
 #include "chassis_motion_test.c"
+#undef GrabTask_PoseClearanceReady
+#undef GrabTask_QrDepartureActive
 #undef ChassisRoute_IsBusy
 #undef ChassisRoute_IsSubmitting
 #undef main
@@ -37,3 +41,5 @@ int main(void)
  assert(!status().stop_confirmed && route_status().stop_confirmed && !strcmp(route_status().state,"paused"));
  puts("production route/motion pause: fresh stop monitor confirms pause without arrival bit PASS");
 }
+
+bool GrabTask_QrDepartureActive(void){return false;}

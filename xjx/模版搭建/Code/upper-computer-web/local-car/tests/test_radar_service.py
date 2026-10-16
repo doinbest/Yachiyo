@@ -18,6 +18,19 @@ import serve
 
 
 class RadarServiceTests(unittest.TestCase):
+    def test_formal_linear_speed_caps_match_firmware_and_keep_cosine(self):
+        profiles=serve.plan_radar_offline({'mask':0,'speed_mm_s':1000})['route_profiles']
+        task=profiles['task_fixed']['phases']
+        self.assertEqual([p['speed_mm_s'] for p in task[:3]],[300,0,1000])
+        raw=[p for p in task if p['segment']==3 and p['kind']=='move']
+        self.assertEqual(raw[0]['speed_mm_s'],700)
+        rough=[p for p in task if p['segment']==4 and p['kind']=='move']
+        self.assertEqual(rough[0]['speed_mm_s'],1000)
+        self.assertEqual(task[-1]['speed_mm_s'],300)
+        cosine=profiles['task_fixed_cosine']['phases']
+        self.assertEqual(cosine[0]['phase'],'entry_curve')
+        self.assertEqual(cosine[-1]['speed_mm_s'],1000)
+
     def test_fifteen_circle_shared_core_and_rolling_expiry(self):
         circles = [[[0, 1000, 80]] for _ in range(3)] + [[] for _ in range(12)]
         result = serve.plan_radar_offline({'circles': circles})
@@ -258,10 +271,20 @@ class RadarServiceTests(unittest.TestCase):
         self.assertTrue(all('path' not in p for p in raw))
         for station,yaw in [(2,180),(3,90)]:
             docks=[p for p in task['phases'] if p['station']==station and p['phase']=='work_dock']
-            self.assertEqual(len(docks),0 if station==2 else 2)
+            self.assertEqual(len(docks),2)
+            if station==2:self.assertEqual([p['target'] for p in docks],[[1200,350,180]]*2)
             self.assertTrue(all(p['target'][2]==yaw and p['speed_mm_s']==50 for p in docks))
         processing=[p for p in task['phases'] if p['station']==2 and p['phase']=='work_turn']
         self.assertEqual([p['target'] for p in processing],[[1200,380,180]]*2)
+        for name in ('task_fixed','task_planned','task_fixed_cosine','task_planned_cosine'):
+            phases=profiles[name]['phases']
+            docks=[i for i,p in enumerate(phases) if p['station']==2 and p['phase']=='work_dock']
+            self.assertEqual(len(docks),2)
+            for i in docks:
+                self.assertEqual(phases[i]['target'],[1200,350,180])
+                self.assertEqual(phases[i+1]['phase'],'undock')
+                self.assertEqual(phases[i+1]['target'],[1200,425,180])
+                self.assertEqual(phases[i+1]['speed_mm_s'],50)
         temporary=[p for p in task['phases'] if p['segment']==6]
         self.assertEqual([p['target'] for p in temporary],[[1200,1200,0],[425,1200,0],[425,1200,90],[350,1200,90]])
         self.assertEqual(temporary[1]['direction'],'reverse')
@@ -288,11 +311,15 @@ class RadarServiceTests(unittest.TestCase):
         for speed in (10,37.5,5000):
             result=serve.plan_radar_offline({'speed_mm_s':speed})
             self.assertIn('route_profiles',result)
-            for profile in result['route_profiles'].values():
+            for name,profile in result['route_profiles'].items():
                 self.assertEqual(profile['speed_mm_s'],speed)
                 for phase in profile['phases']:
                     expected=0 if phase['kind']=='turn' else min(speed,50) if phase['phase'] in ('dock','undock','work_dock') else speed
-                    self.assertEqual(phase['speed_mm_s'],expected)
+                    if name in ('task_fixed','task_planned') and phase['kind']=='move':
+                        self.assertGreater(phase['speed_mm_s'],0)
+                        self.assertLessEqual(phase['speed_mm_s'],min(expected,1000))
+                    else:
+                        self.assertEqual(phase['speed_mm_s'],expected)
         for speed in (9.99,5000.01,0,-1,True,'200',float('nan'),float('inf')):
             with self.subTest(speed=speed),self.assertRaises(ValueError):
                 serve.plan_radar_offline({'speed_mm_s':speed})

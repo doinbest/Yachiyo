@@ -7,7 +7,7 @@
 | 目录 | 用途与入口 |
 |---|---|
 | [template/](template/README.md) | F407 主车固件；Keil `MDK-ARM/template.uvprojx`，Target `template` |
-| [orange_pi/](orange_pi/README.md) | 保留视觉入口 `vision.py`；新增待接入版 `combined_color_digit_ring.py`（三环工位姿态）；本地收录不等于实机部署 |
+| [orange_pi/](orange_pi/README.md) | 保留视觉入口 `vision.py`；新增待接入版 `combined_color_digit_ring.py`（色环0D与码垛前方黑线0E姿态）；本地收录不等于实机部署 |
 | [HMI/](HMI/README.md) | 串口屏 `display.HMI` 和字库资源 |
 | [物料台转盘/](物料台转盘/README.md) | 独立 F103 转盘固件及原始压缩包 |
 | [upper-computer-web/](upper-computer-web/README.md) | 本地控制台；`local-car/start.cmd` 或启动快捷方式 |
@@ -16,5 +16,7 @@
 | `tools/` | 共用开发工具；`radar_plan_cli.c` 在主机调用固件同一份建图与规划核心 |
 
 各模块内部目录与相互邻接关系保持。构建与软件测试日志统一保存在仓库根 `.embeddedskills/`；参考工程不自动参加活动固件构建。
+
+离线偏载/附着条件分析工具为`python Code/tools/chassis_slip_review.py`（NumPy、Matplotlib）；默认输出至`.embeddedskills/analysis/high-speed-left-cg/`，不连接串口或驱动实车。模型假设与实车状态见[四轮分配与偏载审查](../docs/开发记录/2026-10-15-底盘四轮分配与左偏重心打滑分析.md)。
 
 主车的 ID 8 车载三仓转盘业务位于 `template/App/turntable.c/.h`，经 UART5 MotorBus 调度，与 `物料台转盘/` 的独立 F103 工程不同。物料取放和机械参数统一在本地控制台“参数调试”页；设备参数仅存 RAM，浏览器路线速度单独标注本地设置。

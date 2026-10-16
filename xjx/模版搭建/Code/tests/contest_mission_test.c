@@ -43,6 +43,7 @@ static char report[700];
 static bool cancel_defer;
 static bool stop_request_tick_advance;
 static bool route_resume_delayed;
+static const char *route_resume_reason;
 static unsigned grab_resume_calls;
 static ChassisStop_Status_t cancel_stop;
 static bool cancel_stop_pending;
@@ -61,8 +62,10 @@ bool MotorBus_RecoveryStart(void){recovery_starts++;mission_recovery.active=true
 void MotorBus_RecoveryGet(MotorBus_Recovery_t *s){*s=mission_recovery;}
 void MotorBus_RecoveryCancel(void){mission_recovery.active=mission_recovery.success=false;mission_recovery.reason="cancelled";}
 bool Mecanum_RecoveryAfterBusCheck(void){return mission_recovery.success;}
-uint8_t MechanicalArm_IsBusy(void){return 0;}
+static bool arm_busy,turntable_busy;
+uint8_t MechanicalArm_IsBusy(void){return arm_busy;}
 void Mecanum_Feedback_StopMonitor(bool on){(void)on;}
+void Mecanum_Feedback_Arrival(bool on){(void)on;}
 static uint8_t start_wheel_flags=3;
 static int start_wheel_rpm;
 static bool start_feedback_missing, start_imu_missing, origin_rejected;
@@ -71,7 +74,8 @@ void Mecanum_Feedback_Enable(bool enabled){feedback_enabled=enabled;}
 bool Mecanum_FeedbackGet(unsigned wheel,Mecanum_Feedback_t *out)
 {assert(wheel<4);memset(out,0,sizeof *out);out->speed_valid=out->position_valid=out->state_valid=!start_feedback_missing;
  out->speed_ms=out->position_ms=out->state_ms=tick;out->state_flags=start_wheel_flags;out->speed_rpm=start_wheel_rpm;return !start_feedback_missing;}
-void Mecanum_StatusGet(Mecanum_Status_t *out){memset(out,0,sizeof *out);out->ack_profile=MECANUM_ACK_RECEIVE;}
+static Mecanum_Status_t mission_mecanum;
+void Mecanum_StatusGet(Mecanum_Status_t *out){*out=mission_mecanum;out->ack_profile=MECANUM_ACK_RECEIVE;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *out)
 {if(!start_fixture_custom){memset(&localization,0,sizeof localization);localization.origin_valid=localization.feedback_valid=localization.speed_valid=true;
  localization.origin.x_mm=localization.observer.feedback.x_mm=2250;localization.origin.y_mm=localization.observer.feedback.y_mm=150;
@@ -92,16 +96,24 @@ bool ChassisRoute_TaskStart(const RadarPlan_t *p,float s){(void)p;assert(s==200)
 bool ChassisRoute_TaskStartEx(const RadarPlan_t *p,float speed,const ChassisRoute_TaskOptions_t *o)
 {route_start=o->start_id;route_planned=p!=NULL;assert(o->scan_qr && o->turn_speed_deg_s==50);return ChassisRoute_TaskStart(p,speed);}
 bool ChassisRoute_TaskPause(void){if(strcmp(route.state,"paused"))paused_route_state=route.state;route.state="paused";route.stop_confirmed=true;return true;}
+static bool feedback_pause_allowed=true;
+static unsigned feedback_pause_calls;
+bool ChassisRoute_TaskPauseFeedbackLoss(void){
+ feedback_pause_calls++;if(!feedback_pause_allowed)return false;
+ bool stopped=!strcmp(route.state,"error") || !strcmp(route.state,"stopping");
+ bool ok=ChassisRoute_TaskPause();if(ok && stopped)paused_route_state="running";return ok;
+}
 bool ChassisRoute_TaskContinue(void){route.state=paused_route_state?paused_route_state:"running";return true;}
 void ChassisRoute_TaskRecoveryHold(bool hold){(void)hold;}
-bool ChassisRoute_TaskResumeReady(void){return !route_resume_delayed;}
+bool ChassisRoute_TaskResumeReady(void){if(route_resume_reason){route.reason=route_resume_reason;return false;}return !route_resume_delayed;}
 bool ChassisRoute_StationFinish(void){assert(!strcmp(route.state,"station") && route.station==4 && route.visit==2 && route.stop_confirmed);route.state="done";return true;}
 bool ChassisRoute_WorkBegin(void){assert(!strcmp(route.state,"station") && route.stop_confirmed);route.state="work";return true;}
 bool ChassisRoute_WorkResume(void){assert(!strcmp(route.state,"work"));route.state="running";route.phase="move";resumes++;return true;}
 bool ChassisRoute_Cancel(void){cancels++;route.state="cancelled";return true;}
 void ChassisRoute_StatusGet(ChassisRoute_Status_t *out){*out=route;}
 bool ChassisMotion_IsBusy(void){return motion.state==CHASSIS_MOTION_RUNNING;}
-bool ChassisMotion_MoveTo(float x,float y,float a,float s,uint32_t t){assert(s<=50 && t);(void)a;if(reject_move){motion.reason=reject_move;return false;}tx=x;ty=y;motion.state=CHASSIS_MOTION_RUNNING;return true;}
+static float allowed_local_speed=50;
+bool ChassisMotion_MoveTo(float x,float y,float a,float s,uint32_t t){assert(s<=allowed_local_speed && t);(void)a;if(reject_move){motion.reason=reject_move;return false;}tx=x;ty=y;motion.state=CHASSIS_MOTION_RUNNING;return true;}
 void ChassisMotion_StatusGet(ChassisMotion_Status_t *out){*out=motion;out->heading_valid=!start_imu_missing;out->heading_sample_tick=tick;}
 bool GrabTask_IsBusy(void){return grab.state==GRAB_ROUTE_POSE || grab.state==GRAB_PREPARE || grab.state==GRAB_HOLD;}
 void GrabTask_StatusGet(GrabTask_Status_t *out){*out=grab;}
@@ -114,7 +126,7 @@ bool ChassisMotion_StopRequest(uint32_t token){assert(!token);cancel_stop.id++;c
 void ChassisMotion_StopStatusGet(ChassisStop_Status_t *out){*out=cancel_stop;}
 bool ChassisMotion_StopPending(void){return cancel_stop_pending;}
 bool GrabTask_QrPoseStart(void){qr_pose_calls++;grab.state=GRAB_COMPLETE;grab.result="qr_pose_ready";grab.stop_confirmed=true;return true;}
-bool GrabTask_PoseStart(bool work){assert(!GrabTask_IsBusy());if(reject_pose){reject_pose--;grab.reason="busy";return false;}pose_work=work;pose_calls++;grab.state=GRAB_ROUTE_POSE;grab.result="pending";return true;}
+bool GrabTask_PoseStart(bool work){if(GrabTask_IsBusy()){grab.reason="busy";return false;}if(reject_pose){reject_pose--;grab.reason="busy";return false;}pose_work=work;pose_calls++;grab.state=GRAB_ROUTE_POSE;grab.result="pending";return true;}
 bool GrabTask_PoseClearanceReady(void){return pose_clearance && grab.state==GRAB_ROUTE_POSE && !grab_resume_pending;}
 bool GrabTask_StoreFinishTravel(void){assert(grab.state==GRAB_PREPARE && !strcmp(grab.operation,"store"));store_travel_calls++;return true;}
 bool GrabTask_TransferStart(const char *op,const char *scene,uint8_t slot,uint8_t color)
@@ -130,7 +142,7 @@ bool GrabTask_TransferStart(const char *op,const char *scene,uint8_t slot,uint8_
   inventory[slot-1].color=color;transfers++;return true;
 }
 bool Turntable_ReferenceValid(void){return true;}
-bool Turntable_IsBusy(void){return false;}
+bool Turntable_IsBusy(void){return turntable_busy;}
 bool Turntable_SlotConfigured(uint8_t s){return s>=1 && s<=3;}
 Turntable_Inventory_t Turntable_InventoryGet(uint8_t s){return inventory[s-1];}
 bool Turntable_InventorySet(uint8_t s,Turntable_InventoryState_t state,uint8_t color){inventory[s-1]=(Turntable_Inventory_t){state,color};return true;}
@@ -156,6 +168,8 @@ bool GrabTask_AlignPlaceStart(const char *scene,uint8_t ring)
 {assert((!strcmp(scene,"rough") || !strcmp(scene,"temp1") || !strcmp(scene,"temp2")) && ring>=1 && ring<=(!strcmp(scene,"temp2")?6:3));
  if(reject_transfer){grab.reason="config_missing";grab.missing="z_proc_place";return false;}
  ring_captured=false;ring_aligns++;grab.state=GRAB_PREPARE;grab.operation=!strcmp(scene,"temp2")?"empty_material_align":"empty_ring_align";grab.result="pending";return true;}
+bool GrabTask_RingTakePrepare(uint8_t *ring){*ring=2;return GrabTask_RingManualAllowed();}
+bool GrabTask_RingManualAllowed(void){return grab.state==GRAB_HOLD && grab.stop_confirmed;}
 bool GrabTask_AlignPlaceCapture(void)
 {assert(grab.state==GRAB_HOLD && !strcmp(grab.result,"aligned"));if(alignment_blocked)return false;
  ring_captured=true;ring_captures++;grab.state=GRAB_COMPLETE;return true;}
@@ -276,3 +290,9 @@ int main(void)
   puts("contest_mission_test: PASS (two batches, all placed before takeback, color-matched stack, stop)");
   return 0;
 }
+
+bool GrabTask_QrDepartureActive(void){return false;}
+
+bool GrabTask_QrScanCompetitionStart(uint32_t baseline){return GrabTask_QrScanStart(baseline);}
+void GrabTask_NextRawColorSet(uint8_t color){(void)color;}
+bool GrabTask_QrDepartStart(void){if(grab.state==GRAB_COMPLETE && !strcmp(grab.result,"travel_ready"))return true;qr_scanning=false;pose_work=false;pose_calls++;grab.state=GRAB_ROUTE_POSE;grab.result="pending";return true;}

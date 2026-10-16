@@ -21,6 +21,8 @@ static uint8_t sent_address,sent_function;
 bool ChassisRoute_IsBusy(void) { return false; }
 bool ChassisRoute_IsSubmitting(void) { return false; }
 bool GrabTask_IsBusy(void) { return false; }
+bool GrabTask_PoseClearanceReady(void) { return false; }
+bool GrabTask_QrDepartureActive(void) { return false; }
 bool GrabTask_CalibrationActive(void) { return false; }
 uint8_t MechanicalArm_IsBusy(void) { return false; }
 void ChassisLocalization_Get(ChassisLocalization_Status_t *out) { memset(out,0,sizeof *out); }
@@ -120,9 +122,10 @@ int main(void)
   pump(60);assert(sends==4 && last_acc==20);
   assert(!ChassisMotion_VelocityStart(20,0,0));
   reading(-179);pump(20);ChassisMotion_HoldStatusGet(&status);
-  assert(status.active && fabsf(status.output_rad_s+.04f)<.0001f);
+  /* Default P=.1, D=0: the wrapped -2 degree error produces -.2 rad/s. */
+  assert(status.active && fabsf(status.output_rad_s+.2f)<.0001f);
   reading(-150);pump(20);ChassisMotion_HoldStatusGet(&status);
-  assert(fabsf(status.output_rad_s+.15f)<.0001f);
+  assert(fabsf(status.output_rad_s+.5f)<.0001f);
   valid=false;ChassisMotion_Process();ChassisMotion_HoldStatusGet(&status);
   assert(!status.active && !strcmp(status.reason,"imu_invalid"));
   assert(Mecanum_IsBusy());pump(60);assert(!Mecanum_IsBusy());

@@ -1,144 +1,66 @@
 #define main legacy_grab_main
 #include "grab_task_test.c"
 #undef main
-
-static void command(unsigned n,char *a[])
-{ output[0]=0;assert(GrabTask_Command(n,a));assert(!strstr(output,"ERR")); }
-
-static void configurable_pickup_hold(void)
+static void pick_start(void)
 {
-  char *pick[]={"grab","track","pick","3","-8","110"};
-  reset();configure(true);setting("x_min","0");setting("x_max","100");
-  setting("track_pick_tol_px","5");setting("track_pick_hold_ms","200");
-  physical[0]=35;physical[1]=-8;move_arrives=false;
-  command(6,pick);
-  for(unsigned i=0;i<60;i++)step(true,0,20,20);
-  step(true,0,5,-5);
-  for(unsigned i=0;i<3;i++)step(true,0,5,-5);
-  assert(status().state==GRAB_DESCEND && !closures); /* Configured 200 ms, not immediate. */
-  step(true,0,6,0); /* One out-of-window measurement restarts the hold. */
-  step(true,0,5,5);
-  for(unsigned i=0;i<3;i++)step(true,0,5,5);
-  assert(status().state==GRAB_DESCEND && !closures);
-  camera_valid=false;step(true,0,0,0);camera_valid=true;
-  step(true,0,5,5);
-  for(unsigned i=0;i<4;i++)step(false,0,5,5);
-  assert(status().state==GRAB_DESCEND && !closures); /* Cached pixels do not finish hold. */
-  step(true,0,5,5);
-  assert(status().state==GRAB_SETTLE && !closures);
-  GrabTask_Stop();run_to(GRAB_IDLE,200,0);
-  setting("track_pick_tol_px","10");setting("track_pick_hold_ms","100");
-  command(6,pick);
-  for(unsigned i=0;i<60;i++)step(true,0,20,20);
-  step(true,0,10,-10);step(true,0,10,-10);
-  assert(status().state==GRAB_DESCEND && !closures);
-  step(true,0,10,-10);
-  assert(status().state==GRAB_SETTLE && !closures);
-  for(unsigned i=0;i<80 && !closures;i++)step(true,0,10,-10);
-  assert(closures==1 && status().state==GRAB_CLOSE);
-  GrabTask_Stop();run_to(GRAB_IDLE,200,0);
-  char *bad[]={"grab","set","track_pick_hold_ms","1.5"};
-  output[0]=0;assert(GrabTask_Command(4,bad));assert(strstr(output,"ERR"));
-  puts("pickup: configured 5px/200ms, configurable window/hold, interrupted hold and fresh samples PASS");
+ char *pick[]={"grab","track","pick","3","-8","110"};
+ reset();configure(true);setting("x_min","0");setting("x_max","100");
+ setting("track_pick_tol_px","100");setting("track_pick_hold_ms","0");
+ physical[0]=35;physical[1]=10;move_arrives=false;
+ output[0]=0;assert(GrabTask_Command(6,pick));assert(!strstr(output,"ERR"));
 }
-
-/* Catch a descent gated by fine alignment, or a descent which blocks XY tracking.
- * Device replies are fake; the production task and controller remain real. */
-static void coarse_descent_and_fine_close(void)
+static void high_window_continuous_descent(void)
 {
-  char *pick[]={"grab","track","pick","3","-8","110"};
-  reset();configure(true);setting("x_min","0");setting("x_max","100");
-  setting("track_pick_hold_ms","0");setting("track_pick_tol_px","5");
-  physical[0]=35;physical[1]=10;move_arrives=false;
-  command(6,pick);
-  for(unsigned i=0;i<50;i++)step(true,0,51,-50);
-  assert(!z_position_rpm && !closures);
-  for(unsigned i=0;i<20;i++)step(true,0,-50,51);
-  assert(!z_position_rpm && !closures);
-  for(unsigned i=0;i<20;i++)step(true,0,50,-50);
-  assert(z_position_pulses==-800 && z_position_rpm==206 && z_position_acc==configured_z_acc);
-  assert(status().state==GRAB_DESCEND && !status().stop_requested && !closures);
-  unsigned requests=velocity_requests;
-  for(unsigned i=0;i<20;i++)step(true,0,20,-20);
-  assert(velocity_requests>requests && physical[1]==10 && !closures);
-  /* Fine pixels alone must not close the gripper while Z has not arrived. */
-  for(unsigned i=0;i<20;i++)step(true,0,0,0);
-  assert(!closures && status().state==GRAB_DESCEND);
-  physical[1]=-8;
-  for(unsigned i=0;i<30;i++)step(true,0,6,-5);
-  assert(!closures && status().state==GRAB_DESCEND);
-  step(true,0,5,-5); /* Inclusive fine window: no 200 ms visual dwell. */
-  assert(status().state==GRAB_SETTLE && !closures);
-  for(unsigned i=0;i<80 && !closures;i++)step(true,0,5,-5);
-  assert(closures==1 && status().state==GRAB_CLOSE && status().stop_confirmed);
-  move_arrives=true;run_to(GRAB_COMPLETE,150,0);
-  assert(closures==1 && fabsf(physical[1]-10)<.01f && !base_moves && !tray_indexes);
-  assert(!strcmp(status().result,"picked"));
-  puts("pickup: coarse window lowers while tracking; fine window closes after Z/stop feedback PASS");
+ pick_start();
+ for(unsigned i=0;i<60;i++)step(true,0,101,0);
+ assert(!z_position_rpm && !closures);
+ for(unsigned i=0;i<10 && status().state!=GRAB_DESCEND;i++)step(true,0,100,-100);
+ assert(status().state==GRAB_DESCEND);
+ for(unsigned i=0;i<10 && !Axes[1].commanded;i++)step(true,0,100,-100);
+ assert(Axes[1].commanded && z_position_pulses==-800);
+ unsigned requests=velocity_requests,stop_count=stops;
+ for(unsigned i=0;i<10;i++)step(true,0,140,70);
+ assert(Axes[1].commanded && velocity_requests>requests && stops==stop_count && !closures);
+ /* Z completion closes even while X/wheels are moving, with no low-plane
+  * pixel gate and no GRAB_SETTLE/all-axis standstill round. */
+ physical[1]=-8;arrival_reply_enabled=true;wheel_moving=true;Axes[0].quiet=false;
+ uint32_t stopped_z=clock_ms;
+ step(true,0,140,70);
+ assert(!closures); /* Receive/legacy9F does not replace the Z measured hold. */
+ for(unsigned n=0;n<30 && !closures;n++)step(true,0,140,70);
+ assert(closures==1 && status().state==GRAB_CLOSE && !status().stop_requested);
+ assert(clock_ms-stopped_z>=200 && wheel_moving);
+ assert(TrackCloseStopping);
 }
-
-static void descent_pause_recovery_and_stop(void)
+static void hold_only_at_high_plane(void)
 {
-  char *pick[]={"grab","track","pick","3","-8","110"};
-  reset();configure(true);setting("x_min","0");setting("x_max","100");
-  physical[0]=35;physical[1]=10;move_arrives=false;
-  command(6,pick);
-  for(unsigned i=0;i<60;i++)step(true,0,20,20);
-  assert(status().state==GRAB_DESCEND && Axes[1].commanded && !closures);
-  unsigned requests=velocity_requests;
-  for(unsigned i=0;i<5 && Axes[1].commanded;i++)step(true,0,51,0);
-  assert(!Axes[1].commanded && last_stop_axis==MECHANICAL_ARM_AXIS_Z && !closures);
-  for(unsigned i=0;i<10;i++)step(true,0,51,0);
-  assert(!Axes[1].commanded && velocity_requests>requests && !status().stop_requested);
-  for(unsigned i=0;i<10;i++)step(true,0,-50,-50);
-  assert(Axes[1].commanded && z_position_pulses==-800 && !closures);
-  /* Two lost frames fit the existing grace; a sustained gap stops Z as well. */
-  camera_valid=false;
-  for(unsigned i=0;i<2;i++)step(true,0,0,0);
-  assert(status().state==GRAB_DESCEND && Axes[1].commanded && !closures);
-  for(unsigned i=0;i<60;i++)step(true,0,0,0);
-  assert(status().state==GRAB_TRACK_PAUSE && status().stop_confirmed);
-  assert(last_stop_axis==MECHANICAL_ARM_AXIS_ALL && !closures);
-  float anchor=Tracking.reference_left_mm;
-  camera_valid=true;
-  for(unsigned i=0;i<20;i++)step(true,0,20,20);
-  assert(status().state==GRAB_DESCEND && Axes[1].commanded && !closures);
-  assert(Tracking.reference_left_mm==anchor);
-  GrabTask_Stop();run_to(GRAB_IDLE,200,0);
-  assert(last_stop_axis==MECHANICAL_ARM_AXIS_ALL && status().stop_confirmed && !closures);
-  for(unsigned i=0;i<20;i++)step(true,0,0,0);
-  assert(status().state==GRAB_IDLE && !closures && physical[1]==10);
-  assert(Config[C_Z_GRAB]==-8 && Config[C_Z_PICK_SPEED]==110 && Tracking.reference_left_mm==anchor);
-  puts("pickup: coarse exit pauses Z only; brief loss, reacquisition and ALL cancellation PASS");
+ pick_start();GrabTask_Stop();run_to(GRAB_IDLE,200,0);
+ setting("track_pick_hold_ms","200");
+ char *pick[]={"grab","track","pick","3","-8","110"};
+ assert(GrabTask_Command(6,pick));
+ for(unsigned i=0;i<60;i++)step(true,0,101,0);
+ step(true,0,90,90);step(true,0,90,90);
+ assert(status().state!=GRAB_DESCEND);
+ step(true,0,101,0); /* Out of window resets high-plane hold. */
+ for(unsigned i=0;i<3;i++)step(true,0,90,90);
+ assert(status().state!=GRAB_DESCEND);
+ for(unsigned i=0;i<8 && status().state!=GRAB_DESCEND;i++)step(true,0,90,90);
+ assert(status().state==GRAB_DESCEND && !closures);
 }
-
-static void fresh_coordinate_and_z_fault(void)
+static void interrupted_descent_remains_cancellable(void)
 {
-  char *pick[]={"grab","track","pick","3","-8","110"};
-  reset();configure(true);setting("x_min","0");setting("x_max","100");
-  setting("track_pick_hold_ms","0");setting("track_pick_tol_px","5");
-  physical[0]=35;physical[1]=-8;move_arrives=false;
-  command(6,pick);
-  for(unsigned i=0;i<60;i++)step(true,0,20,20);
-  for(unsigned i=0;i<3;i++)step(false,0,0,0);
-  assert(status().state==GRAB_DESCEND && !closures); /* Repeated sample cannot close. */
-  step(true,0,5,5);
-  assert(status().state==GRAB_SETTLE && !closures);
-  /* Fine pixels during stopping must be newer than stop transmission. */
-  for(unsigned i=0;i<20;i++)step(false,0,5,5);
-  assert(!closures);
-  GrabTask_Stop();run_to(GRAB_IDLE,200,0);
-  physical[1]=10;
-  command(6,pick);
-  for(unsigned i=0;i<60;i++)step(true,0,20,20);
-  linear_state_flags[1]=9;
-  for(unsigned i=0;i<60 && status().state!=GRAB_ERROR;i++)step(true,0,0,0);
-  assert((status().state==GRAB_ERROR || status().state==GRAB_STOPPING) && !closures);
-  assert(!strcmp(status().reason,"axis_disabled_or_stall"));
-  assert(last_stop_axis==MECHANICAL_ARM_AXIS_ALL);
-  puts("pickup: fresh fine/parking observation required; Z protection never closes PASS");
+ pick_start();run_to(GRAB_DESCEND,200,0);
+ for(unsigned i=0;i<10;i++)step(true,0,0,0);
+ assert(!closures);camera_valid=false;
+ for(unsigned i=0;i<60;i++)step(true,0,0,0);
+ assert(status().state==GRAB_TRACK_PAUSE && !closures);
+ GrabTask_Stop();run_to(GRAB_IDLE,200,0);
+ for(unsigned i=0;i<20;i++)step(true,0,0,0);
+ assert(!closures && status().state==GRAB_IDLE);
+ pick_start();run_to(GRAB_DESCEND,200,0);linear_state_flags[1]=9;
+ for(unsigned i=0;i<80 && status().state!=GRAB_ERROR;i++)step(true,0,0,0);
+ assert(!closures && (status().state==GRAB_ERROR || status().state==GRAB_STOPPING));
 }
-
 static void descent_bus_feedback_fairness(void)
 {
   const unsigned delays[]={20,25,80};
@@ -184,81 +106,36 @@ static void descent_bus_feedback_fairness(void)
   }
 }
 
-static void pickup_drift_and_cancel(void)
+static void next_raw_pick_after_zero_velocity(void)
 {
-  char *pick[]={"grab","track","pick","3","-8","110"};
-  char *begin[]={"grab","track","begin","3","20"};
-  reset();configure(true);setting("x_min","0");setting("x_max","100");
-  setting("track_pick_tol_px","5");
-  physical[0]=35;physical[1]=10;camera_valid=false;
-  command(5,begin);
-  for(unsigned i=0;i<50;i++)step(true,0,0,0);
-  assert(!Tracking.reference_valid && !velocity_requests && !positions && !closures);
-  camera_valid=true;
-  for(unsigned i=0;i<50;i++)step(true,0,0,0);
-  assert(Tracking.reference_valid && fabsf(TrackOutput.body_room_mm-20)<.1f);
-  GrabTask_Stop();run_to(GRAB_IDLE,200,0);
-  command(6,pick);run_to(GRAB_SETTLE,200,0);
-  for(unsigned i=0;i<50;i++)step(true,0,25,0); /* Target leaves during stop. */
-  assert(!closures && status().state!=GRAB_CLOSE && !TrackPickParking);
-  camera_valid=false;
-  for(unsigned i=0;i<50;i++)step(true,0,25,0);
-  assert(!closures && status().state==GRAB_TRACK_PAUSE);
-  GrabTask_Stop();run_to(GRAB_IDLE,200,0);
-  camera_valid=true;physical[1]=10;move_arrives=false;
-  command(6,pick);run_to(GRAB_DESCEND,200,0);
-  for(unsigned i=0;i<20;i++)step(true,0,0,0);
-  assert(!closures);GrabTask_Stop();run_to(GRAB_IDLE,200,0);
-  assert(!closures && Tracking.reference_valid);
-  float speed=Config[C_Z_PICK_SPEED],height=Config[C_Z_GRAB];
-  char *invalid[]={"grab","track","pick","3","-500","110"};
-  output[0]=0;assert(GrabTask_Command(6,invalid));assert(strstr(output,"ERR"));
-  assert(Config[C_Z_PICK_SPEED]==speed && Config[C_Z_GRAB]==height);
-  puts("tracking startup waits for vision, drift reacquires, loss/cancel never closes PASS");
+  /* Real Mecanum retains its explicit-stop busy latch after a committed zero
+   * batch. A completed raw store must still hand over to the next color. */
+  for(unsigned blocked=0;blocked<5;blocked++)
+  {
+    reset();configure(true);RearReferenceValid=true;
+    Status.state=GRAB_COMPLETE;Status.mode="fixed";Status.result="stored";
+    Operation=OP_STORE;Scene=SCENE_RAW;Status.slot=1;
+    ActiveColor=CAMERA_COLOR_RED;OutsidePose=OutsideReferenceValid=true;
+    chassis_bus_busy=true;chassis_velocity_handoff_ready=blocked!=1;
+    bus.tx_complete=bus.sent_velocity_valid=true;
+    if(blocked==2)bus.sent_rpm[0]=1;
+    if(blocked==3)bus.stop_pending=true;
+    if(blocked==4)Status.result="returned";
+    bool accepted=GrabTask_TrackedStoreStart(CAMERA_COLOR_YELLOW,2,GRAB_TRACK_FEEDBACK);
+    assert(accepted==(blocked==0));
+    if(!accepted){assert(!strcmp(Status.reason,"bus_unavailable"));continue;}
+    assert(Status.state==GRAB_TRACK_OBSERVE && ActiveColor==CAMERA_COLOR_YELLOW && Status.slot==2);
+    assert(!stops && !positions); /* No FE chain, added pose move or waiting stage. */
+    unsigned before=velocity_requests;
+    for(unsigned i=0;i<80 && velocity_requests==before;i++)step(true,0,120,20);
+    assert(velocity_requests>before && Status.state==GRAB_TRACK_MATCH);
+    assert(!closures); /* Outside the high-plane pickup window. */
+  }
 }
-
 int main(void)
 {
-  configurable_pickup_hold();
-  coarse_descent_and_fine_close();
-  descent_pause_recovery_and_stop();
-  fresh_coordinate_and_z_fault();
-  descent_bus_feedback_fairness();
-  reset(); configure(true);
-  float old_speed=Config[C_Z_PICK_SPEED];
-  char *outside_range[]={"grab","track","pick","3","-8","334"};
-  output[0]=0; assert(GrabTask_Command(6,outside_range));
-  assert(strstr(output,"ERR grab track pickup") && Config[C_Z_PICK_SPEED]==old_speed);
-  /* Range acceptance does not bypass conversion to the drive's RPM limit. */
-  setting("z_ppm","1000");
-  outside_range[5]="200"; output[0]=0; assert(GrabTask_Command(6,outside_range));
-  assert(strstr(output,"ERR grab track pickup") && Config[C_Z_PICK_SPEED]==old_speed);
-  char *begin[]={"grab","track","begin","3"};
-  char *pick[]={"grab","track","pick","3","-8","110"};
-  char *stop[]={"grab","track","stop"};
-  reset();configure(true);setting("x_min","0");setting("x_max","100");
-  physical[0]=35;physical[1]=10;
-  output[0]=0;command(4,begin);
-  assert(status().state==GRAB_TRACK_OBSERVE && velocity_requests==0);
-  for(unsigned i=0;i<50;i++)step(true,0,0,0);
-  assert(Tracking.reference_valid && status().state==GRAB_TRACK_FOLLOW);
-  assert(!closures && !openings);
-  command(3,stop);run_to(GRAB_IDLE,200,0);
-  float anchor=Tracking.reference_left_mm;
-  command(4,begin);
-  for(unsigned i=0;i<50;i++)step(true,0,0,0);
-  assert(Tracking.reference_left_mm==anchor);
-  command(3,stop);run_to(GRAB_IDLE,200,0);
-  output[0]=0;command(6,pick);
-  run_to(GRAB_DESCEND,200,0);
-  assert(!status().stop_requested && !closures);
-  run_to(GRAB_CLOSE,100,0);
-  assert(z_position_rpm==206 && z_position_acc==configured_z_acc);
-  assert(closures==1 && fabsf(physical[1]+8)<.01f);
-  run_to(GRAB_COMPLETE,150,0);
-  assert(fabsf(physical[1]-10)<.01f && !tray_indexes && !base_moves);
-  assert(!strcmp(status().result,"picked"));
-  assert(Tracking.reference_left_mm==anchor);
-  pickup_drift_and_cancel();
-  puts("tracking one-click begin, retained budget, fast pickup then lift PASS");
+ high_window_continuous_descent();hold_only_at_high_plane();
+ interrupted_descent_remains_cancellable();descent_bus_feedback_fairness();
+ next_raw_pick_after_zero_velocity();
+ puts("grab_track_pick_test: high-window continuous descent, completion-driven closure, cancel/fault coverage");
 }

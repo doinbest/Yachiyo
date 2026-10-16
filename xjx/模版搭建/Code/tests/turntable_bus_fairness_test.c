@@ -5,8 +5,8 @@
 #include "turntable.h"
 #include "motor_bus.h"
 
-/* Real MotorBus scheduler and wire replies, with the existing arm 25ms and
- * wheel 16ms query cadence. A 1 RPM / 90 degree index takes 15 seconds. */
+/* Real MotorBus scheduler and production2ms handover under the arm's5ms
+ * submission cap and wheel16ms cadence. A1RPM/90degree index takes15seconds. */
 static uint32_t tick=1, last_move_tick;
 static UART_HandleTypeDef uart;
 static uint8_t sent[32];
@@ -52,6 +52,7 @@ static void step(void)
   }
   tick++;MotorBus_Process();Turntable_Process();
 }
+#include "motor_arrival_fixture.h"
 int main(void)
 {
   Turntable_Status_t status;
@@ -60,7 +61,8 @@ int main(void)
   char *speed[]={"turntable","set","speed_rpm","1"};
   char *slot[]={"turntable","set","slot2_deg","270"};
   static const uint8_t arm_address[]={7,6,5},functions[]={0x35,0x36,0x3a};
-  assert(MotorBus_Init(&uart)==HAL_OK);Turntable_Init();
+  assert(MotorBus_Init(&uart)==HAL_OK);fixture_none_modes(&uart,&tick);
+  handled=sends;Turntable_Init();
   assert(Turntable_Origin());
   for(unsigned i=0;i<1000 && Turntable_IsBusy();i++)step();
   assert(!Turntable_IsBusy() && Turntable_ReferenceValid());
@@ -76,7 +78,7 @@ int main(void)
       assert(e.result==MOTOR_BUS_REPLY && e.data[0]>=1 && e.data[0]<=4);
       wheel_time[e.token%12]=tick;wheel_replies++;
     }
-    if(!MotorBus_OwnerBusy(MOTOR_BUS_ARM) && tick-arm_last>=25U) {
+    if(!MotorBus_OwnerBusy(MOTOR_BUS_ARM) && tick-arm_last>=5U) {
       uint8_t query[]={arm_address[arm_index/2],arm_index%2?0x3a:0x36,0x6b};
       assert(MotorBus_Submit(MOTOR_BUS_ARM,query,3,arm_index%2?4:8,arm_index,false));
       arm_last=tick;arm_index=(arm_index+1)%6;

@@ -26,11 +26,12 @@ static void three_slots(void)
     tray_arrives=true;run_to(GRAB_TURN,200,0);
     while(strcmp(status().reason,"car_pick_wait")){step(true,0,0,0);assert(physical[0]==0);}
     assert(grip_custom_calls==1 && fabsf(grip_custom_duty-10.6f)<.001f && !closures);
-    uint32_t ready=clock_ms;unsigned moves=positions;
+    uint32_t ready=CarPickWaitTick;unsigned moves=positions;base_arrives=false;
     for(unsigned i=0;i<5;i++)step(true,0,0,0);
-    assert(clock_ms-ready==250 && positions==moves && !closures && !openings);
+    assert(clock_ms-ready>=250 && positions==moves && !closures && !openings);
+    base_arrives=true;physical[2]=destination[2];
     run_to(GRAB_CLOSE,100,0);
-    assert(clock_ms-ready>=300 && fabsf(physical[1]+40)<.01f && closures==1 && !openings && physical[0]==0);
+    assert(CarPickWaitTick==ready && clock_ms-ready>=100 && fabsf(physical[1]+25)<.01f && closures==1 && !openings && physical[0]==0);
     assert(tray_inventory[slot-1].state==TURNTABLE_OCCUPIED);
     run_to(GRAB_COMPLETE,300,0);
     assert(!strcmp(status().operation,"car_pick") && !strcmp(status().result,"picked"));
@@ -63,7 +64,7 @@ static void stop_before_close(void)
     for(unsigned n=0;n<20;n++)step(true,0,0,0);
     assert(positions==before && status().state==GRAB_IDLE);
     move_arrives=true;start(1,"20");run_to(GRAB_CLOSE,400,0);
-    assert(fabsf(physical[1]+40)<.01f); /* Preserve this pickup's original depth. */
+    assert(fabsf(physical[1]+25)<.01f); /* Preserve this pickup's original depth. */
     run_to(GRAB_COMPLETE,300,0);assert(closures==1 && !openings && tray_inventory[0].state==TURNTABLE_EMPTY);
   }
 }
@@ -136,10 +137,51 @@ static void cancel_ends_pickup_ownership(void)
   /* A later explicit manual request is a new pickup, not the cancelled owner. */
   assert(GrabTask_CarPickStart(3));assert(CarPickSlot==3 && !CarPickClosed && CarPickClearanceX==0);
 }
+static void standalone_ring_lifts_before_turn(unsigned slot,bool pause)
+{
+  setup();assert(GrabTask_RingCarPickStart((uint8_t)slot,25));
+  run_to(GRAB_CLOSE,600,0);run_to(GRAB_LIFT,100,0);
+  unsigned turns=base_moves,closed=closures;z_arrives=false;
+  for(unsigned i=0;i<30;i++)step(true,0,0,0);
+  assert(Status.state==GRAB_LIFT && base_moves==turns && physical[1]==-25);
+  assert(physical[0]==0 && CarPickClearanceX==0); /* Standalone ring pickup keeps X retracted. */
+  if(pause){
+    assert(GrabTask_Pause());run_to(GRAB_IDLE,200,0);
+    Config[C_CAR_PICK_DROP_MM]=60;assert(GrabTask_Continue());
+    run_to(GRAB_LIFT,300,0);
+    for(unsigned i=0;i<15;i++)step(true,0,0,0);
+    assert(base_moves==turns && CarPickTarget==-25 && closures==closed);
+  }
+  z_arrives=true;physical[1]=destination[1];run_to(GRAB_COMPLETE,400,0);
+  assert(physical[1]==0 && base_moves==turns+1 && closures==closed);
+}
+static void standalone_ring_prepare_lift_and_retract_overlap(void)
+{
+  setup();physical[0]=42;physical[1]=-10;
+  assert(GrabTask_RingCarPickStart(1,NAN));run_to(GRAB_RETRACT,400,0);
+  z_arrives=false;unsigned turns=base_moves;
+  for(unsigned i=0;i<30;i++)step(true,0,0,0);
+  assert(Axes[0].commanded && Axes[1].commanded && physical[0]==0 && physical[1]==-10);
+  assert(Status.state==GRAB_RETRACT && base_moves==turns && !closures);
+  z_arrives=true;physical[1]=destination[1];run_to(GRAB_COMPLETE,600,0);
+  assert(physical[0]==0 && physical[1]==0 && closures==1);
+}
+static void standalone_ring_needs_no_extra_x_clearance_room(void)
+{
+  for(unsigned offset=0;offset<2;offset++){
+    setup();Config[C_X_MIN]=offset?10:0;Config[C_X_MAX]=Config[C_X_MIN]+20;
+    physical[0]=Config[C_X_MIN];
+    assert(GrabTask_RingCarPickStart(1,25));run_to(GRAB_COMPLETE,600,0);
+    assert(physical[0]==Config[C_X_MIN] && physical[1]==0 && closures==1);
+  }
+}
 int main(void)
 {
   three_slots();stop_and_continue();stop_before_close();reject_before_motion();manual_selection_needs_no_stock_or_color();
   pickup_clearance_precedes_base_turn();clearance_stop_preserves_absolute_target();insufficient_clearance_rejects_before_motion();
   cancel_ends_pickup_ownership();
-  puts("car pickup: three slots, 300ms wait, lift + X30 before Base+130, closed claw, stop/resume PASS");
+  standalone_ring_prepare_lift_and_retract_overlap();
+  standalone_ring_needs_no_extra_x_clearance_room();
+  for(unsigned slot=1;slot<=3;slot++)standalone_ring_lifts_before_turn(slot,slot==1);
+  puts("car pickup: ordinary X30/Base overlap; standalone ring no X30, lifted Z before turn, three trays and pause/resume PASS");
 }

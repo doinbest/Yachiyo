@@ -36,15 +36,15 @@ int main(void)
   /* A cached UART result and any simulated update are not this scan. */
   assert(QR_SimulatedSet(actual));for(unsigned i=0;i<5;i++)step();
   assert(qr_scanning && !screen_code[0] && !resumes);
-  uart_code(actual);step();ContestMission_Report();
-  assert(strstr(report,"state=qr_display") && strstr(report,"code_source=qr") &&
+  screen_sent=false;uart_code(actual);step();ContestMission_Report();
+  assert(strstr(report,"state=driving") && strstr(report,"code_source=qr") &&
          strstr(report,"exec_code=356+123+536+231") && !strcmp(screen_code,actual));
   /* Busy display and a late different frame cannot change the adopted code. */
   screen_sent=false;uart_code(other);for(unsigned i=0;i<20;i++)step();
-  assert(!resumes);ContestMission_Report();assert(strstr(report,"exec_code=356+123+536+231"));
+  assert(resumes==1);ContestMission_Report();assert(strstr(report,"exec_code=356+123+536+231"));
   screen_error=true;unsigned refreshes=screen_refreshes;
   for(unsigned i=0;i<15;i++)step();
-  assert(screen_refreshes>refreshes && !strcmp(screen_code,actual) && !resumes);
+  assert(screen_refreshes>refreshes && !strcmp(screen_code,actual) && resumes==1);
   screen_error=false;screen_sent=true;
   for(unsigned i=0;i<10 && !resumes;i++)step();
   assert(resumes==1);uart_code(other);step();ContestMission_Report();

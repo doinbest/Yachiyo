@@ -23,7 +23,7 @@ static void pose_stop_can_restart_without_homing(void)
     assert(Status.stop_confirmed && RearReferenceValid && RearBase==37 && Config[C_J00]==2.25f);
     unsigned before=positions;base_arrives=true;
     assert(GrabTask_PoseStart(true));run_to(GRAB_COMPLETE,150,0);
-    assert(fabsf(physical[2]-(37+GRAB_BASE_WORK_OFFSET_DEG))<.15f && homes==0 && !closures && openings==1);
+    assert(fabsf(physical[2]-(37+117.5f))<.15f && homes==0 && !closures && openings==1);
     if(stages[trial]==5)assert(positions==before+1); /* Already lifted/retracted: resume Base only. */
     before=positions;
     assert(GrabTask_PoseStart(true));run_to(GRAB_COMPLETE,150,0);
@@ -107,15 +107,18 @@ static void rear_home_direct_car_release(float rear)
   {
     GrabAxis_t base=Axes[2], z=Axes[1];
     assert(arrived(2,HAL_GetTick()));
-    Axes[2].mm=base.target+2;assert(arrived(2,HAL_GetTick()));
-    Axes[2].mm=base.target-2;assert(arrived(2,HAL_GetTick()));
-    Axes[2].mm=base.target+2.01f;assert(!arrived(2,HAL_GetTick()));Axes[2]=base;
+    /* Probe target tolerance against one unchanged, already stable measurement;
+     * moving the measured position would correctly restart the drift window. */
+    Axes[2].target=base.mm-2;assert(arrived(2,HAL_GetTick()));Axes[2]=base;
+    Axes[2].target=base.mm+2;assert(arrived(2,HAL_GetTick()));Axes[2]=base;
+    Axes[2].target=base.mm-2.01f;assert(!arrived(2,HAL_GetTick()));Axes[2]=base;
     Axes[2].quiet=false;assert(!arrived(2,HAL_GetTick()));Axes[2]=base;
     Axes[2].flags=5;assert(!arrived(2,HAL_GetTick()));Axes[2]=base;
     Axes[2].position_tick=HAL_GetTick()-3000;assert(!arrived(2,HAL_GetTick()));Axes[2]=base;
-    Axes[1]=base;assert(!arrived(1,HAL_GetTick()));Axes[1]=z; /* Release Z still needs reached. */
+    Axes[1]=base;arrival_reset(1);assert(!arrived(1,HAL_GetTick()));Axes[1]=z; /* Z needs its own stable window. */
     /* Real upper-stop return: quiet -0.062 mm, target 0, driver flag=1. */
     Axes[1]=base;Axes[1].target=Config[C_Z_MAX];Axes[1].mm=Config[C_Z_MAX]-.062f;
+    Axes[1].arrival_anchor=Axes[1].mm; /* Independently measured stable upper-stop residue. */
     assert(arrived(1,HAL_GetTick()));
     Axes[1].target=Axes[1].mm=-5;assert(!arrived(1,HAL_GetTick()));
     Axes[1].target=Config[C_Z_MAX];Axes[1].mm=Config[C_Z_MAX]-2;assert(!arrived(1,HAL_GetTick()));
@@ -332,7 +335,7 @@ int main(void)
   assert(fabsf(physical[2]-(397+GRAB_BASE_WORK_OFFSET_DEG))<.15f && homes==3);
   assert(isfinite(Config[C_J00]) && isfinite(Config[C_J11]));
   /* All ID8 slots share the same Base rear-home loading direction; repeated
-   * store/take cycles must return to the same 130-degree outside anchor. */
+   * store/take cycles must return to the same 117.5-degree outside anchor. */
   setting("z_proc_place","-6");
 
   for(unsigned pass=0;pass<4;pass++) for(unsigned slot=1;slot<=3;slot++)
@@ -354,5 +357,5 @@ int main(void)
   run_to(GRAB_COMPLETE,600,0);assert(fabsf(physical[2]-397)<.15f && homes==3);
   GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_BASE);
   assert(!GrabTask_PoseStart(false));
-  puts("grab_pose_test: PASS (rear-home car direction, +130 work geometry, preserved model)");
+  puts("grab_pose_test: PASS (rear-home car direction, +117.5 work geometry, preserved model)");
 }

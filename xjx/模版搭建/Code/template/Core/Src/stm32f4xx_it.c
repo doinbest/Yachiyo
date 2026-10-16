@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 
 #include "usart.h"
+#include "motor_bus.h"
 
 /* USER CODE END Includes */
 
@@ -330,7 +331,11 @@ void UART4_IRQHandler(void)
 void UART5_IRQHandler(void)
 {
   /* USER CODE BEGIN UART5_IRQn 0 */
-  /* ReceiveToIdle由HAL回调直接分发到MotorBus_RxEventCallback。 */
+  /* Observe DMA before HAL's error path aborts/restarts reception. */
+  uint32_t sr=huart5.Instance->SR,cr1=huart5.Instance->CR1,cr3=huart5.Instance->CR3;
+  if(((sr&(USART_SR_NE|USART_SR_FE|USART_SR_ORE)) && (cr3&USART_CR3_EIE)) ||
+     ((sr&USART_SR_PE) && (cr1&USART_CR1_PEIE)) ||
+     ((sr&USART_SR_ORE) && (cr1&USART_CR1_RXNEIE)))MotorBus_UartErrorIRQ(&huart5,sr);
   /* USER CODE END UART5_IRQn 0 */
   HAL_UART_IRQHandler(&huart5);
   /* USER CODE BEGIN UART5_IRQn 1 */

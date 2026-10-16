@@ -2,7 +2,7 @@ export class WheelFeedback {
   constructor(now=()=>performance.now()){this.now=now;this.clear();}
   clear(){this.samples=Array(4).fill(null);}
   receive(line){
-    const m=String(line).match(/^(?:arm>\s*)?OK wheel=([1-4]) raw_rpm=(-?\d+) raw_units=(-?\d+) flags=(0x[\da-f]+) valid=([01]),([01]),([01]) rx_ms=(\d+),(\d+),(\d+)$/i);
+    const m=String(line).match(/^(?:arm>\s*)?OK wheel=([1-4]) raw_rpm=(-?\d+) raw_units=(-?\d+) flags=(0x[\da-f]+) valid=([01]),([01]),([01]) rx_ms=(\d+),(\d+),(\d+)(?: query_ms=\d+,\d+ speed_target=[01],\d+,\d+,-?\d+)?$/i);
     if(!m)return false;
     const index=Number(m[1])-1,old=this.samples[index];
     if(old?.signature===m[0])return true;

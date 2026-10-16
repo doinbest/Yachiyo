@@ -3,7 +3,11 @@ void MissionNavigation_Reset(void){}
 void MissionNavigation_Pause(void){}
 int MissionNavigation_Process(RadarStart_Id_t s,uint32_t g,RadarPlan_t *p,const char **r){(void)s;(void)g;(void)p;*r="radar_scanning";return 0;}
 #define main legacy_motion_main
+#define GrabTask_PoseClearanceReady CommonMotionPoseReady
+#define GrabTask_QrDepartureActive CommonMotionQrDeparture
 #include "chassis_motion_test.c"
+#undef GrabTask_PoseClearanceReady
+#undef GrabTask_QrDepartureActive
 #undef main
 #include "contest_mission.h"
 #include "GrabTask.h"
@@ -13,7 +17,7 @@ int MissionNavigation_Process(RadarStart_Id_t s,uint32_t g,RadarPlan_t *p,const 
 #include "motor_bus.h"
 static GrabTask_Status_t child;
 static ChassisRoute_Status_t travel;
-static char report[512];
+static char report[1024];
 bool Mecanum_Feedback_Select(uint8_t n){assert(!n);return true;}
 void Mecanum_Feedback_Enable(bool on){(void)on;}
 bool ConsoleTx_Write(const uint8_t *d,uint16_t n){assert(n<sizeof report);memcpy(report,d,n);report[n]=0;return true;}
@@ -24,6 +28,7 @@ bool ChassisRoute_TaskStartEx(const RadarPlan_t *p,float s,const ChassisRoute_Ta
 bool ChassisRoute_TaskStart(const RadarPlan_t *p,float s){return ChassisRoute_TaskStartEx(p,s,NULL);}
 bool ChassisRoute_Cancel(void){route_busy=false;travel.state="cancelled";return ChassisMotion_Stop(0);}
 bool ChassisRoute_TaskPause(void){return false;}
+bool ChassisRoute_TaskPauseFeedbackLoss(void){return ChassisRoute_TaskPause();}
 bool ChassisRoute_TaskContinue(void){return false;}
 bool ChassisRoute_TaskResumeReady(void){return false;}
 void ChassisRoute_TaskRecoveryHold(bool hold){(void)hold;}
@@ -54,6 +59,7 @@ bool GrabTask_TrackedStoreStart(uint8_t a,uint8_t b,GrabTracking_Mode_t c){(void
 bool GrabTask_ProcessedStoreStart(uint8_t a,uint8_t b,uint8_t c){(void)a;(void)b;(void)c;return false;}
 bool GrabTask_CarPickStart(uint8_t s){(void)s;return false;}
 bool GrabTask_HeldPlaceStart(const char *s,uint8_t a,uint8_t b){(void)s;(void)a;(void)b;return false;}
+bool GrabTask_RingTakePrepare(uint8_t *ring){(void)ring;return false;}
 bool GrabTask_AlignPlaceStart(const char *s,uint8_t a){(void)s;(void)a;return false;}
 bool GrabTask_ProcessedStoreStartEx(uint8_t a,uint8_t b,uint8_t c,bool raised)
 {(void)raised;return GrabTask_ProcessedStoreStart(a,b,c);}
@@ -97,3 +103,9 @@ int main(void)
  }
  puts("production motion + mission: cancellation and pre-departure stop await physical feedback PASS");
 }
+
+bool GrabTask_QrDepartureActive(void){return false;}
+
+bool GrabTask_QrScanCompetitionStart(uint32_t baseline){return GrabTask_QrScanStart(baseline);}
+void GrabTask_NextRawColorSet(uint8_t color){(void)color;}
+bool GrabTask_QrDepartStart(void){return false;}

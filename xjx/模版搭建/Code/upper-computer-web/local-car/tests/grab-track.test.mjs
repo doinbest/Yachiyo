@@ -11,9 +11,10 @@ test('tracking faults use Chinese reasons while tracking protocol remains Englis
   assert.match(trackText('bus_unavailable'),/总线.*不可用/);
   assert.match(trackText('reference_missing'),/参考.*未建立/);
   assert.equal(status.reason,'feedback_stale');assert.equal(status.raw,raw);
-  assert.match(trackText('track_pick_descend'),/50.*下降.*追踪/);
-  assert.match(trackText('track_pick_descend_wait'),/50.*暂停.*Z/);
-  assert.match(trackText('track_pick_close'),/夹取高度.*闭爪/);
+  assert.match(trackText('track_pick_descend'),/高位.*夹取窗口.*下降.*追踪/);
+  assert.match(trackText('track_pick_descend_wait'),/旧流程.*暂停.*Z/);
+  assert.match(trackText('track_pick_close'),/夹取高度.*闭爪.*请求.*停止/);
+  assert.doesNotMatch(trackText('track_pick_close'),/停稳后闭爪/);
 });
 
 test('live diagnostics are passive and do not fill the frozen trace array',()=>{
@@ -212,20 +213,20 @@ test('pickup window and hold are explicit, confirmed before one motion command, 
   const ui=surface(),wires=[],values=new Map([['track_pick_tol_px',5],['track_pick_hold_ms',200]]);let panel;
   try{
     panel=mountTracking({root:ui.root,send:wire=>{
-      wires.push(wire);const set=wire.match(/^grab set (track_pick_\w+) ([\d.]+)$/),get=wire.match(/^grab get (track_pick_\w+)$/);
+      wires.push(wire);const set=wire.match(/^grab set (\w+) ([\d.]+)$/),get=wire.match(/^grab get (\w+)$/);
       if(set){values.set(set[1],Number(set[2]));queueMicrotask(()=>panel.receive('OK grab set'));}
       if(get)queueMicrotask(()=>panel.receive(`OK grab config key=${get[1]} value=${values.get(get[1])}`));
       return true;
     },canSend:()=>true});panel.connection(true);
     const input=key=>ui.all().find(e=>e.dataset?.pickupKey===key);
-    assert.equal(Number(input('track_pick_tol_px').value),100);assert.equal(Number(input('track_pick_hold_ms').value),10);
+    assert.equal(Number(input('track_pick_tol_px').value),100);assert.equal(Number(input('track_pick_hold_ms').value),0);
     assert.deepEqual(wires,[]);
     input('track_pick_tol_px').value=8;input('track_pick_hold_ms').value=300;
     await ui.all().find(e=>e.title==='grab track pick').onclick();
     assert.deepEqual(wires.slice(0,4),['grab set track_pick_tol_px 8','grab get track_pick_tol_px','grab set track_pick_hold_ms 300','grab get track_pick_hold_ms']);
     assert.equal(wires.filter(w=>w.startsWith('grab track pick')).length,1);
-    await ui.all().find(e=>e.textContent==='读取夹取条件').onclick();
-    assert.deepEqual(wires.slice(-2),['grab get track_pick_tol_px','grab get track_pick_hold_ms']);
+    await ui.all().find(e=>e.textContent==='读取Z速度与夹取条件').onclick();
+    assert.deepEqual(wires.slice(-5),['grab get track_pick_tol_px','grab get track_pick_hold_ms','grab get z_speed','grab get z_pick_speed','grab get qr_z_speed']);
     const count=wires.length;panel.connection(false);panel.connection(true);panel.update();assert.equal(wires.length,count);
     input('track_pick_hold_ms').value='1.5';
     await ui.all().find(e=>e.title==='grab track pick').onclick();assert.equal(wires.length,count);
@@ -245,14 +246,61 @@ test('integrated pickup stores settings before a single firmware-owned transfer 
     const slot=ui.all().find(e=>e.dataset?.storeSlot);slot.value='2';
     const lift=ui.all().find(e=>e.dataset?.transferKey==='lift');lift.value='40';
     await ui.all().find(e=>e.title==='grab track pickstore').onclick();
-    assert.equal(values.get('z_grab'),-50);assert.equal(values.get('z_lift'),-10);
-    assert.equal(values.get('track_store_drop_mm'),40);
+    assert.equal(values.get('z_grab'),-45);assert.equal(values.get('z_lift'),-5);
+    assert.equal(values.get('track_store_drop_mm'),25);
+    assert.equal(values.get('z_speed'),250);assert.equal(values.get('qr_z_speed'),250);
     assert.equal(wires.at(-1),'grab track pickstore 3 2 feedback');
     assert.equal(wires.filter(w=>/^grab track (?:pickstore|store)/.test(w)).length,1);
     const count=wires.length;panel.connection(false);panel.connection(true);assert.equal(wires.length,count);
     panel.receive('OK grab state=car_index mode=fixed operation=store slot=2 result=pending reason=running');
     await ui.all().find(e=>e.title==='grab track stop').onclick();assert.equal(wires.at(-1),'grab stop');
   }finally{panel?.connection(false);ui.restore();}
+});
+
+test('ground and turntable pickup are distinct, use competition Z settings and stay passive on mount',async()=>{
+  const ui=surface(),wires=[],values=new Map([['z_grab',-50]]);let panel;
+  try{
+    panel=mountTracking({root:ui.root,canSend:()=>true,send:wire=>{
+      wires.push(wire);const set=wire.match(/^grab set (\w+) ([\d.-]+)$/),get=wire.match(/^grab get (\w+)$/);
+      if(set){values.set(set[1],Number(set[2]));queueMicrotask(()=>panel.receive('OK grab set'));}
+      if(get)queueMicrotask(()=>panel.receive(`OK grab config key=${get[1]} value=${values.get(get[1])}`));
+      return true;
+    }});panel.connection(true);
+    assert.deepEqual(wires,[]);
+    assert.equal(ui.all().some(e=>e.textContent==='将已夹取物料入仓 / 继续入仓'),false);
+    const ground=ui.all().find(e=>e.title==='grab store ground');assert.ok(ground);
+    assert.equal(ui.all().find(e=>e.title==='grab track pickstore').textContent,'转盘夹取并入仓');
+    await ground.onclick();
+    assert.equal(wires.at(-1),'grab store ground 1 3');
+    assert.equal(values.get('z_proc_place'),-110);assert.equal(values.get('z_grab'),-50);
+    assert.equal(values.get('z_car_lift'),0);assert.equal(values.get('z_place'),-25);
+    assert.equal(values.get('z_pick_speed'),250);
+    assert.equal(values.get('z_speed'),250);assert.equal(values.get('qr_z_speed'),250);
+    const count=wires.length;panel.connection(false);panel.connection(true);assert.equal(wires.length,count);
+  }finally{panel?.connection(false);ui.restore();}
+});
+
+test('ground pickup never launches after mismatched height, stop or disconnect during parameter confirmation',async()=>{
+  for(const scenario of ['mismatch','stop','disconnect']){
+    const ui=surface(),wires=[],values=new Map();let panel,interrupted=false;
+    try{
+      panel=mountTracking({root:ui.root,canSend:()=>true,send:wire=>{
+        wires.push(wire);const set=wire.match(/^grab set (\w+) ([\d.-]+)$/),get=wire.match(/^grab get (\w+)$/);
+        if(set){values.set(set[1],Number(set[2]));queueMicrotask(()=>panel.receive('OK grab set'));}
+        if(get)queueMicrotask(()=>{
+          if(get[1]==='z_proc_place'&&!interrupted){
+            interrupted=true;
+            if(scenario==='stop')void ui.all().find(e=>e.title==='grab track stop').onclick();
+            if(scenario==='disconnect')panel.connection(false);
+          }
+          panel.receive(`OK grab config key=${get[1]} value=${values.get(get[1])+(scenario==='mismatch'?1:0)}`);
+        });
+        return true;
+      }});panel.connection(true);
+      await ui.all().find(e=>e.title==='grab store ground').onclick();
+      assert.equal(wires.some(w=>w.startsWith('grab store ground')),false,scenario);
+    }finally{panel?.connection(false);ui.restore();}
+  }
 });
 
 test('integrated transfer cancels late height confirmation after stop, disconnect or mismatch',async()=>{
@@ -276,7 +324,7 @@ test('integrated transfer cancels late height confirmation after stop, disconnec
       await ui.all().find(e=>e.title==='grab track pickstore').onclick();
       assert.ok(wires.includes('grab set z_lift 0'));
       assert.equal(wires.some(w=>/^grab track (?:pickstore|store)/.test(w)),false,scenario);
-      if(scenario==='stop'||scenario==='disconnect')assert.equal(wires.includes('grab set track_store_drop_mm 40'),false);
+      if(scenario==='stop'||scenario==='disconnect')assert.equal(wires.includes('grab set track_store_drop_mm 20'),false);
     }finally{panel?.connection(false);ui.restore();}
   }
 });
@@ -308,8 +356,8 @@ test('pickup parameter reads remain available in stop lock, writes and start are
   const ui=surface();let panel;
   try{
     panel=mountTracking({root:ui.root,send:()=>true,canSend:readOnlyCommand});panel.connection(true);
-    assert.equal(ui.all().find(e=>e.textContent==='读取夹取条件').disabled,false);
-    assert.equal(ui.all().find(e=>e.textContent==='应用夹取条件并核对').disabled,true);
+    assert.equal(ui.all().find(e=>e.textContent==='读取Z速度与夹取条件').disabled,false);
+    assert.equal(ui.all().find(e=>e.textContent==='应用Z速度与夹取条件').disabled,true);
     assert.equal(ui.all().find(e=>e.title==='grab track pick').disabled,true);
   }finally{panel?.connection(false);ui.restore();}
 });
@@ -319,8 +367,8 @@ test('mount/reconnect are passive; one-click entry and preparation are explicit'
   try{
     const panel=mountTracking({root:ui.root,send:wire=>{
       wires.push(wire);
-      if(/^grab set track_pick_/.test(wire))queueMicrotask(()=>panel.receive('OK grab set'));
-      const key=wire.match(/^grab get (track_pick_\w+)$/)?.[1];
+      if(/^grab set (?:track_pick_|z_speed |z_pick_speed |qr_z_speed )/.test(wire))queueMicrotask(()=>panel.receive('OK grab set'));
+      const key=wire.match(/^grab get (\w+)$/)?.[1];
       if(key)queueMicrotask(()=>panel.receive(`OK grab config key=${key} value=${GRAB_FORM_DEFAULTS[key]}`));
       return true;
     },canSend:()=>true});
@@ -439,7 +487,7 @@ test('unified material panel retains tracking and logging in collapsed groups wi
       const summary=ui.all().find(e=>e.tag==='summary'&&e.textContent===title);
       assert.ok(summary);assert.equal(summary.parentElement.tag,'details');assert.ok(!summary.parentElement.open);
     }
-    for(const wire of ['grab pose work','grab track pickstore','grab track store','grab track begin','grab track visual','grab track feedback','grab track pick','grab track stop','grab track log start'])
+    for(const wire of ['grab pose work','grab track pickstore','grab store ground','grab track begin','grab track visual','grab track feedback','grab track pick','grab track stop','grab track log start'])
       assert.equal(ui.all().filter(e=>e.tag==='button'&&e.title===wire).length,1,wire);
     assert.equal(ui.all().filter(e=>e.dataset?.storeSlot).length,1);
     assert.equal(ui.all().find(e=>e.title==='grab track pickstore').className,'primary');

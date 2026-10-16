@@ -13,3 +13,10 @@ test('wheel snapshots preserve protocol units and do not renew unchanged cached 
   assert.equal(model.receive('OK wheel=7 raw_rpm=0'),false);
   assert.equal(model.receive('OK wheel=2 raw_rpm=bad raw_units=1 flags=0x03 valid=1,1,1 rx_ms=1,2,3'),false);
 });
+test('wheel snapshots accept optional query and committed target diagnostics',()=>{
+ const model=new WheelFeedback(()=>0);
+ const base='OK wheel=1 raw_rpm=80 raw_units=65536 flags=0x03 valid=1,1,1 rx_ms=100,101,102';
+ assert.equal(model.receive(base+' query_ms=98,99 speed_target=1,7,80,90'),true);
+ assert.equal(model.rows()[0].rpm,80);
+ assert.equal(model.receive(base+' query_ms=98,99 speed_target=bad'),false);
+});

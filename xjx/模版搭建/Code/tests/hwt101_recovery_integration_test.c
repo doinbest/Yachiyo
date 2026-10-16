@@ -45,19 +45,18 @@ int main(void)
   memset(regs,0,sizeof regs);regs[0x2e]=0x1234;regs[0x4c]=0xff7c;
   assert(HWT101_Init(&bus));HWT101_Process();HWT101_Cal_Init();
   assert(HWT101_Cal_Start());advance(10000);assert(regs[0x48]==1 && starts==1);
-  /* Module may already have changed its bias when a host BUSY aborts the run. */
+  /* The module keeps calibrating while only the host I2C recovers. */
   regs[0x4c]=0xff47;stuck=true;advance(1500);
-  assert(HWT101_Cal_GetStatus(&cal) && cal.state==HWT101_CAL_RESTORING);
+  assert(HWT101_Cal_GetStatus(&cal) && cal.state==HWT101_CAL_CALIBRATING);
   assert(!exits && !zeros && !saves && !cal.verified);
   advance(1500);
-  assert(HWT101_Cal_GetStatus(&cal) && cal.state==HWT101_CAL_FAILED);
-  assert(cal.normal_mode_confirmed && !cal.control_ready && !strcmp(cal.first_reason,"i2c"));
+  assert(HWT101_Cal_GetStatus(&cal) && cal.busy && !cal.read_recovering);
   assert(cal.first_hal==HAL_BUSY && cal.first_register==0x3f && cal.first_hal_error==0x20);
-  assert(regs[0x48]==0 && regs[0x4c]==0xff47 && starts==1 && exits==1 && reinits==1);
-  assert(HWT101_Status_Get(&comm) && comm.reinit_count==1 && comm.valid_read_count>1000);
-  /* Explicit retry validates the module's current output; no automatic recalibration/SAVE. */
-  assert(HWT101_Cal_VerifyStart(5000));advance(5500);
+  assert(regs[0x48]==1 && starts==1 && exits==0 && reinits==1);
+  advance(40000);
   assert(HWT101_Cal_GetStatus(&cal) && cal.verified && cal.control_ready);
-  assert(zeros==1 && starts==1 && saves==0 && reinits==1);
-  puts("HWT101 real driver + calibration: BUSY recovery, normal-mode exit and explicit verify PASS");
+  assert(cal.normal_mode_confirmed && cal.i2c_errors==1 && cal.recovery_count==1);
+  assert(zeros==1 && starts==1 && exits==1 && saves==1 && reinits==1);
+  assert(HWT101_Status_Get(&comm) && comm.reinit_count==1 && comm.valid_read_count>1000);
+  puts("HWT101 real driver + calibration: BUSY recovery continues native run and full verification PASS");
 }

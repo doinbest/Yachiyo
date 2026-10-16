@@ -70,10 +70,10 @@ static void process(void)
 static void begin(bool enable)
 {
   tick += 10;
-  assert((enable ? MechanicalArm_Enable(MECHANICAL_ARM_AXIS_BASE)
-                 : MechanicalArm_Disable(MECHANICAL_ARM_AXIS_BASE)) == MECHANICAL_ARM_RESULT_NONE);
+  (void)enable;
+  assert(MechanicalArm_StateRead(MECHANICAL_ARM_AXIS_BASE)==MECHANICAL_ARM_RESULT_NONE);
   process();
-  assert(frame[0] == 5 && frame[1] == 0xf3 && frame[3] == (enable ? 1 : 0));
+  assert(frame[0] == 5 && frame[1] == 0x3a);
   MotorBus_TxCpltCallback(&uart);
   process();
 }
@@ -88,7 +88,7 @@ static void expect_ok(void)
 int main(void)
 {
   MechanicalArm_EventTypeDef e;
-  const uint8_t ack[] = {5, 0xf3, 2, 0x6b};
+  const uint8_t ack[] = {5, 0x3a, 3, 0x6b};
   const uint8_t noise = 0;
   uint8_t burst[80];
   assert(MotorBus_Init(&uart) == HAL_OK);
@@ -141,7 +141,7 @@ int main(void)
   process();
   assert(MechanicalArm_ResultGet(&e) && e.Result == MECHANICAL_ARM_RESULT_TX_ERROR);
   assert(MotorBus_IsQuarantined() && rx_starts == 2 && stop_calls == 1);
-  assert(MechanicalArm_Enable(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_TX_ERROR);
+  assert(MechanicalArm_StateRead(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_TX_ERROR);
   assert(MotorBus_RecoverAfterReset()); /* Host model only, no hardware reset. */
   begin(true);
   receive_bytes(ack, sizeof(ack), true);

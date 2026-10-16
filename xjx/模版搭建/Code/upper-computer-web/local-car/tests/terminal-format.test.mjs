@@ -3,6 +3,20 @@ import {visibleTerminalLogs} from '../terminal-log.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {formatTerminalLine,describeReply} from '../protocol.mjs';
+test('native calibration phase observations do not claim validation success',()=>{
+ const text=formatTerminalLine('[IMU NATIVE] timing_valid=1 peak_time_s=10 bias_time_s=10 native_wait_ms=20000 native_modes=0x07 native_normal_ms=15800');
+ assert.match(text,/原生标定阶段.*峰峰值采集时间.*10.*零偏采集时间.*10/);
+ assert.match(text,/本轮标定等待时间.*20000.*模块回正常模式时刻.*15800/);
+ assert.match(formatTerminalLine('[IMU RECOVERY] reason=native_returned_normal_wait'),/等待标定时限后验证/);
+ assert.doesNotMatch(text,/验证通过|保存成功/);
+});
+test('IMU mode diagnosis preserves and labels the pre-abort readings',()=>{
+ const text=formatTerminalLine('[IMU MODE] recovery_step=CAL_WAIT expected_mode=0x0001 first_mode=0x1234 last_mode=0x1234 mode_seen=1 mode_valid=1 mode_HAL=0 mode_reads=2 allowed_mode_mask=0x0006');
+ assert.match(text,/IMU.*模式核验/);
+ assert.match(text,/预期模式.*0x0001.*首次读回模式.*0x1234.*最近读回模式.*0x1234/);
+ assert.match(text,/允许模式掩码.*0x0006/);
+ assert.match(formatTerminalLine('[IMU RECOVERY] reason=recovery_mode_recheck'),/等待复核IMU工作模式/);
+});
 test('processed pickup distinguishes observation alignment and committed descent',()=>{
  assert.match(formatTerminalLine('OK grab state=align mode=pick reason=processed_alignment'),/在观察高度对准加工物料/);
  assert.match(formatTerminalLine('OK grab state=descend mode=pick reason=processed_descending'),/保持水平位置下降夹取/);
@@ -197,6 +211,16 @@ test('failed boot homing reports pending reference, not a missing scale setting'
   assert.match(bootProgress(raw,'正在回零'),/失败/);
 });
 
+test('homing transaction diagnostics distinguish preparation from HOME and retain raw evidence',()=>{
+  const raw='ERR grab home_transaction axis=base step=8 action=home result=motor_error phase=params_write func=0x4C mode=1 code=0xE2 code_valid=1 sent=0 ack=0 wire_sent=1 reply=1 bus_result=reply uart_error=0x00000000 tx_ms=3500';
+  assert.match(formatTerminalLine(raw),/回零事务失败.*Base.*写入回零参数.*0x4C.*0xE2/);
+  assert.match(formatTerminalLine(raw),/任务命令发送完成：0.*当前子命令发送完成：1/);
+  assert.match(formatTerminalLine('ERR grab home_reply axis=base step=8 len=4 hex=05:4C:E2:6B'),/原始应答.*05:4C:E2:6B/);
+  assert.match(formatTerminalLine('ERR grab home_verify axis=base offset=0 expected=0x01 actual=0x00'),/读回不一致.*0x01.*0x00/);
+  assert.match(formatTerminalLine('ERR grab home_transaction axis=base result=ack_timeout phase=params_read bus_result=timeout code_valid=0'),/应答超时.*读取回零参数/);
+  assert.equal(visibleTerminalLogs([{direction:'RX',text:raw}],false,false)[0].text,raw);
+});
+
 test('grab summaries retain mode, state, reason and current pixels without normal diagnostics',()=>{
   const raw='arm> OK grab state=align mode=pick reason=running missing=none ref_cause=home_verified x=12.000 xt=13.000 z=0.000 zt=nan b=0.00 bt=nan dx=-12 dy=7 protocol=B2 age_source=rx rx_seq=118 vision=Ok color=3 model=initial age=21 vf=2.500 vl=0.250 stop_requested=0 stop_confirmed=0 elapsed=2500 recovery_used=1 recovery_count=0 recovery_left_ms=na loss_ms=170 loss_max_ms=200 grace_count=0';
   const summary=formatTerminalLine(raw);
@@ -255,6 +279,11 @@ test('fault reasons are Chinese across modules while raw replies and numbers sta
     ['ERR turntable reference_required action=index',/转盘.*参考.*分度/],
     ['OK chassis status reason=anchor_invalid',/底盘.*地图起点参考.*无效/],
     ['OK imu status reason=drift_or_noise',/IMU.*漂移.*噪声/],
+    ['[IMU RECOVERY] read_recovering=1 read_recoveries=1 reason=i2c_recovering',/IMU.*读取恢复.*等待.*通信恢复/],
+    ['OK imu status reason=i2c_recovered',/通信已恢复/],
+    ['OK imu status reason=i2c_recovery_timeout',/通信恢复等待超时/],
+    ['OK imu status reason=recovery_mode_changed',/恢复后工作模式不符/],
+    ['OK imu status reason=control_mode_unconfirmed',/模式读取暂不可用.*只读复核/],
     ['OK bus status reason=rx_restart_failed addr=7',/总线.*接收.*失败.*7/],
     ['ERR manual axis_busy_or_fault addr=6 command_not_sent',/手动操作.*运动.*故障.*6.*未发送/],
     ['ERR grab track pickup height/speed; inspect z_grab z_lift z_pick_speed',/夹取高度.*下降速度.*检查.*提起高度/],
@@ -278,8 +307,17 @@ test('rejection instructions explain status queries in Chinese without inventing
 });
 
 test('negative Base boot reports opening before direction home',()=>{
-  const banner='Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2500us -> Base negative direction home -> IMU verify=5s; enable_verify=on';
-  assert.match(formatTerminalLine(banner),/X\/Z 完成后开爪2500.*Base负向回零.*逆时针/);
+  const banner='Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2450us -> Base negative direction home -> IMU verify=5s; enable_verify=on';
+  assert.match(formatTerminalLine(banner),/X\/Z 完成后开爪2450.*Base负向回零.*逆时针/);
+  assert.match(formatTerminalLine(banner.replace('2450us','2500us')),/X\/Z 完成后开爪2500.*Base负向回零.*逆时针/);
+});
+
+test('nearest Base boot retains opening order and reports the current HOME mode',()=>{
+  const banner='Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2450us -> Base near home -> IMU verify=5s; enable_verify=on';
+  const text=formatTerminalLine(banner);
+  assert.match(text,/X\/Z 完成后开爪2450.*等待ID8就绪.*Base就近回零/);
+  assert.doesNotMatch(text,/负向|逆时针|Base\/ID8.*并行/);
+  assert.match(formatTerminalLine('OK grab state=homing mode=fixed reason=home_base'),/Base.*就近回零/);
 });
 
 test('turntable degraded reference remains explicit in status',()=>{
@@ -297,4 +335,41 @@ test('mission status translates the adopted alignment mode',()=>{
 test('recoverable bus conditions display warnings',()=>{
  assert.match(formatTerminalLine('WARN bus rx_restarted count=2 uart_error=0x00000002 tasks_interrupted=0'),/警告.*接收已恢复/);
  assert.match(formatTerminalLine('WARN bus sync_ack_ignored mask=0x01 zero_cache_acked=1 wheels_stopped=1'),/警告.*同步应答异常/);
+});
+
+test('raw departure handoff waits identify the resource without claiming a fault',()=>{
+ const text=formatTerminalLine('OK grab route state=leaving mode=mission stored=3 placed=0 reason=chassis_handoff_wait');
+ assert.match(text,/零速.*交接/);
+ assert.doesNotMatch(text,/未知原因|错误.*busy/);
+});
+
+
+test('bus error evidence labels TX, RX boundary and retained replies without inventing success',()=>{
+ const first=formatTerminalLine('OK bus first_tx bytes=13 tx_ms=100 hex=07FD01001F140000023401006B');
+ assert.match(first,/首次故障发送证据.*字节数.*13.*发送完成时刻.*100.*07FD01001F140000023401006B/);
+ assert.match(formatTerminalLine('OK bus attempt_tx bytes=3 tx_ms=200 hex=07356B'),/本次恢复发送证据.*07356B/);
+ const warning=formatTerminalLine('WARN bus rx_restarted count=3 uart_error=0x00000002 tasks_interrupted=0 error_ms=210 queued=4 preserved_replies=1');
+ assert.match(warning,/错误时刻.*210.*错误时待解析字节.*4.*累计保留有效应答.*1/);
+ assert.doesNotMatch(warning,/任务成功|已确认停稳/);
+ const tray=formatTerminalLine('ERR turntable fault reason=bus_locked bus_locked=1 bus_reason=reply_timeout addr=2 func=0xF6');
+ assert.match(tray,/转盘任务受共享电机总线锁定阻断/);
+ assert.match(tray,/电机ID.*2.*功能码.*0xF6/);
+ assert.doesNotMatch(tray,/转盘损坏|ID8.*损坏/);
+});
+
+
+test('UART error DMA snapshots distinguish capture phase and preserve bytes as diagnostics',()=>{
+ const header=formatTerminalLine('OK bus rx_error seq=42 view=latest phase=irq error_ms=100 uart_error=0x00000002 uart_sr=0x00000004');
+ assert.match(header,/接收错误快照.*快照序号.*42.*最近错误.*UART5错误IRQ入口/);
+ const dma=formatTerminalLine('OK bus rx_error_dma seq=42 cursor=64 ndtr=58 ndtr_end=58 queued=0 partial=0 rx_total=100');
+ assert.match(dma,/已交付游标.*64.*DMA剩余计数.*58.*复制结束DMA剩余计数.*58/);
+ const raw=formatTerminalLine('OK bus rx_error_data seq=42 offset=0 bytes=32 hex=07350000006B');
+ assert.match(raw,/物理缓冲偏移.*0.*07350000006B/);
+ assert.doesNotMatch(raw,/应答成功|已确认停稳/);
+});
+
+test('first station placement reports the ID8 clearance separately from X clearance',()=>{
+ const text=formatTerminalLine('OK grab state=return_turn operation=car_pick scene=raw slot=1 result=pending reason=car_pick_tray_clearance');
+ assert.match(text,/车仓.*90°.*避让剩余物料/);
+ assert.doesNotMatch(text,/第三件|未知原因/);
 });

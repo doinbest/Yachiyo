@@ -40,15 +40,39 @@ HAL_StatusTypeDef HAL_UART_DMAStop(UART_HandleTypeDef *u)
   (void)u;
   return HAL_OK;
 }
+
+#include "motor_arrival_fixture.h"
 int main(void)
 {
   MechanicalArm_EventTypeDef e;
-  uint8_t other[] = {1, 0x35, 0x6b}, ack[] = {5, 0xf3, 2, 0x6b};
+  uint8_t other[] = {1, 0x35, 0x6b}, ack[] = {5, 0x3a, 3, 0x6b};
   assert(MotorBus_Init(&uart) == HAL_OK);
   assert(MechanicalArm_Init(&uart) == HAL_OK);
+  MotorBus_WheelReceiveSet(true);
+  fixture_none_modes(&uart,&tick);
+  /* Nearest HOME uses the saved mechanical origin directly, without Both
+   * preparation or direction-parameter writes. Already-at-zero is accepted
+   * as a command response; task-level HOME verification is still required. */
+  for(unsigned sample=0;sample<3;sample++) {
+    const uint8_t code=sample==0?2:sample==1?0x12:0xe2;
+    const uint8_t home_reply[]={5,0x9a,code,0x6b};
+    unsigned before=tx_count;
+    assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_BASE,0)==MECHANICAL_ARM_RESULT_NONE);
+    tick+=10;MotorBus_Process();
+    assert(tx_count==before+1 && frame[0]==5 && frame[1]==0x9a && frame[2]==0 && frame[3]==0);
+    MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(home_reply,sizeof home_reply);
+    MotorBus_Process();MechanicalArm_Process();
+    assert(MechanicalArm_ResultGet(&e) && e.HomeMode==0 && e.MotorCode==0);
+    assert(e.Result==MECHANICAL_ARM_RESULT_OK);
+    assert(e.Transmitted && !e.Acknowledged && e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_TRIGGER);
+    assert(e.Diagnostic.Function==0x9a && !e.Diagnostic.ReplyLength);
+    assert(!e.Diagnostic.ReplyReceived && tx_count==before+1);
+  }
+  fixture_none_modes(&uart,&tick);
   /* Base direction HOME: read, preserve settings, set negative direction,
    * verify, then HOME. Driver names need not match the installed top view. */
   {
+    tick+=3;MotorBus_Process(); /* None TX handover also applies before parameter reads. */
     uint8_t params[18]={5,0x22,0,1,0,30,0,0,0x27,0x10,0,20,3,0xe8,0,60,0,0x6b};
     const uint8_t set_ack[]={5,0x4c,2,0x6b},home_ack[]={5,0x9a,2,0x6b};
     assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_BASE,1)==MECHANICAL_ARM_RESULT_NONE);
@@ -67,25 +91,38 @@ int main(void)
     MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(home_ack,sizeof home_ack);
     MotorBus_Process();MechanicalArm_Process();
     assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_OK && e.HomeMode==1);
+    assert(e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_TRIGGER && e.Diagnostic.Function==0x9a);
+    assert(e.Diagnostic.WireTransmitted && !e.Diagnostic.ReplyReceived);
+    assert(!e.Diagnostic.ReplyLength && !e.Acknowledged);
     tick+=10;tx_count=0;
   }
   /* Rejected settings, mismatching readback and a stop must never launch HOME. */
-  for(unsigned scenario=0;scenario<3;scenario++) {
+  for(unsigned scenario=0;scenario<4;scenario++) {
     uint8_t params[18]={5,0x22,0,1,0,30,0,0,0x27,0x10,0,20,3,0xe8,0,60,0,0x6b};
-    uint8_t reply[4]={5,0x4c,scenario==0?0xee:2,0x6b};
+    uint8_t reply[4]={5,0x4c,scenario==0?0xee:scenario==1?0xe2:2,0x6b};
     assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_BASE,1)==MECHANICAL_ARM_RESULT_NONE);
     MotorBus_Process();assert(frame[1]==0x22);
     MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(params,sizeof params);
     MotorBus_Process();MechanicalArm_Process();tick+=10;MotorBus_Process();assert(frame[1]==0x4c);
     MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(reply,sizeof reply);
     MotorBus_Process();MechanicalArm_Process();
-    if(scenario==0) {
+    if(scenario<2) {
       assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_MOTOR_ERROR && !e.Transmitted);
-    } else if(scenario==1) {
+      assert(e.MotorCode==reply[2] && !e.Acknowledged);
+      assert(e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_PARAMS_WRITE && e.Diagnostic.Function==0x4c);
+      assert(e.Diagnostic.BusEventValid && e.Diagnostic.BusResult==MOTOR_BUS_REPLY);
+      assert(e.Diagnostic.WireTransmitted && e.Diagnostic.ReplyReceived);
+      assert(e.Diagnostic.ReplyLength==4 && !memcmp(e.Diagnostic.Reply,reply,4));
+    } else if(scenario==2) {
       tick+=10;MotorBus_Process();assert(frame[1]==0x22);
       MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(params,sizeof params); /* Old settings. */
       MotorBus_Process();MechanicalArm_Process();
       assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_MOTOR_ERROR && !e.Transmitted);
+      assert(e.MotorCode==0 && !e.Acknowledged);
+      assert(e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_PARAMS_VERIFY && e.Diagnostic.Function==0x22);
+      assert(e.Diagnostic.VerifyMismatch && e.Diagnostic.VerifyOffset==0);
+      assert(e.Diagnostic.VerifyExpected==1 && e.Diagnostic.VerifyActual==0);
+      assert(e.Diagnostic.ReplyLength==18 && !memcmp(e.Diagnostic.Reply,params,18));
     } else {
       assert(MechanicalArm_Stop(MECHANICAL_ARM_AXIS_BASE)==MECHANICAL_ARM_RESULT_NONE);
       for(unsigned n=0;n<20 && MechanicalArm_IsBusy();n++) {
@@ -162,7 +199,7 @@ int main(void)
     MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(position_ack,sizeof position_ack);
     MotorBus_Process();MechanicalArm_Process();
     assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_OK);
-    assert(e.Transmitted && e.Acknowledged && e.PositionPulses==800);
+    assert(e.Transmitted && !e.Acknowledged && e.PositionPulses==800);
   }
   route_busy = motion_busy = false;
   /* Routine X holding must not cancel a four-wheel Receive transaction.
@@ -181,16 +218,16 @@ int main(void)
     tick+=10;MotorBus_Process();
     assert(frame[0]==7 && frame[1]==0xfe && frame[2]==0x98 && frame[3]==0);
     MotorBus_TxCpltCallback(&uart);MotorBus_Process();MechanicalArm_Process();
-    assert(!MechanicalArm_ResultGet(&e));
+    assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_OK && !e.Acknowledged);
     { const uint8_t hold_ack[]={7,0xfe,2,0x6b};MotorBus_RxBytes(hold_ack,4); }
     MotorBus_Process();MechanicalArm_Process();
-    assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_OK && e.Transmitted);
+    assert(!MechanicalArm_ResultGet(&e)); /* Late ACK cannot create a second completion. */
     assert(!MotorBus_IsQuarantined());
     tick+=10;
   }
   assert(MechanicalArm_StopScheduled(MECHANICAL_ARM_AXIS_ALL)==MECHANICAL_ARM_RESULT_PARAM_ERROR);
   assert(MotorBus_Submit(MOTOR_BUS_CHASSIS, other, 3, 0, 0, false));
-  assert(MechanicalArm_Enable(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);
+  assert(MechanicalArm_StateRead(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);
   MotorBus_Process();
   MotorBus_TxCpltCallback(&uart);
   { const uint8_t other_reply[]={1,0x35,0,0,0,0x6b}; MotorBus_RxBytes(other_reply,6); }
@@ -199,7 +236,7 @@ int main(void)
   assert(!MechanicalArm_ResultGet(&e));
   tick += 10;
   MotorBus_Process();
-  assert(frame[0] == 5 && frame[1] == 0xf3);
+  assert(frame[0] == 5 && frame[1] == 0x3a);
   MotorBus_TxCpltCallback(&uart);
   MotorBus_Process();
   MechanicalArm_Process();
@@ -228,7 +265,7 @@ int main(void)
       assert(frame[0] == 6 && frame[1] == 0xfd && frame[2] == negative);
       /* Default motion must carry the selected speed/acceleration on wire;
        * explicit-speed callers retain their own parameters. */
-      assert((((unsigned)frame[3] << 8) | frame[4]) == (explicit_speed ? 10U : 1000U));
+      assert((((unsigned)frame[3] << 8) | frame[4]) == (explicit_speed ? 10U : 2250U));
       MechanicalArm_ConfigTypeDef selected_config;
       assert(MechanicalArm_ConfigGet(MECHANICAL_ARM_AXIS_Z,&selected_config));
       assert(frame[5] == (explicit_speed ? 20U : selected_config.Acceleration));
@@ -242,12 +279,12 @@ int main(void)
   /* Absolute origin is a valid destination; a relative zero is still a no-op error. */
   assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 8,
            MECHANICAL_ARM_POSITION_RELATIVE_CURRENT) == MECHANICAL_ARM_RESULT_PARAM_ERROR);
-  assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 0,
+  assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_BASE, 0, 8, 0,
            MECHANICAL_ARM_POSITION_ABSOLUTE) == MECHANICAL_ARM_RESULT_PARAM_ERROR);
-  assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 255,
+  assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 0,
            MECHANICAL_ARM_POSITION_ABSOLUTE) == MECHANICAL_ARM_RESULT_NONE);
   tick += 10; MotorBus_Process();
-  assert(frame[0] == 7 && frame[1] == 0xfd && frame[10] == 1 && frame[5] == 255);
+  assert(frame[0] == 7 && frame[1] == 0xfd && frame[10] == 1 && frame[5] == 0);
   assert(frame[6] == 0 && frame[7] == 0 && frame[8] == 0 && frame[9] == 0);
   MotorBus_TxCpltCallback(&uart);
   const uint32_t x_tx_tick=tick;
@@ -281,7 +318,7 @@ int main(void)
     assert(e.Action==MECHANICAL_ARM_ACTION_SPEED_READ && e.CurrentSpeedRpm==expected);
   }
   assert(MechanicalArm_SpeedRead(MECHANICAL_ARM_AXIS_ALL)==MECHANICAL_ARM_RESULT_PARAM_ERROR);
-  assert(MechanicalArm_Enable(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);
+  assert(MechanicalArm_StateRead(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);
   tick += 10;
   MotorBus_Process();
   MotorBus_TxCpltCallback(&uart);
@@ -290,8 +327,12 @@ int main(void)
   MotorBus_Process();
   MechanicalArm_Process();
   assert(MechanicalArm_ResultGet(&e) && e.Result == MECHANICAL_ARM_RESULT_ACK_TIMEOUT);
+  assert(e.Diagnostic.BusEventValid && e.Diagnostic.BusResult==MOTOR_BUS_TIMEOUT);
+  assert(e.Diagnostic.Function==0x3a && e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_NONE);
+  assert(e.Diagnostic.WireTransmitted && !e.Diagnostic.ReplyReceived && !e.Diagnostic.ReplyLength);
+  unsigned before_locked_home=tx_count;
   assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_Z,2)==MECHANICAL_ARM_RESULT_TX_ERROR);
-  assert(Emm_V5_TxStatusGet()==HAL_ERROR); /* A locked bus must not retry as BUSY. */
+  assert(tx_count==before_locked_home && !MechanicalArm_IsBusy()); /* Rejected before Emm TX. */
   assert(MechanicalArm_Stop(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);
   tick += 10;
   MotorBus_Process();

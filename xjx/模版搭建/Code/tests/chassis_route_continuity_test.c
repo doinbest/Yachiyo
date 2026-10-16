@@ -73,7 +73,7 @@ static void pause_after_turn_before_translation(bool qr)
     assert(ChassisRoute_TaskStart(NULL,200));finish_leg();ChassisRoute_Process();
     finish_leg();ChassisRoute_Process();finish_leg();
     assert(ChassisRoute_WorkBegin());assert(ChassisRoute_WorkResume());
-    arrive();arrive();assert(last_turn); /* Processing ends at the observation point after this turn. */
+    arrive();arrive();assert(last_turn); /* Turn at380 precedes the350 observation approach. */
     grab_busy=true;clearance=false;arrive();
   }
   unsigned before=starts,calls=qr_pose_calls;
@@ -85,10 +85,10 @@ static void pause_after_turn_before_translation(bool qr)
   clearance=true;ChassisRoute_Process();
   if(qr)assert(starts==before+1 && !last_turn && grab_busy && qr_pose_calls==calls);
   else {
-    assert(starts==before && grab_busy); /* No former 125 mm dock on resume. */
+    assert(starts==before+1 && grab_busy && !last_turn && motion.target_y_mm==350);
+    arrive();assert(strcmp(status().state,"station")); /* Base must also finish. */
     grab_busy=false;ChassisRoute_Process();
-    assert(starts==before+1 && last_turn && motion.target_y_mm==380);
-    arrive();assert(!strcmp(status().state,"station") && status().station==2);
+    assert(!strcmp(status().state,"station") && status().station==2 && status().target_y_mm==350);
   }
   expect_cancel();grab_busy=false;
 }
@@ -126,15 +126,18 @@ int main(void)
   accept=false;feedback_arrival(30,0,0);assert(!strcmp(status().reason,"busy"));
   accept=true;ChassisRoute_Process();assert(motion.target_x_mm==2100 && motion.target_y_mm==2100);
   expect_cancel();
-  /* No post-turn processing translation; station handoff waits the full pose. */
+  /* Post-turn processing approach can overlap clear Base preparation, but
+   * station/vision handoff still waits for the full pose and350 arrival. */
   setup();selected_profile=CHASSIS_PROFILE_COSINE;assert(ChassisRoute_TaskStart(NULL,200));finish_leg();ChassisRoute_Process();
   finish_leg();ChassisRoute_Process();finish_leg();
   assert(ChassisRoute_WorkBegin());assert(ChassisRoute_WorkResume());
   arrive();arrive();assert(last_turn);grab_busy=true;clearance=false;
   unsigned before=starts;arrive();assert(starts==before);
-  clearance=true;ChassisRoute_Process();assert(starts==before && strcmp(status().state,"station"));
+  clearance=true;ChassisRoute_Process();
+  assert(starts==before+1 && !last_turn && motion.target_y_mm==350 && strcmp(status().state,"station"));
+  arrive();assert(strcmp(status().state,"station"));
   grab_busy=false;ChassisRoute_Process();
-  assert(!strcmp(status().state,"station") && status().target_y_mm==380 && starts==before);
+  assert(!strcmp(status().state,"station") && status().target_y_mm==350 && starts==before+1);
   expect_cancel();
   puts("chassis_route_continuity_test: PASS");
 }

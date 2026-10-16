@@ -44,13 +44,18 @@ static void staggered_self_motion(void)
   }
   fprintf(stderr,"staggered camera motion: q=%.3f velocity=%.3f valid=%d\n",
     TrackInput.motion_mm[0],TrackInput.actual_mm_s[0],TrackObserver.feedback_valid);
-  assert(TrackObserver.feedback_valid);
+  assert(TrackObserver.feedback_valid && TrackEstimateObserver.feedback_valid);
+  assert(TrackObserver.feedback_ms<clock_ms);
+  assert(fabsf(TrackObserver.feedback.x_mm-.020f*(TrackObserver.feedback_ms-1000))<.2f);
+  assert(fabsf(TrackInput.body_left_mm-TrackObserver.feedback.y_mm)<.001f);
   assert(fabsf(TrackInput.motion_mm[0]-80)<2);
   assert(fabsf(TrackInput.motion_mm[1])<.2f);
   assert(fabsf(TrackInput.actual_mm_s[0]-20)<.2f);
   /* Stop at the same pose: stale reads must not keep inventing travel, and
    * a truly stale wheel must still invalidate the motion estimate. */
-  for(unsigned ms=20;ms<=800;ms+=20)
+  /* The measured velocity needs two wholly post-stop common endpoints;
+   * four staggered 100 ms reads take up to three groups to supply them. */
+  for(unsigned ms=20;ms<=1200;ms+=20)
   {
     clock_ms=5000+ms;
     if(ms%100==0)
@@ -162,9 +167,13 @@ static void stationary_closed_loop(bool pi_filter,float body_speed,float initial
     if(ms%50==0)
     {
       in.now_ms=clock_ms;memcpy(in.motion_mm,TrackInput.motion_mm,sizeof in.motion_mm);
+      in.body_left_mm=TrackInput.body_left_mm;
+      in.feedback_age_ms=clock_ms-TrackObserver.feedback_ms;
       memcpy(in.actual_mm_s,TrackInput.actual_mm_s,sizeof in.actual_mm_s);
       GrabTracking_Update(&controller,&config,&in,&out);
-      if(ms>=2000) {sum+=in.error_px[0]*in.error_px[0];count++;peak=fmaxf(peak,fabsf(in.error_px[0]));}
+      /* Real common-time velocity can lag by the accepted 600 ms feedback
+       * window; include it in startup settling, retain the steady error bound. */
+      if(ms>=2600) {sum+=in.error_px[0]*in.error_px[0];count++;peak=fmaxf(peak,fabsf(in.error_px[0]));}
     }
   }
   fprintf(stderr,"staggered closed loop%s speed=%.0f start=%.0f: stationary RMS=%.3f peak=%.3f px\n",pi_filter?" with Pi adaptive filter":"",body_speed,initial_error,sqrtf(sum/count),peak);
@@ -654,7 +663,7 @@ int main(void)
    * a smaller known remaining budget must not silently credit 50 mm. */
   char *remaining[]={"grab","track","reference","37"};
   command(4,remaining);
-  assert(fabsf(50-(TrackInput.motion_mm[1]-Tracking.reference_left_mm)-37)<.01f);
+  assert(fabsf(50-(TrackInput.body_left_mm-Tracking.reference_left_mm)-37)<.01f);
   table_anchor=Tracking.reference_left_mm;
   char *excess[]={"grab","track","reference","51"};
   output[0]=0; assert(GrabTask_Command(4,excess));

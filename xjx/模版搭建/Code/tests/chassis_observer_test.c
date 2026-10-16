@@ -1,4 +1,5 @@
 #include "chassis_observer.h"
+static ChassisObserver_History_t history;
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -26,15 +27,15 @@ int main(void)
   }
   f.yaw_valid=true; f.units_per_rev=65536; f.now_ms=1000;
   for(i=0;i<4;i++){ f.valid[i]=true; f.time_ms[i]=1000; }
-  ChassisObserver_Feedback(&o,&g,&f); assert(!o.feedback_valid);
+  ChassisObserver_Feedback(&o,&g,&f,&history); assert(!o.feedback_valid);
   f.now_ms=1200;
   for(i=0;i<4;i++){f.position[i]=65536;f.time_ms[i]=1200;}
-  ChassisObserver_Feedback(&o,&g,&f);
+  ChassisObserver_Feedback(&o,&g,&f,&history);
   assert(o.feedback_valid && fabsf(o.feedback.x_mm-251.3274f)<0.01f);
-  f.now_ms=2000; ChassisObserver_Feedback(&o,&g,&f); assert(!o.feedback_valid);
+  f.now_ms=2000; ChassisObserver_Feedback(&o,&g,&f,&history); assert(!o.feedback_valid);
   for(i=0;i<4;i++) {f.position[i]=655360;f.time_ms[i]=2000;}
-  ChassisObserver_Feedback(&o,&g,&f); assert(!o.feedback_valid);
+  ChassisObserver_Feedback(&o,&g,&f,&history); assert(!o.feedback_valid);
   assert(o.feedback.x_mm<252); /* stale recovery never integrates the gap */
-  f.units_per_rev=0; ChassisObserver_Feedback(&o,&g,&f); assert(!o.feedback_valid);
+  f.units_per_rev=0; ChassisObserver_Feedback(&o,&g,&f,&history); assert(!o.feedback_valid);
   puts("chassis observer: command integration, stale gaps, two sets, units guard PASS");
 }

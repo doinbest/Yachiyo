@@ -2,7 +2,7 @@
   "keil": {
     "project": "Code/template/MDK-ARM/template.uvprojx",
     "target": "template",
-    "log_dir": ".embeddedskills/imu-native-recovery-20261015/build"
+    "log_dir": ".embeddedskills/ring-no-x30-20261017/keil"
   },
   "eide": {
     "project": "Code/template/MDK-ARM/eide",
@@ -10,7 +10,7 @@
     "log_dir": ".embeddedskills/build"
   },
   "serial": {
-    "port": "COM14",
+    "port": "COM23",
     "baudrate": 115200,
     "bytesize": 8,
     "parity": "none",
@@ -23,7 +23,7 @@
     "board": ".embeddedskills/mission-integration/mission-dap.cfg",
     "interface": "interface/cmsis-dap.cfg",
     "target": "target/stm32f4x.cfg",
-    "adapter_speed": "1000",
+    "adapter_speed": "100",
     "transport": "swd",
     "tpiu_name": "stm32f4x.tpiu",
     "traceclk": "168000000",

@@ -1,0 +1,1713 @@
+{
+  "assumptions": {
+    "profile": "linear",
+    "start": [
+      2250,
+      150,
+      180
+    ],
+    "qr_y": 1200,
+    "type": "approximate speed-reference model, not full vehicle simulation",
+    "proposed_deceleration": 300,
+    "turn_limit_deg_s": 100
+  },
+  "rows": [
+    {
+      "leg": 1.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 2250.0,
+      "y0": 150.0,
+      "x1": 2100.0,
+      "y1": 300.0,
+      "yaw0": 180.0,
+      "yaw1": 180.0,
+      "speed": 1000.0,
+      "length": 212.132,
+      "accel": 500,
+      "decel": 300,
+      "target": 300,
+      "ideal": {
+        "peak": 282.0452091420806,
+        "seconds": 1.50424111542443
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 229.5078198086107,
+          "seconds": 2.1288269554296186
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 220.67760131762208,
+          "seconds": 2.4057836526955376
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 209.5,
+          "seconds": 2.8472098798094123
+        }
+      ],
+      "baseline_reference": {
+        "peak": 202.20000000000195,
+        "seconds": 2.545867492575238
+      }
+    },
+    {
+      "leg": 1.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 2100.0,
+      "y0": 300.0,
+      "x1": 2100.0,
+      "y1": 300.0,
+      "yaw0": 180.0,
+      "yaw1": 90.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 1.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 2100.0,
+      "y0": 300.0,
+      "x1": 2100.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 1000.0,
+      "length": 900.0,
+      "accel": 1000,
+      "decel": 300,
+      "target": 1000,
+      "ideal": {
+        "peak": 644.5033866354896,
+        "seconds": 2.7928480087537886
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 579.2004202940734,
+          "seconds": 3.6827707258993008
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 567.0,
+          "seconds": 4.014863134817306
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 551.0,
+          "seconds": 4.533219473871375
+        }
+      ],
+      "baseline_reference": {
+        "peak": 468.300000000012,
+        "seconds": 4.613788434500239
+      }
+    },
+    {
+      "leg": 2.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 2100.0,
+      "y0": 1200.0,
+      "x1": 2100.0,
+      "y1": 2100.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 1000.0,
+      "length": 900.0,
+      "accel": 1000,
+      "decel": 300,
+      "target": 1000,
+      "ideal": {
+        "peak": 644.5033866354896,
+        "seconds": 2.7928480087537886
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 579.2004202940734,
+          "seconds": 3.6827707258993008
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 567.0,
+          "seconds": 4.014863134817306
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 551.0,
+          "seconds": 4.533219473871375
+        }
+      ],
+      "baseline_reference": {
+        "peak": 468.300000000012,
+        "seconds": 4.613788434500239
+      }
+    },
+    {
+      "leg": 3.0,
+      "phase": "work_approach",
+      "kind": 0.0,
+      "x0": 2100.0,
+      "y0": 2100.0,
+      "x1": 1200.0,
+      "y1": 2100.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 1000.0,
+      "length": 900.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 700,
+      "ideal": {
+        "peak": 626.6795614405122,
+        "seconds": 2.8722813232690143
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 564.8000000000021,
+          "seconds": 3.7546949661130213
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 553.2277113583104,
+          "seconds": 4.084864841366052
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 538.1578224078612,
+          "seconds": 4.60122567699755
+        }
+      ],
+      "baseline_reference": {
+        "peak": 468.300000000012,
+        "seconds": 4.613788434500239
+      }
+    },
+    {
+      "leg": 3.0,
+      "phase": "work_turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 2100.0,
+      "x1": 1200.0,
+      "y1": 2100.0,
+      "yaw0": 90.0,
+      "yaw1": 0.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 4.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 2100.0,
+      "x1": 1200.0,
+      "y1": 2100.0,
+      "yaw0": 0.0,
+      "yaw1": -90.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 4.0,
+      "phase": "work_approach",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 2100.0,
+      "x1": 1200.0,
+      "y1": 380.0,
+      "yaw0": -90.0,
+      "yaw1": -90.0,
+      "speed": 1000.0,
+      "length": 1720.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 1000,
+      "ideal": {
+        "peak": 866.3402648760213,
+        "seconds": 3.970726214015097
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 804.022895328734,
+          "seconds": 4.9528259803215535
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 791.9999999999892,
+          "seconds": 5.305774976616178
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 776.3133159299049,
+          "seconds": 5.85116369595587
+        }
+      ],
+      "baseline_reference": {
+        "peak": 666.6666767458571,
+        "seconds": 6.0597874036408745
+      }
+    },
+    {
+      "leg": 4.0,
+      "phase": "work_turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 380.0,
+      "x1": 1200.0,
+      "y1": 380.0,
+      "yaw0": -90.0,
+      "yaw1": 180.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 5.0,
+      "phase": "undock",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 380.0,
+      "x1": 1200.0,
+      "y1": 425.0,
+      "yaw0": 180.0,
+      "yaw1": 180.0,
+      "speed": 50.0,
+      "length": 45.0,
+      "accel": 300,
+      "decel": 300,
+      "target": 50,
+      "ideal": {
+        "peak": 50,
+        "seconds": 1.0666666666666667
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 50.0,
+          "seconds": 1.1398220952567608
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 50.0,
+          "seconds": 1.3258609555656795
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 50.0,
+          "seconds": 1.6512066104280485
+        }
+      ],
+      "baseline_reference": {
+        "peak": 50.0,
+        "seconds": 1.3258609555656795
+      }
+    },
+    {
+      "leg": 5.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 425.0,
+      "x1": 1200.0,
+      "y1": 425.0,
+      "yaw0": 180.0,
+      "yaw1": 90.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 5.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 425.0,
+      "x1": 1200.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 1000.0,
+      "length": 775.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 800,
+      "ideal": {
+        "peak": 581.5340215170719,
+        "seconds": 2.6653642652865797
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 519.8978497243168,
+          "seconds": 3.52377906295208
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 508.2687828350628,
+          "seconds": 3.849809529078835
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 493.43370731347727,
+          "seconds": 4.359198150168966
+        }
+      ],
+      "baseline_reference": {
+        "peak": 431.010373033953,
+        "seconds": 4.335792147346469
+      }
+    },
+    {
+      "leg": 6.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 1200.0,
+      "x1": 1200.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 0.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 6.0,
+      "phase": "work_approach",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 1200.0,
+      "x1": 425.0,
+      "y1": 1200.0,
+      "yaw0": 0.0,
+      "yaw1": 0.0,
+      "speed": 1000.0,
+      "length": 775.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 800,
+      "ideal": {
+        "peak": 581.5340215170719,
+        "seconds": 2.6653642652865797
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 519.8978497243168,
+          "seconds": 3.52377906295208
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 508.2687828350628,
+          "seconds": 3.849809529078835
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 493.43370731347727,
+          "seconds": 4.359198150168966
+        }
+      ],
+      "baseline_reference": {
+        "peak": 431.010373033953,
+        "seconds": 4.335792147346469
+      }
+    },
+    {
+      "leg": 6.0,
+      "phase": "work_turn",
+      "kind": 0.0,
+      "x0": 425.0,
+      "y0": 1200.0,
+      "x1": 425.0,
+      "y1": 1200.0,
+      "yaw0": 0.0,
+      "yaw1": 90.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 6.0,
+      "phase": "work_dock",
+      "kind": 0.0,
+      "x0": 425.0,
+      "y0": 1200.0,
+      "x1": 350.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 50.0,
+      "length": 75.0,
+      "accel": 300,
+      "decel": 300,
+      "target": 50,
+      "ideal": {
+        "peak": 50,
+        "seconds": 1.6666666666666663
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 50.0,
+          "seconds": 1.7398220952567023
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 50.0,
+          "seconds": 1.9258609555656145
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 50.0,
+          "seconds": 2.2512066104279826
+        }
+      ],
+      "baseline_reference": {
+        "peak": 50.0,
+        "seconds": 1.9258609555656145
+      }
+    },
+    {
+      "leg": 7.0,
+      "phase": "undock",
+      "kind": 0.0,
+      "x0": 350.0,
+      "y0": 1200.0,
+      "x1": 425.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 50.0,
+      "length": 75.0,
+      "accel": 300,
+      "decel": 300,
+      "target": 50,
+      "ideal": {
+        "peak": 50,
+        "seconds": 1.6666666666666663
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 50.0,
+          "seconds": 1.7398220952567023
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 50.0,
+          "seconds": 1.9258609555656145
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 50.0,
+          "seconds": 2.2512066104279826
+        }
+      ],
+      "baseline_reference": {
+        "peak": 50.0,
+        "seconds": 1.9258609555656145
+      }
+    },
+    {
+      "leg": 7.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 425.0,
+      "y0": 1200.0,
+      "x1": 425.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 180.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 7.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 425.0,
+      "y0": 1200.0,
+      "x1": 1200.0,
+      "y1": 1200.0,
+      "yaw0": 180.0,
+      "yaw1": 180.0,
+      "speed": 1000.0,
+      "length": 775.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 800,
+      "ideal": {
+        "peak": 581.5340215170719,
+        "seconds": 2.6653642652865797
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 519.8978497243168,
+          "seconds": 3.52377906295208
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 508.2687828350628,
+          "seconds": 3.849809529078835
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 493.43370731347727,
+          "seconds": 4.359198150168966
+        }
+      ],
+      "baseline_reference": {
+        "peak": 431.010373033953,
+        "seconds": 4.335792147346469
+      }
+    },
+    {
+      "leg": 8.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 1200.0,
+      "x1": 1200.0,
+      "y1": 1200.0,
+      "yaw0": 180.0,
+      "yaw1": 90.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 8.0,
+      "phase": "work_curve",
+      "kind": 3.0,
+      "x0": 1200.0,
+      "y0": 1200.0,
+      "x1": 1200.0,
+      "y1": 2100.0,
+      "yaw0": 90.0,
+      "yaw1": 0.0,
+      "speed": 1000.0,
+      "length": 919.4095,
+      "curve_reference_limit": 60,
+      "curve_time_estimate_s": 15.923491666666665
+    },
+    {
+      "leg": 9.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 2100.0,
+      "x1": 1200.0,
+      "y1": 2100.0,
+      "yaw0": 0.0,
+      "yaw1": -90.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 9.0,
+      "phase": "work_approach",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 2100.0,
+      "x1": 1200.0,
+      "y1": 380.0,
+      "yaw0": -90.0,
+      "yaw1": -90.0,
+      "speed": 1000.0,
+      "length": 1720.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 1000,
+      "ideal": {
+        "peak": 866.3402648760213,
+        "seconds": 3.970726214015097
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 804.022895328734,
+          "seconds": 4.9528259803215535
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 791.9999999999892,
+          "seconds": 5.305774976616178
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 776.3133159299049,
+          "seconds": 5.85116369595587
+        }
+      ],
+      "baseline_reference": {
+        "peak": 666.6666767458571,
+        "seconds": 6.0597874036408745
+      }
+    },
+    {
+      "leg": 9.0,
+      "phase": "work_turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 380.0,
+      "x1": 1200.0,
+      "y1": 380.0,
+      "yaw0": -90.0,
+      "yaw1": 180.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 10.0,
+      "phase": "undock",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 380.0,
+      "x1": 1200.0,
+      "y1": 425.0,
+      "yaw0": 180.0,
+      "yaw1": 180.0,
+      "speed": 50.0,
+      "length": 45.0,
+      "accel": 300,
+      "decel": 300,
+      "target": 50,
+      "ideal": {
+        "peak": 50,
+        "seconds": 1.0666666666666667
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 50.0,
+          "seconds": 1.1398220952567608
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 50.0,
+          "seconds": 1.3258609555656795
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 50.0,
+          "seconds": 1.6512066104280485
+        }
+      ],
+      "baseline_reference": {
+        "peak": 50.0,
+        "seconds": 1.3258609555656795
+      }
+    },
+    {
+      "leg": 10.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 425.0,
+      "x1": 1200.0,
+      "y1": 425.0,
+      "yaw0": 180.0,
+      "yaw1": 90.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 10.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 425.0,
+      "x1": 1200.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 1000.0,
+      "length": 775.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 800,
+      "ideal": {
+        "peak": 581.5340215170719,
+        "seconds": 2.6653642652865797
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 519.8978497243168,
+          "seconds": 3.52377906295208
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 508.2687828350628,
+          "seconds": 3.849809529078835
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 493.43370731347727,
+          "seconds": 4.359198150168966
+        }
+      ],
+      "baseline_reference": {
+        "peak": 431.010373033953,
+        "seconds": 4.335792147346469
+      }
+    },
+    {
+      "leg": 11.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 1200.0,
+      "x1": 1200.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 0.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 11.0,
+      "phase": "work_approach",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 1200.0,
+      "x1": 425.0,
+      "y1": 1200.0,
+      "yaw0": 0.0,
+      "yaw1": 0.0,
+      "speed": 1000.0,
+      "length": 775.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 800,
+      "ideal": {
+        "peak": 581.5340215170719,
+        "seconds": 2.6653642652865797
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 519.8978497243168,
+          "seconds": 3.52377906295208
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 508.2687828350628,
+          "seconds": 3.849809529078835
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 493.43370731347727,
+          "seconds": 4.359198150168966
+        }
+      ],
+      "baseline_reference": {
+        "peak": 431.010373033953,
+        "seconds": 4.335792147346469
+      }
+    },
+    {
+      "leg": 11.0,
+      "phase": "work_turn",
+      "kind": 0.0,
+      "x0": 425.0,
+      "y0": 1200.0,
+      "x1": 425.0,
+      "y1": 1200.0,
+      "yaw0": 0.0,
+      "yaw1": 90.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 11.0,
+      "phase": "work_dock",
+      "kind": 0.0,
+      "x0": 425.0,
+      "y0": 1200.0,
+      "x1": 350.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 50.0,
+      "length": 75.0,
+      "accel": 300,
+      "decel": 300,
+      "target": 50,
+      "ideal": {
+        "peak": 50,
+        "seconds": 1.6666666666666663
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 50.0,
+          "seconds": 1.7398220952567023
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 50.0,
+          "seconds": 1.9258609555656145
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 50.0,
+          "seconds": 2.2512066104279826
+        }
+      ],
+      "baseline_reference": {
+        "peak": 50.0,
+        "seconds": 1.9258609555656145
+      }
+    },
+    {
+      "leg": 12.0,
+      "phase": "undock",
+      "kind": 0.0,
+      "x0": 350.0,
+      "y0": 1200.0,
+      "x1": 425.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 50.0,
+      "length": 75.0,
+      "accel": 300,
+      "decel": 300,
+      "target": 50,
+      "ideal": {
+        "peak": 50,
+        "seconds": 1.6666666666666663
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 50.0,
+          "seconds": 1.7398220952567023
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 50.0,
+          "seconds": 1.9258609555656145
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 50.0,
+          "seconds": 2.2512066104279826
+        }
+      ],
+      "baseline_reference": {
+        "peak": 50.0,
+        "seconds": 1.9258609555656145
+      }
+    },
+    {
+      "leg": 12.0,
+      "phase": "turn",
+      "kind": 0.0,
+      "x0": 425.0,
+      "y0": 1200.0,
+      "x1": 425.0,
+      "y1": 1200.0,
+      "yaw0": 90.0,
+      "yaw1": 180.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 12.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 425.0,
+      "y0": 1200.0,
+      "x1": 1200.0,
+      "y1": 1200.0,
+      "yaw0": 180.0,
+      "yaw1": 180.0,
+      "speed": 1000.0,
+      "length": 775.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 800,
+      "ideal": {
+        "peak": 581.5340215170719,
+        "seconds": 2.6653642652865797
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 519.8978497243168,
+          "seconds": 3.52377906295208
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 508.2687828350628,
+          "seconds": 3.849809529078835
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 493.43370731347727,
+          "seconds": 4.359198150168966
+        }
+      ],
+      "baseline_reference": {
+        "peak": 431.010373033953,
+        "seconds": 4.335792147346469
+      }
+    },
+    {
+      "leg": 13.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 1200.0,
+      "y0": 1200.0,
+      "x1": 2100.0,
+      "y1": 1200.0,
+      "yaw0": 180.0,
+      "yaw1": 180.0,
+      "speed": 1000.0,
+      "length": 900.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 800,
+      "ideal": {
+        "peak": 626.6795614405122,
+        "seconds": 2.8722813232690143
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 564.8000000000021,
+          "seconds": 3.7546949661130213
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 553.2277113583104,
+          "seconds": 4.084864841366052
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 538.1578224078612,
+          "seconds": 4.60122567699755
+        }
+      ],
+      "baseline_reference": {
+        "peak": 468.300000000012,
+        "seconds": 4.613788434500239
+      }
+    },
+    {
+      "leg": 13.0,
+      "phase": "arrival_turn",
+      "kind": 0.0,
+      "x0": 2100.0,
+      "y0": 1200.0,
+      "x1": 2100.0,
+      "y1": 1200.0,
+      "yaw0": 180.0,
+      "yaw1": 90.0,
+      "speed": 0.0,
+      "length": 0.0,
+      "turn_estimate_s": 3.8209999999997177
+    },
+    {
+      "leg": 14.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 2100.0,
+      "y0": 1200.0,
+      "x1": 2100.0,
+      "y1": 300.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 1000.0,
+      "length": 900.0,
+      "accel": 800,
+      "decel": 300,
+      "target": 800,
+      "ideal": {
+        "peak": 626.6795614405122,
+        "seconds": 2.8722813232690143
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 564.8000000000021,
+          "seconds": 3.7546949661130213
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 553.2277113583104,
+          "seconds": 4.084864841366052
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 538.1578224078612,
+          "seconds": 4.60122567699755
+        }
+      ],
+      "baseline_reference": {
+        "peak": 468.300000000012,
+        "seconds": 4.613788434500239
+      }
+    },
+    {
+      "leg": 15.0,
+      "phase": "move",
+      "kind": 0.0,
+      "x0": 2100.0,
+      "y0": 300.0,
+      "x1": 2250.0,
+      "y1": 150.0,
+      "yaw0": 90.0,
+      "yaw1": 90.0,
+      "speed": 1000.0,
+      "length": 212.132,
+      "accel": 500,
+      "decel": 300,
+      "target": 300,
+      "ideal": {
+        "peak": 282.0452091420806,
+        "seconds": 1.50424111542443
+      },
+      "reference_scenarios": [
+        {
+          "age": 0.04,
+          "stop": 0.13,
+          "peak": 229.5078198086107,
+          "seconds": 2.1288269554296186
+        },
+        {
+          "age": 0.1,
+          "stop": 0.25,
+          "peak": 220.67760131762208,
+          "seconds": 2.4057836526955376
+        },
+        {
+          "age": 0.18,
+          "stop": 0.47,
+          "peak": 209.5,
+          "seconds": 2.8472098798094123
+        }
+      ],
+      "baseline_reference": {
+        "peak": 202.20000000000195,
+        "seconds": 2.545867492575238
+      }
+    }
+  ],
+  "measured_tests": [
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "1",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "1",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "6135",
+        "peak_mm_s": "826.240",
+        "error_mm": "8.563",
+        "stop_ms": "342",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:51:51.012470+00:00",
+      "reference_model": {
+        "peak": 801.8314066021313,
+        "seconds": 5.955795316880605
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "2",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "2",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5903",
+        "peak_mm_s": "817.916",
+        "error_mm": "9.442",
+        "stop_ms": "279",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:52:03.728480+00:00",
+      "reference_model": {
+        "peak": 801.8314066021313,
+        "seconds": 5.955795316880605
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "3",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1500.0",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "3",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5910",
+        "peak_mm_s": "818.919",
+        "error_mm": "7.992",
+        "stop_ms": "139",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:52:41.271801+00:00",
+      "reference_model": {
+        "peak": 801.8314066021313,
+        "seconds": 5.955795316880605
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "4",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "800.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "4",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5926",
+        "peak_mm_s": "881.780",
+        "error_mm": "6.623",
+        "stop_ms": "457",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "800.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:52:52.705839+00:00",
+      "reference_model": {
+        "peak": 859.8486928011048,
+        "seconds": 5.644773321104308
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "5",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "5",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5798",
+        "peak_mm_s": "924.690",
+        "error_mm": "8.612",
+        "stop_ms": "465",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.020000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:53:04.229517+00:00",
+      "reference_model": {
+        "peak": 882.1085046741315,
+        "seconds": 5.535788326265219
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "6",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.010000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "6",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5484",
+        "peak_mm_s": "897.718",
+        "error_mm": "7.306",
+        "stop_ms": "186",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.010000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:53:49.519959+00:00",
+      "reference_model": {
+        "peak": 882.1085046741315,
+        "seconds": 5.535788326265219
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "7",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.040000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "7",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5796",
+        "peak_mm_s": "917.367",
+        "error_mm": "7.371",
+        "stop_ms": "472",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.040000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:54:07.240227+00:00",
+      "reference_model": {
+        "peak": 882.1085046741315,
+        "seconds": 5.535788326265219
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "8",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "8",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5342",
+        "peak_mm_s": "919.478",
+        "error_mm": "8.283",
+        "stop_ms": "249",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:54:26.191461+00:00",
+      "reference_model": {
+        "peak": 882.1085046741315,
+        "seconds": 5.535788326265219
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "9",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.001000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "9",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "6033",
+        "peak_mm_s": "903.781",
+        "error_mm": "7.496",
+        "stop_ms": "162",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.001000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:54:39.312686+00:00",
+      "reference_model": {
+        "peak": 882.1085046741315,
+        "seconds": 5.535788326265219
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "10",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "10",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5341",
+        "peak_mm_s": "935.176",
+        "error_mm": "9.202",
+        "stop_ms": "170",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "1000.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:54:55.799943+00:00",
+      "reference_model": {
+        "peak": 882.1085046741315,
+        "seconds": 5.535788326265219
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "11",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1500.0",
+        "accel_mm_s2": "1500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "11",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5300",
+        "peak_mm_s": "939.046",
+        "error_mm": "7.365",
+        "stop_ms": "213",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "1500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:55:09.556300+00:00",
+      "reference_model": {
+        "peak": 915.0,
+        "seconds": 5.385817988554783
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "12",
+        "profile": "linear",
+        "distance_mm": "2000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "12",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "5923",
+        "peak_mm_s": "832.633",
+        "error_mm": "7.943",
+        "stop_ms": "180",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:55:21.098694+00:00",
+      "reference_model": {
+        "peak": 801.8314066021313,
+        "seconds": 5.955795316880605
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "13",
+        "profile": "linear",
+        "distance_mm": "500.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "13",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "3474",
+        "peak_mm_s": "386.417",
+        "error_mm": "8.470",
+        "stop_ms": "285",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:55:35.886478+00:00",
+      "reference_model": {
+        "peak": 370.15681621965604,
+        "seconds": 3.3837874921839934
+      }
+    },
+    {
+      "request": {
+        "reason": "accepted",
+        "id": "14",
+        "profile": "linear",
+        "distance_mm": "1000.000",
+        "speed_mm_s": "1000.0",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "result": {
+        "id": "14",
+        "state": "3",
+        "profile": "linear",
+        "elapsed_ms": "4589",
+        "peak_mm_s": "558.181",
+        "error_mm": "7.823",
+        "stop_ms": "129",
+        "stop_confirmed": "1",
+        "accel_mm_s2": "500.0",
+        "cosine_k": "0",
+        "heading_kp": "0.100000",
+        "heading_kd": "0.000000",
+        "curve_period_ms": "1",
+        "control_period_ms": "1",
+        "decel_mm_s2": "300.0"
+      },
+      "time": "2026-10-15T15:55:50.082965+00:00",
+      "reference_model": {
+        "peak": 548.7194352319656,
+        "seconds": 4.473763993234675
+      }
+    }
+  ]
+}

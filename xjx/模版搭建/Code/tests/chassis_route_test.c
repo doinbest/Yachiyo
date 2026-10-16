@@ -16,6 +16,9 @@ static unsigned starts,stops,feedback_selections;
 static float last_speed;
 static uint32_t last_timeout,tick;
 static bool accept=true,last_turn,feedback_enabled;
+static const char *reject_reason;
+static bool resume_feedback_override,resume_feedback_missing;
+static Mecanum_Feedback_t resume_feedback[4];
 static bool independent_stop, mission_pending;
 static ChassisMotion_Profile_t selected_profile;
 bool ContestMission_HasPendingWork(void){return mission_pending;}
@@ -24,6 +27,8 @@ bool ChassisMotion_ProfileSet(ChassisMotion_Profile_t p){selected_profile=p;retu
 bool Mecanum_Feedback_Select(uint8_t wheel){assert(wheel==0);feedback_selections++;return true;}
 void Mecanum_Feedback_Enable(bool enabled){feedback_enabled=enabled;}
 static bool grab_busy, clearance;
+static bool qr_departure,corner_prepared,corner_passed;
+static float corner_speed,corner_accel;
 bool GrabTask_IsBusy(void){return grab_busy;}
 bool GrabTask_PoseClearanceReady(void){return clearance;}
 static unsigned qr_pose_calls;
@@ -35,33 +40,58 @@ uint32_t HAL_GetTick(void){return tick;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *s){*s=loc;}
 void ChassisMotion_StatusGet(ChassisMotion_Status_t *s){*s=motion;}
 void Mecanum_StatusGet(Mecanum_Status_t *s){*s=bus;}
+bool Mecanum_FeedbackGet(unsigned wheel,Mecanum_Feedback_t *out)
+{
+  assert(wheel<4);
+  if(resume_feedback_missing)return false;
+  if(resume_feedback_override){*out=resume_feedback[wheel];return true;}
+  memset(out,0,sizeof *out);
+  out->speed_valid=out->position_valid=out->state_valid=true;
+  out->speed_ms=out->position_ms=out->state_ms=tick;out->state_flags=3;
+  return true;
+}
 bool ChassisMotion_IsBusy(void){return motion.state==CHASSIS_MOTION_RUNNING||motion.state==CHASSIS_MOTION_STOPPING;}
 static bool action(float x,float y,float yaw,float speed,uint32_t timeout,bool turn)
 {
-  assert(timeout>0 && timeout<=400000);assert(turn || (speed>=10 && speed<=5000));
+  assert(timeout>0 && timeout<=400000);assert(turn || (speed>0 && speed<=5000));
   assert(isfinite(yaw) && yaw>=-180 && yaw<=180);
   assert((!ChassisRoute_IsBusy() && !ChassisRoute_StationReserved()) || ChassisRoute_IsSubmitting());
-  if(!accept){motion.reason="busy";return false;}
+  if(!accept){motion.reason=reject_reason?reject_reason:"busy";return false;}
   starts++;last_speed=speed;last_timeout=timeout;last_turn=turn;
+  corner_prepared=corner_passed=false;
   motion.profile=selected_profile;motion.action_id++;motion.state=CHASSIS_MOTION_RUNNING;motion.reason="running";
   motion.target_x_mm=x;motion.target_y_mm=y;motion.target_map_yaw_deg=yaw;motion.stop_confirmed=false;
   return true;
 }
 bool ChassisMotion_MoveTo(float x,float y,float yaw,float speed,uint32_t timeout)
-{ return action(x,y,yaw,speed,timeout,false); }
+{ motion.linear_accel_mm_s2=300;return action(x,y,yaw,speed,timeout,false); }
+bool ChassisMotion_MoveToAccel(float x,float y,float yaw,float speed,float accel,uint32_t timeout)
+{ motion.linear_accel_mm_s2=accel;return action(x,y,yaw,speed,timeout,false); }
+void ChassisMotion_TestParametersDefaults(ChassisMotion_TestParameters_t *p)
+{p->curve_period_ms=1;p->linear_decel_mm_s2=300;p->linear_accel_mm_s2=300;p->cosine_k=200;p->heading_kp=CHASSIS_HEADING_TEST_KP;p->heading_kd=CHASSIS_HEADING_TEST_KD;}
+bool ChassisMotion_MoveToTuned(float x,float y,float yaw,float speed,const ChassisMotion_TestParameters_t *p,uint32_t timeout)
+{motion.linear_decel_mm_s2=p->linear_decel_mm_s2;motion.curve_period_ms=p->curve_period_ms;motion.linear_accel_mm_s2=p->linear_accel_mm_s2;motion.cosine_k=p->cosine_k;motion.heading_kp=p->heading_kp;motion.heading_kd=p->heading_kd;return action(x,y,yaw,speed,timeout,false);}
 bool ChassisMotion_TurnTo(float yaw,uint32_t timeout)
 { return action(loc.observer.feedback.x_mm,loc.observer.feedback.y_mm,yaw,0,timeout,true); }
 static float turn_limit;
 static float curve_progress,curve_end;
+static ChassisPath submitted_path;
 float ChassisMotion_PathProgress(void){return motion.state==CHASSIS_MOTION_DONE?curve_end+10:curve_progress;}
 bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn,uint32_t timeout,float resume)
 {
-  turn_limit=turn;curve_progress=resume;curve_end=path->turn_end;
+  submitted_path=*path;turn_limit=turn;curve_progress=resume;curve_end=path->turn_end;
   ChassisPath_Point p=path->point[path->count-1];
   return action(p.x,p.y,p.yaw,speed,timeout,false);
 }
+static float path_scale=1;
+bool ChassisMotion_PathStartScaled(const ChassisPath *path,float speed,float turn,uint32_t timeout,float resume,float scale)
+{path_scale=scale;return ChassisMotion_PathStart(path,speed,turn,timeout,resume);}
 bool ChassisMotion_TurnToSpeed(float yaw,float speed,uint32_t timeout)
 {turn_limit=speed;return ChassisMotion_TurnTo(yaw,timeout);}
+void ChassisMotion_UseRouteArrival(void){}
+bool ChassisMotion_PrepareCorner(float x,float y,float speed,float accel,uint32_t timeout)
+{assert(x==1200 && y==2100 && timeout>0);corner_speed=speed;corner_accel=accel;corner_prepared=true;return true;}
+bool ChassisMotion_CornerPassed(void){return corner_passed;}
 bool ChassisMotion_Stop(uint32_t ms){assert(ms==0);stops++;motion.state=CHASSIS_MOTION_STOPPING;return true;}
 bool ChassisMotion_StopRequest(uint32_t token){assert(!token);return true;}
 bool ChassisMotion_StopPending(void){return false;}
@@ -89,8 +119,10 @@ static void setup(void)
   motion.reason="idle";loc.origin_valid=loc.feedback_valid=loc.speed_valid=true;
   loc.origin.x_mm=loc.observer.feedback.x_mm=2250;loc.origin.y_mm=loc.observer.feedback.y_mm=150;
   loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI;
-  loc.generation=4;tick=100;loc.feedback_tick=tick;starts=stops=feedback_selections=0;accept=true;last_turn=false;
-  independent_stop=grab_busy=clearance=qr_pose_delayed=mission_pending=false;selected_profile=CHASSIS_PROFILE_LINEAR;ChassisRoute_Init();
+  loc.generation=4;tick=100;loc.feedback_tick=tick;starts=stops=feedback_selections=0;accept=true;reject_reason=NULL;last_turn=false;
+  independent_stop=grab_busy=clearance=qr_pose_delayed=mission_pending=false;
+  resume_feedback_override=resume_feedback_missing=false;
+  qr_departure=corner_prepared=corner_passed=false;selected_profile=CHASSIS_PROFILE_LINEAR;ChassisRoute_Init();
 }
 static void feedback_arrival(float dx,float dy,float dyaw)
 {
@@ -248,6 +280,27 @@ int main(void)
   setup();assert(ChassisRoute_Command(5,single));
   assert(starts==1 && fabsf(motion.target_x_mm-1250)<0.01f && fabsf(motion.target_y_mm-150)<0.01f);
   assert(last_speed==1000 && strstr(reply,"profile=linear") && !last_turn);
+  assert(motion.linear_accel_mm_s2==300 && strstr(reply,"accel_mm_s2=300.0"));
+  char *custom[]={"chassis","test","1000","0","1000","linear","800"};
+  setup();assert(ChassisRoute_Command(7,custom));assert(starts==1 && motion.linear_accel_mm_s2==800 && strstr(reply,"accel_mm_s2=800.0"));
+  const char *invalid_accel[]={"0","9","5001","nan"};
+  for(unsigned i=0;i<4;i++){setup();custom[6]=(char*)invalid_accel[i];assert(ChassisRoute_Command(7,custom));assert(!starts && strstr(reply,"accel_range"));}
+  setup();custom[5]="cosine";custom[6]="800";assert(ChassisRoute_Command(7,custom));assert(starts==1 && motion.cosine_k==800);
+  char *asym[]={"chassis","test","1000","0","1000","linear","500","0.02","0","1","300"};
+  setup();assert(ChassisRoute_Command(11,asym));assert(starts==1 && motion.linear_accel_mm_s2==500 && motion.linear_decel_mm_s2==300);
+  assert(strstr(reply,"decel_mm_s2=300.0"));
+  asym[10]="0";setup();assert(ChassisRoute_Command(11,asym));assert(!starts && strstr(reply,"decel_range"));
+  char *period[]={"chassis","test","1000","0","1000","linear","300","0.02","0","5"};
+  setup();assert(ChassisRoute_Command(10,period));assert(starts==1 && motion.curve_period_ms==5);
+  assert(strstr(reply,"curve_period_ms=5 control_period_ms=1"));
+  period[9]="0";setup();assert(ChassisRoute_Command(10,period));assert(!starts && strstr(reply,"curve_period_range"));
+  period[9]="1.5";setup();assert(ChassisRoute_Command(10,period));assert(!starts && strstr(reply,"curve_period_range"));
+  char *tuned[]={"chassis","test","1000","0","1000","cosine","120","0.1","0.01"};
+  setup();assert(ChassisRoute_Command(9,tuned));assert(starts==1 && motion.cosine_k==120 && motion.heading_kp==.1f && motion.heading_kd==.01f);
+  assert(strstr(reply,"cosine_k=120 heading_kp=0.100000 heading_kd=0.010000"));
+  setup();tuned[7]="nan";assert(ChassisRoute_Command(9,tuned));assert(!starts && strstr(reply,"heading_gain_range"));
+  setup();tuned[7]="0.1";tuned[6]="120.5";assert(ChassisRoute_Command(9,tuned));assert(!starts && strstr(reply,"cosine_k_range"));
+  setup();tuned[6]="120";assert(ChassisRoute_Command(8,tuned));assert(!starts);
   char *cosine[]={"chassis","test","1000","0","1000","cosine"};
   setup();assert(ChassisRoute_Command(6,cosine));assert(starts==1 && motion.profile==CHASSIS_PROFILE_COSINE && strstr(reply,"profile=cosine"));
   setup();mission_pending=true;assert(ChassisRoute_Command(6,cosine));assert(!starts && selected_profile==CHASSIS_PROFILE_LINEAR && strstr(reply,"mission_reserved"));
@@ -339,3 +392,5 @@ int main(void)
   puts("chassis_route_test: PASS (15 targets, phase sequence, stop gates, deadlines, station semantics, cancel)");
   return 0;
 }
+
+bool GrabTask_QrDepartureActive(void){return qr_departure;}

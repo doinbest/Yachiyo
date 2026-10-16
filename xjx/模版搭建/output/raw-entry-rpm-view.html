@@ -1,0 +1,65 @@
+<div id="raw-rpm-preview">
+  <h3>右上绕角 → 物料台中间</h3>
+  <div class="viz-controls">
+    <label class="form-label">直行等效轮速 / RPM<select class="form-select" id="rr-speed"><option value="120">120 · 首轮对照</option><option value="250">250</option><option value="300">300</option></select></label>
+    <label class="form-label">转向上限 · 单轮等效RPM<select class="form-select" id="rr-turn"><option value="40">40 · 42.7°/s</option><option value="60" selected>60 · 64°/s</option></select></label>
+  </div>
+  <svg id="rr-map" role="img" aria-label="上半场地图：沿右通道北行，绕过黄色禁区右上角，同时顺时针转向，再斜向物料台中间。显示300毫米车框与四轮实时转速。"></svg>
+  <div class="viz-row"><button type="button" class="btn btn-primary" id="rr-play">播放</button><span id="rr-time" class="tabular-nums"></span><span id="rr-phase"></span></div>
+  <label class="form-label" for="rr-seek">运动进度</label><input id="rr-seek" class="form-range" type="range" min="0" max="1000" value="0">
+  <div id="rr-live" class="tabular-nums"></div>
+  <div class="text-small" id="rr-wheel" style="margin-top:8px"></div>
+  <div class="table-responsive" style="margin-top:14px"><table class="table table-sm"><thead><tr><th>直行设定</th><th>理论用时</th><th>最大单轮</th><th>直线峰值加速度</th></tr></thead><tbody id="rr-results"></tbody></table></div>
+  <div class="text-small">候选路径 · 理想跟随 · 80 mm轮径 / 1∶1 · 300×300 mm车框</div>
+  <div class="text-small">直线K=200（400 ms）；弯道平移≤50 RPM；转向规划使用上限的65%</div>
+  <div class="text-small">几何扫掠：禁区保守净距≥47.7 mm，场地边界≥47.4 mm</div>
+  <div class="text-small">不含打滑、驱动延迟、定位误差、停车反馈等待；未接入固件</div>
+</div>
+<style>
+#raw-rpm-preview #rr-map{width:100%;display:block;margin:12px 0}
+#raw-rpm-preview svg text{fill:var(--foreground);font-size:12px}
+#raw-rpm-preview .rr-path{fill:none;stroke:var(--viz-series-1);stroke-width:3}
+#raw-rpm-preview .rr-ghost{fill:none;stroke:var(--muted-foreground);stroke-width:1;opacity:.3}
+</style>
+<script>
+(()=>{
+const data=__RPM_DATA__;
+const root=document.getElementById('raw-rpm-preview'),$=id=>root.querySelector('#'+id),NS='http://www.w3.org/2000/svg';
+let current,position=0,playing=false,last=0;
+const create=(tag,attrs={},text)=>{const el=document.createElementNS(NS,tag);for(const[k,v]of Object.entries(attrs))el.setAttribute(k,v);if(text!==undefined)el.textContent=text;return el;};
+function save(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{straightRpm:+$('rr-speed').value,turnEquivalentRpm:+$('rr-turn').value},privateContent:{position}}).catch(()=>{});}
+function select(){current=data.results.find(x=>x.rpm===+$('rr-speed').value&&x.turn===+$('rr-turn').value);position=0;playing=false;$('rr-play').textContent='播放';$('rr-results').innerHTML=data.results.filter(x=>x.turn===current.turn).map(x=>`<tr><td>${x.rpm} RPM</td><td>${x.total.toFixed(2)} s</td><td>${x.peakRpm.toFixed(0)} RPM</td><td>${x.peakAccel.toFixed(0)} mm/s²</td></tr>`).join('');draw();}
+function frame(){const f=current.frames,t=position*current.total;let lo=0,hi=f.length-1;while(lo<hi){const mid=(lo+hi)>>1;if(f[mid].t<t)lo=mid+1;else hi=mid;}return f[lo];}
+function draw(){
+ const svg=$('rr-map'),w=Math.max(280,root.clientWidth),h=w*.88,scale=(w-24)/1500,px=x=>12+(x-950)*scale,py=y=>h-12-(y-1150)*scale;
+ svg.setAttribute('viewBox',`0 0 ${w} ${h}`);svg.replaceChildren();
+ const rect=(x,y,rw,rh,fill,stroke)=>svg.append(create('rect',{x:px(x),y:py(y+rh),width:rw*scale,height:rh*scale,fill,stroke}));
+ rect(950,1150,1450,1250,'var(--background)','var(--border)');
+ rect(1400,1400,450,450,'var(--yellow)','var(--border)');
+ rect(2100,2100,300,300,'var(--muted)','var(--border)');
+ svg.append(create('text',{x:px(1625),y:py(1625),'text-anchor':'middle'},'黄色禁区'));
+ svg.append(create('text',{x:px(2380),y:py(2310),'text-anchor':'end'},'右上起点'));
+ svg.append(create('circle',{cx:px(1200),cy:py(2470),r:150*scale,fill:'var(--muted)',stroke:'var(--border)'}));
+ svg.append(create('text',{x:px(1200),y:py(2380),'text-anchor':'middle'},'物料台'));
+ const pts=[[2100,1200],[2100,1950],...data.path.map(p=>p.slice(0,2)),[1200,2100]];
+ svg.append(create('path',{d:pts.map((p,i)=>`${i?'L':'M'}${px(p[0])},${py(p[1])}`).join(' '),class:'rr-path'}));
+ function body(x,y,yaw,ghost=false){const a=yaw*Math.PI/180,c=Math.cos(a),s=Math.sin(a),corners=[[150,150],[-150,150],[-150,-150],[150,-150]].map(([u,v])=>[px(x+c*u-s*v),py(y+s*u+c*v)]);svg.append(create('polygon',{points:corners.map(p=>p.join(',')).join(' '),fill:ghost?'none':'var(--background)',stroke:ghost?'var(--muted-foreground)':'var(--viz-series-1)','stroke-width':ghost?1:2,opacity:ghost?.3:1}));if(!ghost){svg.append(create('line',{x1:px(x),y1:py(y),x2:px(x+140*c),y2:py(y+140*s),stroke:'var(--viz-series-2)','stroke-width':4}));svg.append(create('circle',{cx:px(x+140*c),cy:py(y+140*s),r:3,fill:'var(--viz-series-2)'}));}}
+ for(const i of[0,25,50,75,100])body(...data.path[i],true);
+ const f=frame();body(f.x,f.y,f.yaw);
+ svg.append(create('text',{x:px(2360),y:py(1235),'text-anchor':'end'},'扫码后起步'));
+ svg.append(create('text',{x:px(1200),y:py(1880),'text-anchor':'middle'},'中间停车点'));
+ $('rr-time').textContent=`${(position*current.total).toFixed(2)} / ${current.total.toFixed(2)} s`;$('rr-phase').textContent=f.phase;
+ $('rr-seek').value=Math.round(position*1000);
+ $('rr-live').textContent=`平移 ${(f.v/(Math.PI*80/60)).toFixed(0)} RPM等效 · ${f.v.toFixed(0)} mm/s　航向 ${f.yaw.toFixed(1)}°　转向 ${Math.abs(f.omega).toFixed(1)}°/s`;
+ const [fl,rl,rr,fr]=f.wheels;
+ $('rr-wheel').textContent=`四轮有符号RPM：左前 ${fl.toFixed(0)} ｜右前 ${fr.toFixed(0)} ｜左后 ${rl.toFixed(0)} ｜右后 ${rr.toFixed(0)}`;
+}
+function tick(now){if(playing){if(last)position=Math.min(1,position+(now-last)/1000/current.total);draw();if(position>=1){playing=false;$('rr-play').textContent='重播';}}last=now;requestAnimationFrame(tick);}
+$('rr-play').onclick=()=>{if(position>=1)position=0;playing=!playing;last=0;$('rr-play').textContent=playing?'暂停':'播放';};
+$('rr-seek').oninput=()=>{playing=false;position=+$('rr-seek').value/1000;$('rr-play').textContent='播放';draw();};$('rr-seek').onchange=save;
+for(const id of['rr-speed','rr-turn'])$(id).onchange=()=>{select();save();};
+function restore(state){const m=state?.modelContent;if(m&&[120,250,300].includes(m.straightRpm)&&[40,60].includes(m.turnEquivalentRpm)){$('rr-speed').value=m.straightRpm;$('rr-turn').value=m.turnEquivalentRpm;}select();position=Math.min(1,Math.max(0,state?.privateContent?.position||0));draw();}
+restore(window.openai?.widgetState);window.addEventListener('openai:set_globals',e=>{if(e.detail?.globals?.widgetState)restore(e.detail.globals.widgetState);});
+new ResizeObserver(draw).observe(root);requestAnimationFrame(tick);
+})();
+</script>

@@ -74,12 +74,17 @@ void Camera_FrameObserverSet(Camera_FrameObserver_t Observer);
 HAL_StatusTypeDef Camera_MaterialStart(Camera_ColorTypeDef Color);
 /** @brief 请求数字同心圆定位，Ring为1～3；发送FF B2 0A/0B/0C FF，不产生运动。 */
 HAL_StatusTypeDef Camera_RingStart(uint8_t Ring);
+/** Recovery-only B2 restart. Under the USB IRQ boundary, retain a matching
+ * fresh post-boundary coordinate, or defer pending RX until parsing. Retained
+ * is1 only when no request was sent; ordinary explicit starts still reset. */
+HAL_StatusTypeDef Camera_RestartIfMissing(uint8_t Target,uint32_t AfterTick,uint32_t FreshMs,uint8_t *Retained);
 typedef struct {
-  uint8_t Active, HasFrame, Valid;
+  uint8_t Active, HasFrame, Valid, Target; /* 0D ring / 0E ground black line. */
   int16_t EX, EY, AngleCdeg, Stop; /* Stop is diagnostic only, never a motor command. */
   uint32_t Sequence, ReceivedTick, RequestEpoch;
 } Camera_PoseSnapshot_t;
 HAL_StatusTypeDef Camera_PoseStart(void);
+HAL_StatusTypeDef Camera_PoseStartSource(uint8_t target);
 void Camera_PoseSnapshotGet(Camera_PoseSnapshot_t *snapshot);
 void Camera_RequestStop(void);
 void Camera_Process(void);

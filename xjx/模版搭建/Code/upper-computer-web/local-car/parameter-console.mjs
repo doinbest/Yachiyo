@@ -16,7 +16,7 @@ export function parseArmConfig(line){
   const match=typeof line==='string'&&line.trim().match(/^OK config (base|z|x) rpm=(\d+) acc=(\d+) limit_pulses=(unlimited|\d+)$/);
   if(!match)return null;
   const rpm=Number(match[2]),acc=Number(match[3]),limit=match[4]==='unlimited'?0:Number(match[4]);
-  return rpm>=1&&rpm<=3000&&acc>=1&&acc<=255&&limit>=0&&limit<=3200?
+  return rpm>=1&&rpm<=3000&&acc>=(match[1]==='base'?1:0)&&acc<=255&&limit>=0&&limit<=3200?
     {axis:match[1],rpm,acc,limit}:null;
 }
 export function parseTurntableConfig(line){

@@ -1,11 +1,16 @@
 import {radarReasonText,radarProbeText} from './radar-format.mjs';
 import {parseTrack,trackText} from './grab-track.mjs';
 import {deviceText,reasonText,rejectionText} from './device-text.mjs';
+import {missionResumeStatus} from './mission-resume-status.mjs';
 export const visualStateText=state=>({Idle:'无活动视觉请求',Off:'USB 未枚举',Wait:'等待首个回复',Lost:'已收到报文，当前无有效坐标',Ok:'有效坐标',Stale:'坐标已过期'})[state]??'未报告';
 // Presentation only. Never feed translated text back into a protocol parser.
 const names={vision_grace:'短暂漏检，减速等待',vision_gap_decelerating:'沿原运动趋势减速，等待连续有效坐标',vision_gap_recovered:'短暂漏检已恢复，未消耗停车恢复次数',vision_pause:'视觉暂停，不会下降夹取',vision_pause_stopping:'漏检，正在停车',vision_recover_wait:'已停稳，等待目标恢复',vision_reacquire_wait:'已重发目标颜色识别，等待新坐标',vision_recovered:'已恢复对准',vision_acquire_timeout:'等待目标颜色超时',vision_recover_timeout:'恢复窗口超时',vision_recover_limit:'恢复次数耗尽',vision_usb_off:'视觉 USB 断开',vision_request_lost:'视觉请求失效',vision_stale:'有效坐标接收超时',vision_lost:'视觉坐标失效',feedback_stale:'机械反馈过期',chassis_tx:'底盘通信故障',base:'Base 底座',x:'X 伸缩轴',z:'Z 升降轴',all:'全部轴',fixed:'固定取放',align:'仅协同对准',pick:'视觉取放',idle:'空闲',prepare:'准备中',acquire:'等待视觉',homing:'正在回零',descend:'下降夹取',close:'夹紧等待',lift:'提起',turn:'Base 转向',place:'下降放置',release:'松爪等待',retract:'提起复位',hold:'动作完成，等待验收',stopping:'正在停止',error:'故障',running:'运行中',waiting:'等待中',station:'站点等待',done:'已完成',complete:'已完成',failed:'失败',none:'无',cancelled:'已取消',pending_tx:'等待停车发送',monitoring:'等待四轮停稳',stopped:'四轮已确认停稳',missing_feedback:'缺少新鲜反馈',timeout:'超时',tx_failed:'发送失败',new_motion:'出现新动作，原停车确认失效',reply_timeout:'驱动回复超时',uart_error:'串口通信错误',motor_request:'电机请求失败',motor_feedback:'电机反馈异常',config_missing:'缺少参数',home_z:'Z 碰撞回零',home_x:'X 碰撞回零',home_base:'Base 就近回零',home_complete:'三轴回零完成',home_stop_unconfirmed:'回零停止未确认',aligned_wait_check:'对准完成，等待验收',placed_wait_check:'取放完成，等待验收',VERIFYING:'静止验证中',DONE:'完成',PASS:'通过',FAIL:'失败',Idle:'空闲',Wait:'等待相机回复',ALIGNED:'对准完成',ERROR:'故障',unlimited:'不限',initial:'初始模型',custom:'自定义模型'};
-const fields={align:'工位视觉对准',hold_ms:'稳定等待(ms)',tolerance:'到位误差阈值',ref_degraded:'近似参考标志',reference:'参考类型',code_source:'执行码来源',scan_code:'实际扫码',exec_code:'本轮执行码',slot:'仓位',ring:'目标环',batch:'批次',item:'件号',stored:'已入仓',placed:'已放置',ref_cause:'参考状态',loss_ms:'本次或最近中断(ms)',loss_max_ms:'本任务最长中断(ms)',grace_count:'减速期间恢复观测(/3)',recovery_used:'已恢复次数',recovery_count:'连续恢复观测(/3)',recovery_left_ms:'设备报告剩余(ms)',state:'状态',mode:'模式',reason:'原因',missing:'缺少参数',axis:'轴',step:'步骤',elapsed:'耗时(ms)',elapsed_ms:'耗时(ms)',rpm:'转速(RPM)',acc:'加速度',limit_pulses:'脉冲限制',raw_units:'位置原始单位',raw_rpm:'转速原始值',en:'使能',reached:'到位',degree:'角度(°)',pulses:'命令脉冲',raw:'原始状态',flags:'状态位',stop_requested:'已请求停止',stop_confirmed:'停止已确认',tx_complete:'停车发送完成',wheels_stopped:'四轮停稳确认',locked:'总线锁定',bus_locked:'总线锁定',fault_ms:'故障时刻(ms)',owner:'事务来源',addr:'电机ID',func:'功能码',active:'活动',wait:'等待应答',arm_ready:'机械臂就绪',chassis_ready:'底盘就绪',tasks_resumed:'已自动续跑',home_reference:'回零参考',color:'Color',cx:'CX',cy:'CY',dx:'像素水平偏差',dy:'像素垂直偏差',x:'X位置(mm)',xt:'X目标(mm)',z:'Z位置(mm)',zt:'Z目标(mm)',b:'Base角度(°)',bt:'Base目标(°)',model:'视觉模型',protocol:'视觉协议',age_source:'时间来源',rx_seq:'MCU接收序号',vision:'坐标状态',age:'坐标接收间隔(ms)',usb:'USB已枚举',fn:'功能码',target:'目标',frame:'收到过匹配报文',current_valid:'当前数据有效',target_valid:'目标有效',seq:'MCU接收序号',data_tick:'MCU接收时刻(ms)',invalid_reports:'本请求无效坐标报文数',rx_bytes:'收到字节数',checksum_errors:'校验错误',overflows:'溢出',frame_age_ms:'最近匹配报文接收间隔(ms)',last_frame_ms:'最后收帧时刻(ms)',vf:'前向速度(mm/s)',vl:'左向速度(mm/s)',yaw_deg:'航向(°)',target_deg:'目标航向(°)',yaw_valid:'航向有效',verified:'验证通过',control_ready:'控制就绪',keep_still:'需保持静止',elapsed_s:'已用时(s)',total_s:'总时间(s)',verify_elapsed_s:'验证用时(s)',wheel:'轮ID',valid:'有效标志',segment:'路段',error:'错误',ack:'应答模式',units:'单位/圈',duty:'占空比',rx_overflow:'接收溢出',reply_dropped:'普通回复丢失',urgent_dropped:'紧急回复丢失',debug_dropped:'旧调试样本替换或丢弃',reply_pending:'回复队列字节',reply_peak:'回复队列峰值',rx_peak:'接收队列峰值',rx_bytes_total:'累计接收字节',tx_bytes:'累计发送字节',rx_restarts:'接收重启次数'};
+const fields={read_recovering:'正在等待读取恢复',read_recoveries:'读取恢复次数',read_wait_ms:'本次读取恢复耗时(ms)',read_limit_ms:'读取恢复期限(ms)',align:'工位视觉对准',hold_ms:'稳定等待(ms)',tolerance:'到位误差阈值',ref_degraded:'近似参考标志',reference:'参考类型',code_source:'执行码来源',scan_code:'实际扫码',exec_code:'本轮执行码',slot:'仓位',ring:'目标环',batch:'批次',item:'件号',stored:'已入仓',placed:'已放置',ref_cause:'参考状态',loss_ms:'本次或最近中断(ms)',loss_max_ms:'本任务最长中断(ms)',grace_count:'减速期间恢复观测(/3)',recovery_used:'已恢复次数',recovery_count:'连续恢复观测(/3)',recovery_left_ms:'设备报告剩余(ms)',state:'状态',mode:'模式',reason:'原因',missing:'缺少参数',axis:'轴',step:'步骤',elapsed:'耗时(ms)',elapsed_ms:'耗时(ms)',rpm:'转速(RPM)',acc:'加速度',limit_pulses:'脉冲限制',raw_units:'位置原始单位',raw_rpm:'转速原始值',en:'使能',reached:'到位',degree:'角度(°)',pulses:'命令脉冲',raw:'原始状态',flags:'状态位',stop_requested:'已请求停止',stop_confirmed:'停止已确认',tx_complete:'停车发送完成',wheels_stopped:'四轮停稳确认',locked:'总线锁定',bus_locked:'总线锁定',fault_ms:'故障时刻(ms)',owner:'事务来源',addr:'电机ID',func:'功能码',active:'活动',wait:'等待应答',arm_ready:'机械臂就绪',chassis_ready:'底盘就绪',tasks_resumed:'已自动续跑',home_reference:'回零参考',color:'Color',cx:'CX',cy:'CY',dx:'像素水平偏差',dy:'像素垂直偏差',x:'X位置(mm)',xt:'X目标(mm)',z:'Z位置(mm)',zt:'Z目标(mm)',b:'Base角度(°)',bt:'Base目标(°)',model:'视觉模型',protocol:'视觉协议',age_source:'时间来源',rx_seq:'MCU接收序号',vision:'坐标状态',age:'坐标接收间隔(ms)',usb:'USB已枚举',fn:'功能码',target:'目标',frame:'收到过匹配报文',current_valid:'当前数据有效',target_valid:'目标有效',seq:'MCU接收序号',data_tick:'MCU接收时刻(ms)',invalid_reports:'本请求无效坐标报文数',rx_bytes:'收到字节数',checksum_errors:'校验错误',overflows:'溢出',frame_age_ms:'最近匹配报文接收间隔(ms)',last_frame_ms:'最后收帧时刻(ms)',vf:'前向速度(mm/s)',vl:'左向速度(mm/s)',yaw_deg:'航向(°)',target_deg:'目标航向(°)',yaw_valid:'航向有效',verified:'验证通过',control_ready:'控制就绪',keep_still:'需保持静止',elapsed_s:'已用时(s)',total_s:'总时间(s)',verify_elapsed_s:'验证用时(s)',wheel:'轮ID',valid:'有效标志',segment:'路段',error:'错误',ack:'应答模式',units:'单位/圈',duty:'占空比',rx_overflow:'接收溢出',reply_dropped:'普通回复丢失',urgent_dropped:'紧急回复丢失',debug_dropped:'旧调试样本替换或丢弃',reply_pending:'回复队列字节',reply_peak:'回复队列峰值',rx_peak:'接收队列峰值',rx_bytes_total:'累计接收字节',tx_bytes:'累计发送字节',rx_restarts:'接收重启次数'};
+Object.assign(fields,{bytes:'字节数',tx_ms:'发送完成时刻(ms)',error_ms:'错误时刻(ms)',queued:'错误时待解析字节',preserved_replies:'累计保留有效应答',bus_reason:'总线原因'});
 Object.assign(names,{first_slot_inventory_unknown:'第一仓库存待核对：确认实物为空后校正库存',first_slot_occupied:'第一仓已有物料',first_slot_angle_unset:'第一仓角度未配置'});
+Object.assign(fields,{recovery_step:'读取恢复阶段',expected_mode:'预期模式',first_mode:'首次读回模式',last_mode:'最近读回模式',mode_seen:'已有成功模式读回',mode_valid:'本次模式读回有效',mode_HAL:'模式读取HAL状态',mode_reads:'模式读取次数',mode_tick:'模式读取时刻(ms)'});
+Object.assign(fields,{allowed_mode_mask:'允许模式掩码（位n表示模式n）'});
+Object.assign(fields,{timing_valid:'标定时长读回有效',peak_time_s:'峰峰值采集时间(s)',bias_time_s:'零偏采集时间(s)',native_wait_ms:'本轮标定等待时间(ms)',native_modes:'已观测模式位图',native_normal_ms:'模块回正常模式时刻(ms)'});
 Object.assign(names,{manual_z:'人工调整Z高度',color_align:'颜色中心静态对准',color_aligned_ready:'颜色对准完成，已抬至最高',color_aligned_low:'颜色对准完成，保持低位',color_raise_no_align:'已停止纠偏，正在抬高',stack_height:'码垛高度调整',stack_height_running:'正在调整高度，保持夹持',stack_height_ready:'高度到位，保持夹持',stack_release:'码垛松爪',stack_released:'已松爪，保持当前高度',static_alignment_required:'请先完成静态对准并保留保持状态',static_alignment_required_or_height_moving:'请先完成静态对准并等待高度到位',stack_height_outside_limits:'目标高度超出Z行程'});
 const colors={1:'red',2:'yellow',3:'blue',4:'green',5:'black',6:'light_blue'};
 Object.assign(names,{stack_align:'码垛视觉对准',stack_center_align:'正在按视觉偏差对准',stack_compensating:'准心已对准，正在执行码垛补偿',stack_aligned_ready:'码垛对准到位，等待人工装料'});
@@ -128,8 +133,27 @@ export function chineseTerminalLine(original){
     }
   }catch{}
   const radar=line.match(/^(OK|ERR) radar ([a-z_]+)$/);if(radar)return `雷达${radar[1]==='ERR'?'未受理':'设备回复'}：${radarReasonText(radar[2])}`;
+  const homeDiagnostic=line.match(/^ERR grab (home_transaction|home_reply|home_verify) (.*)$/);
+  if(homeDiagnostic){
+    const titles={home_transaction:'回零事务失败',home_reply:'回零原始应答',home_verify:'回零参数读回不一致'};
+    const labels={step:'回零步骤',phase:'回零命令阶段',func:'命令功能码',mode:'回零模式',
+      code:'驱动返回码',code_valid:'返回码有效',sent:'任务命令发送完成',ack:'任务命令收到应答',
+      wire_sent:'当前子命令发送完成',reply:'当前子命令收到应答',bus_result:'本次总线结果',
+      tx_ms:'当前子命令发送完成时刻(ms)',len:'应答字节数',hex:'原始字节',
+      offset:'参数块字节偏移(从0起)',expected:'期望值',actual:'实际值'};
+    const values={params_read:'读取回零参数',params_write:'写入回零参数',params_verify:'读回核对回零参数',
+      trigger:'发送HOME',ack_timeout:'应答超时',motor_error:'驱动或参数核对失败',
+      reply:'收到应答',timeout:'超时',io_error:'传输错误',cancelled:'事务已取消'};
+    const tokens=homeDiagnostic[2].split(/\s+/).map(token=>{
+      const pair=token.match(/^([^=]+)=(.*)$/);
+      return pair&&labels[pair[1]]?`${labels[pair[1]]}：${values[pair[2]]??value(pair[2])}`:
+        pair&&values[pair[2]]?`${fields[pair[1]]??pair[1]}：${values[pair[2]]}`:translateToken(token);
+    });
+    return `故障 · ${titles[homeDiagnostic[1]]}：`+tokens.join('；');
+  }
   if(line.startsWith('ERR grab home_request '))return '故障 · 回零请求失败：'+line.slice(22).split(/\s+/).map(translateToken).join('；');
   if(line.startsWith('OK grab home_enable_recovery '))return '回零位置已稳定，补发一次使能：'+line.slice(29).split(/\s+/).map(translateToken).join('；');
+  if(/^ERR turntable fault\b/.test(line) && /\bbus_locked=1\b/.test(line))return '故障 · 转盘任务受共享电机总线锁定阻断；'+line.split(/\s+/).slice(3).map(t=>translateToken(t)).join('；');
   if(/^ERR\b/.test(line)&&!/^ERR grab (?:state=|route state=)/.test(line))return '设备提示：'+rejectionText(line);
   if(/^(?:OK|ERR|EVT) grab state=/.test(line)){
     const summary=grabStatusSummary(line);
@@ -151,8 +175,9 @@ export function chineseTerminalLine(original){
   if(line==='STM32 mechanical arm console ready')return 'STM32 已启动';
   if(/^Boot: arm auto-home=off\b/.test(line))return '上电自动回零已关闭；保持静止完成 IMU 验证 5 秒；手动三轴回零：grab rehome；遥测默认关闭';
   if(line.startsWith('Boot: Z/X collision home')) {
-    const stages=line.includes('-> gripper open 2500us -> Base negative direction home')?
-      '上电流程：Z/X 与 ID8 回零 → X/Z 完成后开爪2500 µs → 等待ID8就绪 → Base负向回零（俯视逆时针）→ IMU 静止验证5秒；':
+    const bootOpen=line.match(/-> gripper open (2450|2500)us -> Base (negative direction|near) home/);
+    const stages=bootOpen?
+      `上电流程：Z/X 与 ID8 回零 → X/Z 完成后开爪${bootOpen[1]} µs → 等待ID8就绪 → ${bootOpen[2]==='near'?'Base就近回零':'Base负向回零（俯视逆时针）'} → IMU 静止验证5秒；`:
       line.includes('+ ID8 near home in parallel -> Base near home')?
       '上电流程：Z/X 碰撞回零、ID8 车仓就近回零并行执行 → 确认完成后 Base 最后就近回零 → IMU 静止验证 5 秒；':
       line.includes('in parallel')?'上电流程：Z/X 碰撞回零、Base/ID8 车仓就近回零并行执行 → 全部完成后 IMU 静止验证 5 秒；':
@@ -175,8 +200,23 @@ export function chineseTerminalLine(original){
       return translateToken(t);
     }).join('；');
   }
-  const attempt=line.match(/^OK bus (attempt_rx|attempt|first)\s+(.*)$/);
-  if(attempt)return `总线：${({attempt:'本次恢复诊断',attempt_rx:'本次恢复接收证据',first:'首次故障记录'})[attempt[1]]}；`+attempt[2].split(/\s+/).map(t=>translateToken(t)).join('；');
+  const readRetry=line.match(/^WARN bus read_retry\s+(.*)$/);
+  if(readRetry)return '警告 · 总线：四轮状态查询漏答，已安排一次补读；'+readRetry[1].split(/\s+/).map(t=>translateToken(t)).join('；');
+  const rxError=line.match(/^OK bus (rx_error(?:_context|_dma|_tx|_data)?)\s+(.*)$/);
+  if(rxError){
+    const title={rx_error:'接收错误快照',rx_error_context:'错误时事务',rx_error_dma:'错误时DMA状态',rx_error_tx:'错误时发送指令',rx_error_data:'DMA原始数据'};
+    const label={seq:'快照序号',request_seq:'总线发送序号',uart_sr:'UART_SR原始值',cursor:'已交付游标',ndtr:'DMA剩余计数',ndtr_end:'复制结束DMA剩余计数',partial:'待成帧字节',offset:'物理缓冲偏移',rx_total:'累计入队字节'};
+    const parts=rxError[2].split(/\s+/).map(t=>{
+      const pair=t.match(/^([^=]+)=(.*)$/);if(!pair)return t;
+      const [,key,v]=pair;
+      if(key==='view')return `快照类型：${v==='first'?'首次故障':v==='latest'?'最近错误':v}`;
+      if(key==='phase')return `采集位置：${v==='irq'?'UART5错误IRQ入口':v==='callback'?'错误回调（无IRQ前快照）':v}`;
+      return label[key]?`${label[key]}：${v}`:translateToken(t);
+    });
+    return `总线诊断：${title[rxError[1]]}；`+parts.join('；');
+  }
+  const attempt=line.match(/^OK bus (attempt_rx|attempt_tx|first_tx|attempt|first)\s+(.*)$/);
+  if(attempt)return `总线：${({attempt:'本次恢复诊断',attempt_rx:'本次恢复接收证据',attempt_tx:'本次恢复发送证据',first_tx:'首次故障发送证据',first:'首次故障记录'})[attempt[1]]}；`+attempt[2].split(/\s+/).map(t=>translateToken(t)).join('；');
   if(/^OK bus recover requested\b/.test(line))return '总线恢复请求已受理；任务不会自动继续';
   if(/^OK bus recover complete\b/.test(line))return `${replyIsFault(line)?'电机总线未完全恢复':'电机总线恢复完成'}；${line.slice(24).trim().split(/\s+/).filter(t=>!/^tasks_resumed=0$|^home_reference=check$/.test(t)).map(translateToken).join('；')}；任务不会自动继续，请检查回零参考`;
   if(/^OK chassis stop id=/.test(line))return '四轮停车：'+line.slice(16).split(/\s+/).map(translateToken).join('；');
@@ -194,11 +234,13 @@ export function chineseTerminalLine(original){
   }
   const group=line.match(/^(OK|ERR|EVT|WARN) (bus|console|state|position|enable|disable|zero|origin|grip|camera|vision|material|grab|chassis|imu|qr|system|turntable)\b\s*(.*)$/);
   if(group){
+    const resume=group[2]==='grab' && group[3].startsWith('route ')
+      ?missionResumeStatus(Object.fromEntries(group[3].split(/\s+/).filter(t=>t.includes('=')).map(t=>t.split('=')))):null;
     const labels={bus:'总线',console:'控制台诊断',state:'轴状态',position:'轴位置',enable:'使能',disable:'关闭使能',zero:'位置清零',origin:'回零点',grip:'夹爪',camera:'相机',vision:'Base/X 对准',material:'物料任务',grab:'抓取任务',chassis:'底盘',imu:'IMU',qr:'二维码',system:'系统',turntable:'转盘'};
     const words={rx_restarted:'串口接收已恢复，继续等待真实应答',auto_recover:'自动恢复通信',sync_ack_ignored:'同步应答异常，零速缓存及实际停稳已验证',status:'状态',route:'路线',recover:'恢复',rehome:'重新建立三轴参考',get:'参数读取',set:'参数设置',accepted:'请求已受理，未确认到位',sent:'已发送，未确认动作完成',stop:'停止请求已处理',start:'启动',rejected:'请求被拒绝',stats:'统计',last:'最近数据',saved:'已保存',stream:'连续输出',on:'开启',off:'关闭',pending:'等待执行',partial:'部分完成'};
-    return `${group[1]==='WARN'?'警告 · ':replyIsFault(line)?'故障 · ':''}${labels[group[2]]}：`+group[3].split(/\s+/).map(t=>words[t]??translateToken(t,group[2])).join('；');
+    return `${group[1]==='WARN'?'警告 · ':replyIsFault(line)?'故障 · ':''}${labels[group[2]]}：`+group[3].split(/\s+/).map(t=>resume&&t.startsWith('state=')?`状态：${resume.label}`:words[t]??translateToken(t,group[2])).join('；');
   }
-  if(/^\[IMU (?:CAL|SAVE|VERIFY)\]/.test(line))return line.replace(/^\[IMU (CAL|SAVE|VERIFY)\]/,(_,k)=>({CAL:'IMU 标定/验证',SAVE:'IMU 保存状态',VERIFY:'IMU 验证数据'})[k]).split(/\s+/).map(translateToken).join('；');
+  if(/^\[IMU (?:CAL|SAVE|VERIFY|RECOVERY|MODE|NATIVE)\]/.test(line))return line.replace(/^\[IMU (CAL|SAVE|VERIFY|RECOVERY|MODE|NATIVE)\]/,(_,k)=>({CAL:'IMU 标定/验证',SAVE:'IMU 保存状态',VERIFY:'IMU 验证数据',RECOVERY:'IMU 读取恢复',MODE:'IMU 模式核验',NATIVE:'IMU 原生标定阶段'})[k]).split(/\s+/).map(translateToken).join('；');
   return original;
 }
 

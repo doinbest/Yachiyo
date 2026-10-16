@@ -2,6 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {commands, buildCommand, moduleForWire, describeReply} from '../protocol.mjs';
 
+test('quick IMU calibration is explicit and full calibration stays available',()=>{
+  assert.equal(buildCommand('imu-cal-quick'),'imu cal quick');
+  assert.equal(buildCommand('imu-cal-start'),'imu cal start');
+  const quick=commands.find(c=>c.id==='imu-cal-quick');
+  assert.equal(quick.owner,'system');assert.equal(quick.section,'calibration');
+  assert.match(quick.note,/20.*10/);
+  assert.match(commands.find(c=>c.id==='imu-cal-start').note,/20.*30/);
+});
+
 test('distance acceleration tests normalize diagonals and leave legacy timed controls separate', () => {
   const vectors={forward:[1,0],back:[-1,0],left:[0,1],right:[0,-1],fl:[1,1],fr:[1,-1],bl:[-1,1],br:[-1,-1]};
   for(const [direction,[x,y]] of Object.entries(vectors)){
@@ -14,8 +23,11 @@ test('distance acceleration tests normalize diagonals and leave legacy timed con
   }
   for(const changed of [{distance:0},{distance:3001},{speed:9},{speed:5001},{speed:'NaN'},{direction:'oops'}])
     assert.throws(()=>buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,...changed}));
-  assert.equal(buildCommand('chassis-test',{direction:'back',distance:500,speed:1000}),'chassis test -500 0 1000 linear');
-  assert.equal(buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,profile:'cosine'}),'chassis test 500 0 1000 cosine');
+  assert.equal(buildCommand('chassis-test',{direction:'back',distance:500,speed:1000}),'chassis test -500 0 1000 linear 500 0.1 0 1 300');
+  assert.equal(buildCommand('chassis-test',{direction:'forward',distance:1000,speed:1000,accel:800}),'chassis test 1000 0 1000 linear 800 0.1 0');
+  for(const accel of [0,9,5001,'NaN','',100.5])assert.throws(()=>buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,accel}));
+  assert.equal(buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,profile:'cosine',accel:''}),'chassis test 500 0 1000 cosine 200 0.1 0');
+  assert.equal(buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,profile:'cosine'}),'chassis test 500 0 1000 cosine 200 0.1 0');
   assert.throws(()=>buildCommand('chassis-test',{direction:'forward',distance:500,speed:1000,profile:'unknown'}));
 });
 
@@ -144,4 +156,9 @@ test('short axis diagnostics are read-only while stop is latched',async()=>{
   assert.equal(buildCommand('grab-base-status'),'grab status base');
   for(const axis of ['base','x','z'])assert.equal(readOnlyCommand('grab status '+axis),true);
   assert.equal(readOnlyCommand('grab status all'),false);
+});
+
+test('ring automatic tray placement sends one firmware command with no color or height draft',()=>{
+ assert.equal(buildCommand('grab-ring-take',{slot:'2'}),'grab ring take 2');
+ assert.throws(()=>buildCommand('grab-ring-take',{slot:'4'}));
 });

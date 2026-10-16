@@ -55,10 +55,12 @@ typedef struct
   uint8_t HomePrep;
   uint8_t HomeParams[20];
   uint8_t ExpectedFunction;
+  MechanicalArm_DiagnosticTypeDef Diagnostic;
   uint8_t SuccessMask;
   uint8_t FailureMask;
   uint8_t StopIdMask;
   bool ScheduledStop;
+  bool TrackingPosition;
   uint8_t StateFlags[MECHANICAL_ARM_AXIS_COUNT];
 } MechanicalArm_RequestTypeDef;
 
@@ -70,11 +72,11 @@ static MechanicalArm_AxisConfigTypeDef MechanicalArm_AxisConfig[MECHANICAL_ARM_A
     {"z",
      MOTOR_ID_ARM_Z,
      MECHANICAL_ARM_Z_POSITIVE_DIR,
-     {1000U, 255U, 0U}}, /* Z普通运动默认等效于config z 1000 255 0；回零使用驱动器参数。 */
+     {2250U, 0U, 0U}}, /* At480 pulses/mm:250 mm/s; gear0 is direct speed, HOME keeps drive parameters. */
     {"x",
      MOTOR_ID_ARM_X,
      MECHANICAL_ARM_X_POSITIVE_DIR,
-     {40U, 20U, MECHANICAL_ARM_COMMAND_PULSES_PER_REV}}};
+     {40U, 0U, MECHANICAL_ARM_COMMAND_PULSES_PER_REV}}};
 
 static UART_HandleTypeDef *MechanicalArm_Uart;
 static uint8_t MechanicalArm_StopPendingMask, MechanicalArm_StopMask;
@@ -132,6 +134,8 @@ static void MechanicalArm_RequestFinish(MechanicalArm_ResultTypeDef Result,
   MechanicalArm_Event.Transmitted = MechanicalArm_Transmitted;
   MechanicalArm_Event.Acknowledged = MechanicalArm_Acknowledged;
   MechanicalArm_Event.StopIdMask = MechanicalArm_Request.StopIdMask;
+  MechanicalArm_Event.Diagnostic = MechanicalArm_Request.Diagnostic;
+  MechanicalArm_Event.Diagnostic.Function = MechanicalArm_Request.ExpectedFunction;
   for (Index = 0U; Index < MECHANICAL_ARM_AXIS_COUNT; Index++)
   {
     MechanicalArm_Event.StateFlags[Index] = MechanicalArm_Request.StateFlags[Index];
@@ -156,11 +160,20 @@ static HAL_StatusTypeDef MechanicalArm_CurrentCommandSend(void)
   MechanicalArm_Transmitted = 0;
   MechanicalArm_Acknowledged = 0;
   MechanicalArm_TxDoneMs = 0;
+  memset(&MechanicalArm_Request.Diagnostic, 0, sizeof MechanicalArm_Request.Diagnostic);
+  MechanicalArm_Request.ExpectedFunction = 0;
 
   AxisConfig = MechanicalArm_AxisConfigGet(MechanicalArm_Request.CurrentAxis);
   if (AxisConfig == NULL)
   {
     return HAL_ERROR;
+  }
+
+  if(MechanicalArm_Request.Action==MECHANICAL_ARM_ACTION_ENABLE ||
+     MechanicalArm_Request.Action==MECHANICAL_ARM_ACTION_HOME){
+    if(MotorBus_IsQuarantined())return HAL_ERROR;
+    int ready=MotorBus_PositionReplyEnsure(AxisConfig->MotorId);
+    if(ready!=1)return ready<0?HAL_ERROR:HAL_BUSY;
   }
 
   switch (MechanicalArm_Request.Action)
@@ -176,6 +189,10 @@ static HAL_StatusTypeDef MechanicalArm_CurrentCommandSend(void)
     break;
 
   case MECHANICAL_ARM_ACTION_POSITION:
+    {
+      int ready=MotorBus_PositionReplyEnsure(AxisConfig->MotorId);
+      if(ready!=1)return ready<0?HAL_ERROR:HAL_BUSY;
+    }
     MechanicalArm_Request.ExpectedFunction = 0xFDU;
     Direction = AxisConfig->PositiveDirection;
     if (MechanicalArm_Request.PositionPulses < 0)
@@ -223,10 +240,13 @@ static HAL_StatusTypeDef MechanicalArm_CurrentCommandSend(void)
     break;
 
   case MECHANICAL_ARM_ACTION_HOME:
+    MechanicalArm_Request.Diagnostic.HomeStage = MECHANICAL_ARM_HOME_TRIGGER;
     if (MechanicalArm_Request.CurrentAxis == MECHANICAL_ARM_AXIS_BASE &&
         MechanicalArm_Request.HomeMode == 1U && MechanicalArm_Request.HomePrep < 3U) {
       uint8_t read[3] = {AxisConfig->MotorId, 0x22, 0x6b};
       bool writing = MechanicalArm_Request.HomePrep == 1U;
+      MechanicalArm_Request.Diagnostic.HomeStage = (MechanicalArm_HomeStageTypeDef)
+        (MECHANICAL_ARM_HOME_PARAMS_READ + MechanicalArm_Request.HomePrep);
       MechanicalArm_Request.ExpectedFunction = writing ? 0x4c : 0x22;
       if (!MotorBus_Submit(MOTOR_BUS_ARM, writing ? MechanicalArm_Request.HomeParams : read,
                           writing ? 20 : 3, writing ? 4 : 18, 0, false))
@@ -330,6 +350,20 @@ static MechanicalArm_ResultTypeDef MechanicalArm_RequestStartEx(MechanicalArm_Ac
   if (MechanicalArm_State != MECHANICAL_ARM_STATE_IDLE)
   {
     return MECHANICAL_ARM_RESULT_BUSY;
+  }
+
+  /* ALL advances on TX completion: prepare every axis before accepting it. */
+  if(Axis==MECHANICAL_ARM_AXIS_ALL &&
+     (Action==MECHANICAL_ARM_ACTION_ENABLE || Action==MECHANICAL_ARM_ACTION_HOME)){
+    if(MotorBus_IsQuarantined())return MECHANICAL_ARM_RESULT_TX_ERROR;
+    bool ready=true;
+    for(unsigned i=MECHANICAL_ARM_AXIS_BASE;i<=MECHANICAL_ARM_AXIS_X;i++){
+      MechanicalArm_AxisConfigTypeDef *cfg=MechanicalArm_AxisConfigGet((MechanicalArm_AxisTypeDef)i);
+      int r=MotorBus_PositionReplyEnsure(cfg->MotorId);
+      if(r<0)return MECHANICAL_ARM_RESULT_TX_ERROR;
+      if(!r)ready=false;
+    }
+    if(!ready)return MECHANICAL_ARM_RESULT_BUSY;
   }
 
   memset(&MechanicalArm_Request, 0, sizeof(MechanicalArm_Request));
@@ -444,8 +478,12 @@ static void MechanicalArm_ResponseProcess(const uint8_t *Response)
     MechanicalArm_Request.StateFlags[(uint8_t)MechanicalArm_Request.CurrentAxis] = MotorCode;
     MechanicalArm_Request.SuccessMask |= AxisMask;
   }
-  else if (MotorCode == 0x02U)
+  else if (MotorCode == 0x02U || (MechanicalArm_Request.Action==MECHANICAL_ARM_ACTION_POSITION && MotorCode==0x9fU) ||
+           (MechanicalArm_Request.Action==MECHANICAL_ARM_ACTION_HOME &&
+            MechanicalArm_Request.HomeMode==0U && MotorCode==0x12U))
   {
+    /* Nearest HOME may report already at the saved zero. This only accepts
+     * the command result; GrabTask still verifies HOME flags and standstill. */
     MechanicalArm_Request.SuccessMask |= AxisMask;
   }
   else
@@ -509,6 +547,8 @@ HAL_StatusTypeDef MechanicalArm_Init(UART_HandleTypeDef *huart)
   MechanicalArm_Uart = huart;
   MechanicalArm_State = MECHANICAL_ARM_STATE_IDLE;
   MechanicalArm_EventReady = 0;
+  /* Initialization stays quiet. Enable, HOME and FD prepare verified None
+   * on demand before their first command; no drive Flash or origin changes. */
   MechanicalArm_StopPendingMask=MechanicalArm_StopMask=0;
   memset(&MechanicalArm_Request, 0, sizeof(MechanicalArm_Request));
   memset(&MechanicalArm_Event, 0, sizeof(MechanicalArm_Event));
@@ -530,6 +570,21 @@ void MechanicalArm_Process(void)
     return;
   MechanicalArm_Transmitted = (uint8_t)event.tx_completed;
   MechanicalArm_TxDoneMs = event.tx_ms;
+  /* Snapshot the matched transaction before HOME preparation can clear the
+   * original command's flags or dispatch the next configuration step. */
+  MechanicalArm_Request.Diagnostic.BusEventValid = 1;
+  MechanicalArm_Request.Diagnostic.BusResult = (uint8_t)event.result;
+  MechanicalArm_Request.Diagnostic.WireTransmitted = (uint8_t)event.tx_completed;
+  MechanicalArm_Request.Diagnostic.WireTxMs = event.tx_ms;
+  MechanicalArm_Request.Diagnostic.UartError = event.uart_error;
+  MechanicalArm_Request.Diagnostic.ReplyReceived = event.result == MOTOR_BUS_REPLY;
+  MechanicalArm_Request.Diagnostic.ReplyLength = event.result == MOTOR_BUS_REPLY ? event.length : 0;
+  if (event.result == MOTOR_BUS_REPLY) {
+    unsigned length = event.length;
+    if (length > sizeof MechanicalArm_Request.Diagnostic.Reply)
+      length = sizeof MechanicalArm_Request.Diagnostic.Reply;
+    memcpy(MechanicalArm_Request.Diagnostic.Reply, event.data, length);
+  }
   if (MechanicalArm_StopPendingMask)
   {
     uint8_t mask=MechanicalArm_StopPendingMask;
@@ -567,7 +622,8 @@ void MechanicalArm_Process(void)
     if (event.result != MOTOR_BUS_REPLY ||
         (phase == 1U ? (event.length != 4U || event.data[2] != 2U) : event.length != 18U)) {
       MechanicalArm_RequestFinish(event.result == MOTOR_BUS_TIMEOUT ? MECHANICAL_ARM_RESULT_ACK_TIMEOUT :
-        MECHANICAL_ARM_RESULT_MOTOR_ERROR, MECHANICAL_ARM_AXIS_BASE, 0);
+        MECHANICAL_ARM_RESULT_MOTOR_ERROR, MECHANICAL_ARM_AXIS_BASE,
+        event.result == MOTOR_BUS_REPLY && event.length == 4U ? event.data[2] : 0);
       return;
     }
     if (phase == 0U) {
@@ -576,6 +632,13 @@ void MechanicalArm_Process(void)
       cmd[4] = 1; cmd[5] = MECHANICAL_ARM_BASE_POSITIVE_DIR ? 0 : 1;
       cmd[19] = 0x6b;
     } else if (phase == 2U && memcmp(cmd + 4, event.data + 2, 15)) {
+      for (unsigned i = 0; i < 15; i++) if (cmd[4+i] != event.data[2+i]) {
+        MechanicalArm_Request.Diagnostic.VerifyMismatch = 1;
+        MechanicalArm_Request.Diagnostic.VerifyOffset = (uint8_t)i;
+        MechanicalArm_Request.Diagnostic.VerifyExpected = cmd[4+i];
+        MechanicalArm_Request.Diagnostic.VerifyActual = event.data[2+i];
+        break;
+      }
       MechanicalArm_RequestFinish(MECHANICAL_ARM_RESULT_MOTOR_ERROR, MECHANICAL_ARM_AXIS_BASE, 0);
       return;
     }
@@ -595,9 +658,21 @@ void MechanicalArm_Process(void)
   }
   if (event.result == MOTOR_BUS_TX_DONE &&
       (MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_STOP ||
-       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_HOME_ABORT))
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_HOME_ABORT ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_ENABLE ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_DISABLE ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_HOME ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_POSITION ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_ZERO))
   {
     MechanicalArm_Transmitted = 1;
+    /* A sent command is not an ACK, arrival, enabled or HOME confirmation.
+     * The owning task must obtain those facts from fresh real feedback. */
+    MechanicalArm_Request.SuccessMask |= (uint8_t)(1U << MechanicalArm_Request.CurrentAxis);
+    if(MechanicalArm_Request.RequestedAxis==MECHANICAL_ARM_AXIS_ALL &&
+       MechanicalArm_Request.CurrentAxis<MECHANICAL_ARM_AXIS_X){
+      (void)MechanicalArm_NextAxisStart();return;
+    }
     MechanicalArm_RequestFinish(MECHANICAL_ARM_RESULT_OK, MECHANICAL_ARM_AXIS_INVALID, 0);
     return;
   }
@@ -669,14 +744,16 @@ MechanicalArm_ResultTypeDef MechanicalArm_Position(MechanicalArm_AxisTypeDef Axi
  * 返 回 值：请求接收结果
  * 说    明：视觉微调使用相对模式，已标定抓放位置可使用绝对模式
  */
-MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef Axis,
+static MechanicalArm_ResultTypeDef MechanicalArm_PositionSubmit(MechanicalArm_AxisTypeDef Axis,
                                                      int32_t Position, uint16_t SpeedRpm,
                                                      uint8_t Acceleration,
-                                                     MechanicalArm_PositionModeTypeDef Mode)
+                                                     MechanicalArm_PositionModeTypeDef Mode,
+                                                     bool Tracking)
 {
   if ((MechanicalArm_AxisConfigGet(Axis) == NULL) ||
       ((Position == 0) && (Mode != MECHANICAL_ARM_POSITION_ABSOLUTE)) || (SpeedRpm < 1U) ||
-      (SpeedRpm > 3000U) || (Acceleration < 1U) ||
+      (SpeedRpm > 3000U) ||
+      ((Acceleration == 0U) && (Axis != MECHANICAL_ARM_AXIS_X) && (Axis != MECHANICAL_ARM_AXIS_Z)) ||
       ((Mode != MECHANICAL_ARM_POSITION_ABSOLUTE) &&
        (Mode != MECHANICAL_ARM_POSITION_RELATIVE_CURRENT)))
   {
@@ -695,6 +772,7 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef A
   MechanicalArm_Request.SpeedRpm = SpeedRpm;
   MechanicalArm_Request.Acceleration = Acceleration;
   MechanicalArm_Request.PositionMode = Mode;
+  MechanicalArm_Request.TrackingPosition = Tracking;
   HAL_StatusTypeDef submitted = MechanicalArm_CurrentCommandSend();
   if (submitted != HAL_OK)
   {
@@ -702,6 +780,23 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef A
     return submitted == HAL_BUSY ? MECHANICAL_ARM_RESULT_BUSY : MECHANICAL_ARM_RESULT_TX_ERROR;
   }
   return MECHANICAL_ARM_RESULT_NONE;
+}
+
+MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef Axis,
+                                                     int32_t Position,uint16_t SpeedRpm,
+                                                     uint8_t Acceleration,
+                                                     MechanicalArm_PositionModeTypeDef Mode)
+{
+  return MechanicalArm_PositionSubmit(Axis,Position,SpeedRpm,Acceleration,Mode,false);
+}
+MechanicalArm_ResultTypeDef MechanicalArm_PositionTrackingEx(MechanicalArm_AxisTypeDef Axis,
+                                                     int32_t Position,uint16_t SpeedRpm,
+                                                     uint8_t Acceleration,
+                                                     MechanicalArm_PositionModeTypeDef Mode)
+{
+  if(Axis!=MECHANICAL_ARM_AXIS_X || Mode!=MECHANICAL_ARM_POSITION_ABSOLUTE)
+    return MECHANICAL_ARM_RESULT_PARAM_ERROR;
+  return MechanicalArm_PositionSubmit(Axis,Position,SpeedRpm,Acceleration,Mode,true);
 }
 
 /**
@@ -760,7 +855,7 @@ MechanicalArm_ResultTypeDef MechanicalArm_OriginSet(MechanicalArm_AxisTypeDef Ax
  * 函    数：触发单轴或全部轴执行指定模式回零
  * 参    数：Axis 目标轴；HomeMode 回零模式0至3
  * 返 回 值：请求接收结果
- * 说    明：成功结果只表示驱动器接受回零命令，不代表机械运动已经完成
+ * 说    明：None模式成功结果仅表示回零命令已发送；实际回零由任务反馈核验
  */
 MechanicalArm_ResultTypeDef MechanicalArm_Home(MechanicalArm_AxisTypeDef Axis, uint8_t HomeMode)
 {
@@ -848,7 +943,8 @@ uint8_t MechanicalArm_ConfigSet(MechanicalArm_AxisTypeDef Axis, uint16_t SpeedRp
   uint8_t Index;
 
   if ((Axis > MECHANICAL_ARM_AXIS_ALL) || (SpeedRpm < 1U) || (SpeedRpm > 3000U) ||
-      (Acceleration < 1U) || (PulseLimit > MECHANICAL_ARM_COMMAND_PULSES_PER_REV) ||
+      ((Acceleration == 0U) && (Axis != MECHANICAL_ARM_AXIS_X) && (Axis != MECHANICAL_ARM_AXIS_Z)) ||
+      (PulseLimit > MECHANICAL_ARM_COMMAND_PULSES_PER_REV) ||
       ((PulseLimit == 0U) && (Axis != MECHANICAL_ARM_AXIS_Z)))
   {
     return 0U;

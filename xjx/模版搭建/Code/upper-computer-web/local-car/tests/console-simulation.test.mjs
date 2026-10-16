@@ -32,7 +32,7 @@ function consoleFixture(){
     renderStatus:empty,displayReply:protocol.formatTerminalLine,visualStateText:t=>t??'—',bootProgress:(_l,s)=>s,
     parseRadar:()=>null,radarModel:{snapshots:{},params:{}},localStorage:{setItem:empty},
     radarExchange:{busy:false,cancel:empty},radarHostClient:null,radarDirectView:null,
-    paramsView:{receive:empty,cancel:empty,update:empty},trackingPanel:null,materialTrackingPanel:null,stackingPanel:null,missionPanel:null,headingPanel:null,chassisTestResult:null,
+    paramsView:{receive:empty,cancel:empty,update:empty},staticAlignGain:null,trackingPanel:null,materialTrackingPanel:null,stackingPanel:null,missionPanel:null,headingPanel:null,chassisTestResult:null,chassisTestSession:null,stopRecovery:null,
     radarView:{receive:empty,connection:empty,render:empty},mapView:null,wheelView:null,
     qrView:{receive:empty,connection:empty,refreshControls:empty},
     prepView:{busy:false,pending:null,connection(){this.busy=false;this.pending=null;},cancel(){this.busy=false;this.pending=null;},receive:empty},
@@ -49,10 +49,12 @@ function consoleFixture(){
     ${section('function mayQuery(wire)','async function requestStop()')}
     ${section('async function send(wire','async function refreshPorts()')}
     ${section('function definition(id)','async function copyText(text)')}
+    ${section('function buildGrabPreparation(body)','function parameterLink(')}
     ${section('function receive(line)','function communicationError(error)')}
     ${section('function renderGrabCalibrationStatus()','function buildVisionWorkspace(')}
     ${section('function renderGrabStatus()','function buildPages()')}
-    globalThis.sim={canSend,send,receive,connection,controlForm,updateControls,buildGrabCalibrationPanel,
+    globalThis.sim={canSend,send,receive,connection,controlForm,updateControls,buildGrabCalibrationPanel,buildGrabPreparation,
+      setStaticAlignGain(panel){staticAlignGain=panel;},
       get grabSnapshot(){return grabSnapshot;},get calibrationSnapshot(){return grabCalibrationSnapshot;},
       mountGrabStatus(){grabPanel=$('grab-task-status');renderGrabStatus();},
       configure(p){
@@ -67,10 +69,21 @@ function consoleFixture(){
   return {sim:ctx.sim,bridge,elements,wires,messages,logs,$};
 }
 
+test('Base quick HOME stays passive until clicked and sends nearest mode',async()=>{
+  const f=consoleFixture();f.sim.buildGrabPreparation(f.$('home-test-root'));
+  const button=f.elements.find(e=>e.tag==='button'&&e.title==='home base near');
+  assert.ok(button);assert.equal(button.textContent,'就近回零');
+  assert.ok(f.elements.some(e=>e.title==='home x collision'));
+  assert.ok(f.elements.some(e=>e.title==='home z collision'));
+  assert.deepEqual(f.wires,[]);
+  button.onclick();await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['home base near']);
+});
+
 test('gripper microsecond edits stay passive and apply once through existing firmware',async()=>{
   const f=consoleFixture();f.sim.controlForm('grip-pulse',{compact:true});
   const input=f.$('grip-pulse-pulse'),form=f.elements.find(e=>e.tag==='form');
-  assert.equal(Number(input.value),2120);assert.deepEqual(f.wires,[]);
+  assert.equal(Number(input.value),2450);assert.deepEqual(f.wires,[]);
   input.value='2300';input.oninput();assert.deepEqual(f.wires,[]);
   form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
   assert.deepEqual(f.wires,['grip duty 11.5']);
@@ -89,10 +102,39 @@ test('standalone chassis test remains passive until submit and respects stop loc
   distance.value='1000';distance.oninput();assert.deepEqual(f.wires,[]);
   profile.value='cosine';profile.onchange();assert.deepEqual(f.wires,[]);
   form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
-  assert.deepEqual(f.wires,['chassis test 0 1000 1000 cosine']);
+  assert.deepEqual(f.wires,['chassis test 0 1000 1000 cosine 200 0.1 0']);
   f.sim.configure({stopLatched:true});distance.value='500';distance.oninput();
   form.onsubmit({preventDefault(){}});await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(f.wires.length,1);
+});
+
+test('single-test form delegates one asymmetric motion to its lifecycle',async()=>{
+ const f=consoleFixture(),started=[];let busy=false;
+ f.sim.controlForm('chassis-test',{compact:true,onExecute:w=>started.push(w),isBusy:()=>busy});
+ const form=f.elements.find(e=>e.tag==='form');
+ form.onsubmit({preventDefault(){}});
+ assert.deepEqual(started,['chassis test 500 0 1000 linear 500 0.1 0 1 300']);assert.deepEqual(f.wires,[]);
+ busy=true;form.onsubmit({preventDefault(){}});assert.equal(started.length,1);
+});
+test('deceleration input is independent and inactive under cosine',()=>{
+ const f=consoleFixture(),started=[];f.sim.controlForm('chassis-test',{onExecute:w=>started.push(w)});
+ const form=f.elements.find(e=>e.tag==='form'),decel=f.$('chassis-test-decel'),profile=f.$('chassis-test-profile');
+ const label=f.elements.find(e=>e.tag==='label'&&e.children.includes(decel));
+ assert.equal(Number(decel.value),300);decel.value='250';decel.oninput();form.onsubmit({preventDefault(){}});
+ assert.equal(started.at(-1),'chassis test 500 0 1000 linear 500 0.1 0 1 250');
+ profile.value='cosine';profile.onchange();assert.equal(decel.disabled,true);assert.equal(label.hidden,true);
+ profile.value='linear';profile.onchange();assert.equal(decel.value,'250');assert.equal(decel.disabled,false);
+});
+test('linear acceleration input is per test and cosine hides it without losing its draft',()=>{
+ const f=consoleFixture(),started=[];f.sim.controlForm('chassis-test',{onExecute:w=>started.push(w)});
+ const form=f.elements.find(e=>e.tag==='form'),accel=f.$('chassis-test-accel'),profile=f.$('chassis-test-profile');
+ const label=f.elements.find(e=>e.tag==='label'&&e.children.includes(accel));
+ accel.value='800';accel.oninput();assert.deepEqual(started,[]);assert.deepEqual(f.wires,[]);
+ form.onsubmit({preventDefault(){}});assert.equal(started.at(-1),'chassis test 500 0 1000 linear 800 0.1 0 1 300');
+ profile.value='cosine';profile.onchange();assert.equal(accel.disabled,true);assert.equal(label.hidden,true);
+ form.onsubmit({preventDefault(){}});assert.equal(started.at(-1),'chassis test 500 0 1000 cosine 200 0.1 0');
+ profile.value='linear';profile.onchange();assert.equal(label.hidden,false);assert.equal(accel.value,'800');
+ accel.value='0';accel.oninput();form.onsubmit({preventDefault(){}});assert.equal(started.length,2);
 });
 
 test('ring comparison stays passive and issues one explicit fixed-height alignment',async()=>{
@@ -376,4 +418,38 @@ test('actual task and calibration status cards translate causes without changing
   assert.match(f.$('grab-calibration-status').textContent,/标定响应.*无效/);
   assert.equal(f.sim.calibrationSnapshot.data.reason,'response_invalid');
   assert.deepEqual(f.wires,[]);
+});
+
+test('ring tray placement form is passive and sends one selected-tray command',async()=>{
+ const f=consoleFixture();f.sim.controlForm('grab-ring-take',{compact:true});
+ assert.deepEqual(f.wires,[]);f.$('grab-ring-take-slot').value='3';
+ const form=f.elements.find(e=>e.tag==='form');form.onsubmit({preventDefault(){}});
+ await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(f.wires,['grab ring take 3 110 25']);
+ f.sim.configure({stopLatched:true});form.onsubmit({preventDefault(){}});
+ await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(f.wires,['grab ring take 3 110 25']);
+});
+
+test('standalone ring task status omits unused route and QR fields',()=>{
+ const f=consoleFixture();f.sim.mountGrabStatus();
+ f.sim.receive('OK grab route state=car_pick mode=ring_place source=qr code=none slot=3 ring=2 elapsed_ms=100 reason=car_pick');
+ const card=f.$('grab-task-status').children.find(e=>e.className==='grab-route-status');
+ const text=card.children.map(e=>e.textContent).join(' ');
+ assert.match(text,/编号环自动放置.*2号环.*3号料盘/);
+ assert.doesNotMatch(text,/第 — 段|来源 qr|none|路线原因/);
+ assert.deepEqual(f.wires,[]);
+});
+
+
+test('static gain hooks receive replies and cancel on stop, reboot and disconnect',async()=>{
+  const f=consoleFixture(),calls=[];
+  f.sim.setStaticAlignGain({receive:line=>calls.push(['reply',line]),cancel:reason=>calls.push(['cancel',reason]),connection:connected=>calls.push(['connection',connected]),update(){}});
+  f.sim.receive('OK grab config key=lambda value=4');
+  assert.ok(calls.some(([kind,line])=>kind==='reply'&&line==='OK grab config key=lambda value=4'));
+  await f.sim.send('grab stop');
+  assert.ok(calls.some(([kind,reason])=>kind==='cancel'&&reason.includes('停止')));
+  f.sim.receive('STM32 mechanical arm console ready');
+  assert.ok(calls.some(([kind,reason])=>kind==='cancel'&&reason.includes('重启')));
+  f.sim.connection('disconnected');
+  assert.ok(calls.some(([kind,value])=>kind==='connection'&&value===false));
+  assert.deepEqual(f.wires,['grab stop']);
 });

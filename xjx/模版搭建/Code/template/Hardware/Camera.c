@@ -62,7 +62,8 @@ static HAL_StatusTypeDef Camera_RequestStart(uint8_t Function, uint8_t Target)
     Camera_RequestTarget = Target;
     Camera_RequestActive = 1U;
     memset(&Camera_Pose, 0, sizeof Camera_Pose);
-    Camera_Pose.Active = Target == 0x0DU;
+    Camera_Pose.Active = Target == 0x0DU || Target == 0x0EU;
+    Camera_Pose.Target = Target;
     Camera_Pose.RequestEpoch = ++Camera_RequestEpoch;
     Camera_InvalidCount = 0U;
     Camera_LastFrameTick = 0U;
@@ -77,6 +78,28 @@ static HAL_StatusTypeDef Camera_RequestStart(uint8_t Function, uint8_t Target)
     return (Status == USBD_BUSY) ? HAL_BUSY : HAL_ERROR;
   }
   return HAL_OK;
+}
+HAL_StatusTypeDef Camera_RestartIfMissing(uint8_t Target,uint32_t AfterTick,uint32_t FreshMs,uint8_t *Retained)
+{
+  uint32_t primask,tick,received;HAL_StatusTypeDef result;
+  if(!Retained)return HAL_ERROR;
+  *Retained=0;
+  primask=__get_PRIMASK();__disable_irq();
+  tick=HAL_GetTick();
+  received=Camera_LatestData.HasReceiveTime?Camera_LatestData.ReceivedTick:Camera_LatestData.Tick;
+  if(!Camera_RequestActive || Camera_RequestFunction!=0xB2U || Camera_RequestTarget!=Target ||
+     !((Target>=1U && Target<=6U) || (Target>=10U && Target<=12U)))result=HAL_ERROR;
+  else if(Camera_HasFrame && Camera_HasValidData && Camera_TargetValid &&
+          Camera_LatestData.Function==0xB2U && Camera_LatestData.Target==Target &&
+          (int32_t)(received-AfterTick)>=0 && tick-received<=FreshMs){
+    *Retained=1;result=HAL_OK;
+  }else if(Camera_InputLength && !Camera_InputOverflow){
+    /* A packet can arrive during stop verification after Camera_Process ran.
+     * Let the next main-loop parse it before a restart discards its bytes. */
+    result=HAL_BUSY;
+  }else result=Camera_RequestStart(0xB2U,Target);
+  __set_PRIMASK(primask);
+  return result;
 }
 
 /**
@@ -183,7 +206,12 @@ void Camera_FrameObserverSet(Camera_FrameObserver_t Observer)
   * 说    明：只发送一次FF B2 Color FF
   */
 HAL_StatusTypeDef Camera_PoseStart(void)
-{ return Camera_RequestStart(0xB2U, 0x0DU); }
+{ return Camera_PoseStartSource(0x0DU); }
+HAL_StatusTypeDef Camera_PoseStartSource(uint8_t target)
+{
+  if(target!=0x0DU && target!=0x0EU)return HAL_ERROR;
+  return Camera_RequestStart(0xB2U, target);
+}
 void Camera_PoseSnapshotGet(Camera_PoseSnapshot_t *snapshot)
 { if (snapshot) *snapshot = Camera_Pose; }
 HAL_StatusTypeDef Camera_RingStart(uint8_t Ring)
@@ -316,7 +344,7 @@ void Camera_Process(void)
     {
       Camera_HasFrame = 1U;
       Camera_LastFrameTick = HAL_GetTick();
-      if (Camera_RequestTarget == 0x0DU)
+      if (Camera_RequestTarget == 0x0DU || Camera_RequestTarget == 0x0EU)
       {
         Camera_Pose.HasFrame = 1U;
         Camera_Pose.Valid = Camera_TargetValid = Camera_StreamBuffer[3];

@@ -82,15 +82,15 @@ int main(void)
   assert(!strcmp(rows[0], "4/4 Servo Test"));
   assert(!strcmp(rows[1], "Signal:Off") && servo_sets == 0);
   assert(OledUi_KeyHandle(KEY_EVENT_PE2) && servo_sets == 0);
-  refresh(); assert(!strcmp(rows[2], "Set:2500us"));
+  refresh(); assert(!strcmp(rows[2], "Set:2450us"));
   chassis_busy = 1U; OledUi_KeyHandle(KEY_EVENT_PE5); assert(servo_sets == 0);
   chassis_busy = 0U; OledUi_KeyHandle(KEY_EVENT_PE5);
-  assert(servo_sets == 1 && servo_duty == 12.5f);
+  assert(servo_sets == 1 && servo_duty == 12.25f);
   OledUi_KeyHandle(KEY_EVENT_PE3); assert(servo_duty == 9.6f);
   OledUi_KeyHandle(KEY_EVENT_PE5); assert(servo_offs == 1 && servo_duty == 0.0f);
   before = servo_sets;
   OledUi_KeyHandle(KEY_EVENT_PE2);
-  refresh(); assert(!strcmp(rows[2], "Set:2500us") && servo_sets == before);
+  refresh(); assert(!strcmp(rows[2], "Set:2450us") && servo_sets == before);
   OledUi_KeyHandle(KEY_EVENT_PE3);
   refresh(); assert(!strcmp(rows[2], "Set:1920us") && servo_sets == before);
   OledUi_KeyHandle(KEY_EVENT_PE5); assert(servo_duty == 9.6f);

@@ -40,7 +40,7 @@ export class RoutePreparation {
     if(!this.connected||this.busy)return false;
     const config=this.getConfig();
     if(!validCarConfig(config)){this.fail('请先在“本车配置”中确认四轮安装方向并保存。Emm 协议参数已预设。');return false;}
-    this.config={...config,profile:'receive',units_per_rev:65536};
+    this.config={...config,profile:'none',units_per_rev:65536};
     this.verifiedNow=false;this.session=null;this.streamAccepted=false;
     this.request('quiet','chassis stream off','1/5 暂停遥测，检查底盘配置与任务…');
     return true;
@@ -90,7 +90,7 @@ export class RoutePreparation {
       case 'configured':
         if(!line.startsWith('OK chassis task '))break;
         if(f.locked!=='0'||!['0','3','4'].includes(f.state)||!['0','5'].includes(f.stage)||
-          f.ack!=='2'||f.units!=='65536'){
+          !['1','2'].includes(f.ack)||f.units!=='65536'){
           this.fail('保存的配置未生效，或底盘已被占用。请检查任务中的应答模式与位置单位。');break;
         }
         this.request('select','chassis feedback 0','2/5 选择四轮反馈…');break;
@@ -191,7 +191,7 @@ export function mountPreparation({root,send,beginTelemetry,telemetry,getConfig=(
   const section=make('section','');section.className='route-preparation';section.id='route-preparation';
   section.append(make('h3','准备跑图'),make('p','保持整车静止。可先扫描再准备，也可先准备再扫描。程序检查四轮反馈和 IMU；已有合适原点直接复用，首次或原点不匹配时需确认摆放位置。完成准备不会启动运动。'));
   const details=make('details','');details.className='car-config';details.append(make('summary','本车配置 · Emm 默认预设'));
-  details.append(make('p','已确认：Emm42 固件，仅修改 ID。控制 3200 脉冲/圈；位置反馈 65536 单位/圈；Receive 接收应答。均按电机轴一圈计。'));
+  details.append(make('p','Emm42 控制3200脉冲/圈，位置反馈65536单位/圈，均按电机轴一圈计。底盘默认None：运动不等ACK，实际运动由反馈确认；固件首次运动前自动仅RAM配置并读回核对。'));
   const directionsLabel=make('label',''),directions=make('input','');directions.type='checkbox';directions.id='car-directions-confirmed';directionsLabel.append(directions,make('span','已确认四轮安装方向与程序的前进方向一致'));
   const save=make('button','保存轮向确认'),configText=make('p','');save.id='car-config-save';save.type='button';configText.id='car-config-status';configText.setAttribute('role','status');
   details.append(directionsLabel,make('p','协议参数无需实测或重复选择。准备时配置 STM32 RAM，不改驱动器设置。更改轮子安装或驱动固件后需重新核对本车预设。'),save,configText);section.append(details);
@@ -207,7 +207,7 @@ export function mountPreparation({root,send,beginTelemetry,telemetry,getConfig=(
     directions.disabled=state.busy||saving;
     save.disabled=!configAvailable()||state.busy||saving||isStopped();
     configText.textContent=!configAvailable()?'本地服务不可用，无法加载或保存配置。':validCarConfig(c)?'Emm 预设就绪 · 四轮方向已确认':'Emm 预设已确定；请先确认四轮方向。';}
-  save.onclick=async()=>{const c={profile:'receive',units_per_rev:65536,directions_confirmed:directions.checked};saving=true;render();try{await saveConfig(c);state.cancel('本车配置已保存；点击准备跑图时应用。');}catch(error){state.fail('保存失败：'+error.message);}finally{saving=false;render();}};
+  save.onclick=async()=>{const c={profile:'none',units_per_rev:65536,directions_confirmed:directions.checked};saving=true;render();try{await saveConfig(c);state.cancel('本车配置已保存；点击准备跑图时应用。');}catch(error){state.fail('保存失败：'+error.message);}finally{saving=false;render();}};
   state.refreshConfiguration=render;
   start.onclick=async()=>{if(!state.connected||state.busy||isStopped())return;if(!validCarConfig(state.getConfig())){state.start();return;}state.show('acquiring','正在锁定本次准备；其他窗口只能查询或停止…');const serial=state.serial;try{await acquire();if(state.serial!==serial||state.phase!=='acquiring'||isStopped()){await release();return;}state.phase='idle';state.streamAccepted=false;state.start();}catch(error){state.fail('无法开始准备：'+error.message);}};confirm.onclick=()=>state.confirmOrigin();cancel.onclick=()=>state.cancel();
   setInterval(()=>state.tick(),100);render();return state;

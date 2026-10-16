@@ -21,8 +21,9 @@ static unsigned camera_calls, motor_calls, stop_calls, notice_clears, manual_arm
 static uint8_t motor_busy;
 static bool calib_ref;
 static bool grab_busy, grab_route_busy;
-static bool mission_pending,mission_recovery_accepted;
+static bool mission_pending,mission_recovery_accepted,mission_feedback_allowed;
 bool ContestMission_HasPendingWork(void){return mission_pending;}
+bool ContestMission_FeedbackPreparationAllowed(void){return mission_feedback_allowed;}
 bool ContestMission_BusRecoveryEvidenceGet(MotorBus_Recovery_t *out){(void)out;return false;}
 bool ContestMission_RequestBusRecovery(bool auto_resume){assert(!auto_resume);return mission_pending && mission_recovery_accepted;}
 static bool turntable_busy;
@@ -52,6 +53,13 @@ void GrabTask_Stop(void){grab_stops++;grab_busy=false;}
 void GrabRoute_Stop(void){grab_route_busy=false;if(grab_busy)GrabTask_Stop();}
 static unsigned mission_pauses,mission_cancels,mission_fields;
 bool GrabRoute_Command(unsigned n,char *t[]){
+ if(n==4 && !strcmp(t[0],"grab") && !strcmp(t[1],"ring") && !strcmp(t[2],"take")){ArmConsole_Write("OK ring take routed\r\n");return true;}
+ if(n==11 || n==12){
+  assert(!strcmp(t[0],"grab") && !strcmp(t[1],"mission") && !strcmp(t[2],"fixed"));
+  assert(!strcmp(t[8],"vhigh") && !strcmp(t[9],"linear") && !strcmp(t[10],"scale=1.2"));
+  if(n==12)assert(!strcmp(t[11],"smooth=1"));
+  mission_fields=n;return true;
+ }
  if((n==9 || n==10) && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && !strcmp(t[2],"fixed"))
  {assert(!strcmp(t[8],"lowered"));if(n==10)assert(!strcmp(t[9],"cosine"));mission_fields=n;return true;}
  if(n==3 && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && (!strcmp(t[2],"pause") || !strcmp(t[2],"stop")))
@@ -82,7 +90,24 @@ bool MotorBus_RecoveryStart(void) { recovery_fake.active=true;return true; }
 void MotorBus_RecoveryCancel(void) { recovery_fake.active=false; }
 void MotorBus_RecoveryGet(MotorBus_Recovery_t *s) { *s=recovery_fake; }
 bool Mecanum_RecoveryAfterBusCheck(void) { return true; }
-void Mecanum_Feedback_Enable(bool enabled) { (void)enabled; }
+static bool mode_feedback_enabled=true,mode_feedback_valid=true;
+static uint8_t mode_feedback_address=3;
+static int mode_feedback_rpm;
+static MotorBus_ModeTestStatus_t mode_fake;
+void Mecanum_Feedback_Enable(bool enabled) { mode_feedback_enabled=enabled; }
+void Mecanum_FeedbackSettingsGet(bool *enabled,uint8_t *address)
+{if(enabled)*enabled=mode_feedback_enabled;if(address)*address=mode_feedback_address;}
+bool Mecanum_Feedback_Select(uint8_t address){mode_feedback_address=address;mode_feedback_enabled=false;return address<=4;}
+bool Mecanum_FeedbackGet(unsigned wheel,Mecanum_Feedback_t *f)
+{(void)wheel;memset(f,0,sizeof *f);f->speed_valid=f->position_valid=f->state_valid=mode_feedback_valid;
+ f->speed_ms=f->position_ms=f->state_ms=tick;f->state_flags=3;f->speed_rpm=mode_feedback_rpm;return true;}
+bool MotorBus_ModeTestActive(void){return mode_fake.active;}
+bool MotorBus_ModeTestStart(uint8_t target,uint16_t gap)
+{if(mode_fake.active)return false;memset(&mode_fake,0,sizeof mode_fake);mode_fake.active=true;mode_fake.target=target;mode_fake.gap_ms=gap;mode_fake.reason="snapshot";return true;}
+void MotorBus_ModeTestProcess(void){}
+void MotorBus_ModeTestCancel(void){mode_fake.active=false;mode_fake.cancelled=mode_fake.restored=true;mode_fake.reason="cancelled_restored";}
+void MotorBus_ModeTestGet(MotorBus_ModeTestStatus_t *s){*s=mode_fake;}
+uint32_t MotorBus_ReplySettleMs(void){return mode_fake.active?mode_fake.gap_ms:2;}
 void MotorBus_Cancel(MotorBus_Owner_t owner) { (void)owner;guard_ready=false; }
 bool MotorBus_OwnerBusy(MotorBus_Owner_t owner) { (void)owner;return guard_ready; }
 bool MotorBus_Submit(MotorBus_Owner_t owner,const uint8_t *p,uint8_t n,uint8_t reply,uint32_t token,bool priority)
@@ -127,6 +152,10 @@ void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out)
   out->tick_ms=12345;out->uart_error=4;
   out->owner=MOTOR_BUS_ARM;out->address=7;out->function=0x3a;
 }
+static bool rx_error_fake_valid;
+static MotorBus_RxErrorSnapshot_t rx_error_fake;
+bool MotorBus_RxErrorGet(MotorBus_RxErrorSnapshot_t *out,bool first)
+{(void)first;if(!out || !rx_error_fake_valid)return false;*out=rx_error_fake;return true;}
 static float forward_value, left_value, yaw_value, grip_duty;
 static int32_t motor_pulses;
 static MechanicalArm_ConfigTypeDef config = {60, 20, 3200};
@@ -150,8 +179,18 @@ bool ConsoleTx_Event(const char *data,uint16_t length)
 { assert(length<sizeof(qr_event));if(qr_event[0])qr_event_dropped++;memcpy(qr_event,data,length);qr_event[length]=0;qr_event_count++;return true; }
 void ConsoleTx_EventCancel(void) {if(qr_event[0])qr_event_dropped++;qr_event[0]=0;}
 uint32_t ConsoleTx_EventDropped(void) {return qr_event_dropped;}
-bool ChassisTelemetry_Command(unsigned count,char *tokens[]) {if(count==2&&!strcmp(tokens[0],"chassis")&& !strcmp(tokens[1],"task"))
- {ArmConsole_Write("OK chassis task query\r\n");return true;}return false;}
+static unsigned feedback_queries,feedback_commands;
+bool ChassisTelemetry_Command(unsigned count,char *tokens[]) {
+ if(count<2 || strcmp(tokens[0],"chassis"))return false;
+ if(count==2 && !strcmp(tokens[1],"task"))
+ {ArmConsole_Write("OK chassis task query\r\n");return true;}
+ if(!strcmp(tokens[1],"feedback")) {
+   if(count==2){feedback_queries++;ArmConsole_Write("OK wheel=1 cached\r\n");return true;}
+   if(count==3 && (!strcmp(tokens[2],"on") || !strcmp(tokens[2],"off") ||
+      (strlen(tokens[2])==1 && tokens[2][0]>='0' && tokens[2][0]<='4')))
+   {feedback_commands++;ArmConsole_Write("OK chassis request accepted\r\n");return true;}
+ }
+ return false;}
 static bool route_reserved;
 bool ChassisRoute_IsBusy(void){return route_reserved;}
 bool ChassisRoute_Cancel(void){route_reserved=false;motion_busy=false;return true;}
@@ -196,6 +235,7 @@ bool HWT101_Angle_Is_Fresh(const HWT101_Angle_t *out,uint32_t age) { (void)out;(
 bool HWT101_Status_Get(HWT101_Status_t *out) { memset(out,0,sizeof(*out));out->valid_read_count=44;out->i2c_error_count=UINT32_MAX;return true; }
 static HWT101_CalStatus_t cal_status;
 static unsigned cal_starts, cal_cancels, refresh_calls;
+static unsigned quick_cal_starts;
 static uint32_t verify_duration;
 static bool chassis_busy;
 bool HWT101_Cal_IsBusy(void) { return cal_status.busy; }
@@ -203,7 +243,13 @@ bool HWT101_Cal_ZeroStart(void) { zero_calls++; cal_status.busy=true; return tru
 bool HWT101_Cal_Start(void)
 {
   assert(!chassis_busy && !motor_busy && !grab_busy);
-  cal_starts++; cal_status.busy=true; cal_status.state=HWT101_CAL_CALIBRATING; return true;
+  cal_starts++; cal_status.busy=true; cal_status.state=HWT101_CAL_CALIBRATING; cal_status.native_wait_ms=20000; return true;
+}
+bool HWT101_Cal_QuickStart(void)
+{
+  assert(!chassis_busy && !motor_busy && !grab_busy);
+  quick_cal_starts++;cal_status.busy=true;cal_status.state=HWT101_CAL_CALIBRATING;
+  cal_status.native_wait_ms=20000;cal_status.verify_ms=10000;return true;
 }
 bool HWT101_Cal_VerifyStart(uint32_t duration)
 {
@@ -259,6 +305,60 @@ static void command(const char *text)
   for(unsigned i=0;i<12 && ManualGuardActive;i++)ArmConsole_Process(); }
 static unsigned occurrences(const char *text)
 { unsigned count=0;const char *at=output;while((at=strstr(at,text))!=NULL){count++;at+=strlen(text);}return count; }
+/* The real console, including its early busy guards, must admit only the
+ * recovery owner's feedback preparation. Mission stop-proof policy is covered
+ * by contest_imu_pause_test; this fake controls that public decision. */
+static void test_paused_feedback_admission(void)
+{
+  unsigned queries=feedback_queries,writes=feedback_commands,motors=motor_calls;
+  unsigned stops=stop_calls;
+  mission_pending=grab_route_busy=true;
+  mission_feedback_allowed=true; /* Preserved PAUSED mission, current stop proven. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  command("chassis feedback 0\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  command("chassis feedback on\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  assert(mission_pending && grab_route_busy && motor_calls==motors && stop_calls==stops);
+  {
+    const char *blocked[]={"chassis feedback off\r","chassis feedback 1\r",
+      "chassis feedback 4\r","chassis feedback 00\r","chassis feedback 0 extra\r",
+      "chassis origin 0 0 0\r","chassis velocity 1 0 0\r","pos x 10\r"};
+    for(unsigned i=0;i<sizeof blocked/sizeof blocked[0];i++) {
+      command(blocked[i]);assert(strstr(output,"grab_busy"));
+      assert(feedback_commands==writes && motor_calls==motors && stop_calls==stops);
+    }
+  }
+  mission_feedback_allowed=false; /* PAUSED without current parking proof. */
+  command("chassis feedback 0\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  command("chassis feedback on\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  motion_busy=route_reserved=true; /* Running mission. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  command("chassis feedback on\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  motion_busy=route_reserved=false;
+  recovery_fake.active=true; /* Mission recovery owns all bus activity. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  command("chassis feedback 0\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  recovery_fake.active=false;
+  BusRecoveryPending=2;recovery_fake.active=true; /* Ordinary console recovery. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  command("chassis feedback on\r");assert(strstr(output,"operation_busy") && feedback_commands==writes);
+  BusRecoveryPending=0;recovery_fake.active=false;
+  ResetPending=1; /* Cached data also remains readable during a pending reset. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  ResetPending=0;
+  /* A newer stop revokes the mission API decision before a queued enable. */
+  mission_feedback_allowed=true;
+  command("chassis feedback 0\r");assert(feedback_commands==++writes);
+  mission_feedback_allowed=false;
+  stop_status.tx_complete=stop_status.wheels_stopped=false;
+  command("chassis feedback on\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  mission_pending=false; /* Cancelled mission still completing its owned stop. */
+  command("chassis feedback on\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  grab_route_busy=false; /* Ordinary idle keeps the original preparation API. */
+  command("chassis feedback 0\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  command("chassis feedback on\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  command("chassis feedback off\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  assert(motor_calls==motors && stop_calls==stops);
+}
 static void qr_receive(const char *text) {while(*text)QR_ReceiveData((uint8_t)*text++);}
 static void test_qr(void)
 {
@@ -313,7 +413,7 @@ int main(void)
     char qr[]="grab mission qr 500 100 lower fixed";
     char fixed[]="grab mission fixed 156+123+516+231 500 100 upper radar";
     char raised[]="grab mission fixed 156+123+516+231 500 100 upper radar raised";
-    char extra[]="grab mission fixed 156+123+516+231 500 100 upper radar raised cosine extra";
+    char extra[]="grab mission fixed 156+123+516+231 500 100 upper radar raised cosine extra overflow overlimit";
     char *tokens[ARM_CONSOLE_TOKEN_COUNT];
     assert(ArmConsole_Tokenize(qr,tokens)==7);
     assert(!strcmp(tokens[5],"lower") && !strcmp(tokens[6],"fixed"));
@@ -321,14 +421,21 @@ int main(void)
     assert(!strcmp(tokens[3],"156+123+516+231") && !strcmp(tokens[6],"upper") && !strcmp(tokens[7],"radar"));
     assert(ArmConsole_Tokenize(raised,tokens)==9 && !strcmp(tokens[8],"raised"));
     assert(ArmConsole_Tokenize(extra,tokens)==0);
+    char asymmetric[]="chassis test 1000 0 1000 linear 500 0.02 0 1 300";
+    assert(ArmConsole_Tokenize(asymmetric,tokens)==11 && !strcmp(tokens[10],"300"));
   }
   UART_HandleTypeDef uart={0};MechanicalArm_EventTypeDef event={0};unsigned before;
   uart.Instance=USART1;ArmConsole_Init(&uart);BusAutoFaultSeen=true;BusAutoFaultTick=12345; /* Existing guards use an already acknowledged fault. */
+  test_paused_feedback_admission();
   snapshot.UsbConfigured=1;snapshot.RequestActive=1;
   command("grab mission fixed 156+123+516+231 5000 100 upper radar lowered\r");
   assert(mission_fields==9 && !strstr(output,"ERR")); /* Full 63-byte payload plus CR. */
   command("grab mission fixed 156+123+516+231 1000 100 upper fixed lowered cosine\r");
   assert(mission_fields==10 && !strstr(output,"ERR"));
+  command("grab mission fixed 156+123+516+231 1000 100 lower fixed vhigh linear scale=1.2 smooth=1\r");
+  assert(mission_fields==12 && !strstr(output,"ERR"));
+  command("grab mission fixed 156+123+516+231 1000 100 lower fixed vhigh linear scale=1.2\r");
+  assert(mission_fields==11 && !strstr(output,"ERR"));
   command("lidarservo status\r");assert(lidar_sets==0 && strstr(output,"enabled=0 pulse_us=0"));
   for(unsigned pulse=500;pulse<=5000;pulse+=500) {
     char wire[40];snprintf(wire,sizeof wire,"lidarservo pulse %u\r",pulse);
@@ -445,7 +552,17 @@ int main(void)
   cal_status.state=HWT101_CAL_DONE;
   before=refresh_calls;command("imu status\r");assert(refresh_calls==before+1 && strstr(output,"result=PASS"));
   cal_status.state=HWT101_CAL_FAILED;cal_status.gap_ms=353;cal_status.max_gap_ms=353;
+  cal_status.recovery_step="CAL_WAIT";cal_status.recovery_expected_mode=1;cal_status.recovery_mode_mask=6;
+  cal_status.recovery_mode_first=cal_status.recovery_mode_last=0x1234;
+  cal_status.recovery_mode_seen=cal_status.recovery_mode_valid=true;cal_status.recovery_mode_reads=2;
   command("imu status\r");assert(strstr(output,"result=FAIL") && strstr(output,"gap_ms=353 max_gap_ms=353 limit_ms=300"));
+  assert(strstr(output,"recovery_step=CAL_WAIT expected_mode=0x0001 first_mode=0x1234 last_mode=0x1234"));
+  assert(strstr(output,"mode_seen=1 mode_valid=1 mode_HAL=0 mode_reads=2"));
+  assert(strstr(output,"allowed_mode_mask=0x0006"));
+  cal_status.timing_valid=true;cal_status.peak_time_s=cal_status.bias_time_s=10;
+  cal_status.native_modes_seen=7;cal_status.native_normal_ms=15800;
+  command("imu status\r");assert(strstr(output,"OK imu native timing_valid=1 peak_time_s=10 bias_time_s=10"));
+  assert(strstr(output,"native_modes=0x07 native_normal_ms=15800"));
   command("imu cal clear\r");assert(cal_cancels==5);
   command("imu cal start extra\r");assert(cal_starts==1 && strstr(output,"ERR imu format"));
   before=motor_calls;command("chassis hold 30 5\r");assert(motor_calls==before && strstr(output,"imu_not_verified"));
@@ -625,6 +742,7 @@ int main(void)
   command("pos z 10\r");assert(motor_calls==before&&strstr(output,"grab_busy"));
   command("grip open\r");assert(strstr(output,"grab_busy"));
   ring_manual=true;
+  command("grab ring take 2\r");assert(strstr(output,"ring take routed") && motor_calls==before);
   command("grip catch\r");assert(!strstr(output,"grab_busy") && grip_duty==ARM_GRIPPER_CATCH);
   command("grab stack lower -100\r");assert(strstr(output,"stack routed") && motor_calls==before);
   command("grab stack release\r");assert(strstr(output,"stack routed") && motor_calls==before);
@@ -735,6 +853,20 @@ int main(void)
   command("bus test 8\r");assert(BusTest.active && BusTest.rounds==10);
   ArmConsole_ReceiveData(3);ArmConsole_StopProcess();assert(!BusTest.active && !probe_active);
   bus_locked=false;
+  mode_feedback_enabled=true;mode_feedback_address=3;
+  command("bus mode-test receive off 3\r");assert(mode_fake.active && ArmConsole_OperationBusy());
+  assert(!mode_feedback_enabled && mode_feedback_address==0);
+  before=motor_calls;command("wheel fl 10\r");assert(before==motor_calls && strstr(output,"mode-test active"));
+  command("bus read 1 driver\r");assert(!BusTest.active && strstr(output,"mode-test active"));
+  command("bus mode-test status\r");assert(strstr(output,"gap_ms=3"));
+  mode_fake.active=false;mode_fake.success=mode_fake.restored=true;mode_fake.reason="complete";
+  ArmConsole_Process();assert(mode_feedback_enabled && mode_feedback_address==3 && !ArmConsole_OperationBusy());
+  mode_feedback_valid=false;command("bus mode-test none on 5\r");assert(!mode_fake.active && strstr(output,"fresh_stopped_feedback_required"));mode_feedback_valid=true;
+  mode_feedback_rpm=2;command("bus mode-test none on 5\r");assert(!mode_fake.active && strstr(output,"fresh_stopped_feedback_required"));mode_feedback_rpm=0;
+  command("bus mode-test none on 4\r");assert(!mode_fake.active && strstr(output,"ERR format"));
+  command("bus mode-test none on 5\r");assert(mode_fake.active && mode_feedback_enabled);
+  ArmConsole_ReceiveData(3);ArmConsole_StopProcess();assert(!mode_fake.active && mode_fake.cancelled);
+  ArmConsole_Process();
   grab_busy=grab_route_busy=true;
   mission_pending=true;recovery_fake.active=true;
   command("grab mission pause\r");assert(mission_pauses==1 && recovery_fake.active);
@@ -751,5 +883,31 @@ int main(void)
   ArmConsole_ReceiveData(3);ArmConsole_StopProcess();
   tick+=3000;ArmConsole_Process();assert(!BusRecoveryPending && !recovery_fake.active);
   bus_locked=false;
+  rx_error_fake_valid=true;rx_error_fake.sequence=42;rx_error_fake.phase=1;
+  rx_error_fake.tick_ms=UINT32_MAX;rx_error_fake.token=UINT32_MAX;rx_error_fake.request_seq=UINT32_MAX;
+  rx_error_fake.rx_total=UINT32_MAX;rx_error_fake.tx_ms=UINT32_MAX;rx_error_fake.uart_error=HAL_UART_ERROR_NE;
+  rx_error_fake.tx_length=MOTOR_BUS_FRAME_MAX;memset(rx_error_fake.tx,0xff,sizeof rx_error_fake.tx);
+  memset(rx_error_fake.dma,0xab,sizeof rx_error_fake.dma);
+  command("bus recovery\r");
+  assert(strstr(output,"OK bus rx_error seq=42 view=first phase=irq") &&
+    strstr(output,"OK bus rx_error_tx seq=42 bytes=40 hex=FFFFFFFF") &&
+    strstr(output,"OK bus rx_error_data seq=42 offset=32 bytes=32 hex=ABABABAB"));
+  output[0]=0;tick+=2000;ArmConsole_BusRecoveryProcess();
+  assert(!strstr(output,"OK bus rx_error seq=42"));
+  rx_error_fake.sequence++;output[0]=0;tick+=2000;ArmConsole_BusRecoveryProcess();
+  assert(strstr(output,"OK bus rx_error seq=43 view=latest"));
+  rx_error_fake_valid=false;
+  /* Quick native calibration has its own command, the same motion guards and
+   * a ten-second verification report; it never silently uses full mode. */
+  memset(&cal_status,0,sizeof cal_status);
+  chassis_busy=false;motor_busy=grab_busy=motion_busy=0;heading_status.active=false;
+  command("imu cal quick\r");
+  assert(quick_cal_starts==1 && strstr(output,"cal_ms=20000") && strstr(output,"verify_ms=10000"));
+  command("imu cal quick\r");assert(quick_cal_starts==1 && strstr(output,"busy"));
+  command("imu cal cancel\r");
+  chassis_busy=true;command("imu cal quick\r");assert(quick_cal_starts==1 && strstr(output,"motion_busy"));chassis_busy=false;
+  grab_busy=1;command("imu cal quick\r");assert(quick_cal_starts==1 && strstr(output,"grab_busy"));grab_busy=0;
+  motor_busy=1;command("imu cal quick\r");assert(quick_cal_starts==1 && strstr(output,"motion_busy"));motor_busy=0;
+  command("imu cal quick extra\r");assert(quick_cal_starts==1 && strstr(output,"ERR imu format"));
   puts("arm_console_host_test: commands, units, busy, status, CRLF and async prompts OK");return 0;
 }

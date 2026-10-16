@@ -65,8 +65,12 @@
 
 /* 独立补偿直行测试：先核对正方向，再进行落地调试。 */
 #define CHASSIS_HEADING_TEST_YAW_SIGN      1.0f /* HWT逆时针角度增大用+1，否则-1。 */
-#define CHASSIS_HEADING_TEST_KP            0.02f
-#define CHASSIS_HEADING_TEST_OUTPUT_LIMIT  0.15f /* rad/s，首次测试仅使用P控制。 */
+#define CHASSIS_HEADING_TEST_KP            0.10f /* Pure P, rad/s per degree of error. */
+#define CHASSIS_HEADING_TEST_KD            0.00f /* D disabled for the P-only comparison. */
+#define CHASSIS_HEADING_RATE_FILTER_MS     40U
+#define CHASSIS_HEADING_DEADBAND_DEG       0.10f /* Translation/heading hold only; precision turns bypass. */
+#define CHASSIS_HEADING_TEST_OUTPUT_LIMIT  0.50f /* Straight heading correction, rad/s. */
+#define CHASSIS_TURN_KP                    0.10f /* Pure-turn P; keep its independent speed ceiling. */
 
 /* 参数版本与确认状态；数值变更时同步网页模型和版本。 */
 #define CHASSIS_CONFIG_REVISION           "geom-20260912-v1"
@@ -79,11 +83,16 @@
 #define CHASSIS_PHYSICAL_ENCODER_BITS      0U
 #define CHASSIS_EMM_POSITION_UNITS_PER_REV 65536U
 /* 0x36协议位置单位不等于命令脉冲数，也不代表物理编码器分辨率。 */
-#define CHASSIS_MOTION_PERIOD_MS           20U
+#define CHASSIS_MOTION_PERIOD_MS           1U
+#define CHASSIS_MOTION_MIN_DURATION_MS     20U
+#define CHASSIS_CURVE_PERIOD_MS            1U
+#define CHASSIS_CURVE_PERIOD_MAX_MS        100U
 #define CHASSIS_MOTION_MAX_GAP_MS          100U
 #define CHASSIS_MOTION_DEFAULT_RAMP_MS     500U
 #define CHASSIS_MOTION_MAX_LINEAR_MM_S     5000.0f
 #define CHASSIS_MOTION_MAX_OMEGA_DEG_S     100.0f
+/* Explicit route/turn requests may select a higher limit; defaults stay100. */
+#define CHASSIS_TURN_MAX_SPEED_DEG_S       360.0f
 #define CHASSIS_MOTION_MAX_OMEGA_RAD_S     (CHASSIS_MOTION_MAX_OMEGA_DEG_S * 3.14159265358979323846f / 180.0f)
 /* Emm F6/FD speed field is documented as 0..3000 RPM; loaded speed is unverified. */
 #define CHASSIS_EMM_MAX_COMMAND_RPM         3000U
@@ -93,6 +102,8 @@
 /* Route speed profile; verify acceleration and stopping distance on the chassis. */
 #define CHASSIS_DISTANCE_SPEED_MM_S       50.0f
 #define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  1000.0f
+#define CHASSIS_MISSION_SCALE_MIN          0.1f
+#define CHASSIS_MISSION_SCALE_MAX          5.0f
 #define CHASSIS_ROUTE_AUTO_DWELL_MS       0U
 #define CHASSIS_DISTANCE_KP               2.5f
 #define CHASSIS_DISTANCE_RESPONSE_S       0.25f
@@ -105,14 +116,35 @@
  * Curved-path vector tracking retains its separately validated slew limit. */
 #define CHASSIS_DISTANCE_COSINE_K         200U
 #define CHASSIS_DISTANCE_ACCEL_MM_S2     300.0f
+/* Formal linear mission: user-selected rates; full loaded-route validation pending. */
+#define CHASSIS_MISSION_EMPTY_ACCEL_MM_S2 1000.0f
+/* Lower-start QR straight after the (2100,300) turn; departure stays separate. */
+#define CHASSIS_MISSION_QR_APPROACH_ACCEL_MM_S2 800.0f
+#define CHASSIS_MISSION_QR_APPROACH_MM_S      800.0f
+#define CHASSIS_MISSION_QR_DEPARTURE_ACCEL_MM_S2 800.0f
+#define CHASSIS_MISSION_QR_DEPARTURE_MM_S     800.0f
+#define CHASSIS_MISSION_LOADED_ACCEL_MM_S2 800.0f
+#define CHASSIS_MISSION_SHORT_ACCEL_MM_S2 500.0f
+#define CHASSIS_MISSION_DECEL_MM_S2        300.0f
+#define CHASSIS_PROCESSING_OBSERVE_Y_MM    350.0f
+#define CHASSIS_PROCESSING_EXIT_Y_MM       425.0f
+#define CHASSIS_MISSION_TRANSIT_MM_S       800.0f
+#define CHASSIS_MISSION_RAW_LATERAL_MM_S   700.0f
+#define CHASSIS_MISSION_SHORT_MM_S         300.0f
+#define CHASSIS_TEST_ACCEL_MIN_MM_S2     10.0f
+#define CHASSIS_TEST_ACCEL_MAX_MM_S2     5000.0f
+#define CHASSIS_TEST_COSINE_K_MIN         10U
+#define CHASSIS_TEST_COSINE_K_MAX         2000U
+#define CHASSIS_TEST_HEADING_GAIN_MAX     1.0f
 #define CHASSIS_PATH_ACCEL_MM_S2          300.0f
 #define CHASSIS_DISTANCE_TOLERANCE_MM     10.0f
 #define CHASSIS_DISTANCE_HEADING_DEG      2.0f
 #define CHASSIS_DISTANCE_TIMEOUT_MS      60000U
 #define CHASSIS_DISTANCE_MAX_TIMEOUT_MS  400000U /* Full route: up to 1750 mm at 10 mm/s plus settling. */
 #define CHASSIS_DISTANCE_STOP_TIMEOUT_MS 3000U
-/* Confirm on three new quiet wheel groups; no additional dwell time. */
+/* Standalone distance/independent stop baseline; formal normal arrivals use 2. */
 #define CHASSIS_DISTANCE_STOP_GROUPS      3U
+#define CHASSIS_ROUTE_STOP_GROUPS         2U /* Normal formal-route arrivals only. */
 #define CHASSIS_DISTANCE_STOP_RPM         1
 #define CHASSIS_DISTANCE_STOP_DELTA_MM    2.0f
 

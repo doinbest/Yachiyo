@@ -2,23 +2,33 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parameterFields,displayValue,fieldWrites,deviceRequests} from '../parameter-schema.mjs';
 import {GRAB_FORM_DEFAULTS} from '../grab-params.mjs';
+
+test('automatic gripper defaults use 100ms without changing stability windows',()=>{
+  for(const key of ['close_ms','release_ms','car_pick_wait_ms'])assert.equal(GRAB_FORM_DEFAULTS[key],100);
+  assert.equal(GRAB_FORM_DEFAULTS.stable_ms,200);
+  assert.equal(GRAB_FORM_DEFAULTS.arrival_hold_ms,200);
+});
 import {grabParameters,buildCommand} from '../protocol.mjs';
 
 test('firmware defaults and physical ranges reach all parameter entry points',()=>{
   assert.equal(GRAB_FORM_DEFAULTS.z_min,-150);
-  assert.equal(GRAB_FORM_DEFAULTS.car_pick_drop_mm,40);
-  assert.equal(GRAB_FORM_DEFAULTS.z_grab,-50);
-  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-140);
+  assert.equal(GRAB_FORM_DEFAULTS.car_pick_drop_mm,25);
+  assert.equal(GRAB_FORM_DEFAULTS.z_grab,-45);
+  assert.equal(GRAB_FORM_DEFAULTS.z_place,-25);
+  assert.equal(GRAB_FORM_DEFAULTS.track_store_drop_mm,25);
+  for(const key of ['z_speed','z_pick_speed','qr_z_speed'])assert.equal(GRAB_FORM_DEFAULTS[key],250);
+  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-110);
   assert.equal(GRAB_FORM_DEFAULTS.z_rough_align,-100);
   assert.equal(GRAB_FORM_DEFAULTS.z_temp_align,-100);
-  assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-110);
-  assert.equal(grabParameters.length,66);
-  for(const key of ['head_proc_zero','head_proc_gain','head_temp_zero','head_temp_gain','head_tol','head_spread','head_settle_ms','head_proc_turn','head_temp_turn'])assert.ok(!(key in GRAB_FORM_DEFAULTS));
+  assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-100);
+  assert.equal(grabParameters.length,68);
+  for(const key of ['head_proc_zero','head_proc_gain','head_temp_zero','head_temp_gain','head_line_zero','head_line_gain','head_tol','head_spread','head_settle_ms','head_proc_turn','head_temp_turn'])assert.ok(!(key in GRAB_FORM_DEFAULTS));
   assert.ok(!grabParameters.some(p=>['ref_u','ref_v'].includes(p.key)));
   assert.ok(!('ref_u' in GRAB_FORM_DEFAULTS) && !('ref_v' in GRAB_FORM_DEFAULTS));
-  assert.equal(new Set(grabParameters.map(p=>p.key)).size,66);
+  assert.equal(new Set(grabParameters.map(p=>p.key)).size,68);
   assert.equal(GRAB_FORM_DEFAULTS.track_pick_tol_px,100);
-  assert.equal(GRAB_FORM_DEFAULTS.track_pick_hold_ms,10);
+  assert.equal(GRAB_FORM_DEFAULTS.arrival_hold_ms,200);
+  assert.equal(GRAB_FORM_DEFAULTS.track_pick_hold_ms,0);
   assert.equal(buildCommand('grab-set-track_pick_tol_px',{value:8}),'grab set track_pick_tol_px 8');
   assert.equal(buildCommand('grab-set-track_pick_tol_px',{value:100}),'grab set track_pick_tol_px 100');
   assert.equal(buildCommand('grab-set-track_pick_hold_ms',{value:0}),'grab set track_pick_hold_ms 0');
@@ -33,10 +43,10 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.equal(buildCommand('grab-set-base_home_degrade',{value:0}),'grab set base_home_degrade 0');
   assert.throws(()=>buildCommand('grab-set-base_home_degrade',{value:2}));
   assert.throws(()=>buildCommand('grab-set-base_home_degrade',{value:0.5}));
-  for(const key of ['z_speed','z_pick_speed']) {
+  for(const key of ['z_speed','z_pick_speed','qr_z_speed']) {
     const field=parameterFields.find(p=>p.key===key);
     assert.equal(field.max,333.333);
-    assert.deepEqual(fieldWrites(field,{[key]:222.222}),[[key,222.222]]);
+    assert.deepEqual(fieldWrites(field,{[key]:222.222}),['z_speed','z_pick_speed','qr_z_speed'].map(k=>[k,222.222]));
     assert.equal(buildCommand(`grab-set-${key}`,{value:111.111111}),`grab set ${key} 111.111111`);
     for(const value of [0,333.334]) {
       assert.throws(()=>fieldWrites(field,{[key]:value}));
@@ -49,10 +59,27 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.match(parameterFields.find(p=>p.key==='x_acc').note,/默认X20、Z255/);
 });
 
-test('material descent speed is shared and separate from ring/lift speed',()=>{
+test('visual mapping uses the measured 450 by 330 mm field at 640 by 480 pixels',()=>{
+  const p=GRAB_FORM_DEFAULTS;
+  const near=(actual,expected)=>assert.ok(Math.abs(actual-expected)<1e-6,`${actual} != ${expected}`);
+  // Test physical distances as well as the response: catch inverse units or cm/mm mistakes.
+  near(p.j00*450,640);
+  near(p.j11*330,480);
+  near(p.j12*330,480);
+  near(100/p.j00,70.3125);
+  near(100/p.j11,68.75);
+  for(const key of ['j01','j02','j10'])assert.equal(p[key],0);
+  // Explicit measured responses remain writable, including negative/coupled directions.
+  for(const [key,value] of [['j00',-1.7],['j02',0.3],['j12',1.6]]){
+    assert.deepEqual(fieldWrites(parameterFields.find(f=>f.key===key),{[key]:value}),[[key,value]]);
+    assert.equal(buildCommand(`grab-set-${key}`,{value}),`grab set ${key} ${value}`);
+  }
+});
+
+test('material Z speed retains its compatibility parameter entry',()=>{
   const speed=parameterFields.find(f=>f.key==='z_pick_speed');
   assert.ok(speed);assert.equal(speed.tab,'material');assert.equal(speed.unit,'mm/s');
-  assert.deepEqual(fieldWrites(speed,{z_pick_speed:'111.111'}),[['z_pick_speed',111.111]]);
+  assert.deepEqual(fieldWrites(speed,{z_pick_speed:'111.111'}),['z_speed','z_pick_speed','qr_z_speed'].map(k=>[k,111.111]));
 });
 
 test('distance fields preserve absolute firmware coordinates and relative clearance',()=>{
@@ -81,7 +108,7 @@ test('claw waiting is an optional motion timing field and units are separate fro
   for(const key of ['close_ms','release_ms','car_pick_wait_ms']){
     const f=parameterFields.find(f=>f.key===key);
     assert.equal(f.tab,'motion');assert.equal(f.group,'夹爪动作时序');assert.equal(f.unit,'ms');
-    assert.equal(GRAB_FORM_DEFAULTS[key],300);
+    assert.equal(GRAB_FORM_DEFAULTS[key],100);
     assert.deepEqual(fieldWrites(f,{[key]:450}),[[key,450]]);
   }
   const wait=parameterFields.find(f=>f.key==='close_ms');

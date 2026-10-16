@@ -24,7 +24,8 @@ typedef struct
   bool receive_time_valid;
   bool valid, actuating;
   float error_px[2], j[2][3];
-  float motion_mm[3]; /* local feedback: forward, left, X extension */
+  float motion_mm[3]; /* Control motion: measured in visual/feedback, estimated only in predict mode. */
+  float body_left_mm; /* Measured local left displacement only; owns the 50 mm budget in every mode. */
   float actual_mm_s[3], x_mm, x_min_mm, x_max_mm;
   uint32_t feedback_age_ms, batch_interval_ms;
   uint32_t request_ms, sent_ms;

@@ -46,6 +46,7 @@ typedef struct
   bool locked, stop_pending;
   int32_t sent_rpm[4];
   uint32_t sent_ms;
+  uint32_t sent_sequence; /* Sequence of the committed batch, not the pending plan. */
   bool sent_velocity_valid;
   bool tx_complete, acknowledged;
   uint8_t acknowledged_wheels;
@@ -56,6 +57,10 @@ typedef struct
   int64_t position_raw; /* signed magnitude 32-bit payload, no truncation */
   uint8_t state_flags;
   uint32_t speed_ms, position_ms, state_ms;
+  uint32_t speed_tx_ms, position_tx_ms;
+  uint32_t speed_target_ms, speed_target_sequence;
+  int32_t speed_target_rpm; /* Logical chassis-forward target active at speed query TX. */
+  bool speed_target_valid;
   bool speed_valid, position_valid, state_valid;
 } Mecanum_Feedback_t;
 /** Accept a latest target snapshot; main loop sends asynchronously. acc is drive grade. */
@@ -86,7 +91,12 @@ bool Mecanum_RecoveryAfterBusCheck(void);
 /** @brief Main-loop temporary all-wheel stop feedback, independent of user selection.
  * Release retains the most recent user/task enable and selection policy. */
 void Mecanum_Feedback_StopMonitor(bool active);
+/** Normal route arrival: refresh drive states once, then four speeds/positions.
+ * Does not alter user selection; independent stop monitoring takes precedence. */
+void Mecanum_Feedback_Arrival(bool active);
 void Mecanum_Feedback_Enable(bool enabled);
+/** Read user/task polling policy, independently of temporary stop demand. */
+void Mecanum_FeedbackSettingsGet(bool *enabled,uint8_t *address);
 /** @brief Select the next poll's motor address 1..4, or 0 for all.
  * Disables new polling until Enable(true). An outstanding read/reply completes
  * normally with its original identity; selection does not cancel it or move motors.
@@ -164,5 +174,9 @@ bool Mecanum_RequestPlannedStop(void);
  * Mecanum_Test_Stop()且四条停止命令均发送成功，才能解除记录。
  */
 bool Mecanum_IsBusy(void);
+/** Read-only velocity handoff gate: committed four-wheel zero, no queued motion
+ * or stop/fault work. Does not clear IsBusy's explicit-stop latch or claim
+ * measured standstill; the receiving task still validates fresh feedback. */
+bool Mecanum_VelocityHandoffReady(void);
 
 #endif /* MECANUM_CHASSIS_H */

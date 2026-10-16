@@ -10,6 +10,7 @@
 static ChassisLocalization_Status_t location;
 static bool route_busy,route_submitting,stop_polling;
 void Mecanum_Feedback_StopMonitor(bool active){stop_polling=active;}
+void Mecanum_Feedback_Arrival(bool active){(void)active;}
 bool Mecanum_FeedbackGet(unsigned i,Mecanum_Feedback_t *out){*out=location.wheels[i];return true;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *out){*out=location;}
 bool ChassisRoute_IsBusy(void){return route_busy;}
@@ -27,6 +28,10 @@ bool HWT101_Cal_IsBusy(void){return cal_busy;}
 bool HWT101_Cal_ControlAngleGet(HWT101_Angle_t *out){if(!valid||cal_busy)return false;*out=angle;return true;}
 uint8_t MechanicalArm_IsBusy(void){return arm_busy;}
 bool Mecanum_IsBusy(void){return motor_busy;}
+static bool velocity_handoff,pose_clearance,qr_departure;
+bool Mecanum_VelocityHandoffReady(void){return velocity_handoff;}
+bool GrabTask_PoseClearanceReady(void){return pose_clearance;}
+bool GrabTask_QrDepartureActive(void){return qr_departure;}
 bool GrabTask_IsBusy(void){return grab_busy;}
 bool GrabTask_CalibrationActive(void){return calibration_busy;}
 void Mecanum_StatusGet(Mecanum_Status_t *out){*out=bus;}
@@ -36,7 +41,7 @@ bool Mecanum_Test_Stop(void){stops++;bus.stop_sequence++;bus.tx_complete=false;b
 bool Mecanum_RequestPlannedStop(void){return Mecanum_Test_Stop();}
 static void reading(uint32_t now,float yaw){tick=now;angle.yaw=yaw;angle.last_update_ms=now;angle.update_count++;}
 static ChassisMotion_Status_t status(void){ChassisMotion_Status_t s;ChassisMotion_StatusGet(&s);return s;}
-static void reset(void){memset(&location,0,sizeof(location));route_busy=route_submitting=false;tick=0;sends=stops=0;expected_acc=sent_acc=0;valid=cal_busy=arm_busy=calibration_busy=motor_busy=grab_busy=false;accept=true;memset(&bus,0,sizeof(bus));bus.ack_profile=MECANUM_ACK_NONE;memset(&angle,0,sizeof(angle));ChassisMotion_Init();}
+static void reset(void){memset(&location,0,sizeof(location));route_busy=route_submitting=velocity_handoff=pose_clearance=qr_departure=false;tick=0;sends=stops=0;expected_acc=sent_acc=0;valid=cal_busy=arm_busy=calibration_busy=motor_busy=grab_busy=false;accept=true;memset(&bus,0,sizeof(bus));bus.ack_profile=MECANUM_ACK_NONE;memset(&angle,0,sizeof(angle));ChassisMotion_Init();}
 static void complete_stop(void){bus.stage=MECANUM_STAGE_STOPPED;bus.stop_pending=false;ChassisMotion_Process();}
 int main(void)
 {
@@ -73,7 +78,7 @@ int main(void)
   assert(ChassisMotion_HoldStart(-30,1000));assert(sent_vx==-30);
   assert(!status().map_anchor_valid && status().requested.heading_deg==179);
   ChassisMotion_HoldStatus_t hs;ChassisMotion_HoldStatusGet(&hs);assert(hs.active);
-  reading(20,-179);ChassisMotion_Process();assert(fabsf(sent_omega+.04f)<.00001f);
+  reading(20,-179);ChassisMotion_Process();assert(fabsf(sent_omega+.2f)<.00001f);
   reading(160,-179);ChassisMotion_Process();assert(ChassisMotion_IsBusy() && !stops);
   for(unsigned ms=180;ms<=1000;ms+=20){reading(ms,-179);ChassisMotion_Process();}
   complete_stop();ChassisMotion_HoldStatusGet(&hs);assert(!hs.active && !strcmp(hs.reason,"complete"));
@@ -84,7 +89,7 @@ int main(void)
   /* Straight heading correction must not inherit the faster pure-turn ceiling. */
   reset();valid=true;reading(0,0);ChassisMotion_TargetDefaults(&t);
   t.mode=CHASSIS_MOTION_HOLD_CURRENT;t.vx_mm_s=100;t.transition_ms=0;
-  assert(ChassisMotion_Start(&t));reading(20,-30);ChassisMotion_Process();assert(fabsf(sent_omega-.15f)<.00001f);
+  assert(ChassisMotion_Start(&t));reading(20,-30);ChassisMotion_Process();assert(fabsf(sent_omega-.5f)<.00001f);
   /* A timed straight task captures module yaw; no artificial map origin. */
   reset();ChassisMotion_TargetDefaults(&t);t.mode=CHASSIS_MOTION_HOLD_CURRENT;
   t.vx_mm_s=50;t.transition_ms=0;
@@ -109,9 +114,9 @@ int main(void)
   reset();ChassisMotion_TargetDefaults(&t);assert(t.transition_ms==500&&t.stop_ms==500);t.vx_mm_s=100;t.hold_ms=100;
   assert(ChassisMotion_Start(&t));assert(ChassisMotion_IsBusy());
   for(tick=20;tick<=240;tick+=20)ChassisMotion_Process();
-  tick=250;ChassisMotion_Process();assert(sent_vx<50); /* not due yet */
+  tick=250;ChassisMotion_Process();assert(fabsf(sent_vx-50)<.001f); /* 1ms scheduling consumes this 10ms interval. */
   tick=260;ChassisMotion_Process();assert(fabsf(sent_vx-53.1395f)<.001f);
-  assert(status().control_dt_ms==20);
+  assert(status().control_dt_ms==10);
   for(tick=280;tick<=600;tick+=20)ChassisMotion_Process();
   assert(fabsf(sent_vx-100)<.001f);
   for(tick=620;tick<=1100;tick+=20)ChassisMotion_Process();
@@ -131,11 +136,11 @@ int main(void)
   reset();assert(ChassisMotion_Start(&t));tick=20;ChassisMotion_Process();assert(ChassisMotion_Stop(0));assert(stops==1);complete_stop();assert(!strcmp(status().reason,"cancelled"));
   reset();assert(ChassisMotion_Start(&t));tick=20;ChassisMotion_Process();bus.stage=MECANUM_STAGE_FAULT;ChassisMotion_Process();assert(stops==1&&status().state==CHASSIS_MOTION_STOPPING);complete_stop();assert(status().state==CHASSIS_MOTION_ERROR&&!strcmp(status().reason,"bus_fault"));
   reset();valid=true;reading(0,179);assert(ChassisMotion_AnchorSet(1));t.mode=CHASSIS_MOTION_HEADING;t.heading_deg=179;t.transition_ms=0;
-  assert(ChassisMotion_Start(&t));reading(20,-179);ChassisMotion_Process();assert(fabsf(status().current_deg-181)<.001f);assert(fabsf(sent_omega+.04f)<.0001f);
+  assert(ChassisMotion_Start(&t));reading(20,-179);ChassisMotion_Process();assert(fabsf(status().current_deg-181)<.001f);assert(fabsf(sent_omega+.2f)<.0001f);
   assert(fabsf(status().map_yaw_rad-(1+2*CHASSIS_MODEL_PI/180))<.0001f);
-  tick=40;ChassisMotion_Process();assert(fabsf(sent_omega+.04f)<.0001f); /* same sample retains heading output */
-  valid=false;ChassisMotion_Process();assert(!status().heading_valid&&!status().map_anchor_valid);assert(stops==1);complete_stop();assert(status().state==CHASSIS_MOTION_ERROR);
-  reset();valid=true;reading(0,0);assert(ChassisMotion_AnchorSet(0));t.mode=CHASSIS_MOTION_ANGULAR_VELOCITY;assert(ChassisMotion_Start(&t));reading(20,NAN);ChassisMotion_Process();assert(!status().map_anchor_valid); /* direct omega doesn't require IMU */
+  tick=40;ChassisMotion_Process();assert(fabsf(sent_omega+.2f)<.0001f); /* same sample retains heading output */
+  valid=false;ChassisMotion_Process();assert(!status().heading_valid&&status().map_anchor_valid);assert(stops==1);complete_stop();assert(status().state==CHASSIS_MOTION_ERROR);
+  reset();valid=true;reading(0,0);assert(ChassisMotion_AnchorSet(0));t.mode=CHASSIS_MOTION_ANGULAR_VELOCITY;assert(ChassisMotion_Start(&t));reading(20,NAN);ChassisMotion_Process();assert(!status().heading_valid&&status().map_anchor_valid); /* direct omega doesn't require IMU */
   assert(status().state==CHASSIS_MOTION_RUNNING);ChassisMotion_Stop(0);complete_stop();
   reset();valid=true;reading(0,0);t.mode=CHASSIS_MOTION_HEADING;assert(!ChassisMotion_Start(&t));assert(!strcmp(status().reason,"anchor_invalid"));assert(ChassisMotion_AnchorSet(0));assert(ChassisMotion_Start(&t));reading(20,0);ChassisMotion_Process();ChassisMotion_AnchorInvalidate();ChassisMotion_Process();assert(stops==1);complete_stop();assert(!strcmp(status().reason,"anchor_invalid"));
   reset();ChassisMotion_TargetDefaults(&t);t.vx_mm_s=100;t.transition_ms=0;

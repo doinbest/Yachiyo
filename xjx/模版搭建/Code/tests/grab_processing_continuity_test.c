@@ -50,8 +50,8 @@ static void car_index_during_lift(bool pause)
 }
 static void processed_pick_open_and_index(void)
 {
- setup();assert(GrabTask_ProcessedStoreStartEx(4,2,2,false));
- assert(grip_custom_calls==1 && fabsf(grip_custom_duty-12.5f)<.001f);
+ setup();tray_arrives=false;assert(GrabTask_ProcessedStoreStartEx(4,2,2,false));
+ assert(grip_custom_calls==1 && fabsf(grip_custom_duty-12.25f)<.001f);
  run_to(GRAB_CLOSE,500,0);assert(!openings);
  move_arrives=false;tray_arrives=false;run_to(GRAB_LIFT,200,0);
  for(unsigned i=0;i<20;i++)step(true,0,0,0);
@@ -77,7 +77,7 @@ static void no_early_index_under_claw(void)
 }
 static void processed_pause_keeps_claw_and_target(void)
 {
- setup();assert(GrabTask_ProcessedStoreStartEx(4,2,2,false));run_to(GRAB_CLOSE,500,0);
+ setup();tray_arrives=false;assert(GrabTask_ProcessedStoreStartEx(4,2,2,false));run_to(GRAB_CLOSE,500,0);
  move_arrives=false;tray_arrives=false;run_to(GRAB_LIFT,200,0);
  for(unsigned i=0;i<20;i++)step(true,0,0,0);
  assert(tray_indexes==1);assert(GrabTask_Pause());run_to(GRAB_IDLE,200,0);

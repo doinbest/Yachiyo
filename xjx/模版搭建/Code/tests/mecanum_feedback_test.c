@@ -13,6 +13,8 @@ static unsigned count;
 static bool flying;
 static bool drop_replies;
 static bool acknowledge_motion;
+static bool record_arrival;
+static unsigned arrival_speed_reads,arrival_position_reads,arrival_state_reads;
 static unsigned stop_count;
 static bool all_wheels, reply_pending;
 static uint8_t reply_address, reply_function;
@@ -20,7 +22,7 @@ static uint32_t reply_due, reply_delay;
 static ChassisMotion_Status_t motion;
 bool ChassisRoute_IsBusy(void) { return false; }
 bool ChassisMotion_IsBusy(void) { return false; }
-void ChassisMotion_StatusGet(ChassisMotion_Status_t *out) { *out = motion; }
+void ChassisMotion_StatusGet(ChassisMotion_Status_t *out) { *out = motion;out->heading_sample_tick=tick; }
 bool ChassisMotion_AnchorSet(float yaw)
 {
   motion.heading_valid = motion.map_anchor_valid = true;
@@ -48,6 +50,11 @@ HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef *u, uint8_t *p, uint1
   if (p[1] == 0xfe)
     stop_count++;
   memcpy(frame, p, n);
+  if(record_arrival && n==3){
+    if(p[1]==0x35)arrival_speed_reads++;
+    else if(p[1]==0x36)arrival_position_reads++;
+    else if(p[1]==0x3a)arrival_state_reads++;
+  }
   count++;
   #ifdef UART5_DEBUG
   if(tick>690 && tick<1300)fprintf(stderr,"wire t=%lu id=%u fn=%02x\n",(unsigned long)tick,p[0],p[1]);
@@ -335,6 +342,32 @@ int main(void)
     assert(tick - f.speed_ms < 600 && tick - f.position_ms < 600);
   }
   for(unsigned phase=0;phase<3;phase++)select_with_outstanding_feedback(phase);
+  /* A normal position group delays only the next velocity batch, never FE.
+   * Stop halfway through ID1..4 and prove later explicit motion still works. */
+  reply_delay=2;
+  assert(Mecanum_Velocity_Request(100,0,0,0));
+  for(unsigned i=0;i<2000 && !(reply_pending && reply_function==0x36 && reply_address==2);i++) step();
+  assert(reply_pending && reply_function==0x36 && reply_address==2);
+  saved=stop_count;assert(Mecanum_Test_Stop());
+  for(unsigned i=0;i<800;i++) step();
+  Mecanum_StatusGet(&status);
+  assert(stop_count==saved+4 && !status.locked && status.tx_complete);
+  assert(Mecanum_Velocity_Request(0,0,0,0));
+  for(unsigned i=0;i<200;i++) step();
+  Mecanum_StatusGet(&status);
+  assert(status.tx_complete && status.sent_velocity_valid && !status.locked);
+  /* Normal arrival prioritizes actual speed/position; manual stop retains its scan. */
+  all_wheels=true;drop_replies=false;reply_delay=0;
+  assert(Mecanum_Feedback_Select(0));Mecanum_Feedback_Enable(true);
+  Mecanum_Feedback_Arrival(true);for(unsigned i=0;i<30;i++)step();
+  arrival_speed_reads=arrival_position_reads=arrival_state_reads=0;record_arrival=true;
+  for(unsigned i=0;i<200;i++)step();
+  assert(arrival_speed_reads>=8 && arrival_position_reads>=8 && !arrival_state_reads);
+  Mecanum_Feedback_StopMonitor(true);
+  for(unsigned i=0;i<200;i++)step();
+  assert(arrival_state_reads>0);
+  Mecanum_Feedback_StopMonitor(false);Mecanum_Feedback_Arrival(false);record_arrival=false;
+  puts("feedback position group: urgent stop and later explicit command PASS");
   puts("mecanum_feedback_test: opt-in single wheel, signed speed, full 32-bit magnitude, "
        "validity/timestamps OK");
   return 0;
