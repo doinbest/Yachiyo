@@ -112,7 +112,8 @@ bool ChassisRoute_WorkResume(void){assert(!strcmp(route.state,"work"));route.sta
 bool ChassisRoute_Cancel(void){cancels++;route.state="cancelled";return true;}
 void ChassisRoute_StatusGet(ChassisRoute_Status_t *out){*out=route;}
 bool ChassisMotion_IsBusy(void){return motion.state==CHASSIS_MOTION_RUNNING;}
-bool ChassisMotion_MoveTo(float x,float y,float a,float s,uint32_t t){assert(s<=50 && t);(void)a;if(reject_move){motion.reason=reject_move;return false;}tx=x;ty=y;motion.state=CHASSIS_MOTION_RUNNING;return true;}
+static float allowed_local_speed=50;
+bool ChassisMotion_MoveTo(float x,float y,float a,float s,uint32_t t){assert(s<=allowed_local_speed && t);(void)a;if(reject_move){motion.reason=reject_move;return false;}tx=x;ty=y;motion.state=CHASSIS_MOTION_RUNNING;return true;}
 void ChassisMotion_StatusGet(ChassisMotion_Status_t *out){*out=motion;out->heading_valid=!start_imu_missing;out->heading_sample_tick=tick;}
 bool GrabTask_IsBusy(void){return grab.state==GRAB_ROUTE_POSE || grab.state==GRAB_PREPARE || grab.state==GRAB_HOLD;}
 void GrabTask_StatusGet(GrabTask_Status_t *out){*out=grab;}

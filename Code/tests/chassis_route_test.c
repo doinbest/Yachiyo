@@ -53,7 +53,7 @@ bool Mecanum_FeedbackGet(unsigned wheel,Mecanum_Feedback_t *out)
 bool ChassisMotion_IsBusy(void){return motion.state==CHASSIS_MOTION_RUNNING||motion.state==CHASSIS_MOTION_STOPPING;}
 static bool action(float x,float y,float yaw,float speed,uint32_t timeout,bool turn)
 {
-  assert(timeout>0 && timeout<=400000);assert(turn || (speed>=10 && speed<=5000));
+  assert(timeout>0 && timeout<=400000);assert(turn || (speed>0 && speed<=5000));
   assert(isfinite(yaw) && yaw>=-180 && yaw<=180);
   assert((!ChassisRoute_IsBusy() && !ChassisRoute_StationReserved()) || ChassisRoute_IsSubmitting());
   if(!accept){motion.reason=reject_reason?reject_reason:"busy";return false;}
@@ -75,13 +75,17 @@ bool ChassisMotion_TurnTo(float yaw,uint32_t timeout)
 { return action(loc.observer.feedback.x_mm,loc.observer.feedback.y_mm,yaw,0,timeout,true); }
 static float turn_limit;
 static float curve_progress,curve_end;
+static ChassisPath submitted_path;
 float ChassisMotion_PathProgress(void){return motion.state==CHASSIS_MOTION_DONE?curve_end+10:curve_progress;}
 bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn,uint32_t timeout,float resume)
 {
-  turn_limit=turn;curve_progress=resume;curve_end=path->turn_end;
+  submitted_path=*path;turn_limit=turn;curve_progress=resume;curve_end=path->turn_end;
   ChassisPath_Point p=path->point[path->count-1];
   return action(p.x,p.y,p.yaw,speed,timeout,false);
 }
+static float path_scale=1;
+bool ChassisMotion_PathStartScaled(const ChassisPath *path,float speed,float turn,uint32_t timeout,float resume,float scale)
+{path_scale=scale;return ChassisMotion_PathStart(path,speed,turn,timeout,resume);}
 bool ChassisMotion_TurnToSpeed(float yaw,float speed,uint32_t timeout)
 {turn_limit=speed;return ChassisMotion_TurnTo(yaw,timeout);}
 void ChassisMotion_UseRouteArrival(void){}

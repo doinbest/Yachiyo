@@ -16,6 +16,7 @@ static ChassisRoute_Status_t Route;
 static bool Submitting, Automatic, Stations, FirstScanLeg;
 static bool TaskRoute, RequestTask, QrRoute, RequestQr;
 static bool QrLowerStart, RequestQrLower, QrPoseStarted;
+static bool StartSmooth,RequestSmooth,StartSmoothActive;
 static ChassisRoute_TaskOptions_t TaskOptions;
 static const char *PauseState;
 static const char *FeedbackResumeState;
@@ -25,6 +26,7 @@ static bool PauseMonitoring;
 static uint32_t PauseStopTick;
 static uint32_t Generation, LegStartTick, LegBudget;
 static float RouteSpeed = CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
+static float RouteScale=1,RequestedScale=1;
 static float AcceptedYaw;
 static ChassisModel_Pose_t StartOrigin;
 static uint32_t StartUnits;
@@ -57,8 +59,9 @@ void ChassisRoute_Init(void)
   CornerCandidate=CornerActive=false;
   memset(&TaskOptions,0,sizeof TaskOptions);PauseState=FeedbackResumeState=NULL;ResumeFeedbackStarted=RecoveryHold=PauseMonitoring=false;
   QrLowerStart=RequestQrLower=false;
-  CurveActive=false;CurveProgress=0;
+  CurveActive=false;CurveProgress=0;StartSmooth=RequestSmooth=StartSmoothActive=false;
   RouteSpeed=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;AcceptedYaw=90;
+  RouteScale=RequestedScale=1;
 }
 bool ChassisRoute_IsBusy(void)
 {
@@ -111,13 +114,13 @@ static bool submit_phase(const ChassisRoute_Phase_t *phase)
   { Route.state="running";Route.reason="grab_task_busy";return true; }
   Submitting=true;
   if(!strcmp(phase->direction,"curve"))
-    ok=ChassisMotion_PathStart(&Curve,phase->speed_mm_s,TaskOptions.turn_speed_deg_s,timeout,CurveProgress);
+    ok=ChassisMotion_PathStartScaled(&Curve,phase->speed_mm_s,TaskOptions.turn_speed_deg_s,timeout,CurveProgress,RouteScale);
   else if(phase->turn) ok=TaskRoute?ChassisMotion_TurnToSpeed(phase->yaw_deg,TaskOptions.turn_speed_deg_s,timeout):ChassisMotion_TurnTo(phase->yaw_deg,timeout);
   else if(TaskRoute && ChassisMotion_ProfileGet()==CHASSIS_PROFILE_LINEAR){
     ChassisMotion_TestParameters_t tuning;
     ChassisMotion_TestParametersDefaults(&tuning);
     tuning.linear_accel_mm_s2=PendingIndex<Profile.count?PhaseAccel[PendingIndex]:CHASSIS_DISTANCE_ACCEL_MM_S2;
-    tuning.linear_decel_mm_s2=CHASSIS_MISSION_DECEL_MM_S2;
+    tuning.linear_decel_mm_s2=CHASSIS_MISSION_DECEL_MM_S2*RouteScale;
     ok=ChassisMotion_MoveToTuned(phase->x_mm,phase->y_mm,phase->yaw_deg,phase->speed_mm_s,&tuning,timeout);
   }else ok=ChassisMotion_MoveTo(phase->x_mm,phase->y_mm,phase->yaw_deg,phase->speed_mm_s,timeout);
   Submitting=false;
@@ -138,7 +141,8 @@ static bool submit_phase(const ChassisRoute_Phase_t *phase)
   Route.state="running";Route.reason=phase->phase;Route.stop_confirmed=false;
   if(CornerCandidate && !phase->turn && PhaseIndex+1U==Profile.count){
     CornerActive=ChassisMotion_PrepareCorner(1200,2100,
-      fminf(RouteSpeed,CHASSIS_MISSION_RAW_LATERAL_MM_S),CHASSIS_MISSION_LOADED_ACCEL_MM_S2,timeout);
+      fminf(RouteSpeed,CHASSIS_MISSION_RAW_LATERAL_MM_S)*RouteScale,
+      CHASSIS_MISSION_LOADED_ACCEL_MM_S2*RouteScale,timeout);
   }
   return true;
 }
@@ -159,7 +163,7 @@ static bool repair_position(void)
   float dy=Route.target_y_mm-Position.observer.feedback.y_mm;
   float yaw=Route.target_yaw_deg*CHASSIS_MODEL_PI/180;
   float forward=dx*cosf(yaw)+dy*sinf(yaw),lateral=-dx*sinf(yaw)+dy*cosf(yaw);
-  phase.speed_mm_s=fminf(RouteSpeed,CHASSIS_DISTANCE_CORRECTION_SPEED_MM_S);
+  phase.speed_mm_s=fminf(RouteSpeed,CHASSIS_DISTANCE_CORRECTION_SPEED_MM_S)*RouteScale;
   if(fabsf(lateral)<0.01f) phase.direction=forward>=0?"forward":"reverse";
   else if(fabsf(forward)<0.01f) phase.direction="lateral";
   return queue_phase(&phase,Profile.count);
@@ -220,7 +224,7 @@ static bool submit_leg(unsigned index,bool running_handoff)
     }
   }
   else if(!(TaskRoute?ChassisRouteProfile_BuildTaskEntry(&from,&to,profile_yaw,RouteSpeed,FirstScanLeg,
-      ChassisMotion_ProfileGet()==CHASSIS_PROFILE_COSINE,&Profile):
+      (ChassisMotion_ProfileGet()==CHASSIS_PROFILE_COSINE || StartSmooth),&Profile):
       ChassisRouteProfile_Build(&from,&to,AcceptedYaw,RouteSpeed,FirstScanLeg,&Profile)))
   { Route.state="error";Route.reason="route_profile_invalid";return false; }
   /* Only remove a neutral stop when both generated legs are single plain
@@ -255,13 +259,27 @@ static bool submit_leg(unsigned index,bool running_handoff)
   bool has_curve=Profile.count && !strcmp(Profile.phases[Profile.count-1].direction,"curve");
   CurveActive=false;
   CurveProgress=0;
-  if(has_curve){
-    unsigned kind=!strcmp(Profile.phases[Profile.count-1].phase,"entry_curve")?1:from.x_mm==2100?2:3;
-    if(!ChassisPath_Build(&Curve,kind,from.x_mm,from.y_mm,to.x_mm,to.y_mm,RouteSpeed))return false;
-    Profile.nominal_time_s=Curve.length/RouteSpeed+180/TaskOptions.turn_speed_deg_s+5;
-  }
+  if(TaskRoute && StartSmooth && !index)StartSmoothActive=has_curve && !strcmp(Profile.phases[Profile.count-1].phase,"entry_curve");
   ChassisRouteProfile_ApplyTaskLinear(&from,&to,&Profile,
     TaskRoute && ChassisMotion_ProfileGet()==CHASSIS_PROFILE_LINEAR,PhaseAccel);
+  float curve_speed=has_curve?Profile.phases[Profile.count-1].speed_mm_s:RouteSpeed;
+  if(has_curve){
+    unsigned kind=!strcmp(Profile.phases[Profile.count-1].phase,"entry_curve")?1:from.x_mm==2100?2:3;
+    if(!ChassisPath_Build(&Curve,kind,from.x_mm,from.y_mm,to.x_mm,to.y_mm,curve_speed))return false;
+    Profile.nominal_time_s=Curve.length/curve_speed+180/TaskOptions.turn_speed_deg_s+5;
+  }
+  if(TaskRoute && ChassisMotion_ProfileGet()==CHASSIS_PROFILE_LINEAR){
+    ChassisRouteProfile_ApplyScale(&from,&Profile,PhaseAccel,RouteScale);
+    if(has_curve){
+      /* Include both the transit and actual slow-arc caps, even at K=1. */
+      float seconds=0;
+      for(unsigned i=1;i<Curve.count;i++){
+        float cap=Curve.point[i].limit>0?fminf(curve_speed,Curve.point[i].limit):curve_speed;
+        seconds+=(Curve.point[i].s-Curve.point[i-1].s)/(cap*RouteScale);
+      }
+      Profile.nominal_time_s=fmaxf(Profile.nominal_time_s,seconds+180/TaskOptions.turn_speed_deg_s+5);
+    }
+  }
   if(TaskRoute && TaskOptions.scan_qr && TaskOptions.start_id==RADAR_START_LOWER &&
      ChassisMotion_ProfileGet()==CHASSIS_PROFILE_LINEAR && from.station==5U && from.visit==1U &&
      to.x_mm==2100 && to.y_mm==2100 && !to.station && Profile.count==1U &&
@@ -283,7 +301,8 @@ static bool submit_leg(unsigned index,bool running_handoff)
   if(TaskRoute && to.station==2U && Profile.count)
     Route.target_y_mm=Profile.phases[Profile.count-1U].y_mm;
   Route.target_yaw_deg=Profile.final_yaw_deg;Route.station=to.station;Route.visit=to.visit;
-  Route.speed_mm_s=RouteSpeed;
+  Route.speed_mm_s=RouteSpeed*RouteScale;
+  Route.base_speed_mm_s=RouteSpeed;Route.motion_scale=RouteScale;
   ChassisLocalization_Get(&Position);
   if(running_handoff){
     /* Motion already changed its endpoint in-place. Adopt its route phase
@@ -319,6 +338,8 @@ static bool start_at_speed(float speed, bool automatic, bool planned)
       fabsf(angle_error(Position.observer.feedback.yaw_rad*180/CHASSIS_MODEL_PI,origin_yaw))>CHASSIS_DISTANCE_HEADING_DEG)
   { Route.state="error";Route.reason="start_origin_or_feedback";return false; }
   TaskRoute=RequestTask;QrRoute=RequestQr;
+  StartSmooth=TaskRoute && RequestSmooth;StartSmoothActive=false;
+  RouteScale=TaskRoute?RequestedScale:1;
   QrLowerStart=RequestQr && RequestQrLower;
   QrPoseStarted=TaskRoute && TaskOptions.start_id==RADAR_START_UPPER;RouteSpeed=speed;Automatic=automatic;Stations=false;AcceptedYaw=origin_yaw;FirstScanLeg=!planned;
   if(planned) for(i=0;i<PlannedCount;i++)
@@ -365,10 +386,17 @@ static bool station_start(float speed)
 bool ChassisRoute_TaskStart(const RadarPlan_t *plan,float speed)
 { const ChassisRoute_TaskOptions_t options={false,1200,100,RADAR_START_LOWER};return ChassisRoute_TaskStartEx(plan,speed,&options); }
 bool ChassisRoute_TaskStartEx(const RadarPlan_t *plan,float speed,const ChassisRoute_TaskOptions_t *options)
+{return ChassisRoute_TaskStartScaled(plan,speed,options,1);}
+bool ChassisRoute_TaskStartScaled(const RadarPlan_t *plan,float speed,const ChassisRoute_TaskOptions_t *options,float scale)
+{return ChassisRoute_TaskStartConfigured(plan,speed,options,scale,false);}
+bool ChassisRoute_TaskStartConfigured(const RadarPlan_t *plan,float speed,const ChassisRoute_TaskOptions_t *options,float scale,bool smooth)
 {
   if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved())return false;
+  if(!ChassisMissionScale_Valid(speed,scale) || (scale!=1 && ChassisMotion_ProfileGet()!=CHASSIS_PROFILE_LINEAR))return false;
   if(!options || !isfinite(options->qr_scan_y_mm) || options->qr_scan_y_mm<1100 || options->qr_scan_y_mm>1300 ||
      !isfinite(options->turn_speed_deg_s) || options->turn_speed_deg_s<5 || options->turn_speed_deg_s>CHASSIS_TURN_MAX_SPEED_DEG_S)return false;
+  if(smooth && (options->start_id!=RADAR_START_LOWER || ChassisMotion_ProfileGet()!=CHASSIS_PROFILE_LINEAR))return false;
+  RequestedScale=scale;RequestSmooth=smooth;
   TaskOptions=*options;PauseState=FeedbackResumeState=NULL;ResumeFeedbackStarted=RecoveryHold=false;RequestTask=true;
   bool ok;
   if(!plan && options->start_id==RADAR_START_UPPER){
@@ -377,7 +405,7 @@ bool ChassisRoute_TaskStartEx(const RadarPlan_t *plan,float speed,const ChassisR
     Planned[PlannedCount-2].y_mm=2100;Planned[PlannedCount-1].y_mm=2250;
     ok=start_at_speed(speed,true,true);if(ok)Stations=true;
   }else ok=plan?ChassisRoute_PlanStart(plan,speed,true):station_start(speed);
-  RequestTask=false;return ok;
+  RequestTask=RequestSmooth=false;return ok;
 }
 static bool pause_task(const char *resume)
 {
@@ -848,9 +876,9 @@ bool ChassisRoute_Command(unsigned n,char *t[])
   }
   else return false;
   ChassisRoute_StatusGet(&Route);
-  length=snprintf(text,sizeof(text),"%s chassis route state=%s segment=%lu id=%lu reason=%s error_mm=%.1f,%.1f heading_error_deg=%.2f feedback_valid=%u stop_confirmed=%u speed_mm_s=%.1f auto=%u total=%lu dwell_ms=%lu phase=%s direction=%s phase_speed_mm_s=%.1f phase_target=%.1f,%.1f,%.1f station=%lu visit=%lu\r\n",
+  length=snprintf(text,sizeof(text),"%s chassis route state=%s segment=%lu id=%lu reason=%s error_mm=%.1f,%.1f heading_error_deg=%.2f feedback_valid=%u stop_confirmed=%u speed_mm_s=%.1f base_speed_mm_s=%.1f route_scale=%.7g start_smooth=%u start_smooth_active=%u auto=%u total=%lu dwell_ms=%lu phase=%s direction=%s phase_speed_mm_s=%.1f phase_target=%.1f,%.1f,%.1f station=%lu visit=%lu\r\n",
       ok?"OK":"ERR",Route.state,(unsigned long)Route.segment,(unsigned long)Route.action_id,(!ok && reject)?reject:Route.reason,
-      (double)Route.error_x_mm,(double)Route.error_y_mm,(double)Route.error_heading_deg,Route.feedback_valid?1:0,Route.stop_confirmed?1:0,(double)RouteSpeed,Automatic?1:0,(unsigned long)Route.total,(unsigned long)CHASSIS_ROUTE_AUTO_DWELL_MS,
+      (double)Route.error_x_mm,(double)Route.error_y_mm,(double)Route.error_heading_deg,Route.feedback_valid?1:0,Route.stop_confirmed?1:0,(double)(RouteSpeed*RouteScale),(double)RouteSpeed,(double)RouteScale,StartSmooth?1U:0U,StartSmoothActive?1U:0U,Automatic?1:0,(unsigned long)Route.total,(unsigned long)CHASSIS_ROUTE_AUTO_DWELL_MS,
       Route.phase,Route.direction,(double)Route.phase_speed_mm_s,(double)Route.phase_target_x_mm,(double)Route.phase_target_y_mm,(double)Route.phase_target_yaw_deg,(unsigned long)Route.station,(unsigned long)Route.visit);
   if(length>0 && (size_t)length<sizeof(text)) (void)ConsoleTx_Write((const uint8_t*)text,(uint16_t)length);
   return true;

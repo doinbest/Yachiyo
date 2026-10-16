@@ -95,6 +95,8 @@ void Mecanum_Feedback_StopMonitor(bool active);
  * Does not alter user selection; independent stop monitoring takes precedence. */
 void Mecanum_Feedback_Arrival(bool active);
 void Mecanum_Feedback_Enable(bool enabled);
+/** Read user/task polling policy, independently of temporary stop demand. */
+void Mecanum_FeedbackSettingsGet(bool *enabled,uint8_t *address);
 /** @brief Select the next poll's motor address 1..4, or 0 for all.
  * Disables new polling until Enable(true). An outstanding read/reply completes
  * normally with its original identity; selection does not cancel it or move motors.

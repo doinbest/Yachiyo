@@ -60,6 +60,13 @@ class FakeSerial:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_mode_test_status_is_readonly_but_switching_is_not(self):
+        self.assertIsNotNone(READ_COMMAND.fullmatch('bus mode-test status'))
+        self.assertIsNone(READ_COMMAND.fullmatch('bus mode-test receive on 3'))
+        self.assertIsNone(READ_COMMAND.fullmatch('bus mode-test stop'))
+        self.assertIsNotNone(PRIORITY_STOP.fullmatch('bus mode-test stop'))
+        self.assertIsNotNone(CANCEL_COMMAND.fullmatch('bus mode-test stop'))
+
     def test_test_preparation_allows_only_explicit_local_origin_and_still_blocks_motion(self):
         port = self.connect()
         self.bridge.preparation(True, 'single-test')

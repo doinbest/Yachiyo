@@ -96,6 +96,7 @@ static uint32_t DistanceFeedbackAge;
 static ChassisPath FollowPath;
 static bool FollowingPath;
 static float PathProgress,PathTurnSpeed;
+static float PathScale=1;
 static float HeadingTolerance = CHASSIS_DISTANCE_HEADING_DEG;
 static unsigned DistanceCorrections;
 static ChassisLocalization_Status_t Position; /* Main-loop snapshot; avoid large stack use. */
@@ -558,7 +559,12 @@ static void corner_handoff(uint32_t now)
 float ChassisMotion_PathProgress(void){return PathProgress;}
 bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn_deg_s,
                              uint32_t timeout,float resume_mm)
+{return ChassisMotion_PathStartScaled(path,speed,turn_deg_s,timeout,resume_mm,1);}
+bool ChassisMotion_PathStartScaled(const ChassisPath *path,float speed,float turn_deg_s,
+                                   uint32_t timeout,float resume_mm,float scale)
 {
+  if(!isfinite(scale) || scale<CHASSIS_MISSION_SCALE_MIN || scale>CHASSIS_MISSION_SCALE_MAX ||
+     (scale!=1 && ChassisMotion_ProfileGet()!=CHASSIS_PROFILE_LINEAR))return false;
   if(!path || path->count<2 || path->count>CHASSIS_PATH_CAPACITY ||
      !isfinite(resume_mm) || resume_mm<0 || resume_mm>path->length ||
      !isfinite(turn_deg_s) || turn_deg_s<5 || turn_deg_s>CHASSIS_TURN_MAX_SPEED_DEG_S)return false;
@@ -568,8 +574,12 @@ bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn_deg_
        !isfinite(p.limit) || p.limit<0 || (i && p.s<=path->point[i-1].s))return false;
   }
   ChassisPath_Point end=path->point[path->count-1];
-  if(!ChassisMotion_MoveTo(end.x,end.y,end.yaw,speed,timeout))return false;
+  ChassisMotion_TestParameters_t tuning;ChassisMotion_TestParametersDefaults(&tuning);
+  tuning.linear_accel_mm_s2=tuning.linear_decel_mm_s2=CHASSIS_DISTANCE_ACCEL_MM_S2*scale;
+  if(!ChassisMotion_MoveToTuned(end.x,end.y,end.yaw,speed,&tuning,timeout))return false;
   FollowPath=*path;FollowingPath=true;PathProgress=resume_mm;PathTurnSpeed=turn_deg_s;
+  PathScale=scale;
+  for(unsigned i=0;i<FollowPath.count;i++)FollowPath.point[i].limit*=scale;
   return true;
 }
 bool ChassisMotion_TurnToSpeed(float yaw,float max_deg_s,uint32_t timeout)
@@ -917,7 +927,7 @@ static bool path_command(uint32_t dt,ChassisModel_Velocity_t *command)
     float distance=fmaxf(0,a.s-PathProgress);
     /* Final target braking uses the existing feedback-aware distance law. */
     if(i+1==FollowPath.count)break;
-    speed=fminf(speed,sqrtf(cap*cap+2*150*distance));
+    speed=fminf(speed,sqrtf(cap*cap+2*150*PathScale*distance));
   }
   float yaw_error=wrap_deg(at.yaw-Motion.map_yaw_rad*180/CHASSIS_MODEL_PI);
   speed*=fminf(1,5/fmaxf(5,fabsf(yaw_error)));
@@ -926,7 +936,7 @@ static bool path_command(uint32_t dt,ChassisModel_Velocity_t *command)
   float norm=hypotf(vx,vy),limit=fminf(DistanceMaxSpeed,speed+20);
   if(norm>limit){vx*=limit/norm;vy*=limit/norm;}
   dx=vx-MapVx;dy=vy-MapVy;norm=hypotf(dx,dy);
-  float step=CHASSIS_PATH_ACCEL_MM_S2*dt/1000.0f;
+  float step=CHASSIS_PATH_ACCEL_MM_S2*PathScale*dt/1000.0f;
   if(norm>step){dx*=step/norm;dy*=step/norm;}
   MapVx+=dx;MapVy+=dy;
   command->vx_mm_s=cosf(Motion.map_yaw_rad)*MapVx+sinf(Motion.map_yaw_rad)*MapVy;

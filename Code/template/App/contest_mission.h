@@ -20,10 +20,20 @@ typedef struct {
   ChassisMotion_Profile_t profile; /* Locked per match; zero defaults to linear. */
 } ContestMission_Request_t;
 bool ContestMission_Start(const RadarPlan_t *plan,const ContestMission_Request_t *request);
+/* Legacy Start is scale=1; scale is frozen with this match, linear only. */
+bool ContestMission_StartScaled(const RadarPlan_t *plan,const ContestMission_Request_t *request,float scale);
+/* Optional smooth lower linear entrance; frozen for pause/recovery. Legacy starts disable it. */
+bool ContestMission_StartConfigured(const RadarPlan_t *plan,const ContestMission_Request_t *request,float scale,bool smooth);
 /** @brief 右下至原料台，蓝色入第一仓并后向收回；不改二维码。 */
 bool ContestMission_StartSingle(float speed);
 /** Complete the currently aligned ring using a selected tray; no route/QR/inventory initialization. */
 bool ContestMission_StartRingTake(uint8_t slot);
+bool ContestMission_StartRingTakeEx(uint8_t slot,float place_drop_mm,float car_drop_mm);
+bool ContestMission_StartRingStore(uint8_t slot,float pick_drop_mm,float car_drop_mm);
+/** Current-position heading correction -> high ring align -> selected tray -> release.
+ * drop_mm is a positive distance from Z=0, local to this request. */
+bool ContestMission_StartRingFlow(uint8_t ring,uint8_t slot,float drop_mm);
+bool ContestMission_StartRingFlowEx(uint8_t ring,uint8_t slot,float drop_mm,float car_drop_mm);
 /** Independent test after grab pose work; 2=processing, 3=temporary, 1..10 deg/s. */
 bool ContestMission_StartHeadingTest(unsigned station,float speed_deg_s);
 bool ContestMission_StartHeadingTestSource(unsigned station,float speed_deg_s,uint8_t source);

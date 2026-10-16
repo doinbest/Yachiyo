@@ -33,6 +33,8 @@ bool ContestMission_StartHeadingProbe(unsigned station,float delta,float speed){
 bool ContestMission_StartHeadingTest(unsigned station,float speed){heading_station=station;heading_speed=speed;heading_calls++;return true;}
 bool ContestMission_StartHeadingTestSource(unsigned station,float speed,uint8_t source){heading_source=source;return ContestMission_StartHeadingTest(station,speed);}
 bool ContestMission_StartHeadingProbeSource(unsigned station,float delta,float speed,uint8_t source){heading_source=source;return ContestMission_StartHeadingProbe(station,delta,speed);}
+bool ContestMission_StartRingFlow(uint8_t ring,uint8_t slot,float drop_mm)
+{(void)ring;(void)slot;(void)drop_mm;return false;}
 static unsigned ring_take_slot;
 bool ContestMission_StartRingTake(uint8_t slot){ring_take_slot=slot;return slot>=1 && slot<=3;}
 static unsigned single_starts;
@@ -42,7 +44,13 @@ static bool legacy(void){RadarPlan_t p={0};p.valid=true;return GrabRoute_StartPl
 void ContestMission_Init(void){}
 static unsigned mission_starts;
 static ContestMission_Request_t mission_request;
+static float mission_scale=1;
+static bool mission_smooth;
 bool ContestMission_Start(const RadarPlan_t *p,const ContestMission_Request_t *s){(void)p;mission_request=*s;mission_starts++;return false;}
+bool ContestMission_StartScaled(const RadarPlan_t *p,const ContestMission_Request_t *s,float scale)
+{mission_scale=scale;return ContestMission_Start(p,s);}
+bool ContestMission_StartConfigured(const RadarPlan_t *p,const ContestMission_Request_t *s,float scale,bool smooth)
+{mission_smooth=smooth;return ContestMission_StartScaled(p,s,scale);}
 void ContestMission_Process(void){}
 void ContestMission_Stop(void){}
 void ContestMission_Cancel(void){}
@@ -74,6 +82,31 @@ static void setup(void){memset(&route,0,sizeof(route));memset(&grab_status,0,siz
 int main(void)
 {
   setup();
+  char *smooth_qr[]={"grab","mission","qr","1000","100","lower","fixed","vhigh","linear","smooth=1","scale=1.2"};
+  assert(GrabRoute_Command(11,smooth_qr) && mission_starts==1 && mission_smooth && fabsf(mission_scale-1.2f)<.0001f);
+  mission_starts=0;
+  char *scaled_qr[]={"grab","mission","qr","1000","100","lower","fixed","vhigh","linear","scale=1.2"};
+  assert(GrabRoute_Command(10,scaled_qr) && mission_starts==1 && !mission_smooth && fabsf(mission_scale-1.2f)<.0001f);
+  assert(mission_request.route_speed_mm_s==1000 && mission_request.turn_speed_deg_s==100);
+  mission_starts=0;
+  char *fixed_smooth[]={"grab","mission","fixed","156+123+516+231","1000","100","lower","radar","vhigh","linear","scale=1.5","smooth=1"};
+  assert(GrabRoute_Command(12,fixed_smooth) && mission_starts==1 && mission_smooth && mission_scale==1.5f);
+  assert(mission_request.code_source==MISSION_CODE_FIXED && mission_request.radar_enabled);
+  fixed_smooth[11]="smooth=0";
+  assert(GrabRoute_Command(12,fixed_smooth) && mission_starts==2 && !mission_smooth);
+  fixed_smooth[11]="smooth=2";
+  assert(GrabRoute_Command(12,fixed_smooth) && mission_starts==2 && strstr(reply,"start_smooth_required"));
+  fixed_smooth[11]="scale=1";
+  assert(GrabRoute_Command(12,fixed_smooth) && mission_starts==2 && strstr(reply,"duplicate_option"));
+  fixed_smooth[10]="smooth=1";fixed_smooth[11]="smooth=0";
+  assert(GrabRoute_Command(12,fixed_smooth) && mission_starts==2 && strstr(reply,"duplicate_option"));
+  fixed_smooth[10]="scale=1";fixed_smooth[11]="smooth=1";fixed_smooth[6]="upper";
+  assert(GrabRoute_Command(12,fixed_smooth) && mission_starts==2 && strstr(reply,"start_smooth_lower_linear_only"));
+  fixed_smooth[6]="lower";fixed_smooth[9]="cosine";
+  assert(GrabRoute_Command(12,fixed_smooth) && mission_starts==2 && strstr(reply,"start_smooth_lower_linear_only"));
+  fixed_smooth[11]="unknown=1";
+  assert(GrabRoute_Command(12,fixed_smooth) && mission_starts==2 && strstr(reply,"format"));
+  mission_starts=0;
   char *ring_take[]={"grab","ring","take","2"};
   assert(GrabRoute_Command(4,ring_take) && ring_take_slot==2);
   ring_take[3]="4";assert(GrabRoute_Command(4,ring_take) && strstr(reply,"invalid_slot"));

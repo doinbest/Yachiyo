@@ -54,6 +54,12 @@ void GrabRoute_Stop(void){grab_route_busy=false;if(grab_busy)GrabTask_Stop();}
 static unsigned mission_pauses,mission_cancels,mission_fields;
 bool GrabRoute_Command(unsigned n,char *t[]){
  if(n==4 && !strcmp(t[0],"grab") && !strcmp(t[1],"ring") && !strcmp(t[2],"take")){ArmConsole_Write("OK ring take routed\r\n");return true;}
+ if(n==11 || n==12){
+  assert(!strcmp(t[0],"grab") && !strcmp(t[1],"mission") && !strcmp(t[2],"fixed"));
+  assert(!strcmp(t[8],"vhigh") && !strcmp(t[9],"linear") && !strcmp(t[10],"scale=1.2"));
+  if(n==12)assert(!strcmp(t[11],"smooth=1"));
+  mission_fields=n;return true;
+ }
  if((n==9 || n==10) && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && !strcmp(t[2],"fixed"))
  {assert(!strcmp(t[8],"lowered"));if(n==10)assert(!strcmp(t[9],"cosine"));mission_fields=n;return true;}
  if(n==3 && !strcmp(t[0],"grab") && !strcmp(t[1],"mission") && (!strcmp(t[2],"pause") || !strcmp(t[2],"stop")))
@@ -84,7 +90,24 @@ bool MotorBus_RecoveryStart(void) { recovery_fake.active=true;return true; }
 void MotorBus_RecoveryCancel(void) { recovery_fake.active=false; }
 void MotorBus_RecoveryGet(MotorBus_Recovery_t *s) { *s=recovery_fake; }
 bool Mecanum_RecoveryAfterBusCheck(void) { return true; }
-void Mecanum_Feedback_Enable(bool enabled) { (void)enabled; }
+static bool mode_feedback_enabled=true,mode_feedback_valid=true;
+static uint8_t mode_feedback_address=3;
+static int mode_feedback_rpm;
+static MotorBus_ModeTestStatus_t mode_fake;
+void Mecanum_Feedback_Enable(bool enabled) { mode_feedback_enabled=enabled; }
+void Mecanum_FeedbackSettingsGet(bool *enabled,uint8_t *address)
+{if(enabled)*enabled=mode_feedback_enabled;if(address)*address=mode_feedback_address;}
+bool Mecanum_Feedback_Select(uint8_t address){mode_feedback_address=address;mode_feedback_enabled=false;return address<=4;}
+bool Mecanum_FeedbackGet(unsigned wheel,Mecanum_Feedback_t *f)
+{(void)wheel;memset(f,0,sizeof *f);f->speed_valid=f->position_valid=f->state_valid=mode_feedback_valid;
+ f->speed_ms=f->position_ms=f->state_ms=tick;f->state_flags=3;f->speed_rpm=mode_feedback_rpm;return true;}
+bool MotorBus_ModeTestActive(void){return mode_fake.active;}
+bool MotorBus_ModeTestStart(uint8_t target,uint16_t gap)
+{if(mode_fake.active)return false;memset(&mode_fake,0,sizeof mode_fake);mode_fake.active=true;mode_fake.target=target;mode_fake.gap_ms=gap;mode_fake.reason="snapshot";return true;}
+void MotorBus_ModeTestProcess(void){}
+void MotorBus_ModeTestCancel(void){mode_fake.active=false;mode_fake.cancelled=mode_fake.restored=true;mode_fake.reason="cancelled_restored";}
+void MotorBus_ModeTestGet(MotorBus_ModeTestStatus_t *s){*s=mode_fake;}
+uint32_t MotorBus_ReplySettleMs(void){return mode_fake.active?mode_fake.gap_ms:2;}
 void MotorBus_Cancel(MotorBus_Owner_t owner) { (void)owner;guard_ready=false; }
 bool MotorBus_OwnerBusy(MotorBus_Owner_t owner) { (void)owner;return guard_ready; }
 bool MotorBus_Submit(MotorBus_Owner_t owner,const uint8_t *p,uint8_t n,uint8_t reply,uint32_t token,bool priority)
@@ -390,7 +413,7 @@ int main(void)
     char qr[]="grab mission qr 500 100 lower fixed";
     char fixed[]="grab mission fixed 156+123+516+231 500 100 upper radar";
     char raised[]="grab mission fixed 156+123+516+231 500 100 upper radar raised";
-    char extra[]="grab mission fixed 156+123+516+231 500 100 upper radar raised cosine extra overflow";
+    char extra[]="grab mission fixed 156+123+516+231 500 100 upper radar raised cosine extra overflow overlimit";
     char *tokens[ARM_CONSOLE_TOKEN_COUNT];
     assert(ArmConsole_Tokenize(qr,tokens)==7);
     assert(!strcmp(tokens[5],"lower") && !strcmp(tokens[6],"fixed"));
@@ -409,6 +432,10 @@ int main(void)
   assert(mission_fields==9 && !strstr(output,"ERR")); /* Full 63-byte payload plus CR. */
   command("grab mission fixed 156+123+516+231 1000 100 upper fixed lowered cosine\r");
   assert(mission_fields==10 && !strstr(output,"ERR"));
+  command("grab mission fixed 156+123+516+231 1000 100 lower fixed vhigh linear scale=1.2 smooth=1\r");
+  assert(mission_fields==12 && !strstr(output,"ERR"));
+  command("grab mission fixed 156+123+516+231 1000 100 lower fixed vhigh linear scale=1.2\r");
+  assert(mission_fields==11 && !strstr(output,"ERR"));
   command("lidarservo status\r");assert(lidar_sets==0 && strstr(output,"enabled=0 pulse_us=0"));
   for(unsigned pulse=500;pulse<=5000;pulse+=500) {
     char wire[40];snprintf(wire,sizeof wire,"lidarservo pulse %u\r",pulse);
@@ -826,6 +853,20 @@ int main(void)
   command("bus test 8\r");assert(BusTest.active && BusTest.rounds==10);
   ArmConsole_ReceiveData(3);ArmConsole_StopProcess();assert(!BusTest.active && !probe_active);
   bus_locked=false;
+  mode_feedback_enabled=true;mode_feedback_address=3;
+  command("bus mode-test receive off 3\r");assert(mode_fake.active && ArmConsole_OperationBusy());
+  assert(!mode_feedback_enabled && mode_feedback_address==0);
+  before=motor_calls;command("wheel fl 10\r");assert(before==motor_calls && strstr(output,"mode-test active"));
+  command("bus read 1 driver\r");assert(!BusTest.active && strstr(output,"mode-test active"));
+  command("bus mode-test status\r");assert(strstr(output,"gap_ms=3"));
+  mode_fake.active=false;mode_fake.success=mode_fake.restored=true;mode_fake.reason="complete";
+  ArmConsole_Process();assert(mode_feedback_enabled && mode_feedback_address==3 && !ArmConsole_OperationBusy());
+  mode_feedback_valid=false;command("bus mode-test none on 5\r");assert(!mode_fake.active && strstr(output,"fresh_stopped_feedback_required"));mode_feedback_valid=true;
+  mode_feedback_rpm=2;command("bus mode-test none on 5\r");assert(!mode_fake.active && strstr(output,"fresh_stopped_feedback_required"));mode_feedback_rpm=0;
+  command("bus mode-test none on 4\r");assert(!mode_fake.active && strstr(output,"ERR format"));
+  command("bus mode-test none on 5\r");assert(mode_fake.active && mode_feedback_enabled);
+  ArmConsole_ReceiveData(3);ArmConsole_StopProcess();assert(!mode_fake.active && mode_fake.cancelled);
+  ArmConsole_Process();
   grab_busy=grab_route_busy=true;
   mission_pending=true;recovery_fake.active=true;
   command("grab mission pause\r");assert(mission_pauses==1 && recovery_fake.active);

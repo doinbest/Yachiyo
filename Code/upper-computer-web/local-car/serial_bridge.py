@@ -17,7 +17,7 @@ STOP_REPLY = re.compile(
     r'OK chassis stop id=(\d+) token=(\d+) requested_ms=(\d+) '
     r'tx_complete=([01]) wheels_stopped=([01]) reason=([A-Za-z0-9_]+)')
 READ_COMMAND = re.compile(
-    r'(?:info|help|bus (?:status|recovery)|bus read [1-8] (?:current|voltage|error|home|driver)|bus test (?:status|stop|[1-8](?: (?:[1-9]\d?|100))?)|console status|(?:state|position|config) (?:base|z|x|all)|'
+    r'(?:info|help|bus (?:status|recovery)|bus mode-test status|bus read [1-8] (?:current|voltage|error|home|driver)|bus test (?:status|stop|[1-8](?: (?:[1-9]\d?|100))?)|console status|(?:state|position|config) (?:base|z|x|all)|'
     r'(?:camera|imu|qr|grab) status|camera log (?:start|stop|status)|qr read|grab (?:route|mission|calib|qr) status|grab status (?:base|x|z)|grab get [a-z][a-z0-9_]*|grab track (?:status|trace(?: \d+)?|get [a-z][a-z0-9_]*(?: (?:predict|visual|feedback))?|log(?: (?:status|stop|start(?: \d+)?))?)|'
     r'lidarservo status|turntable (?:status|inventory|get [a-z][a-z0-9_]*)|'
     r'chassis (?:task|status|snapshot|feedback|stop-status|route status)|'
@@ -26,8 +26,8 @@ READ_COMMAND = re.compile(
 PREPARATION_COMMAND = re.compile(
     r'(?:chassis (?:units 65536|feedback (?:0|on)|'
     r'origin (?:2250 150 180|0 0 0)|stream (?:off|on [1-9]\d{0,9}))|imu verify 5)')
-CANCEL_COMMAND = re.compile(r'(?:bus recover|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab mission (?:pause|stop)|grab (?:track|qr) stop|(?:camera|grab) stop)')
-PRIORITY_STOP = re.compile(r'(?:radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab mission (?:pause|stop)|grab (?:track|qr) stop|(?:camera|grab) stop)')
+CANCEL_COMMAND = re.compile(r'(?:bus recover|bus mode-test stop|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab mission (?:pause|stop)|grab (?:track|qr) stop|(?:camera|grab) stop)')
+PRIORITY_STOP = re.compile(r'(?:bus mode-test stop|radar (?:stop|live stop|nav cancel)|radar host (?:stop|live stop)|turntable stop|chassis route cancel|imu cal cancel|stop (?:all|base|z|x)|grab mission (?:pause|stop)|grab (?:track|qr) stop|(?:camera|grab) stop)')
 TERMINAL_STOP = {'confirmed', 'timeout', 'disconnected'}
 
 

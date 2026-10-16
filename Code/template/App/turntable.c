@@ -136,7 +136,7 @@ static void fail(const char *reason)
 }
 void Turntable_Init(void)
 {
-  /* Fixed index/jog/angle actions prepare Receive in start(); boot HOME does not. */
+  /* Initialization stays quiet; enable/HOME prepare Receive before sending. */
   unsigned i;
   static const float Defaults[PARAM_COUNT] = {0, 90, 180, 30, 8, 2.5f, 200, 2000};
   memcpy(Params, Defaults, sizeof(Params));
@@ -551,6 +551,16 @@ void Turntable_Process(void)
   }
   if (MotorBus_IsQuarantined() && Step != TT_PHASE_STOP_FRAME && Step != TT_PHASE_ABORT_HOME) {
     fail("bus_locked"); return;
+  }
+  if(Step==TT_PHASE_HOME || (Step==TT_PHASE_ENABLE && (Op!=OP_POWER || PowerEnabled))){
+    int ready=MotorBus_PositionReplyEnsure(MOTOR_ID_TURNTABLE);
+    if(ready!=1){
+      /* Configuration has its own owner; never hold ID8's reservation while waiting. */
+      MotorBus_Release(MOTOR_BUS_TURNTABLE);
+      if(ready<0)fail("reply_mode_failed");
+      return;
+    }
+    if(!MotorBus_Reserve(MOTOR_BUS_TURNTABLE))return;
   }
   cmd[0] = MOTOR_ID_TURNTABLE;
   if (Step == TT_PHASE_ABORT_HOME) {

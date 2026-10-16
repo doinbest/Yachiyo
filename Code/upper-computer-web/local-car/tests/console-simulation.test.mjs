@@ -424,9 +424,9 @@ test('ring tray placement form is passive and sends one selected-tray command',a
  const f=consoleFixture();f.sim.controlForm('grab-ring-take',{compact:true});
  assert.deepEqual(f.wires,[]);f.$('grab-ring-take-slot').value='3';
  const form=f.elements.find(e=>e.tag==='form');form.onsubmit({preventDefault(){}});
- await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(f.wires,['grab ring take 3']);
+ await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(f.wires,['grab ring take 3 110 25']);
  f.sim.configure({stopLatched:true});form.onsubmit({preventDefault(){}});
- await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(f.wires,['grab ring take 3']);
+ await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(f.wires,['grab ring take 3 110 25']);
 });
 
 test('standalone ring task status omits unused route and QR fields',()=>{

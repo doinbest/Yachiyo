@@ -444,7 +444,7 @@ static void car_x_default_survives_reset_and_verified_home(void)
   assert(GrabTask_Command(3,read));assert(strstr(output,"ERR grab config"));
   GrabTask_BootHomeStart();run_to(GRAB_IDLE,250,0);
   assert(GrabTask_ConfigReady("fixed"));
-  assert(Config[C_Z_PROC_PLACE]==-120 && Config[C_Z_ROUGH_ALIGN]==-100);
+  assert(Config[C_Z_PROC_PLACE]==-110 && Config[C_Z_ROUGH_ALIGN]==-100);
 }
 static void missing_and_fixed(void)
 {
@@ -683,8 +683,8 @@ static void fractional_x_survives_alternating_bus_wait(void)
   assert(GrabTask_Start("align")); run_to(GRAB_ALIGN,180,1); before=positions;
   for(i=0;i<20;i++)
   {
-    /* An in-flight wheel batch owns IO: each blocked control
-     * opportunity is followed by one free 100ms opportunity worth 0.105 pulse. */
+    /* Body targets may replace the pending wheel batch. This virtual arm
+     * accepts IO immediately; all80 control opportunities retain fractions. */
     for(j=0;j<2;j++)
     { bus.stage=MECANUM_STAGE_WHEELS; bus.sent_ms=clock_ms+50; step(true,2,0,1); }
     bus.stage=MECANUM_STAGE_SENT;
@@ -692,7 +692,8 @@ static void fractional_x_survives_alternating_bus_wait(void)
     for(j=0;j<2;j++) step(true,2,0,1);
   }
   assert(positions>before);
-  assert(fabsf(physical[0])<=.03f); /* Busy intervals were skipped, not caught up later. */
+  assert(physical[0]<=-.029f && physical[0]>=-.051f); /* Sub-pulse60ms leads progress monotonically. */
+  assert(fabsf(Axes[0].target-physical[0])<=.011f); /* One final0.01mm pulse may still be in flight. */
 }
 static void stale_wheels_cannot_confirm_stop(void)
 {
@@ -815,7 +816,7 @@ static void boot_homing(void)
   for(i=0;i<20;i++) step(false,0,0,0);
   assert(homes==2 && !boot_verify_calls); /* Idle HOME flags alone are not verified origins. */
   physical[1]=0; run_to(GRAB_IDLE,250,0);
-  assert(boot_verify_calls==1 && homes==3 && !strcmp(status().reason,"home_complete") && Config[C_Z_GRAB]==-45 && Config[C_Z_PLACE]==-25 && Config[C_Z_TEMP_ALIGN]==-100 && Config[C_Z_STACK_PLACE]==-110);
+  assert(boot_verify_calls==1 && homes==3 && !strcmp(status().reason,"home_complete") && Config[C_Z_GRAB]==-45 && Config[C_Z_PLACE]==-25 && Config[C_Z_TEMP_ALIGN]==-100 && Config[C_Z_STACK_PLACE]==-100);
   assert(GrabTask_ConfigReady("fixed") && GrabTask_ConfigReady("align"));
   assert(!strcmp(status().missing,"none"));
   for(i=0;i<50;i++) step(false,0,0,0);
@@ -1264,7 +1265,7 @@ static void recovery_boundaries_and_faults(void)
     assert(velocity_requests==before && !closures);
     RecoveryTick=clock_ms-11950; step(true,1,20,20); /* Exactly 12000 ms is accepted. */
     assert(status().state==GRAB_ALIGN && RecoveryUsed==i+1 && Retries==2 && !CaptureCount);
-    assert(fabsf(XIntegral-Axes[0].mm)<.001f && !PreviousVelocity[0]);
+    assert(fabsf(Axes[0].target-Axes[0].mm)<.001f && !PreviousVelocity[0]);
   }
   {bool was=camera_valid;camera_valid=false;step(true,1,20,20);camera_valid=was;}
   assert(status().state==GRAB_VISION_PAUSE && RecoveryUsed==4);
@@ -1369,7 +1370,7 @@ static void tuned_initial_response_is_faster_and_bounded(void)
   /* Exercise the production acceleration limiter over consecutive updates. */
   pending_valid=false; PendingAction=MECHANICAL_ARM_ACTION_NONE;
   LastControl=clock_ms; Status.dx=-95; Status.dy=0; HaveCapture=true;
-  memset(PreviousVelocity,0,sizeof PreviousVelocity); XIntegral=Axes[0].mm;
+  memset(PreviousVelocity,0,sizeof PreviousVelocity); Axes[0].target=Axes[0].mm;
   for(i=0;i<10;i++) {
     clock_ms+=100;FreshVision=AlignControlPending=true;align_control(clock_ms);
     assert(Status.forward_mm_s>=previous && Status.forward_mm_s-previous<=30.001f);

@@ -102,6 +102,8 @@
 /* Route speed profile; verify acceleration and stopping distance on the chassis. */
 #define CHASSIS_DISTANCE_SPEED_MM_S       50.0f
 #define CHASSIS_ROUTE_DEFAULT_SPEED_MM_S  1000.0f
+#define CHASSIS_MISSION_SCALE_MIN          0.1f
+#define CHASSIS_MISSION_SCALE_MAX          5.0f
 #define CHASSIS_ROUTE_AUTO_DWELL_MS       0U
 #define CHASSIS_DISTANCE_KP               2.5f
 #define CHASSIS_DISTANCE_RESPONSE_S       0.25f

@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #define CHASSIS_PATH_CAPACITY 26U
 #define CHASSIS_PATH_ENTRY_MAX_MM_S 200.0f
+#define CHASSIS_PATH_RAW_CURVE_MAX_MM_S 60.0f
+/* limit applies to the segment arriving at this point, not only its end. */
 typedef struct { float x,y,yaw,s,limit; } ChassisPath_Point;
 typedef struct {
   ChassisPath_Point point[CHASSIS_PATH_CAPACITY];
@@ -45,12 +47,15 @@ static inline bool ChassisPath_Build(ChassisPath *p,unsigned kind,float sx,float
     ChassisPath_Add(p,tx,ty,90,0);
     return true;
   }
-  if(kind==2)ChassisPath_Add(p,1300,2050,90,60);
-  else ChassisPath_Add(p,1200,1950,90,60);
+  /* The approach is a straight transit. Its incoming segment must not
+   * inherit the slow turn's cap; path lookahead brakes before the next arc. */
+  float curve_speed=fminf(speed,CHASSIS_PATH_RAW_CURVE_MAX_MM_S);
+  if(kind==2)ChassisPath_Add(p,1300,2050,90,speed);
+  else ChassisPath_Add(p,1200,1950,90,speed);
   for(unsigned i=1;i<=20;i++){
     float t=i/20.0f,b=30*sinf(3.14159265358979323846f*t);
-    if(kind==2)ChassisPath_Add(p,1300-100*t,2050-b,90-90*t,60);
-    else ChassisPath_Add(p,1200+b,1950+100*t,90-90*t,60);
+    if(kind==2)ChassisPath_Add(p,1300-100*t,2050-b,90-90*t,curve_speed);
+    else ChassisPath_Add(p,1200+b,1950+100*t,90-90*t,curve_speed);
   }
   p->turn_end=p->length;
   ChassisPath_Add(p,tx,ty,kind==1?90:0,0);

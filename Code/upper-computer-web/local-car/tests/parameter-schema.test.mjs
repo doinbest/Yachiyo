@@ -17,10 +17,10 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.equal(GRAB_FORM_DEFAULTS.z_place,-25);
   assert.equal(GRAB_FORM_DEFAULTS.track_store_drop_mm,25);
   for(const key of ['z_speed','z_pick_speed','qr_z_speed'])assert.equal(GRAB_FORM_DEFAULTS[key],250);
-  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-120);
+  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-110);
   assert.equal(GRAB_FORM_DEFAULTS.z_rough_align,-100);
   assert.equal(GRAB_FORM_DEFAULTS.z_temp_align,-100);
-  assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-110);
+  assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-100);
   assert.equal(grabParameters.length,68);
   for(const key of ['head_proc_zero','head_proc_gain','head_temp_zero','head_temp_gain','head_line_zero','head_line_gain','head_tol','head_spread','head_settle_ms','head_proc_turn','head_temp_turn'])assert.ok(!(key in GRAB_FORM_DEFAULTS));
   assert.ok(!grabParameters.some(p=>['ref_u','ref_v'].includes(p.key)));

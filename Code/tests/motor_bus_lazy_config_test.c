@@ -80,14 +80,21 @@ int main(int argc,char **argv)
     Turntable_BootHomeProcess(false);assert(!Turntable_IsBusy());
     Turntable_BootHomeProcess(true);assert(Turntable_IsBusy());
     Turntable_Process();MotorBus_Process();
-    assert(sends==1 && frame[0]==8 && frame[1]==0xf3);
+    assert(sends==1 && frame[0]==8 && frame[1]==0x42);
+    uint8_t cfg[33]={8,0x42,33,21};cfg[22]=1;cfg[32]=0x6b;
+    reply(cfg,sizeof cfg);Turntable_Process();MotorBus_Process();
+    assert(sends==2 && frame[0]==8 && frame[1]==0xf3);
     assert(!MotorBus_IsQuarantined());
-    puts("lazy configuration: ID8 boot HOME starts enable without Both preflight PASS");
+    puts("lazy configuration: ID8 boot HOME verifies Receive before enable PASS");
     return 0;
   }
-  /* HOME must not wait for unrelated FD/Both configuration. */
+  /* HOME prepares this axis' Receive before sending, with no eager init traffic. */
+  assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_Z,2)==MECHANICAL_ARM_RESULT_BUSY);
+  MotorBus_Process();assert(sends==1 && frame[0]==6 && frame[1]==0x42);
+  uint8_t home_cfg[33]={6,0x42,33,21};home_cfg[22]=1;home_cfg[32]=0x6b;
+  reply(home_cfg,sizeof home_cfg);
   assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_Z,2)==MECHANICAL_ARM_RESULT_NONE);
-  MotorBus_Process();assert(sends==1 && frame[0]==6 && frame[1]==0x9a);
+  MotorBus_Process();assert(sends==2 && frame[0]==6 && frame[1]==0x9a);
   const uint8_t home_ack[]={6,0x9a,2,0x6b};reply(home_ack,sizeof home_ack);
   MechanicalArm_EventTypeDef event;assert(MechanicalArm_ResultGet(&event));
   assert(event.Result==MECHANICAL_ARM_RESULT_OK && !MotorBus_IsQuarantined());
@@ -105,6 +112,6 @@ int main(int argc,char **argv)
   cfg[22]=1;reply(cfg,sizeof cfg);
   assert(MechanicalArm_Position(MECHANICAL_ARM_AXIS_X,100)==MECHANICAL_ARM_RESULT_NONE);
   MotorBus_Process();assert(frame[0]==7 && frame[1]==0xfd);
-  puts("lazy configuration: quiet boot, independent HOME, fixed X read/RAM-Receive/verify before FD PASS");
+  puts("lazy configuration: quiet init, verified Receive before HOME/FD PASS");
   return 0;
 }

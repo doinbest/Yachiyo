@@ -232,3 +232,21 @@ test('ring low observation keeps adjustable height and distinct completion',()=>
   for(const z of [-151,1,NaN]) assert.throws(()=>protocol.buildCommand('grab-ring-align-stay',{ring:'1',z}));
   assert.equal(protocol.describeReply('OK grab state=hold mode=align operation=ring_align reason=ring_aligned_low result=aligned'),'色环对准完成 · 保持对准高度观察');
 });
+
+
+test('complete ring flow selects ring/tray and carries only this request drop distance',()=>{
+  assert.equal(protocol.buildCommand('grab-ring-run',{ring:2,slot:1,drop:110}),'grab ring run 2 1 110 25');
+  assert.equal(protocol.buildCommand('grab-ring-run',{ring:3,slot:2,drop:100}),'grab ring run 3 2 100 25');
+  for(const drop of [0,151,'NaN',''])assert.throws(()=>protocol.buildCommand('grab-ring-run',{ring:1,slot:1,drop}));
+  assert.throws(()=>protocol.buildCommand('grab-ring-run',{ring:4,slot:1,drop:110}));
+  assert.throws(()=>protocol.buildCommand('grab-ring-run',{ring:1,slot:0,drop:110}));
+});
+
+
+test('ring workflows share placement depth and pass an independent tray travel',()=>{
+  const values={ring:2,slot:1,drop:110,carDrop:30};
+  assert.equal(protocol.buildCommand('grab-ring-run',values),'grab ring run 2 1 110 30');
+  assert.equal(protocol.buildCommand('grab-ring-take',values),'grab ring take 1 110 30');
+  assert.equal(protocol.buildCommand('grab-ring-store',values),'grab ring store 1 110 30');
+  for(const carDrop of [0,151,'NaN',''])assert.throws(()=>protocol.buildCommand('grab-ring-run',{...values,carDrop}));
+});

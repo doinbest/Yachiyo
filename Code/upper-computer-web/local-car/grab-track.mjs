@@ -294,7 +294,7 @@ export function mountTracking({root,send,canSend=()=>false}){
   button(parameterActions,'应用并核对','grab track set body_speed 160',apply);
   button(parameterActions,'填入追踪预设','local',()=>{for(const [key,value]of Object.entries(profileDefaults(parameterProfile.value)))inputs.get(key).value=value;message.textContent='预设只填入草稿，尚未写入设备。';});
   parameterProfile.onchange=()=>{cancel('参数模式已切换');for(const [key,input]of inputs)input.value=profileDefaults(parameterProfile.value)[key];message.textContent=`正在编辑${profileNames[parameterProfile.value]}参数；请显式读取设备值。`;render();};
-  card.append(actions,statusGuide,pickup,pickupReadback,el('p','地面默认Z−120 mm，静态对准后夹取并抬至Z0；转盘默认Z−50 mm，追踪夹取后按所填距离抬升。入仓默认从转移高度下降20 mm。夹取下降速度默认250 mm/s，使用比赛同一Z驱动加速度配置（默认档位255）。转盘下降窗口默认±100 px、高位保持0 ms；地面采用静态对准稳定条件。两种入口均先写入并核对所需参数，停止和断线不自动续发；自动选仓按库存，指定仓沿用原规则。','form-note'),status,readout,message);
+  card.append(actions,statusGuide,pickup,pickupReadback,el('p','地面默认Z−110 mm，静态对准后夹取并抬至Z0；转盘默认Z−45 mm，追踪夹取后按所填距离抬升。入仓默认从转移高度下降25 mm。夹取下降速度默认250 mm/s，使用比赛同一Z驱动加速度配置（默认档位0，直接按目标速度运行）。转盘下降窗口默认±100 px、高位保持0 ms；地面采用静态对准稳定条件。两种入口均先写入并核对所需参数，停止和断线不自动续发；自动选仓按库存，指定仓沿用原规则。','form-note'),status,readout,message);
   const records=el('details',undefined,'advanced material-records');records.append(el('summary','追踪记录与诊断'),logActions,logStatus,diagnostics);mountLogArchive({root:records});
   card.append(trackingOnly,parameters,records);root.append(card);
   function render(){

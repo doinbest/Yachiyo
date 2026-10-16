@@ -57,6 +57,7 @@ int main(void)
   assert(!MotorBus_Submit(MOTOR_BUS_PROBE,write_current,sizeof write_current,4,32,false));
   MotorBus_ProbeStop();
   /* Never start diagnostic isolation around queued or active motion. */
+  MotorBus_WheelReceiveSet(true); /* This case owns an outstanding motion ACK. */
   assert(MotorBus_Submit(MOTOR_BUS_CHASSIS,motion,sizeof motion,4,6,false));
   assert(!MotorBus_ProbeStart(4));advance(3);tx_done();assert(!MotorBus_ProbeStart(4));
   uart.ErrorCode=HAL_UART_ERROR_DMA;MotorBus_ErrorCallback(&uart);MotorBus_Process();

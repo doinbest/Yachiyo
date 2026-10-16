@@ -60,7 +60,21 @@ static void aligned_station_anchor(void){
   unsigned prepared=pose_calls;ContestMission_Process();assert(pose_calls==prepared+1 && WorkStarted);
   start_fixture_custom=false;
 }
+static void scaled_local_move_keeps_parameters_and_busy_retry(void)
+{
+  extern float test_local_scaled_speed,test_local_scaled_accel,test_local_scaled_decel;
+  fixture(M_RING_MOVE);Speed=80;MotionScale=2;allowed_local_speed=100;
+  reject_move="busy";
+  assert(!local_move(123,456,"ring_position") && State==M_RING_MOVE);
+  assert(!strcmp(Reason,"busy"));
+  reject_move=NULL;
+  assert(local_move(123,456,"ring_position"));
+  assert(tx==123 && ty==456 && !strcmp(Reason,"ring_position"));
+  assert(test_local_scaled_speed==100 && test_local_scaled_accel==600 && test_local_scaled_decel==600);
+  MotionScale=1;allowed_local_speed=50;
+}
 int main(void){
+  scaled_local_move_keeps_parameters_and_busy_retry();
   processing_vision_waits_for_dock();aligned_station_anchor();
   /* One heading operation on each arrival, never on intra-station ring moves. */
   for(unsigned visit=3;visit<=7;visit++) {

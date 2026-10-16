@@ -19,7 +19,7 @@ static void ground_entry(bool pause)
  run_to(GRAB_DESCEND,600,0);
  if(pause){assert(GrabTask_Pause());run_to(GRAB_IDLE,200,0);assert(GrabTask_Continue());}
  run_to(GRAB_CLOSE,600,0);
- assert(physical[1]==-120 && z_position_acc==255 && z_position_rpm==468);
+ assert(physical[1]==-120 && z_position_acc==0 && z_position_rpm==468); /* Current X/Z baseline uses driver gear0. */
  bool dropped=false;
  for(unsigned i=0;i<800 && status().state!=GRAB_COMPLETE;i++){
    step(true,0,0,0);

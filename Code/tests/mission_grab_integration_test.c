@@ -155,7 +155,7 @@ static void run_match(bool raised)
  fprintf(stderr,"integration stored=%u placed=%u paused=%u overlap=%u overlap_pauses=%u busy=%u\n",stored,placed,pause_count,overlapping_moves,overlap_pauses,busy_moves);
  assert(stored==12 && placed==12 && pause_count==6 && overlap_pauses==3 && overlapping_moves>0 && busy_moves>0);
  extern unsigned test_heading_competition_starts;
- assert(test_heading_competition_starts==6); /* Four arrivals plus two processing departures. */
+ assert(test_heading_competition_starts==7); /* Four arrivals, two processing departures and one first-layer temporary departure. */
  route.state="done";cycle();assert(!ContestMission_IsBusy());
  if(raised)assert(raised_ring && raised_pick && raised_stack);
  ContestMission_Report();assert(strstr(output,raised?"align=raised":"align=lowered"));
@@ -174,15 +174,24 @@ static void standalone_ring_tray_place(void)
   physical[0]=42;tray_inventory[slot-1]=(Turntable_Inventory_t){TURNTABLE_UNKNOWN,0};
   ContestMission_Init();assert(!ContestMission_StartRingTake(slot)); /* An aligned ring is required. */
   assert(GrabTask_AlignStart(11,0,true));run_to(GRAB_HOLD,600,0);
-  assert(!closures);assert(ContestMission_StartRingTake(slot));
-  unsigned requests=0,closed=closures,opened=0;bool pickup_paused=false,descent_paused=false,release_paused=false;
+  float release_drop=slot==2?130:140;
+  assert(!closures);assert(slot==2?ContestMission_StartRingTakeEx(slot,release_drop,35):ContestMission_StartRingTake(slot));
+  unsigned requests=0,closed=closures,opened=0;bool pickup_paused=false,descent_paused=false,release_paused=false,lift_checked=false;
   for(unsigned i=0;i<3000 && ContestMission_IsBusy();i++){
    ContestMission_Process();step(true,0,0,0);
    if(!strcmp(status().operation,"car_pick")){assert(AlignedPlace.valid && AlignedPlace.ring==2);requests=camera_requests;}
    if(PrealignedPlaceActive){assert(ActiveColor==0 && camera_requests==requests);if(!opened)opened=openings;
     if(status().state==GRAB_DESCEND && !descent_paused){ContestMission_Stop();descent_paused=true;}}
    if(status().state==GRAB_CLOSE && !pickup_paused){ContestMission_Stop();pickup_paused=true;}
-   if(status().state==GRAB_RELEASE && !release_paused){assert(physical[1]==-140);ContestMission_Stop();release_paused=true;}
+   if(status().state==GRAB_LIFT && CarPickClosed && !lift_checked){
+    lift_checked=true;z_arrives=false;unsigned turns=base_moves;
+    for(unsigned wait=0;wait<25;wait++){
+     ContestMission_Process();step(true,0,0,0);
+     assert(base_moves==turns && physical[1]<0); /* Standalone ring pickup must lift first. */
+    }
+    z_arrives=true;physical[1]=destination[1];
+   }
+   if(status().state==GRAB_RELEASE && !release_paused){assert(physical[1]==-release_drop);ContestMission_Stop();release_paused=true;}
    if(ContestMission_CanConfigure())assert(ContestMission_Continue());
   }
   if(ContestMission_IsBusy() || TrackHeld || closures!=closed+1 || AlignedPlace.valid){
@@ -190,7 +199,7 @@ static void standalone_ring_tray_place(void)
       slot,TrackHeld,closures,closed+1,AlignedPlace.valid,States[status().state],status().reason,output);
   }
   assert(!ContestMission_IsBusy() && !TrackHeld && closures==closed+1 && !AlignedPlace.valid);
-  assert(pickup_paused && descent_paused && release_paused && openings==opened+1);
+  assert(pickup_paused && descent_paused && release_paused && lift_checked && openings==opened+1);
   assert(tray_inventory[slot-1].state==TURNTABLE_EMPTY && physical[1]==0);
   assert(fabsf(physical[0]-42)<.1f && fabsf(physical[2]-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))<.1f);
   ContestMission_Report();assert(strstr(output,"mode=ring_place") && strstr(output,"ring_pickplace_complete"));

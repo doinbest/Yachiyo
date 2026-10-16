@@ -559,6 +559,11 @@ void Mecanum_Feedback_Enable(bool enabled)
   FeedbackEnabled = enabled;
   if(!enabled) FeedbackPositionGroup=false;
 }
+void Mecanum_FeedbackSettingsGet(bool *enabled,uint8_t *address)
+{
+  if(enabled)*enabled=FeedbackEnabled;
+  if(address)*address=FeedbackAddress;
+}
 bool Mecanum_Feedback_Select(uint8_t address)
 {
   if (address > 4)

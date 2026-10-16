@@ -165,4 +165,5 @@ int main(void){
   assert(commits==0 && turns==0 && StationHeading_ObservationZ()==0);
   assert(!strcmp(StationHeading_Reason(),"heading_height_unmatched"));
   puts("station heading: observation-only, STOP independence, pause/reacquire, missing/duplicate/invalid samples PASS");
+  return 0;
 }

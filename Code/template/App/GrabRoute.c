@@ -217,13 +217,47 @@ bool GrabRoute_Command(unsigned Count,char *Tokens[])
   char *End;
   float Speed;
   if(Count<2U || strcmp(Tokens[0],"grab")) return false;
-  if(Count>=3U && !strcmp(Tokens[1],"ring") && !strcmp(Tokens[2],"take"))
+  if(Count>=3U && !strcmp(Tokens[1],"ring") && !strcmp(Tokens[2],"run"))
   {
-    if(Count!=4U || Tokens[3][0]<'1' || Tokens[3][0]>'3' || Tokens[3][1])
-    {static const char error[]="ERR grab ring_take reason=invalid_slot\r\n";(void)ConsoleTx_Write((const uint8_t*)error,sizeof error-1);return true;}
-    if(!ContestMission_StartRingTake((uint8_t)(Tokens[3][0]-'0'))){
-      char line[160];snprintf(line,sizeof line,"ERR grab ring_take reason=%s\r\n",ContestMission_Reason());(void)ConsoleTx_Write((const uint8_t*)line,(uint16_t)strlen(line));
+    const char *error=NULL;float drop=0,car_drop=0;
+    if(Count!=6U && Count!=7U)error="format";
+    else if(Tokens[3][0]<'1' || Tokens[3][0]>'3' || Tokens[3][1])error="invalid_ring";
+    else if(Tokens[4][0]<'1' || Tokens[4][0]>'3' || Tokens[4][1])error="invalid_slot";
+    else{
+      drop=strtof(Tokens[5],&End);
+      if(End==Tokens[5] || *End || !isfinite(drop) || drop<=0 || drop>150)error="ring_release_height";
+      if(!error && Count==7U){
+        car_drop=strtof(Tokens[6],&End);
+        if(End==Tokens[6] || *End || !isfinite(car_drop) || car_drop<=0 || car_drop>150)error="car_pick_z_targets";
+      }
     }
+    if(!error){
+      bool ok=Count==7U?ContestMission_StartRingFlowEx((uint8_t)(Tokens[3][0]-'0'),(uint8_t)(Tokens[4][0]-'0'),drop,car_drop):
+        ContestMission_StartRingFlow((uint8_t)(Tokens[3][0]-'0'),(uint8_t)(Tokens[4][0]-'0'),drop);
+      if(!ok)error=ContestMission_Reason();
+    }
+    if(error){char line[160];int n=snprintf(line,sizeof line,"ERR grab ring_flow reason=%s\r\n",error);
+      if(n>0 && n<(int)sizeof line)(void)ConsoleTx_Write((const uint8_t*)line,(uint16_t)n);}
+    return true;
+  }
+  if(Count>=3U && !strcmp(Tokens[1],"ring") && (!strcmp(Tokens[2],"take") || !strcmp(Tokens[2],"store")))
+  {
+    bool storing=!strcmp(Tokens[2],"store");const char *error=NULL;float drop=0,car_drop=0;
+    if((!storing && Count!=4U && Count!=6U) || (storing && Count!=6U))error="format";
+    else if(Tokens[3][0]<'1' || Tokens[3][0]>'3' || Tokens[3][1])error="invalid_slot";
+    else if(Count==6U){
+      drop=strtof(Tokens[4],&End);
+      if(End==Tokens[4] || *End || !isfinite(drop) || drop<=0 || drop>150)error="ring_release_height";
+      if(!error){car_drop=strtof(Tokens[5],&End);
+        if(End==Tokens[5] || *End || !isfinite(car_drop) || car_drop<=0 || car_drop>150)error="car_pick_z_targets";}
+    }
+    if(!error){uint8_t slot=(uint8_t)(Tokens[3][0]-'0');
+      bool ok=storing?ContestMission_StartRingStore(slot,drop,car_drop):Count==6U?
+        ContestMission_StartRingTakeEx(slot,drop,car_drop):ContestMission_StartRingTake(slot);
+      if(!ok)error=ContestMission_Reason();
+    }
+    if(error){char line[160];int n=snprintf(line,sizeof line,"ERR grab ring_%s reason=%s\r\n",storing?"store":"take",error);
+      if(n>0 && n<(int)sizeof line)(void)ConsoleTx_Write((const uint8_t*)line,(uint16_t)n);}
     return true;
   }
   if(!strcmp(Tokens[1],"heading"))
@@ -304,6 +338,22 @@ qr_format:
     { (void)ContestMission_Continue();ContestMission_Report();return true; }
     ContestMission_Request_t request={MISSION_CODE_QR,"",CHASSIS_ROUTE_DEFAULT_SPEED_MM_S,100,RADAR_START_LOWER,false,true,false,CHASSIS_PROFILE_LINEAR};
     const char *error=NULL;unsigned first=3;
+    float scale=1;
+    bool smooth=false,seen_scale=false,seen_smooth=false;
+    while(Count>3 && strchr(Tokens[Count-1],'=')){
+      const char *suffix=Tokens[--Count];
+      if(!strncmp(suffix,"scale=",6)){
+        if(seen_scale){error="duplicate_option";break;}
+        seen_scale=true;scale=strtof(suffix+6,&End);
+        if(End==suffix+6 || *End || !isfinite(scale) ||
+           scale<CHASSIS_MISSION_SCALE_MIN || scale>CHASSIS_MISSION_SCALE_MAX)error="route_scale_range";
+      }else if(!strncmp(suffix,"smooth=",7)){
+        if(seen_smooth){error="duplicate_option";break;}
+        seen_smooth=true;
+        if(strcmp(suffix+7,"0") && strcmp(suffix+7,"1"))error="start_smooth_required";
+        else smooth=suffix[7]=='1';
+      }else error="format";
+    }
     if(Count<3 || (strcmp(Tokens[2],"qr") && strcmp(Tokens[2],"fixed")))error="source_required";
     else if(!strcmp(Tokens[2],"fixed"))
     {
@@ -333,8 +383,9 @@ qr_format:
       if(!strcmp(Tokens[first+5],"cosine"))request.profile=CHASSIS_PROFILE_COSINE;
       else if(strcmp(Tokens[first+5],"linear"))error="profile_required";
     }
+    if(!error && smooth && (request.start_id!=RADAR_START_LOWER || request.profile!=CHASSIS_PROFILE_LINEAR))error="start_smooth_lower_linear_only";
     if(!error && (GrabRoute_IsBusy() || GrabTask_IsBusy()))error="busy";
-    if(!error && !ContestMission_Start(NULL,&request))error=ContestMission_Reason();
+    if(!error && !ContestMission_StartConfigured(NULL,&request,scale,smooth))error=ContestMission_Reason();
     if(error)
     {
       char text[180];int n=snprintf(text,sizeof text,"ERR grab mission reason=%s\r\n",error);

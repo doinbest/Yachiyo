@@ -22,7 +22,11 @@ int main(void)
   }
   for(unsigned kind=2;kind<=3;kind++){
     assert(ChassisPath_Build(&path,kind,kind==2?2100:1200,kind==2?2100:1200,1200,2100,1000));
-    assert(path.count==23 && path.point[1].limit==60);
+    assert(path.count==23 && path.point[1].limit==1000);
+    for(unsigned i=2;i+1<path.count;i++)assert(path.point[i].limit==60);
+    assert(ChassisPath_Sample(&path,path.point[1].s*.5f).limit==1000);
+    assert(ChassisPath_Build(&path,kind,kind==2?2100:1200,kind==2?2100:1200,1200,2100,40));
+    for(unsigned i=1;i+1<path.count;i++)assert(path.point[i].limit==40);
   }
   ChassisRoute_Profile_t p;
   RadarPlan_Point_t start={2250,150,1,0},qr={2100,1250,5,1};
@@ -37,6 +41,9 @@ int main(void)
   corner.x_mm=1200;corner.y_mm=1200;
   assert(ChassisRouteProfile_BuildTask(&corner,&raw,90,1000,false,&p));
   assert(p.count==1 && !strcmp(p.phases[0].phase,"work_curve"));
+  float accels[CHASSIS_ROUTE_PROFILE_MAX_PHASES];
+  ChassisRouteProfile_ApplyTaskLinear(&corner,&raw,&p,true,accels);
+  assert(p.phases[0].speed_mm_s==800 && accels[0]==300);
   /* A planner's nonstandard entry remains its entry, not a fixed shortcut. */
   corner.x_mm=1500;corner.y_mm=1800;
   assert(ChassisRouteProfile_BuildTask(&corner,&raw,90,1000,false,&p));

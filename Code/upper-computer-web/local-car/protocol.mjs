@@ -1,6 +1,7 @@
 import {chineseTerminalLine,replyIsFault} from './terminal-format.mjs?v=lidar-poses-20261012';
 import {deviceText,reasonText} from './device-text.mjs';
 import {missionResumeStatus} from './mission-resume-status.mjs';
+import {missionSpeedSettings} from './mission-scale.mjs';
 export {deviceText,reasonText};
 import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from './grab-params.mjs?v=car-transfer-speed-20261007';
 import {GRAB_PARAMETER_METADATA} from './grab-parameter-metadata.mjs';
@@ -75,7 +76,9 @@ export const commands = [
   command('camera-ring','vision','仅识别编号环 · 不运动','camera ring {ring}',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']])],'只请求所选数字同心圆的坐标；不移动底盘或机械臂。'),
   command('grab-ring-align-options','vision','编号环视觉对准','grab align ring {ring} {z}',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']]),choice('height','对准高度',[['raised','高位对准 · Z=0'],['lowered','下降对准 · 仅对照测试']]),number('z','下降对准 Z 绝对高度 / mm',-100,-150,0,1),choice('finish','完成后动作',[['stay','保持对准高度'],['raise','抬回上限 · 默认Z=0']])],'对准高度和完成后的抬升分别选择；高位模式忽略下降高度输入。'),
   command('grab-ring-align','vision','底盘 + X 对准所选编号环','grab align ring {ring} {z}',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']]),number('z','对准时Z绝对高度 / mm',-100,-150,0,1)],'Z最高处识别编号，先底盘和X横向接近，再随环心接近准心逐步下降；靠画面边缘时暂缓下降。完成后停止视觉控制、Z抬至最高，再手动装料。DX/DY各≤1像素。'),
-  command('grab-ring-take','vision','编号环自动取仓放置','grab ring take {slot}',[choice('slot','取料仓位',[['1','1号料盘'],['2','2号料盘'],['3','3号料盘']])],'先完成上方编号环对准并保持空爪。STM32重新核验停稳与视觉，保存实际X/Z，再从所选料盘取料，Base转回作业方向、恢复X并按比赛z_proc_place下降释放、提起；无需颜色或库存登记。'),
+  command('grab-ring-run','vision','编号环完整取仓放置','grab ring run {ring} {slot} {drop} {carDrop}',[choice('ring','目标编号环',[['1','1号环'],['2','2号环'],['3','3号环']]),choice('slot','取料车仓',[['1','1号料盘'],['2','2号料盘'],['3','3号料盘']]),number('drop','本次放置下降距离 / mm',-GRAB_FORM_DEFAULTS.z_proc_place,0.1,150,0.1),number('carDrop','车仓下降／等量上升距离 / mm',GRAB_FORM_DEFAULTS.car_pick_drop_mm,0.1,150,0.1)],'空爪放在粗加工编号环前，机构已回零。自动准备作业姿态、视觉航向矫正、高位对准指定环、保存位置、指定仓取料、恢复位置并下降放置提起。下降距离从Z=0向下计算，只作用本次，不改比赛默认；航向未验证不取料。不扫码、不跑比赛路线、不重置其他库存。'),
+  command('grab-ring-take','vision','编号环自动取仓放置','grab ring take {slot} {drop} {carDrop}',[choice('slot','取料仓位',[['1','1号料盘'],['2','2号料盘'],['3','3号料盘']]),number('drop','放料下降距离 / mm',-GRAB_FORM_DEFAULTS.z_proc_place,0.1,150,0.1),number('carDrop','车仓下降／等量上升距离 / mm',GRAB_FORM_DEFAULTS.car_pick_drop_mm,0.1,150,0.1)],'先完成上方编号环对准并保持空爪。STM32重新核验停稳与视觉，保存实际X/Z，再从所选料盘按本次车仓距离取料，Base转回作业方向、恢复X并按本次放料距离下降释放、提起；无需颜色或库存登记。'),
+  command('grab-ring-store','vision','从当前编号环取回车仓并回位','grab ring store {slot} {drop} {carDrop}',[choice('slot','放回车仓',[['1','1号料盘'],['2','2号料盘'],['3','3号料盘']]),number('drop','外部夹取下降距离 / mm',-GRAB_FORM_DEFAULTS.z_proc_place,0.1,150,0.1),number('carDrop','车仓下降／等量上升距离 / mm',GRAB_FORM_DEFAULTS.car_pick_drop_mm,0.1,150,0.1)],'保持当前已对准的工位位置，空爪在作业方向。下降夹取、抬Z收X、转到指定车仓、下降放料、再抬Z、伸X30 mm后Base回作业方向；最终Z=0、X相对收回参考伸出30 mm。无新视觉对准，不扫码跑路，仅作用本次参数。'),
   command('grab-ring-place','vision','下降放置并提起','grab ring place {z}',[number('z','放置Z绝对位置 / mm（可调整）',-150,-150,-0.1,0.1)],'先完成所选环对准，人工放入物料并闭合夹爪。仅Z下降、反馈到位后松爪，再提起至观察高度；不取仓、不改变库存。'),
   command('grab-ring-align-stay','vision','对准后保持低位','grab align ring {ring} {z} stay',[choice('ring','识别环号',[['1','1号环'],['2','2号环'],['3','3号环']]),number('z','对准时Z绝对高度 / mm',-100,-150,0,1)],'按所设高度渐进下降，对准完成后保持低位，仅继续识别编号环供观察。'),
   command('grab-stack-align','vision','码垛视觉对准','grab stack align {color}',[choice('color','下层物料颜色',grabColorOptions,'3')],'Z保持最高，直接按视觉DX/DY对准并停稳后等待装料；补偿由香橙派完成。'),
@@ -93,7 +96,7 @@ export const commands = [
   ...[['fixed','固定位置抓取'],['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}`,'vision',label,mode==='align'?'grab align color 3 0':`grab start ${mode}`)),
   ...[['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}-color`,'vision',label,mode==='align'?'grab align color {color} 0':`grab start ${mode} {color}`,[choice('color','物料颜色',grabColorOptions,'3')])),
   command('grab-route','vision','启动蓝色首件入仓测试','grab route {speed}',[number('speed','路线平移速度 / mm·s⁻¹',1000,10,5000)],'右下起点、机械臂朝后；二维码点直接通过，到原料台抓蓝色入第一仓，再收回朝后结束。不覆盖任务码；第一仓需有参考、已配置且为空，先在地图页准备跑图。'),
-  command('grab-mission','vision','扫码并启动两批比赛','grab mission qr {speed} {turnSpeed} lower fixed vhigh linear',[number('speed','路线速度 / mm/s',1000,10,5000),number('turnSpeed','转向速度 / °/s',100,5,360)],'前往二维码实际扫码，并采用本轮扫码任务码执行两批搬运。固定任务码在比赛任务页选择。'),
+  command('grab-mission','vision','扫码并启动两批比赛','grab mission qr {speed} {turnSpeed} lower fixed vhigh linear',[number('speed','基准总限速 / mm/s',1000,10,5000),number('turnSpeed','转向速度 / °/s',100,5,360),number('scale','比赛倍率K',1,0.1,5,0.1)],'正式linear底盘平移总限速、各段速度及起步/停车加速度统一乘K；转向、视觉、机构及等待独立。固定任务码在比赛任务页选择。'),
   command('grab-mission-continue','vision','补齐参数后继续本件','grab mission continue'),
   command('grab-mission-pause','vision','暂停比赛','grab mission pause',[],'停车并保留本轮进度，显式继续才恢复。'),
   command('grab-mission-stop','vision','停止比赛','grab mission stop',[],'停车后结束本轮，不再续接；保持夹爪、参数、参考及已完成库存。'),
@@ -214,11 +217,17 @@ export function frameCommand(text) {
   if (typeof text !== 'string' || /[^\x20-\x7e\t]/.test(text)) throw new Error('仅允许单行 ASCII 命令，不能包含换行。');
   const line = text.trim();
   if (!line || line.length > 95) throw new Error('命令长度必须为 1～95 字节。');
-  if (line.split(/\s+/).length > 11) throw new Error('固件最多接受 11 个字段。');
+  if (line.split(/\s+/).length > 12) throw new Error('固件最多接受 12 个字段。');
   return line + '\r\n';
 }
 
 export function buildCommand(id, values = {}) {
+  if(['grab-ring-run','grab-ring-take','grab-ring-store'].includes(id))values={drop:-GRAB_FORM_DEFAULTS.z_proc_place,carDrop:GRAB_FORM_DEFAULTS.car_pick_drop_mm,...values};
+  if(id==='grab-mission'){
+    values={scale:1,smoothStart:false,...values};
+    if(typeof values.smoothStart!=='boolean')throw new Error('请选择是否启用起步平滑处理。');
+    if(values.smoothStart&&((values.start??'lower')!=='lower'||(values.profile??'linear')!=='linear'))throw new Error('起步平滑处理仅支持右下起点和linear模式。');
+  }
   if(id==='chassis-test'){const legacyAccel=values.accel;values={profile:'linear',accel:500,cosine_k:200,curve_period_ms:1,heading_kp:0.1,heading_kd:0,...values};if(values.decel===undefined)values.decel=legacyAccel??300;if(values.profile==='cosine')values.accel=values.decel=300;else values.cosine_k=200;}
   // A high alignment uses absolute Z=0; the inactive lower-height draft is ignored.
   if(id==='grab-ring-align-options' && values.height==='raised')values={...values,z:'0'};
@@ -269,6 +278,7 @@ export function buildCommand(id, values = {}) {
     frameCommand(line);return line;
   }
   let line = definition.template.replace(/\{(\w+)\}/g, (_,key) => checked[key]);
+  if(id==='grab-mission'){const settings=missionSpeedSettings(checked.speed,checked.scale);if(settings.scale!==1)line+=` scale=${settings.scale}`;if(values.smoothStart)line+=' smooth=1';}
   if(id==='chassis-test'){line+=` ${Number(checked.profile==='linear'?checked.accel:checked.cosine_k)} ${Number(checked.heading_kp)} ${Number(checked.heading_kd)}`;if(Number(checked.curve_period_ms)!==1||(checked.profile==='linear'&&Number(checked.decel)!==Number(checked.accel)))line+=` ${Number(checked.curve_period_ms)}`;if(checked.profile==='linear'&&Number(checked.decel)!==Number(checked.accel))line+=` ${Number(checked.decel)}`;}
   frameCommand(line);
   return line;
@@ -382,6 +392,16 @@ export function parseGrabRouteStatus(line) {
     result[match[1]]=match[2];
   }
   if (!/^[a-z_]+$/.test(result.state??'')) return null;
+  for(const key of ['start_smooth','entry_smooth']){
+    if(result[key]===undefined)continue;
+    if(!/^[01]$/.test(result[key]))return null;
+    result[key]=Number(result[key]);
+  }
+  for(const key of ['route_base_speed','route_scale','route_speed']){
+    if(result[key]===undefined)continue;
+    if(!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(result[key])||!Number.isFinite(Number(result[key])))return null;
+    result[key]=Number(result[key]);
+  }
   for (const key of ['segment','elapsed_ms','batch','item','station','visit','stored','placed','slot','ring','color','stop_confirmed']) {
     if (result[key]===undefined) {result[key]=null;continue;}
     if (!/^\d+$/.test(result[key]) || !Number.isSafeInteger(Number(result[key]))) return null;
@@ -394,8 +414,9 @@ export function describeGrabRoute(r) {
   if(r?.mode==='heading')return `独立航向测试 · ${reasonText(r.reason||r.heading_result||r.state)}`;
   if(r?.mode==='single'){const stage=({stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',car_pick:'车仓取出并保持',held_place:'持料视觉对准',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向姿态',driving:'行驶中',prepare_transfer:'准备抓取',transfer:'抓取入仓',prepare_departure:'准备收回',leaving:'收回朝后',config_wait:`等待补齐 ${describeGrabMissing(r.reason)} 后继续本件`,done:'入仓及收回完成',error:'任务故障',cancelled:'已取消'})[r.state]||r.state;return `蓝色首件 · 第一仓 · ${stage}`;}
   if(!['mission','ring_place'].includes(r?.mode))return `组合路线：${({idle:'空闲',driving:'行驶中',scan_wait:'扫码等待 1 秒',display_wait:'等待屏幕发送',handoff:'物料台已交接',error:'路线故障',cancelled:'已取消',done:'首件任务完成'})[r?.state]||r?.state||'未报告'}`;
-  const stage=({cancelling:'正在结束本轮',cancel_wait:'结束中 · 停车尚未确认',stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',empty_ring_align:'空爪对准目标编号环',empty_material_align:'空爪对准第一层同色物料',car_pick:'车仓取出并保持',held_place:'放置所取物料',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向行驶姿态',driving:'行驶中',departure_heading_prepare:'准备加工区离站航向矫正',departure_heading:'加工区离站前航向矫正',ring_clear:'抬升收回',ring_move:'移动到指定环',transfer:'单件取放',leaving:'恢复后向姿态',return_center:'返回工位中心',config_wait:'等待补齐参数',done:'两批任务结束',error:'任务故障',cancelled:'已取消',prepare_ring:'准备换环',prepare_departure:'准备离站',prepare_transfer:'准备下一件取放'})[r.state]||r.state;
+  const stage=({cancelling:'正在结束本轮',cancel_wait:'结束中 · 停车尚未确认',stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',empty_ring_align:'空爪对准目标编号环',empty_material_align:'空爪对准第一层同色物料',car_pick:'车仓取出并保持',held_place:'放置所取物料',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向行驶姿态',driving:'行驶中',departure_heading_prepare:'准备工位离站航向矫正',departure_heading:'工位离站前色环航向矫正',ring_clear:'抬升收回',ring_move:'移动到指定环',transfer:'单件取放',leaving:'恢复后向姿态',return_center:'返回工位中心',config_wait:'等待补齐参数',done:'两批任务结束',error:'任务故障',cancelled:'已取消',prepare_ring:'准备换环',prepare_departure:'准备离站',prepare_transfer:'准备下一件取放'})[r.state]||r.state;
   const recoveryStage=missionResumeStatus(r)?.label||({bus_recovery_stopping:'通信异常 · 保留进度停车',bus_recovering:'恢复电机总线',bus_recovery_verify:'恢复后确认停稳',bus_recovery_wait:'总线恢复待处理',bus_recovery_retry:'通信恢复重试'})[r.state];
+  if(r?.mode==='ring_store')return `编号环取回入仓 · ${r.slot??'—'}号料盘 · ${r.state==='done'?'放料、抬Z及机械臂回位完成':recoveryStage||stage}`;
   if(r?.mode==='ring_place')return `编号环自动放置 · ${r.ring??'—'}号环 · ${r.slot??'—'}号料盘 · ${r.state==='done'?'取仓放置完成':recoveryStage||stage}`;
   return `${r.batch===2?'第二批':'第一批'} · 第 ${r.item??'—'} 件 · ${recoveryStage||stage}${r.state==='config_wait'?`：补齐 ${describeGrabMissing(r.reason)} 后继续本件`:''}`;
 }

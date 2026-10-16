@@ -137,10 +137,41 @@ static void cancel_ends_pickup_ownership(void)
   /* A later explicit manual request is a new pickup, not the cancelled owner. */
   assert(GrabTask_CarPickStart(3));assert(CarPickSlot==3 && !CarPickClosed && CarPickClearanceX==0);
 }
+static void standalone_ring_lifts_before_turn(unsigned slot,bool pause)
+{
+  setup();assert(GrabTask_RingCarPickStart((uint8_t)slot,25));
+  run_to(GRAB_CLOSE,600,0);run_to(GRAB_LIFT,100,0);
+  unsigned turns=base_moves,closed=closures;z_arrives=false;
+  for(unsigned i=0;i<30;i++)step(true,0,0,0);
+  assert(Status.state==GRAB_LIFT && base_moves==turns && physical[1]==-25);
+  assert(physical[0]==(slot<=2?30:0));
+  if(pause){
+    assert(GrabTask_Pause());run_to(GRAB_IDLE,200,0);
+    Config[C_CAR_PICK_DROP_MM]=60;assert(GrabTask_Continue());
+    run_to(GRAB_LIFT,300,0);
+    for(unsigned i=0;i<15;i++)step(true,0,0,0);
+    assert(base_moves==turns && CarPickTarget==-25 && closures==closed);
+  }
+  z_arrives=true;physical[1]=destination[1];run_to(GRAB_COMPLETE,400,0);
+  assert(physical[1]==0 && base_moves==turns+1 && closures==closed);
+}
+static void standalone_ring_prepare_lift_and_retract_overlap(void)
+{
+  setup();physical[0]=42;physical[1]=-10;
+  assert(GrabTask_RingCarPickStart(1,NAN));run_to(GRAB_RETRACT,400,0);
+  z_arrives=false;unsigned turns=base_moves;
+  for(unsigned i=0;i<30;i++)step(true,0,0,0);
+  assert(Axes[0].commanded && Axes[1].commanded && physical[0]==0 && physical[1]==-10);
+  assert(Status.state==GRAB_RETRACT && base_moves==turns && !closures);
+  z_arrives=true;physical[1]=destination[1];run_to(GRAB_COMPLETE,600,0);
+  assert(physical[0]==30 && physical[1]==0 && closures==1);
+}
 int main(void)
 {
   three_slots();stop_and_continue();stop_before_close();reject_before_motion();manual_selection_needs_no_stock_or_color();
   pickup_clearance_precedes_base_turn();clearance_stop_preserves_absolute_target();insufficient_clearance_rejects_before_motion();
   cancel_ends_pickup_ownership();
-  puts("car pickup: three slots, 100ms open overlaps Base, X30 releases Base while Z lifts, closed claw, stop/resume PASS");
+  standalone_ring_prepare_lift_and_retract_overlap();
+  for(unsigned slot=1;slot<=3;slot++)standalone_ring_lifts_before_turn(slot,slot==1);
+  puts("car pickup: ordinary X30/Base overlap; standalone ring parallel preparation, lifted Z before turn, three trays and pause/resume PASS");
 }

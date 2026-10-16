@@ -16,6 +16,7 @@ typedef struct {
   bool planned;
   uint32_t total, station, visit;
   float speed_mm_s, phase_speed_mm_s;
+  float base_speed_mm_s, motion_scale;
   float phase_target_x_mm, phase_target_y_mm, phase_target_yaw_deg;
 } ChassisRoute_Status_t;
 /** @brief Initialize RAM before commands are accepted; never stops motors. */
@@ -42,6 +43,11 @@ bool ChassisRoute_StationReserved(void);
 /** @brief 新后向机构任务：NULL为固定路线，否则使用已完成的右下雷达计划；不扫码。 */
 typedef struct { bool scan_qr; float qr_scan_y_mm, turn_speed_deg_s; RadarStart_Id_t start_id; } ChassisRoute_TaskOptions_t;
 bool ChassisRoute_TaskStartEx(const RadarPlan_t *plan,float speed,const ChassisRoute_TaskOptions_t *options);
+bool ChassisRoute_TaskStartScaled(const RadarPlan_t *plan,float base_speed,
+                                 const ChassisRoute_TaskOptions_t *options,float scale);
+/* Optional smooth entrance affects only standard lower linear QR geometry. */
+bool ChassisRoute_TaskStartConfigured(const RadarPlan_t *plan,float base_speed,
+  const ChassisRoute_TaskOptions_t *options,float scale,bool smooth);
 bool ChassisRoute_TaskStart(const RadarPlan_t *plan,float speed);
 /** Pause only owned active/reserved work or an existing valid pause; terminal
  * status from an earlier match never establishes pause ownership. */

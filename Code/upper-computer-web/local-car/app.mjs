@@ -203,12 +203,13 @@ function renderStatus(){const s=status.get(active);$('reply-title').textContent=
 function definition(id){const c=commands.find(c=>c.id===id);if(!c)throw new Error(`缺少命令定义 ${id}`);return c;}
 function action(id,label,preset={},useAxis=false){const c=definition(id),b=node('button',label||c.label);b.type='button';b.dataset.send='1';if(useAxis&&!c.fields.find(f=>f.key==='axis')?.options?.some(([v])=>v==='all'))b.dataset.single='1';const wire=()=>buildCommand(id,{...Object.fromEntries(c.fields.map(f=>[f.key,f.value])),...(typeof preset==='function'?preset():preset),...(useAxis?{axis}: {})});const hint=()=>{try{b.title=wire();}catch{b.title='请选择单轴';}};b.onmouseenter=hint;b.onfocus=hint;hint();b.onclick=()=>{try{void send(wire());}catch(e){toast(e.message);}};return b;}
 function actions(container,list){const row=node('div',undefined,'actions');for(const item of list)row.append(action(...(Array.isArray(item)?item:[item])));container.append(row);return row;}
-function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,executeLabel,note:noteText,alternateCommand,onExecute,isBusy=()=>false}={}){
+function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,executeLabel,note:noteText,alternateCommand,onExecute,isBusy=()=>false,sharedInputs={},transformValues}={}){
   const c=definition(id),root=node('form',undefined,'control-form');
   root.classList.toggle('compact-control',compact);root.append(node('h3',label||c.label));
   const fields=node('div',undefined,'fields'),inputs={},fieldLabels={};
   for(const f of c.fields){
     if(sharedAxis&&f.key==='axis')continue;
+    if(sharedInputs[f.key]){inputs[f.key]=sharedInputs[f.key];continue;}
     const wrap=node('label',f.label);let input;
     if(f.options){
       input=node('select');
@@ -247,7 +248,8 @@ function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,execut
       inputs.degree.min=min;inputs.degree.max=max;
     }
     try{
-      const values={...Object.fromEntries(Object.entries(inputs).map(([k,e])=>[k,e.value])),...(sharedAxis?{axis}: {})};
+      const rawValues={...Object.fromEntries(Object.entries(inputs).map(([k,e])=>[k,e.value])),...(sharedAxis?{axis}: {})};
+      const values=transformValues?transformValues(rawValues):rawValues;
       wire=buildCommand(id,values);
       if(alternate){alternateWire=buildCommand(alternateCommand.id,values);alternate.title=alternateWire;alternate.disabled=!canSend(alternateWire);}
       code.textContent=wire;execute.title=wire;validation.textContent='';execute.disabled=!canSend(wire)||isBusy();copy.disabled=false;
@@ -260,7 +262,7 @@ function controlForm(id,{sharedAxis=false,label,idPrefix='',compact=false,execut
       const t=Number(inputs.seconds.value);note.textContent=`起步 0.5 秒 + 保持 ${Number.isFinite(t)?t:'—'} 秒 + 停车 0.5 秒，总时长 ${Number.isFinite(t)?Math.round((t+1)*1000)/1000:'—'} 秒。${noteText??c.note??''}`;
     }
   }
-  for(const input of Object.values(inputs)){input.oninput=update;input.onchange=update;}
+  for(const [key,input] of Object.entries(inputs)){if(!sharedInputs[key]){input.oninput=update;input.onchange=update;}}
   root.onsubmit=e=>{e.preventDefault();update();if(wire&&!execute.disabled)void (onExecute?onExecute(wire):send(wire));};copy.onclick=()=>void copyText(wire);
   if(alternate)alternate.onclick=()=>{update();if(alternateWire)void send(alternateWire);};
   // Nested pages refresh controls before these forms are attached; retain them until first mount.
@@ -335,13 +337,26 @@ function buildGrabPanel(body){
 }
 function buildRingPanel(body){
   const ring=node('section',undefined,'ring-flow');ring.id='ring-place-test';
-  ring.append(node('h2','编号环放置','vision-title'),node('p','粗加工区 · 先对准编号环，再选择自动取仓放置或手动装料。','form-note'));
+  ring.append(node('h2','编号环放置','vision-title'),node('p','粗加工区 · 可一键完成航向矫正、选环对准、指定车仓取料和放置；也保留分步测试。','form-note'));
+  const sharedSettings=node('section',undefined,'vision-card');sharedSettings.append(node('h3','两个完整流程共用高度'));
+  const sharedFields=node('div',undefined,'fields'),sharedInputs={};
+  for(const key of ['drop','carDrop']){
+    const spec=definition('grab-ring-run').fields.find(f=>f.key===key),input=node('input');
+    input.type='number';input.min=spec.min;input.max=spec.max;input.step=spec.step??.1;input.value=spec.value;input.id=`ring-shared-${key}`;
+    const label=node('label',key==='drop'?'外部放料／夹取下降距离 / mm':'车仓下降／等量上升距离 / mm');label.append(input);sharedFields.append(label);sharedInputs[key]=input;
+    input.oninput=input.onchange=updateControls;
+  }
+  sharedSettings.append(sharedFields,node('p','外部距离从Z=0向下计算；两个完整流程及下面的分步放置共用同一个外部高度。车仓距离同时用于车仓下降和提回。参数只在按按钮时提交，启动后固定用于本次动作，暂停续接不随草稿改变。','form-note'));ring.append(sharedSettings);
+  const fullFlow=controlForm('grab-ring-run',{sharedInputs,compact:true,label:'一键完整流程',executeLabel:'矫正、对环、取仓并放置',note:'保持空爪，将小车放在编号环前并确认机构已回零。选择环号和取料仓，填写本次放置下降距离（从Z=0向下）；程序自动准备姿态、先矫正航向再对环，取料后按保存位置放置并提起。无需提前手动对环，参数仅作用本次。'});
+  actions(fullFlow,[['grab-mission-continue','继续本次完整流程'],['grab-stop','暂停本次流程']]);ring.append(fullFlow);
+  const reverseFlow=controlForm('grab-ring-store',{sharedInputs,compact:true,label:'独立完整流程 · 取回入仓',executeLabel:'下降夹取、入仓并回位',note:'保持编号环对准位置不变；按共用外部高度下降夹取，抬升后回指定车仓放料，再抬Z、伸X30 mm，Base回作业方向。最终Z在高位，X伸出30 mm；不再次视觉对准。'});
+  actions(reverseFlow,[['grab-mission-continue','继续本次取回'],['grab-stop','暂停取回']]);ring.append(reverseFlow);
   ring.append(controlForm('grab-ring-align-options',{compact:true,label:'1 · 视觉对准',executeLabel:'开始对准',note:'默认回到Z=0完成对准并保持，不再下降识别再抬高。下降选项仅用于对照测试。完成后可保持该高度观察，或抬回上限（默认Z=0）装料；已经在上限时不重复抬升。选择不会自动发送指令。'}));
-  const autoTake=controlForm('grab-ring-take',{compact:true,label:'2 · 自动取仓放置',executeLabel:'从料盘取料并放置',note:'沿用上一步已对准的环号。保持空爪，选择物料所在料盘；按比赛流程核验并保存位置、回仓夹取、转回作业方向并恢复X，再按设备z_proc_place放置高度下降、松爪和提起（默认Z=−140 mm）。无需再做下面的手动装料与下降。'});
-  autoTake.classList.add('ring-auto-take');actions(autoTake,[['grab-mission-continue','继续自动取仓'],['grab-get-z_proc_place','读取比赛放置高度']]);ring.append(autoTake);
+  const autoTake=controlForm('grab-ring-take',{sharedInputs,compact:true,label:'2 · 自动取仓放置',executeLabel:'从料盘取料并放置',note:'沿用上一步已对准的环号。保持空爪，选择物料所在料盘；按比赛流程核验并保存位置、回仓夹取、转回作业方向并恢复X，再按上方共用放料距离下降、松爪并抬Z到高位。无需再做下面的手动装料与下降。'});
+  autoTake.classList.add('ring-auto-take');actions(autoTake,[['grab-mission-continue','继续自动取仓']]);ring.append(autoTake);
   const load=node('section',undefined,'vision-card ring-load');load.append(node('h3','手动方式 · 装料'),node('p','对准完成并停稳后装料、闭合夹爪；需要高位装料时，上一步选择“抬回上限”。','form-note'));
   actions(load,[['grip-open','打开夹爪 · 2450 µs'],['grip-catch','闭合夹爪 · 1920 µs']]);ring.append(load);
-  ring.append(controlForm('grab-ring-place',{compact:true,label:'手动方式 · 下降放置',executeLabel:'下降、松爪并提起',note:'按所设绝对高度下降，松爪后自动提起。'}));
+  ring.append(controlForm('grab-ring-place',{sharedInputs:{z:sharedInputs.drop},transformValues:values=>({...values,z:-Number(values.z)}),compact:true,label:'手动方式 · 下降放置',executeLabel:'下降、松爪并提起',note:'按上方共用外部放料高度下降，松爪后自动提起；不再单独填写高度。'}));
   ring.append(node('p','自动取仓可停止后点击“继续自动取仓”续接；手动放置完成后，再次放置前需重新对准。','form-note'));body.append(ring);
   const comparison=node('details',undefined,'vision-card advanced');
   comparison.append(node('summary','通信故障对照 · 对环与Z下降'),node('p','先结束比赛并确认停稳，准备作业姿态。A在Z=0对环，B按设定高度逐步下降对环；两项均不夹取、不松爪。一次只运行一项，停止后再切换。若复现故障，点击“读取本次恢复诊断”。','form-note'));

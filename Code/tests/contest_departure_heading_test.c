@@ -70,11 +70,32 @@ static void pause_departure(bool during_heading)
   assert(State==M_HEADING && HeadingNext==M_REAR_REQUEST);
   test_heading_done=true;ContestMission_Process();assert(State==M_REAR_REQUEST && Stored==6);
 }
+static void temporary_departure(unsigned batch,bool enabled)
+{
+  departure_fixture(batch,enabled);
+  Station=3;Pass=0;State=M_TRANSFER;WorkYaw=90;RingAnchorValid=true;
+  Stored=batch?12:6;Placed=batch?11:5;
+  grab.state=GRAB_COMPLETE;grab.result="released";grab.slot=3;
+  ContestMission_Process();
+  assert(Placed==(batch?12U:6U) && Stored==(batch?12U:6U) && Item==3);
+  if(batch || !enabled){assert(State==M_REAR_REQUEST && !test_heading_starts);return;}
+  assert(State==M_CLEAR_REQUEST);
+  ContestMission_Process();assert(State==M_RING_CLEAR && pose_work);
+  pose_clearance=true;ContestMission_Process();assert(State==M_RING_CLEAR && !test_heading_starts);
+  grab.state=GRAB_COMPLETE;grab.result="work_ready";
+  ContestMission_Process();assert(State==M_HEADING && HeadingNext==M_REAR_REQUEST);
+  assert(test_heading_competition_starts==1 && test_heading_source==STATION_HEADING_RING);
+  for(unsigned i=0;i<3;i++)ContestMission_Process();
+  assert(State==M_HEADING && Placed==6 && Stored==6 && tx==-1);
+  test_heading_done=true;ContestMission_Process();assert(State==M_REAR_REQUEST);
+  ContestMission_Process();assert(State==M_LEAVE && !pose_work);
+}
 int main(void)
 {
   processing_departure(0,true);processing_departure(1,true);
   processing_departure(0,false);processing_departure(1,false);
   pause_departure(false);pause_departure(true);
+  temporary_departure(0,true);temporary_departure(1,true);temporary_departure(0,false);
   puts("processing departure heading: stored first, observe at work pose, rear pose afterwards PASS");
   return 0;
 }

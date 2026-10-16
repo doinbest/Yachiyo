@@ -6,6 +6,17 @@
 
 #include <stdbool.h>
 #include "radar_map.h"
+#include "chassis_config.h"
+#include <math.h>
+
+/* The public speed remains a base ceiling. Reject an unexecutable effective
+ * ceiling instead of silently clipping or multiplying a second time. */
+static inline bool ChassisMissionScale_Valid(float base,float scale)
+{
+  return isfinite(base) && base>=10 && base<=CHASSIS_MOTION_MAX_LINEAR_MM_S &&
+    isfinite(scale) && scale>=CHASSIS_MISSION_SCALE_MIN && scale<=CHASSIS_MISSION_SCALE_MAX &&
+    base*scale>=10 && base*scale<=CHASSIS_MOTION_MAX_LINEAR_MM_S;
+}
 
 #define CHASSIS_ROUTE_TARGET_COUNT 15U
 #define CHASSIS_ROUTE_PROFILE_MAX_PHASES 6U
@@ -61,5 +72,8 @@ void ChassisRouteProfile_ApplyTaskLinear(const RadarPlan_Point_t *from,
                                        const RadarPlan_Point_t *to,
                                        ChassisRoute_Profile_t *profile,bool linear,
                                        float *accels);
+/* Call once AFTER baseline classification/caps, including low-speed phases. */
+void ChassisRouteProfile_ApplyScale(const RadarPlan_Point_t *from,
+                                  ChassisRoute_Profile_t *profile,float *accels,float scale);
 
 #endif

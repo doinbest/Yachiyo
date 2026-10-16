@@ -17,6 +17,9 @@ static inline const char *ChassisMotion_ProfileName(ChassisMotion_Profile_t prof
  * resume_mm is the saved path progress, zero for a new leg. */
 bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn_deg_s,
                              uint32_t timeout,float resume_mm);
+/* speed is already effective; only path-point caps and acceleration scale here. */
+bool ChassisMotion_PathStartScaled(const ChassisPath *path,float speed,float turn_deg_s,
+                                   uint32_t timeout,float resume_mm,float scale);
 float ChassisMotion_PathProgress(void);
 
 typedef enum

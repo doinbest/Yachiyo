@@ -80,7 +80,8 @@ void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out);
 /** Init once after UART/DMA setup; UART5 RX must use DMA_CIRCULAR.
  * Main loop is the sole submit/event consumer. */
 HAL_StatusTypeDef MotorBus_Init(UART_HandleTypeDef *uart);
-/** Copies the complete frame; true means accepted, never means transmitted. */
+/** Copies the complete frame; true means accepted, never means transmitted.
+ * Read-only probe1F requests reply_length=7, accepting documented5/7-byte replies. */
 bool MotorBus_Submit(MotorBus_Owner_t owner, const uint8_t *data, uint8_t length,
                      uint8_t reply_length, uint32_t token, bool priority);
 /** @brief Submit a copied frame with a distinct reply address (broadcast FF: ID1). */
@@ -110,6 +111,24 @@ int MotorBus_PositionReplyEnsureMode(uint8_t address,uint8_t mode);
  * TX-only control policy never changes data-query or configuration replies. */
 int MotorBus_WheelReplyEnsure(uint8_t address,bool receive);
 void MotorBus_WheelReceiveSet(bool receive);
+#define MOTOR_BUS_MODE_TEST_DIAG 1
+typedef struct {
+  bool active, success, restored, cancelled;
+  uint8_t phase, target, original[4]; /* 0 snapshot, 1 apply, 2 observe, 3 restore. */
+  uint16_t gap_ms;
+  uint32_t started_ms, elapsed_ms, trace_sequence, trace_tx_ms, trace_event_ms;
+  uint32_t error_seq_start, error_seq_end, warnings;
+  uint8_t trace_address, trace_function, trace_phase, trace_result, trace_mode;
+  const char *reason;
+} MotorBus_ModeTestStatus_t;
+/* Stationary caller only. Own GUARD reads and wheel RAM configuration; block
+ * all ordinary motion at Submit. No HOME/enable/sync/Flash writes. */
+bool MotorBus_ModeTestStart(uint8_t target, uint16_t gap_ms);
+void MotorBus_ModeTestProcess(void);
+void MotorBus_ModeTestCancel(void);
+void MotorBus_ModeTestGet(MotorBus_ModeTestStatus_t *out);
+bool MotorBus_ModeTestActive(void);
+uint32_t MotorBus_ReplySettleMs(void);
 /* Stop/arrival feedback owns the bus before background configuration resumes.
  * In-flight traffic completes or is preempted by the existing urgent-stop path;
  * only unsent configuration work is cancelled here. Main-loop only. */

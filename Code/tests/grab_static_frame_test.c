@@ -11,7 +11,7 @@ static void setup(void)
   ActiveColor=CAMERA_COLOR_RED;LastControl=clock_ms;
   HaveCapture=FreshVision=false;PendingAction=MECHANICAL_ARM_ACTION_NONE;
   RequestTick=clock_ms;LastSequence=0;
-  Axes[0].mm=Axes[0].target=XIntegral=0;
+  Axes[0].mm=Axes[0].target=0;
   for(unsigned i=0;i<3;i++){
     Axes[i].position_valid=Axes[i].state_valid=true;Axes[i].flags=3;
     Axes[i].position_tick=Axes[i].state_tick=clock_ms;
@@ -36,17 +36,17 @@ int main(void)
   assert(velocity_requests==2); /* Duplicate snapshot does not move again. */
 
   setup();clock_ms+=16;frame(40,0);bus.stage=MECANUM_STAGE_WHEELS;
-  float before=XIntegral;align_control(clock_ms);
-  assert(!velocity_requests && XIntegral==before && AlignControlPending && LastControl==clock_ms-16 && LastXControl==clock_ms);
+  float before=Axes[0].target;align_control(clock_ms);
+  assert(velocity_requests==1 && Axes[0].target==before && !AlignControlPending && LastControl==clock_ms);
   clock_ms+=16;frame(-40,0);align_control(clock_ms); /* Latest frame replaces pending. */
   bus.stage=MECANUM_STAGE_SENT;clock_ms++;assert(vision_read(clock_ms));align_control(clock_ms);
-  assert(velocity_requests==1 && Status.forward_mm_s>0 && LastControl==clock_ms);
-  clock_ms++;assert(vision_read(clock_ms));align_control(clock_ms);assert(velocity_requests==1);
+  assert(velocity_requests==2 && LastControl==clock_ms-1);
+  clock_ms++;assert(vision_read(clock_ms));align_control(clock_ms);assert(velocity_requests==2);
 
   setup();clock_ms+=16;frame(40,0);pending_valid=true;
-  align_control(clock_ms);assert(!velocity_requests);
+  align_control(clock_ms);assert(velocity_requests==1);
   pending_valid=false;clock_ms++;assert(vision_read(clock_ms));align_control(clock_ms);
-  assert(velocity_requests==1); /* Arm busy also retains the observation. */
+  assert(velocity_requests==1); /* Arm busy no longer blocks/replays the body observation. */
 
   setup();Config[C_LOSS_GRACE_MS]=250;clock_ms+=16;frame(40,0);
   vision_loss_begin(clock_ms);assert(Status.state==GRAB_VISION_GRACE);
@@ -67,7 +67,7 @@ int main(void)
   RingApproachSequence=0;RingAlignZ=-5;clock_ms+=16;
   camera.Data.Sequence++;camera.Data.Tick=clock_ms;camera.Data.DX=0;camera.Data.DY=40;
   /* Frequent X corrections cannot starve a newly eligible Z action. */
-  GrabTask_Process();assert(positions==1 && RingLowerSent && !velocity_requests);
+  GrabTask_Process();assert(positions==1 && RingLowerSent && velocity_requests==1);
   pending_valid=false;PendingAction=MECHANICAL_ARM_ACTION_NONE;clock_ms++;
   GrabTask_Process(); /* Due feedback may take its fair turn before XY. */
   if(!velocity_requests){pending_valid=false;PendingAction=MECHANICAL_ARM_ACTION_NONE;clock_ms++;GrabTask_Process();}

@@ -169,6 +169,13 @@ static HAL_StatusTypeDef MechanicalArm_CurrentCommandSend(void)
     return HAL_ERROR;
   }
 
+  if(MechanicalArm_Request.Action==MECHANICAL_ARM_ACTION_ENABLE ||
+     MechanicalArm_Request.Action==MECHANICAL_ARM_ACTION_HOME){
+    if(MotorBus_IsQuarantined())return HAL_ERROR;
+    int ready=MotorBus_PositionReplyEnsure(AxisConfig->MotorId);
+    if(ready!=1)return ready<0?HAL_ERROR:HAL_BUSY;
+  }
+
   switch (MechanicalArm_Request.Action)
   {
   case MECHANICAL_ARM_ACTION_ENABLE:
@@ -343,6 +350,20 @@ static MechanicalArm_ResultTypeDef MechanicalArm_RequestStartEx(MechanicalArm_Ac
   if (MechanicalArm_State != MECHANICAL_ARM_STATE_IDLE)
   {
     return MECHANICAL_ARM_RESULT_BUSY;
+  }
+
+  /* ALL advances directly on ACK: prepare every axis before accepting it. */
+  if(Axis==MECHANICAL_ARM_AXIS_ALL &&
+     (Action==MECHANICAL_ARM_ACTION_ENABLE || Action==MECHANICAL_ARM_ACTION_HOME)){
+    if(MotorBus_IsQuarantined())return MECHANICAL_ARM_RESULT_TX_ERROR;
+    bool ready=true;
+    for(unsigned i=MECHANICAL_ARM_AXIS_BASE;i<=MECHANICAL_ARM_AXIS_X;i++){
+      MechanicalArm_AxisConfigTypeDef *cfg=MechanicalArm_AxisConfigGet((MechanicalArm_AxisTypeDef)i);
+      int r=MotorBus_PositionReplyEnsure(cfg->MotorId);
+      if(r<0)return MECHANICAL_ARM_RESULT_TX_ERROR;
+      if(!r)ready=false;
+    }
+    if(!ready)return MECHANICAL_ARM_RESULT_BUSY;
   }
 
   memset(&MechanicalArm_Request, 0, sizeof(MechanicalArm_Request));
@@ -526,8 +547,8 @@ HAL_StatusTypeDef MechanicalArm_Init(UART_HandleTypeDef *huart)
   MechanicalArm_Uart = huart;
   MechanicalArm_State = MECHANICAL_ARM_STATE_IDLE;
   MechanicalArm_EventReady = 0;
-  /* Receive is prepared for FD moves, not HOME or initialization. Prepare it
-   * lazily in CurrentCommandSend so early configuration cannot cancel boot HOME. */
+  /* Initialization stays quiet. Enable, HOME and FD prepare verified Receive
+   * on demand before their first command; no drive Flash or origin changes. */
   MechanicalArm_StopPendingMask=MechanicalArm_StopMask=0;
   memset(&MechanicalArm_Request, 0, sizeof(MechanicalArm_Request));
   memset(&MechanicalArm_Event, 0, sizeof(MechanicalArm_Event));

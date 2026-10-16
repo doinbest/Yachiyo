@@ -214,6 +214,12 @@ void ChassisRouteProfile_ApplyTaskLinear(const RadarPlan_Point_t *from,
     ChassisRoute_Phase_t *phase=&profile->phases[i];
     float length=hypotf(phase->x_mm-x,phase->y_mm-y);
     accels[i]=CHASSIS_DISTANCE_ACCEL_MM_S2;
+    if(linear && !phase->turn && (!strcmp(phase->phase,"work_curve") || !strcmp(phase->phase,"entry_curve"))){
+      float speed=fminf(phase->speed_mm_s,CHASSIS_MISSION_TRANSIT_MM_S);
+      profile->nominal_time_s+=length*(1/speed-1/phase->speed_mm_s);
+      phase->speed_mm_s=speed;
+      /* Keep the continuous path's existing300mm/s^2 vector ramp. */
+    }
     if(linear && !phase->turn && strcmp(phase->direction,"curve") && phase->speed_mm_s>50){
       float cap=CHASSIS_MISSION_TRANSIT_MM_S;
       accels[i]=CHASSIS_MISSION_LOADED_ACCEL_MM_S2;
@@ -243,5 +249,20 @@ void ChassisRouteProfile_ApplyTaskLinear(const RadarPlan_Point_t *from,
       phase->speed_mm_s=speed;
     }
     x=phase->x_mm;y=phase->y_mm;
+  }
+}
+
+void ChassisRouteProfile_ApplyScale(const RadarPlan_Point_t *from,
+                                  ChassisRoute_Profile_t *profile,float *accels,float scale)
+{
+  float x=from->x_mm,y=from->y_mm;
+  for(unsigned i=0;i<profile->count;i++){
+    ChassisRoute_Phase_t *p=&profile->phases[i];
+    if(!p->turn){
+      float length=hypotf(p->x_mm-x,p->y_mm-y);
+      profile->nominal_time_s+=length*(1.0f/(p->speed_mm_s*scale)-1.0f/p->speed_mm_s);
+      p->speed_mm_s*=scale;accels[i]*=scale;
+    }
+    x=p->x_mm;y=p->y_mm;
   }
 }

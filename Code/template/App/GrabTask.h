@@ -117,6 +117,10 @@ bool GrabTask_IsBusy(void);
 bool GrabTask_RingManualAllowed(void);
 /** Adopt a completed empty-claw numbered-ring test for fresh capture and automatic tray placement. */
 bool GrabTask_RingTakePrepare(uint8_t *ring);
+bool GrabTask_RingTakePrepareAtZ(uint8_t *ring,float release_z_mm);
+/* Independent full ring flow: validate empty claw and this request release Z. */
+bool GrabTask_RingFlowReady(float release_z_mm);
+bool GrabTask_AlignPlaceStartAtZForSlot(const char *scene,uint8_t target,uint8_t slot,float release_z_mm);
 /** @brief 取消自动推进并请求停车；重复请求保留停稳证据，保持夹爪输出与Z使能，检查状态确认停车。 */
 void GrabTask_Stop(void);
 /** Cancel an owned task and discard its paused continuation; preserve claw output. */
@@ -131,6 +135,14 @@ bool GrabTask_TrackedStoreStart(uint8_t color,uint8_t slot,GrabTracking_Mode_t m
  * Preserved by mission pause; standalone storage still returns to observation. */
 bool GrabTask_StoreFinishTravel(void);
 bool GrabTask_CarPickStart(uint8_t slot);
+/* One-request depth; lift returns to the same captured upper reference. */
+bool GrabTask_CarPickStartEx(uint8_t slot,float drop_mm);
+/* Standalone ring run/take: parallel empty-claw lift/retraction, then wait
+ * for both lifted Z and X clearance before turning with material. NAN depth
+ * selects the configured car_pick_drop; accepted goals survive pause/resume. */
+bool GrabTask_RingCarPickStart(uint8_t slot,float drop_mm);
+/* Current aligned work pose -> pickup -> selected tray -> X30 -> work pose. */
+bool GrabTask_RingStoreStart(uint8_t slot,float pick_drop_mm,float car_drop_mm);
 bool GrabTask_HeldPlaceStart(const char *scene,uint8_t target,uint8_t material_color);
 /** rough/temp1 use ring 1..3; temp2 uses first-layer material color 1..6.
  * Empty-claw alignment captures actual X/Z and the scene release target,

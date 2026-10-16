@@ -34,13 +34,15 @@ def build_test(name, *sources):
             flags = [*flags, "-DMISSION_TEST_HAS_GRAB_TASK"]
         if "template/App/chassis_motion.c" in sources or name == "contest_heading_test":
             flags = [*flags, "-DMISSION_TEST_HAS_MOTION"]
+    if name == "contest_heading_test":
+        flags = [*flags, "-DMISSION_TEST_STUB_LOCAL_TUNING"]
     if name in ("qr_control_test", "grab_pose_test", "grab_task_test", "grab_static_frame_test", "grab_calibration_task_test", "grab_transfer_test", "grab_grace_test", "grab_command_sim_test", "grab_tuning_sim_test", "grab_track_task_test", "grab_track_pick_test", "grab_stack_test"):
         sources = (*sources, "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     if "template/App/mecanum_chassis.c" in sources and "template/App/chassis_model.c" not in sources:
         sources = (*sources, "template/App/chassis_model.c")
     # Existing virtual UART fixtures freeze time at ACK; the dedicated settle
     # test exercises the production 2 ms handover and emergency bypass.
-    if name not in ("motor_bus_reply_settle_test", "motor_bus_probe_test", "chassis_feedback_alignment_test", "motor_recovery_evidence_test", "turntable_bus_fairness_test", "turntable_read_preemption_test", "chassis_none_bus_test"):
+    if name not in ("motor_bus_mode_test", "motor_bus_reply_settle_test", "motor_bus_probe_test", "chassis_feedback_alignment_test", "motor_recovery_evidence_test", "turntable_bus_fairness_test", "turntable_read_preemption_test", "chassis_none_bus_test"):
         flags = [*flags, "-DMOTOR_BUS_REPLY_SETTLE_MS=0"]
     run(flags + ["tests/" + name + ".c", *sources, "-lm", "-o", exe])
     run([exe])
@@ -103,6 +105,10 @@ if __name__ == "__main__":
     build_test("chassis_route_continuity_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
     build_test("chassis_route_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
     build_test("chassis_mission_speed_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
+    build_test("mission_start_smooth_route_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
+    build_test("mission_scale_route_test", "template/App/chassis_route.c", "template/App/chassis_route_profile.c")
+    build_test("mission_scale_motion_test", "template/App/chassis_motion.c", "template/App/chassis_model.c")
+    build_test("mission_scale_task_test", "template/Hardware/QR.c", "tests/mission_heading_stub.c")
     build_test("grab_route_test", "template/App/GrabRoute.c", "template/Hardware/QR.c")
     build_test("mission_navigation_test", "template/App/mission_navigation.c")
     build_test("contest_mission_test", "template/App/contest_mission.c", "template/Hardware/QR.c")
@@ -147,6 +153,7 @@ if __name__ == "__main__":
     build_test("grab_static_optimization_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_static_preparation_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_measured_alignment_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_static_motion_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_calibration_task_test", "template/App/grab_calibration.c")
     build_test("grab_stack_test")
     build_test("grab_tracking_test", "template/App/grab_tracking.c")
@@ -181,9 +188,14 @@ if __name__ == "__main__":
     build_test("motor_bus_test", "template/Hardware/motor_bus.c")
     build_test("motor_arrival_test", "template/Hardware/motor_bus.c")
     build_test("chassis_none_bus_test", "template/Hardware/motor_bus.c", "template/App/mecanum_chassis.c")
+    build_test("motor_bus_mode_test")
+    for gap in (2,3,5):
+        for polling in ("off","poll"):
+            run([OUT / "motor_bus_mode_test.exe",polling,str(gap)])
     build_test("grab_none_profile_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_recovery_stream_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("motor_bus_probe_test", "template/Hardware/motor_bus.c")
+    build_test("motor_bus_version_test", "template/Hardware/motor_bus.c")
     build_test("turntable_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
     build_test("turntable_read_preemption_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
     for case in ("missing", "motion", "home_command", "enable_command", "save_command", "deadline", "deadline_dense", "stop"):
@@ -202,6 +214,9 @@ if __name__ == "__main__":
     build_test("motor_bus_diagnostic_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_startup_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
     build_test("motor_bus_lazy_config_test", "template/App/mechanical_arm.c", "template/App/turntable.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
+    build_test("motor_home_receive_test", "template/App/mechanical_arm.c", "template/App/turntable.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
+    for scenario in ("home5","home7","enable5","enable6","enable7","enable_all","home_all","tray_home","tray_enable","home6_fail","tray_fail","stop","disable","abort","parallel"):
+        run([OUT / "motor_home_receive_test.exe",scenario])
     run([OUT / "motor_bus_lazy_config_test.exe", "turntable_home"])
     run([OUT / "motor_bus_lazy_config_test.exe", "tracking"])
     run([OUT / "motor_bus_lazy_config_test.exe", "tracking_stop"])

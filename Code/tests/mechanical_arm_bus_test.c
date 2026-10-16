@@ -49,6 +49,7 @@ int main(void)
   assert(MotorBus_Init(&uart) == HAL_OK);
   assert(MechanicalArm_Init(&uart) == HAL_OK);
   MotorBus_WheelReceiveSet(true);
+  fixture_receive_modes(&uart,&tick);
   /* Nearest HOME uses the saved mechanical origin directly, without Both
    * preparation or direction-parameter writes. Already-at-zero is accepted
    * as a command response; task-level HOME verification is still required. */
@@ -328,8 +329,9 @@ int main(void)
   assert(e.Diagnostic.BusEventValid && e.Diagnostic.BusResult==MOTOR_BUS_TIMEOUT);
   assert(e.Diagnostic.Function==0xf3 && e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_NONE);
   assert(e.Diagnostic.WireTransmitted && !e.Diagnostic.ReplyReceived && !e.Diagnostic.ReplyLength);
+  unsigned before_locked_home=tx_count;
   assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_Z,2)==MECHANICAL_ARM_RESULT_TX_ERROR);
-  assert(Emm_V5_TxStatusGet()==HAL_ERROR); /* A locked bus must not retry as BUSY. */
+  assert(tx_count==before_locked_home && !MechanicalArm_IsBusy()); /* Rejected before Emm TX. */
   assert(MechanicalArm_Stop(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);
   tick += 10;
   MotorBus_Process();
