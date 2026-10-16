@@ -76,6 +76,10 @@ static void turn_plant(float initial,float target,float limit,float tolerance)
 int main(void)
 {
   turn_plant(.5f,0,10,.1f);turn_plant(-.5f,0,10,.1f);
+  /* Formal ring correction uses the proven inverse relative angle with a
+   * separate10deg/s cap; small/large errors share measured-yaw P control. */
+  turn_plant(.45f,0,10,.1f);turn_plant(-.45f,0,10,.1f);
+  turn_plant(10.92f,0,10,.1f);turn_plant(-10.92f,0,10,.1f);
   turn_plant(0,90,30,2);
   turn_plant(0,-90,50,2);
   turn_plant(90,180,100,2);turn_plant(180,90,100,2);turn_plant(170,-170,100,2);turn_plant(0,180,100,2);turn_plant(90,95,100,2);

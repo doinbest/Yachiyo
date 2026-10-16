@@ -4,13 +4,13 @@
 
 typedef struct {float x,y,speed,accel;bool curve;} Expected;
 static const Expected moves[]={
- {2100,300,300,500,false},{2100,1200,1000,1000,false},
- {2100,2100,1000,1000,false},{1200,2100,700,800,false},
- {1200,380,1000,800,false},{1200,425,50,300,false},
+ {2100,300,300,500,false},{2100,1200,800,800,false},
+ {2100,2100,800,800,false},{1200,2100,700,800,false},
+ {1200,380,1000,800,false},{1200,350,50,300,false},
  {1200,1200,800,800,false},{425,1200,800,800,false},
  {350,1200,50,300,false},{425,1200,50,300,false},
  {1200,1200,800,800,false},{1200,2100,1000,300,true},
- {1200,380,1000,800,false},{1200,425,50,300,false},
+ {1200,380,1000,800,false},{1200,350,50,300,false},
  {1200,1200,800,800,false},{425,1200,800,800,false},
  {350,1200,50,300,false},{425,1200,50,300,false},
  {1200,1200,800,800,false},{2100,1200,800,800,false},
@@ -25,7 +25,13 @@ static void run_route(bool planned,float ceiling)
  unsigned index=0,seen=0,turns=0;
  for(unsigned guard=0;guard<200 && strcmp(status().state,"done");guard++){
    if(!strcmp(status().state,"station")){
-     assert(ChassisRoute_WorkBegin());assert(ChassisRoute_WorkResume());
+     assert(ChassisRoute_WorkBegin());
+     if(status().station==2U){
+       /* The mission returns locally to425 before handing route ownership
+        * back; the observation target is350 in route status. */
+       loc.observer.feedback.y_mm=425;
+     }
+     assert(ChassisRoute_WorkResume());
    }
    if(starts!=seen){
      seen=starts;

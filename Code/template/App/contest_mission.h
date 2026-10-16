@@ -46,4 +46,6 @@ bool ContestMission_Continue(void);
 /** Preserve a live match, recover transport, then verify stop. Manual calls wait for Continue. */
 bool ContestMission_RequestBusRecovery(bool auto_resume);
 bool ContestMission_CanConfigure(void);
+/** Only cached feedback reads/0/on preparation; paused with current real stop proof. */
+bool ContestMission_FeedbackPreparationAllowed(void);
 #endif

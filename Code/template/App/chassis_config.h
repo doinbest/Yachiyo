@@ -70,7 +70,7 @@
 #define CHASSIS_HEADING_RATE_FILTER_MS     40U
 #define CHASSIS_HEADING_DEADBAND_DEG       0.10f /* Translation/heading hold only; precision turns bypass. */
 #define CHASSIS_HEADING_TEST_OUTPUT_LIMIT  0.50f /* Straight heading correction, rad/s. */
-#define CHASSIS_TURN_KP                    0.02f /* Preserve independent pure-turn control. */
+#define CHASSIS_TURN_KP                    0.10f /* Pure-turn P; keep its independent speed ceiling. */
 
 /* 参数版本与确认状态；数值变更时同步网页模型和版本。 */
 #define CHASSIS_CONFIG_REVISION           "geom-20260912-v1"
@@ -114,9 +114,16 @@
 #define CHASSIS_DISTANCE_ACCEL_MM_S2     300.0f
 /* Formal linear mission: user-selected rates; full loaded-route validation pending. */
 #define CHASSIS_MISSION_EMPTY_ACCEL_MM_S2 1000.0f
+/* Lower-start QR straight after the (2100,300) turn; departure stays separate. */
+#define CHASSIS_MISSION_QR_APPROACH_ACCEL_MM_S2 800.0f
+#define CHASSIS_MISSION_QR_APPROACH_MM_S      800.0f
+#define CHASSIS_MISSION_QR_DEPARTURE_ACCEL_MM_S2 800.0f
+#define CHASSIS_MISSION_QR_DEPARTURE_MM_S     800.0f
 #define CHASSIS_MISSION_LOADED_ACCEL_MM_S2 800.0f
 #define CHASSIS_MISSION_SHORT_ACCEL_MM_S2 500.0f
 #define CHASSIS_MISSION_DECEL_MM_S2        300.0f
+#define CHASSIS_PROCESSING_OBSERVE_Y_MM    350.0f
+#define CHASSIS_PROCESSING_EXIT_Y_MM       425.0f
 #define CHASSIS_MISSION_TRANSIT_MM_S       800.0f
 #define CHASSIS_MISSION_RAW_LATERAL_MM_S   700.0f
 #define CHASSIS_MISSION_SHORT_MM_S         300.0f
@@ -131,8 +138,9 @@
 #define CHASSIS_DISTANCE_TIMEOUT_MS      60000U
 #define CHASSIS_DISTANCE_MAX_TIMEOUT_MS  400000U /* Full route: up to 1750 mm at 10 mm/s plus settling. */
 #define CHASSIS_DISTANCE_STOP_TIMEOUT_MS 3000U
-/* Confirm on three new quiet wheel groups; no additional dwell time. */
+/* Standalone distance/independent stop baseline; formal normal arrivals use 2. */
 #define CHASSIS_DISTANCE_STOP_GROUPS      3U
+#define CHASSIS_ROUTE_STOP_GROUPS         2U /* Normal formal-route arrivals only. */
 #define CHASSIS_DISTANCE_STOP_RPM         1
 #define CHASSIS_DISTANCE_STOP_DELTA_MM    2.0f
 

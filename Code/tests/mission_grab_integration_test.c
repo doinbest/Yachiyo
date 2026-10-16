@@ -6,6 +6,7 @@ int MissionNavigation_Process(RadarStart_Id_t s,uint32_t g,RadarPlan_t *p,const 
  * station travel. This catches state/result contracts hidden by child mocks. */
 static void mission_before_grab(void);
 #define TEST_GRAB_BEFORE_PROCESS mission_before_grab
+#define GRAB_TEST_EXTERNAL_LOCALIZATION
 #define main legacy_main
 #include "grab_task_test.c"
 #undef main
@@ -34,10 +35,12 @@ bool ChassisRoute_StationReserved(void){return !strcmp(route.state,"work") || !s
 bool ChassisRoute_TaskStart(const RadarPlan_t *p,float s){(void)p;(void)s;route.state="running";return true;}
 bool ChassisRoute_TaskStartEx(const RadarPlan_t *p,float s,const ChassisRoute_TaskOptions_t *o){assert(o->scan_qr);return ChassisRoute_TaskStart(p,s);}
 bool ChassisRoute_TaskPause(void){paused_route=route.state;route.state="paused";route.stop_confirmed=true;chassis_pose_motion=false;motion.state=CHASSIS_MOTION_DONE;motion.stop_confirmed=true;motion.reason="cancelled";return true;}
+bool ChassisRoute_TaskPauseFeedbackLoss(void){return ChassisRoute_TaskPause();}
 bool ChassisRoute_TaskContinue(void){route.state=paused_route;return true;}
 bool ChassisRoute_TaskResumeReady(void){return true;}
 void ChassisRoute_TaskRecoveryHold(bool hold){(void)hold;}
 void Mecanum_Feedback_StopMonitor(bool on){(void)on;}
+void Mecanum_Feedback_Arrival(bool on){(void)on;}
 bool MotorBus_RecoveryStart(void){return false;}
 void MotorBus_RecoveryGet(MotorBus_Recovery_t *s){memset(s,0,sizeof *s);}
 void MotorBus_RecoveryCancel(void){}
@@ -161,6 +164,7 @@ static void standalone_ring_tray_place(void)
   integration_mission_enabled=false;standalone_without_origin=true;expected_raised=true;
   memset(&route,0,sizeof route);memset(&motion,0,sizeof motion);
   route.state="cancelled";route.reason="cancelled";motion.state=CHASSIS_MOTION_ERROR;motion.stop_confirmed=true;
+  motion.heading_valid=true; /* The fixture's IMU is healthy throughout this pause/resume test. */
   reset();configure(true);setting("x_min","0");setting("x_max","100");setting("z_min","-150");setting("z_max","0");
   setting("z_observe","0");setting("z_car_lift","0");setting("z_proc_place","-140");
   RearBase=37;RearReferenceValid=true;physical[2]=RearBase+GRAB_BASE_WORK_OFFSET_DEG;
@@ -177,6 +181,10 @@ static void standalone_ring_tray_place(void)
    if(status().state==GRAB_CLOSE && !pickup_paused){ContestMission_Stop();pickup_paused=true;}
    if(status().state==GRAB_RELEASE && !release_paused){assert(physical[1]==-140);ContestMission_Stop();release_paused=true;}
    if(ContestMission_CanConfigure())assert(ContestMission_Continue());
+  }
+  if(ContestMission_IsBusy() || TrackHeld || closures!=closed+1 || AlignedPlace.valid){
+    ContestMission_Report();fprintf(stderr,"ring slot=%u held=%u closed=%u expected=%u saved=%u child=%s reason=%s parent=%s\n",
+      slot,TrackHeld,closures,closed+1,AlignedPlace.valid,States[status().state],status().reason,output);
   }
   assert(!ContestMission_IsBusy() && !TrackHeld && closures==closed+1 && !AlignedPlace.valid);
   assert(pickup_paused && descent_paused && release_paused && openings==opened+1);

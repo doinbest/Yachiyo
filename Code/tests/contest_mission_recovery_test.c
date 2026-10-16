@@ -117,5 +117,16 @@ int main(void)
   assert(!strcmp(evidence.stage,"stop_verify") && evidence.uart_error==HAL_UART_ERROR_NE && evidence.address==7);
   for(unsigned i=0;i<20 && recovery_starts<2;i++)step();
   assert(recovery_starts==2);finish_recovery(true);
+  /* The pasted run reached stop_wait after recovery; pause must also revoke
+   * auto_resume here, even though the physical stop was already confirmed. */
+  fixture();assert(ContestMission_RequestBusRecovery(true));
+  for(unsigned i=0;i<10 && !recovery_starts;i++)step();
+  mission_recovery.active=false;mission_recovery.success=true;mission_recovery.checked_mask=0xff;
+  recovery_diagnostic.locked=false;
+  for(unsigned i=0;i<20;i++){step();if(strstr(report,"state=resuming "))break;}
+  assert(strstr(report,"state=resuming "));
+  motion.state=CHASSIS_MOTION_ERROR;motion.reason="feedback_invalid";
+  ContestMission_Process();ContestMission_Report();assert(strstr(report,"state=stop_wait ") && strstr(report,"auto_resume=1"));
+  ContestMission_Stop();ContestMission_Report();assert(strstr(report,"auto_resume=0"));
   puts("mission recovery: retained route, explicit retry, pause/stop override automatic resume PASS");
 }

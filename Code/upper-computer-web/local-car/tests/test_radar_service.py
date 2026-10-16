@@ -271,10 +271,20 @@ class RadarServiceTests(unittest.TestCase):
         self.assertTrue(all('path' not in p for p in raw))
         for station,yaw in [(2,180),(3,90)]:
             docks=[p for p in task['phases'] if p['station']==station and p['phase']=='work_dock']
-            self.assertEqual(len(docks),0 if station==2 else 2)
+            self.assertEqual(len(docks),2)
+            if station==2:self.assertEqual([p['target'] for p in docks],[[1200,350,180]]*2)
             self.assertTrue(all(p['target'][2]==yaw and p['speed_mm_s']==50 for p in docks))
         processing=[p for p in task['phases'] if p['station']==2 and p['phase']=='work_turn']
         self.assertEqual([p['target'] for p in processing],[[1200,380,180]]*2)
+        for name in ('task_fixed','task_planned','task_fixed_cosine','task_planned_cosine'):
+            phases=profiles[name]['phases']
+            docks=[i for i,p in enumerate(phases) if p['station']==2 and p['phase']=='work_dock']
+            self.assertEqual(len(docks),2)
+            for i in docks:
+                self.assertEqual(phases[i]['target'],[1200,350,180])
+                self.assertEqual(phases[i+1]['phase'],'undock')
+                self.assertEqual(phases[i+1]['target'],[1200,425,180])
+                self.assertEqual(phases[i+1]['speed_mm_s'],50)
         temporary=[p for p in task['phases'] if p['segment']==6]
         self.assertEqual([p['target'] for p in temporary],[[1200,1200,0],[425,1200,0],[425,1200,90],[350,1200,90]])
         self.assertEqual(temporary[1]['direction'],'reverse')

@@ -34,7 +34,7 @@ export function mountHeadingTest({root,send,canSend}){
     buttons.push({b,wire,requiresIdle});setup.append(b);return b;
   }
   button('1 · 准备视觉姿态','heading-prepare',()=> 'grab pose work',true);
-  setup.append(make('p','与物料取放共用准备动作：抬Z、收X、Base转原参考+127.5°，到位后打开夹爪2450 µs。用于空爪测试。'),pose);
+  setup.append(make('p','与物料取放共用准备动作：抬Z、收X、Base转原参考+117.5°，到位后打开夹爪2450 µs。用于空爪测试。'),pose);
   button('2 · 开始视觉航向矫正','heading-start',()=>buildHeadingTestCommand(station.value,speed.value,source.value),true);
   const polarity=make('select',undefined,'heading-polarity');
   for(const [value,text] of [['-1','反号：底盘转角 = −视觉角'],['1','同号：底盘转角 = 视觉角']]){const o=make('option',text);o.value=value;polarity.append(o);}polarity.value='-1';

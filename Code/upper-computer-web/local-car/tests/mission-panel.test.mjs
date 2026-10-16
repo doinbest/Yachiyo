@@ -6,6 +6,15 @@ test('new mission defaults to 1000 mm/s without transmitting on mount',()=>{
  assert.equal(buildMissionCommand({source:'qr'}),'grab mission qr 1000 100 lower fixed raised linear');
  const f=fixture();assert.equal(f.elements.find(e=>e.tag==='input'&&e.value==='1000').value,'1000');assert.deepEqual(f.wires,[]);
 });
+
+test('formal linear profile displays per-stage acceleration without changing command defaults',()=>{
+ const f=fixture();
+ assert.match(f.get('mission-profile').children.find(e=>e.value==='linear').textContent,/500\/800\/1000.*300/);
+ f.panel.connection(true);f.panel.receive(parseGrabRouteStatus('OK grab route state=paused mode=mission profile=linear'));
+ assert.match(f.get('mission-adopted-profile').textContent,/500\/800\/1000.*300/);
+ assert.equal(f.get('mission-profile').value,'linear');
+ assert.deepEqual(f.wires,[]);
+});
 test('profile choice is passive, explicit, and locked through pending start and pause',async()=>{
  const f=fixture();f.panel.connection(true);const select=f.get('mission-profile');
  assert.equal(select.value,'linear');assert.equal(select.disabled,false);
@@ -167,4 +176,13 @@ test('heading switch is independent, bounded, locked by device and passive',asyn
  f.panel.connection(false);f.panel.connection(true);assert.equal(f.wires.length,2);
  f.panel.receive(parseGrabRouteStatus('OK grab route state=paused mode=mission'));
  assert.match(f.get('mission-adopted-heading').textContent,/未报告/);
+});
+
+test('competition direct heading displays its own10deg/s limit independently of route speed',()=>{
+ const f=fixture();f.panel.connection(true);
+ f.panel.receive(parseGrabRouteStatus('OK grab route state=station_heading mode=mission visual_heading=on turn_speed=100 heading_source=ring heading_method=direct_ring heading_speed=10 heading_result=heading_turning heading_image=0.45 heading_error=0.45 heading_z=0'));
+ assert.match(f.get('mission-heading-result').textContent,/反号.*1[∶:]1/);
+ assert.match(f.get('mission-heading-result').textContent,/10(?:\.0)?\s*°\/s/);
+ assert.doesNotMatch(f.get('mission-heading-result').textContent,/100\s*°\/s|未标定/);
+ assert.deepEqual(f.wires,[]);
 });

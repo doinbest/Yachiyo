@@ -1,7 +1,7 @@
 import {bootProgress,describeStopEvent,visualStateText} from './terminal-format.mjs?v=lidar-poses-20261012';
 import {recordingPayload,visibleTerminalLogs,createLogRenderScheduler} from './terminal-log.mjs?v=recording-background-20261009';
 import {mountWheelFeedback} from './wheel-feedback.mjs';
-import {mountTracking} from './grab-track.mjs?v=chinese-notices-20261009';
+import {mountTracking} from './grab-track.mjs?v=z-unified-20261016';
 import {downloadCurrentConsole} from './log-archive.mjs';
 import {mountStacking} from './stack-panel.mjs?v=stack-20261008';
 import {mountMission} from './mission-panel.mjs?v=mission-20261012';
@@ -17,6 +17,7 @@ import {BridgeLink,readOnlyCommand,scopedStopCommand} from './bridge.mjs?v=lidar
 import {mountMap} from './map-view.mjs?v=chinese-notices-20261009';
 import {mountQr} from './qr-panel.mjs?v=qr-lower-20261011';
 import {mountParameterPage} from './parameter-page.mjs?v=chinese-notices-20261009';
+import {mountStaticAlignGain} from './static-align-gain.mjs';
 import {RadarModel,RadarExchange,parseRadar,radarStateText,radarReasonText} from './radar-model.mjs';
 import {mountRadarWorkspace} from './radar-view.mjs';
 import {MonitorResult,mountMonitorRadar} from './monitor-radar.mjs';
@@ -48,6 +49,7 @@ function persistRadarSnapshots(force=false){const snapshot=Object.values(radarMo
 const radarExchange=new RadarExchange({send:wire=>executeSend(wire,false,true,true)});
 const status=new Map(),forms=[],pages={};
 let grabSnapshot=null,grabRouteSnapshot=null,grabReply=null,grabPanel=null,materialTrackingPanel=null;
+let staticAlignGain=null;
 function appendLog(direction,text){
   if(direction==='RX'&&$('quiet-grab-log').checked&&recordingPayload(text)){rxCount++;return;}
   const entry={time:new Date().toLocaleTimeString('zh-CN',{hour12:false}),direction,text,owner:moduleForWire(text)};
@@ -94,6 +96,7 @@ function receive(line){
   appendLog('RX',line);
   if(/^(OK|ERR) radar\b/.test(line))$('map-recent-result').textContent=`${line.startsWith('ERR')?'设备未受理':'设备回复'} · ${radarReasonText(line.split(' ')[2])}`;
   paramsView?.receive(line);
+  staticAlignGain?.receive(line);
   chassisTestResult?.receive(line);
   chassisTestSession?.receive(line);
   missionPanel?.receiveReply(line);
@@ -108,6 +111,7 @@ function receive(line){
     stackingPanel?.cancel();
     materialTrackingPanel?.connection(false);materialTrackingPanel?.connection(bridge.connected);
     paramsView?.cancel('STM32 已重启，旧读回标为历史值。',true);
+    staticAlignGain?.cancel('STM32 已重启，λ读回标为历史值。');
     missionPanel?.reset();headingPanel?.reset();chassisTestResult?.reset();chassisTestSession?.reset();status.clear();routeLocked=false;grabSnapshot=null;grabRouteSnapshot=null;grabReply=null;renderGrabStatus();
     for(const view of [wheelView,mapView,radarView,qrView,prepView]){view?.connection(false);view?.connection(bridge.connected);}
     appendLog('SYS','已收到 STM32 启动信息；旧状态已清除。启动流程以设备报告为准，IMU 验证时请保持静止。');renderStatus();
@@ -119,7 +123,7 @@ function receive(line){
 wheelView?.receive(line);mapView?.receive(line);
 const routeState=line.trim().replace(/^(?:arm>\s*)+/,'').match(/^(?:OK|ERR) chassis route state=(\w+)/)?.[1]??(line.startsWith('@CHASSIS ')?mapView?.snapshot()?.route?.state:null);if(routeState){routeLocked=['running','stopping','waiting','station'].includes(routeState);updateControls();}
 qrView?.receive(line);prepView?.receive(line);const owner=moduleForWire(line);if(owner!=='manual'&&!line.startsWith('@CHASSIS ')&&/^(OK |ERR |\[IMU CAL\]|\[MOTOR BUS\]|ARM STM32|BUILD |EVT qr )/.test(line)){status.set(owner,{line,time:Date.now(),live:bridge.connected});renderStatus();}}
-function connection(state){const changed=state!==connectionState;if(changed){stopRecovery?.cancel('连接已变化；本次恢复已取消。');if(grabCalibrationSnapshot)grabCalibrationSnapshot.live=false;renderGrabCalibrationStatus();stackingPanel?.connection(state==='connected');missionPanel?.connection(state==='connected');headingPanel?.connection(state==='connected');chassisTestResult?.connection(state==='connected');chassisTestSession?.connection(state==='connected');routeLocked=false;bootStage='';if($('boot-status'))$('boot-status').textContent='启动状态：连接变化，请读取设备状态';grabRouteSnapshot=null;grabSnapshot=null;grabReply=null;renderGrabStatus();}connectionState=state;if(lastStopEvent)$('stop-status').textContent=describeStopEvent(lastStopEvent,state==='connected'||state==='disconnecting',state==='disconnecting');const connected=state==='connected';if(connected&&bridge.port){const select=$('serial-port');if(!Array.from(select.options).some(o=>o.value===bridge.port)){const o=node('option',bridge.port);o.value=bridge.port;select.append(o);}select.value=bridge.port;}if(changed){wheelView?.connection(connected);mapView?.connection(connected);radarView?.connection(connected);const radarConnection={state,port:bridge.port||$('serial-port').value||'',baudrate:Number($('baud').value)||115200};if(radarDirectView)radarDirectView.connection(radarConnection);else radarHostClient?.connection(radarConnection);qrView?.connection(connected);prepView?.connection(connected);if(!connected)paramsView?.cancel('连接已变化，旧读回标为历史值。',true);}$('connection-status').textContent=({connected:`本地服务已连接 ${bridge.port}`,connecting:`正在连接 ${$('serial-port').value}…`,disconnecting:'正在停车并断开…',disconnected:'尚未连接'})[state];$('connection-dot').classList.toggle('online',connected);$('connect').disabled=state!=='disconnected'||!$('serial-port').value;$('serial-port').disabled=state!=='disconnected';$('refresh-ports').disabled=state!=='disconnected';$('disconnect').disabled=!connected;$('baud').disabled=state!=='disconnected';if(changed)for(const value of status.values())value.live=false;if(!connected)$('subscription-note').textContent='';updateControls();renderStatus();if(changed&&connected)appendLog('SYS','已连接，尚未自动发送任何指令。');}
+function connection(state){staticAlignGain?.connection(state==='connected');const changed=state!==connectionState;if(changed){stopRecovery?.cancel('连接已变化；本次恢复已取消。');if(grabCalibrationSnapshot)grabCalibrationSnapshot.live=false;renderGrabCalibrationStatus();stackingPanel?.connection(state==='connected');missionPanel?.connection(state==='connected');headingPanel?.connection(state==='connected');chassisTestResult?.connection(state==='connected');chassisTestSession?.connection(state==='connected');routeLocked=false;bootStage='';if($('boot-status'))$('boot-status').textContent='启动状态：连接变化，请读取设备状态';grabRouteSnapshot=null;grabSnapshot=null;grabReply=null;renderGrabStatus();}connectionState=state;if(lastStopEvent)$('stop-status').textContent=describeStopEvent(lastStopEvent,state==='connected'||state==='disconnecting',state==='disconnecting');const connected=state==='connected';if(connected&&bridge.port){const select=$('serial-port');if(!Array.from(select.options).some(o=>o.value===bridge.port)){const o=node('option',bridge.port);o.value=bridge.port;select.append(o);}select.value=bridge.port;}if(changed){wheelView?.connection(connected);mapView?.connection(connected);radarView?.connection(connected);const radarConnection={state,port:bridge.port||$('serial-port').value||'',baudrate:Number($('baud').value)||115200};if(radarDirectView)radarDirectView.connection(radarConnection);else radarHostClient?.connection(radarConnection);qrView?.connection(connected);prepView?.connection(connected);if(!connected)paramsView?.cancel('连接已变化，旧读回标为历史值。',true);}$('connection-status').textContent=({connected:`本地服务已连接 ${bridge.port}`,connecting:`正在连接 ${$('serial-port').value}…`,disconnecting:'正在停车并断开…',disconnected:'尚未连接'})[state];$('connection-dot').classList.toggle('online',connected);$('connect').disabled=state!=='disconnected'||!$('serial-port').value;$('serial-port').disabled=state!=='disconnected';$('refresh-ports').disabled=state!=='disconnected';$('disconnect').disabled=!connected;$('baud').disabled=state!=='disconnected';if(changed)for(const value of status.values())value.live=false;if(!connected)$('subscription-note').textContent='';updateControls();renderStatus();if(changed&&connected)appendLog('SYS','已连接，尚未自动发送任何指令。');}
 function communicationError(error){appendLog('SYS',`通信异常：${error.message}`);toast(error.message);prepView?.refreshConfiguration();updateControls();}
 function stopped(){return bridge.stopLatched;}
 function bridgeEvent(e){if(e.kind==='preparation'&&e.active===false&&e.owner===bridge.preparationOwner&&prepView?.busy)prepView.cancel('共享准备锁定已结束，请重新准备。');if(e.kind==='tx'&&!/^radar (?:host )?fetch /.test(e.text))appendLog('TX',e.text);if(e.kind==='system')appendLog('SYS',e.text||e.error||'本地服务状态变化');if(e.kind==='stop'){stopRecovery?.observeStop(e);chassisTestSession?.stopEvent(e);if(e.latched)chassisTestResult?.interrupted();if(e.latched)paramsView?.cancel('停止操作已取消参数批次；已读值和草稿保留。');if(e.latched)prepView?.cancel('停止已锁定，准备已取消；解除锁定后也不会自动继续。');lastStopEvent=e;$('stop-status').textContent=describeStopEvent(e,bridge.connected,bridge.disconnecting);$('resume-stop').hidden=!e.latched;updateControls();prepView?.refreshConfiguration();}}
@@ -131,7 +135,7 @@ stopRecovery=new StopRecovery({bridge,changed:()=>{
 radarHostClient=new RadarHostClient({fastResults:true,send:wire=>executeSend(wire,false,true,true),onError:error=>{radarDirectView?.refresh();appendLog('SYS',error.message);}});
 const preparationStop=wire=>wire==='bus recover'||/^(?:chassis (?:stop|route cancel)|stop (?:all|base|z|x)|radar live stop|grab stop)$/.test(wire);
 function mayQuery(wire){return readOnlyCommand(wire)&&(!prepView?.busy||!prepView.pending);}
-async function requestStop(){stopRecovery?.cancel('已重新请求停车，取消本次恢复。');chassisTestResult?.interrupted();chassisTestSession?.cancel('已请求停止测试；停车结果以设备反馈为准。');stackingPanel?.cancel();presetCancelled=true;radarExchange.cancel('停止操作已取消雷达读取，保留已完成快照');paramsView?.cancel('停止操作已取消参数核对。');attempts.supersede();$('attempt-wire').textContent='chassis stop';$('attempt-status').textContent='请求停车 · 确认见底部状态';$('latest-command').dataset.state='pending';appendLog('SYS','请求停车 → chassis stop');prepView?.cancel('已中止准备并请求停车；请查看停止状态。');try{await bridge.stop();return true;}catch(error){communicationError(error);return false;}}
+async function requestStop(){staticAlignGain?.cancel('停止操作已取消λ核对。');stopRecovery?.cancel('已重新请求停车，取消本次恢复。');chassisTestResult?.interrupted();chassisTestSession?.cancel('已请求停止测试；停车结果以设备反馈为准。');stackingPanel?.cancel();presetCancelled=true;radarExchange.cancel('停止操作已取消雷达读取，保留已完成快照');paramsView?.cancel('停止操作已取消参数核对。');attempts.supersede();$('attempt-wire').textContent='chassis stop';$('attempt-status').textContent='请求停车 · 确认见底部状态';$('latest-command').dataset.state='pending';appendLog('SYS','请求停车 → chassis stop');prepView?.cancel('已中止准备并请求停车；请查看停止状态。');try{await bridge.stop();return true;}catch(error){communicationError(error);return false;}}
 function showAttempt({wire,state,current}) {
   if(current){
   $('attempt-wire').textContent=wire;
@@ -144,7 +148,7 @@ function showAttempt({wire,state,current}) {
 const attempts=createAttemptTracker(showAttempt);
 async function send(wire,fromPreparation=false){
   if(['chassis stop','wheel stop'].includes(wire))return requestStop();
-  if(preparationStop(wire)||scopedStopCommand(wire)){stopRecovery?.cancel('新的停止或恢复请求已取消当前恢复流程。');stackingPanel?.cancel();radarExchange.cancel();presetCancelled=true;paramsView?.cancel('停止操作已取消参数核对。');}
+  if(preparationStop(wire)||scopedStopCommand(wire)){staticAlignGain?.cancel('停止或恢复操作已取消λ核对。');stopRecovery?.cancel('新的停止或恢复请求已取消当前恢复流程。');stackingPanel?.cancel();radarExchange.cancel();presetCancelled=true;paramsView?.cancel('停止操作已取消参数核对。');}
   if(/^system\s+reset$/.test(wire.trim())&&!window.confirm('重启 STM32？\n仅在整车静止、任务空闲时操作。主控将重新初始化，外部驱动器不会断电复位。启动流程以设备报告为准，IMU 验证时请保持静止。'))return false;
   return attempts.run(wire,()=>executeSend(wire,fromPreparation));
 }
@@ -159,7 +163,7 @@ async function executeSend(wire,fromPreparation=false,quiet=false,fromParameters
   try{frameCommand(wire);sending=Number(sending)+1;updateControls();chassisTestResult?.requested(wire);await bridge.send(wire,fromPreparation);if(!quiet)toast(`已发送：${wire}`);if(wire==='chassis stream off')$('subscription-note').textContent='已请求关闭遥测';return true;}catch(error){chassisTestResult?.failed(wire);appendLog('SYS',error.message);toast(error.message);return false;}finally{sending=Math.max(0,Number(sending)-1);updateControls();}
 }
 function canSend(wire){return (!stopRecovery?.busy||scopedStopCommand(wire)||preparationStop(wire))&&(!chassisTestSession?.preparing||scopedStopCommand(wire)||preparationStop(wire))&&!(routeLocked&&/^chassis route (start|auto)/.test(wire))&&bridge.connected&&!bridge.disconnecting&&(!(applyingGrabPreset||parameterBusy)||scopedStopCommand(wire)||preparationStop(wire))&&(!sending||scopedStopCommand(wire))&&(!stopped()||readOnlyCommand(wire)||scopedStopCommand(wire)||wire==='bus recover')&&(!prepView?.busy||preparationStop(wire)||wire==='imu cal cancel'||mayQuery(wire));}
-function updateControls(){const connected=bridge.connected&&!bridge.disconnecting;if(connected!==trackingConnected){trackingConnected=connected;materialTrackingPanel?.connection(connected);}materialTrackingPanel?.update();stackingPanel?.update();missionPanel?.update();headingPanel?.update();qrView?.refreshControls();document.querySelectorAll('[data-send]').forEach(b=>{const wire=b.dataset.stop||b.title||'';b.disabled=!canSend(wire)||(b.dataset.single==='1'&&axis==='all');});$('raw-send').disabled=!bridge.connected||bridge.disconnecting||!!sending||applyingGrabPreset||parameterBusy||(!!prepView?.busy&&!!prepView.pending);$('device-reset').disabled=!canSend('system reset');$('service-stop').disabled=!bridge.available;$('resume-stop').disabled=!bridge.available||!!stopRecovery?.busy||!!chassisTestSession?.preparing||!!prepView?.busy;
+function updateControls(){staticAlignGain?.update();const connected=bridge.connected&&!bridge.disconnecting;if(connected!==trackingConnected){trackingConnected=connected;materialTrackingPanel?.connection(connected);}materialTrackingPanel?.update();stackingPanel?.update();missionPanel?.update();headingPanel?.update();qrView?.refreshControls();document.querySelectorAll('[data-send]').forEach(b=>{const wire=b.dataset.stop||b.title||'';b.disabled=!canSend(wire)||(b.dataset.single==='1'&&axis==='all');});$('raw-send').disabled=!bridge.connected||bridge.disconnecting||!!sending||applyingGrabPreset||parameterBusy||(!!prepView?.busy&&!!prepView.pending);$('device-reset').disabled=!canSend('system reset');$('service-stop').disabled=!bridge.available;$('resume-stop').disabled=!bridge.available||!!stopRecovery?.busy||!!chassisTestSession?.preparing||!!prepView?.busy;
 $('resume-stop').hidden=!bridge.stopLatched&&!stopRecovery?.busy&&stopRecovery?.phase!=='failed';
 $('resume-stop').textContent=stopRecovery?.busy?'正在恢复底盘…':stopRecovery?.phase==='failed'?'重试底盘恢复':'解除停止锁定并恢复底盘';paramsView?.update();radarView?.render();for(let i=forms.length-1;i>=0;i--){if(forms[i].root.isConnected){forms[i].mounted=true;forms[i].update();}else if(forms[i].mounted)forms.splice(i,1);}}
 async function refreshPorts(){
@@ -281,7 +285,7 @@ function buildGrabPreparation(body){
   prep.append(node('summary','回零与通信恢复'),node('p','上电自动完成 Z、X、Base 回零，再静止验证 IMU。需要重建参考时使用“重新建立三轴参考”；通信异常时查看或恢复电机总线。','form-note'));
   actions(prep,[['grab-rehome'],['grab-home-accept'],['bus-recover','恢复电机总线'],['bus-status','读取总线状态']]);
   const axes=node('details',undefined,'advanced');axes.append(node('summary','单轴手动回零'));
-  for(const [axisName,label,mode,homeLabel] of [['base','Base · 底座','dir','负向回零'],['x','X · 伸缩轴','collision','碰撞回零'],['z','Z · 升降轴','collision','碰撞回零']]){
+  for(const [axisName,label,mode,homeLabel] of [['base','Base · 底座','near','就近回零'],['x','X · 伸缩轴','collision','碰撞回零'],['z','Z · 升降轴','collision','碰撞回零']]){
     const row=node('div',undefined,'grab-home-row');
     row.append(node('strong',label));
     actions(row,[['home',homeLabel,{axis:axisName,mode}]]);
@@ -294,10 +298,10 @@ function parameterLink(label,category,key,source='视觉任务'){
   const link=node('a',label+' →','context-link');link.href='#params/'+category+(key?'/'+key:'');link.dataset.parameterLink='1';link.dataset.parameterSource=source;return link;
 }
 function buildGrabPanel(body){
-  body.append(node('h2','物料取放','vision-title'),node('p','原料夹取入仓、车仓取出与加工取回集中操作；单独追踪、参数和记录按需展开。','form-note'));
+  body.append(node('h2','物料取放','vision-title'),node('p','地面与转盘夹取入仓、车仓取出集中操作；单独追踪、参数和记录按需展开。','form-note'));
   materialTrackingPanel=mountTracking({root:body,send:wire=>send(wire),canSend});materialTrackingPanel.connection(bridge.connected);
   const takeWork=node('section',undefined,'vision-card');
-  takeWork.append(controlForm('grab-take-work',{compact:true,label:'车仓取出并保持',executeLabel:'夹取并转到127.5° · 保持闭爪'}));
+  takeWork.append(controlForm('grab-take-work',{compact:true,label:'车仓取出并保持',executeLabel:'夹取并转到117.5° · 保持闭爪'}));
   actions(takeWork,[['grab-status','读取取出任务状态'],['grab-stop','停止车仓取出']]);body.append(takeWork);
   const manual=node('details',undefined,'vision-card material-manual');manual.append(node('summary','固定夹取与静态对准'));body.append(manual);
   const options=node('section',undefined,'vision-card');options.append(node('h3','固定夹取与原静态流程的任务目标'));
@@ -313,6 +317,11 @@ function buildGrabPanel(body){
     ['fixed','固定位置夹取','从已对齐的位置夹取、入仓，再返回观察姿态。']
   ]){
     const step=node('section',undefined,'vision-card');step.append(node('h3',title),node('p',note,'form-note'));
+    if(mode==='align'){
+      staticAlignGain=mountStaticAlignGain({root:step,send:wire=>executeSend(wire,false,true,true),canSend,
+        onBusy:busy=>{parameterBusy=busy;updateControls();}});
+      staticAlignGain.connection(bridge.connected);
+    }
     const begin=node('button','开始'+({fixed:'固定夹取入仓',align:'协同对准',pick:'视觉夹取入仓'})[mode],'primary');begin.type='button';begin.dataset.send='1';
     const wire=()=>mode==='align'?buildCommand('grab-align-color',{color:colorSelect.value}):slotSelect.value==='auto'?(mode==='fixed'?'grab start fixed':buildCommand('grab-pick-color',{color:colorSelect.value})):buildCommand('grab-'+mode+'-slot',{slot:slotSelect.value,color:colorSelect.value});
     const update=()=>{begin.title=wire();updateControls();};colorSelect.addEventListener('change',update);slotSelect.addEventListener('change',update);begin.title=wire();begin.onclick=()=>void send(wire());

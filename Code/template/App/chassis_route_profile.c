@@ -135,7 +135,7 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan
                                  float previous_yaw_deg,float speed_mm_s,bool first_scan_leg,
                                  ChassisRoute_Profile_t *out)
 {
-  float x,y,yaw,dx,dy,length,travel,work,stage_x,stage_y,dock;
+  float x,y,yaw,dx,dy,length,travel,work,stage_x,stage_y,dock,observation_y;
   ChassisRoute_Profile_t transit;
   RadarPlan_Point_t neutral;
   if(!from || !to || !out || !isfinite(previous_yaw_deg) ||
@@ -162,9 +162,12 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan
        transit.count>=CHASSIS_ROUTE_PROFILE_MAX_PHASES)return false;
     *out=transit;
     for(unsigned i=out->count;i>0;i--)out->phases[i]=out->phases[i-1];
-    out->phases[0]=(ChassisRoute_Phase_t){false,"undock",direction(0,425-from->y_mm,previous_yaw_deg),
+    /* Offline profiles start from the completed observation endpoint; live
+     * WorkResume already substitutes its confirmed425 departure position. */
+    float source_y=from->y_mm==380?CHASSIS_PROCESSING_OBSERVE_Y_MM:from->y_mm;
+    out->phases[0]=(ChassisRoute_Phase_t){false,"undock",direction(0,425-source_y,previous_yaw_deg),
       from->x_mm,425,previous_yaw_deg,fminf(speed_mm_s,50)};
-    out->count++;out->nominal_time_s+=(425-from->y_mm)/fminf(speed_mm_s,50);return true;
+    out->count++;out->nominal_time_s+=(425-source_y)/fminf(speed_mm_s,50);return true;
   }
   if(to->station!=4U && to->station!=2U && to->station!=3U)
     return ChassisRouteProfile_Build(from,to,previous_yaw_deg,speed_mm_s,first_scan_leg,out);
@@ -187,14 +190,16 @@ bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,const RadarPlan
     travel=transit.phases[0].yaw_deg;
   }
   /* Raw station: translate all the way at 90 degrees, then turn in place.
-   * Processing stops at its observation point; temporary retains its outer dock. */
+   * Processing turns at380, then approaches350 without changing heading.
+   * The route waypoint remains the turn/staging point; temporary keeps its dock. */
   dock=(to->station==2U && to->y_mm==380)?0:(to->station==4U && fabsf(dy)<0.01f && dx<0)?0:fminf(length,to->station==2U && to->y_mm==300?125.0f:75.0f);
   stage_x=length>0?to->x_mm-dx*dock/length:x;
   stage_y=length>0?to->y_mm-dy*dock/length:y;
   add(out,true,"turn",&x,&y,&yaw,x,y,travel,0);
   add(out,false,"work_approach",&x,&y,&yaw,stage_x,stage_y,travel,speed_mm_s);
   add(out,true,"work_turn",&x,&y,&yaw,x,y,work,0);
-  add(out,false,"work_dock",&x,&y,&yaw,to->x_mm,to->y_mm,work,fminf(speed_mm_s,50));
+  observation_y=(to->station==2U && to->y_mm==380)?CHASSIS_PROCESSING_OBSERVE_Y_MM:to->y_mm;
+  add(out,false,"work_dock",&x,&y,&yaw,to->x_mm,observation_y,work,fminf(speed_mm_s,50));
   out->final_yaw_deg=work;
   return true;
 }
@@ -216,6 +221,16 @@ void ChassisRouteProfile_ApplyTaskLinear(const RadarPlan_Point_t *from,
          (from->station==5U && from->visit==1U && to->x_mm==2100 && to->y_mm==2100)){
         cap=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;
         accels[i]=CHASSIS_MISSION_EMPTY_ACCEL_MM_S2;
+        if(to->station==5U && to->visit==1U &&
+           fabsf(x-2100)<.01f && fabsf(y-300)<.01f &&
+           phase->x_mm==2100 && fabsf(delta(phase->yaw_deg,90))<.01f &&
+           !strcmp(phase->direction,"forward")){
+          cap=CHASSIS_MISSION_QR_APPROACH_MM_S;
+          accels[i]=CHASSIS_MISSION_QR_APPROACH_ACCEL_MM_S2;
+        }else if(from->station==5U && from->visit==1U && to->x_mm==2100 && to->y_mm==2100){
+          cap=CHASSIS_MISSION_QR_DEPARTURE_MM_S;
+          accels[i]=CHASSIS_MISSION_QR_DEPARTURE_ACCEL_MM_S2;
+        }
       }else if(to->station==4U && to->visit==2U)
         cap=CHASSIS_MISSION_RAW_LATERAL_MM_S;
       else if(to->station==2U)cap=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;

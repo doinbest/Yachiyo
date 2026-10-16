@@ -240,7 +240,8 @@ int main(void)
   assert(!snapshot().verified && saves==0);
 
   setup(100);assert(HWT101_Cal_Start());until_verify();fail_save=true;finish();
-  assert(snapshot().verified && !strcmp(snapshot().result,"PASS") && !strcmp(snapshot().save_state,"ERROR"));
+  assert(snapshot().verified && !strcmp(snapshot().result,"FAIL") && !strcmp(snapshot().save_state,"ERROR"));
+  assert(snapshot().state==HWT101_CAL_FAILED && !snapshot().control_ready);
   assert(!snapshot().save_requested && !snapshot().save_readback_ok);
   setup(100);assert(HWT101_Cal_Start());until_verify();fail_save=fail_restore=true;finish();
   assert(!strcmp(snapshot().reason,"normal_mode_unconfirmed") && !strcmp(snapshot().result,"FAIL"));
@@ -248,6 +249,8 @@ int main(void)
   while(!saves)sample(10,0);
   fail_read_reg=0x4C;finish();
   assert(snapshot().verified && snapshot().save_requested && !snapshot().save_readback_ok);
+  assert(snapshot().state==HWT101_CAL_FAILED && !strcmp(snapshot().result,"FAIL"));
+  assert(!strcmp(snapshot().save_state,"ERROR") && !snapshot().control_ready);
   setup(100);assert(HWT101_Cal_Start());until_verify();finish();
   assert(snapshot().verified && snapshot().save_requested);
   tick+=301;assert(!HWT101_Cal_Start());

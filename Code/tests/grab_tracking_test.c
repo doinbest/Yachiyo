@@ -27,6 +27,7 @@ static void sample(uint32_t now,float ex,float ey,float forward,float left,float
   input.now_ms=input.sample_ms=now;
   input.sequence++; input.error_px[0]=ex; input.error_px[1]=ey;
   input.motion_mm[0]=forward; input.motion_mm[1]=left; input.motion_mm[2]=extension;
+  input.body_left_mm=left;
   input.x_mm=50+extension;
   GrabTracking_Update(&track,&cfg,&input,&output);
 }
@@ -68,6 +69,7 @@ static void reallocation_and_budget(void)
   }
   assert(output.velocity_mm_s[2]<=0 && output.velocity_mm_s[1]>30);
   input.motion_mm[1]=50;
+  input.body_left_mm=50;
   input.now_ms+=50; input.sample_ms=input.now_ms; input.sequence++;
   GrabTracking_Update(&track,&cfg,&input,&output);
   assert(output.body_room_mm<=.01f && output.velocity_mm_s[1]<=0);

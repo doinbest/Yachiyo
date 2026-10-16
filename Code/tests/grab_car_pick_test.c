@@ -25,7 +25,7 @@ static void three_slots(void)
     assert(!base_moves && !closures && !openings && !grip_custom_calls && physical[1]==0);
     tray_arrives=true;run_to(GRAB_TURN,200,0);
     while(strcmp(status().reason,"car_pick_wait")){step(true,0,0,0);assert(physical[0]==0);}
-    assert(grip_custom_calls==1 && fabsf(grip_custom_duty-12.25f)<.001f && !closures);
+    assert(grip_custom_calls==1 && fabsf(grip_custom_duty-10.6f)<.001f && !closures);
     uint32_t ready=clock_ms;unsigned moves=positions;
     for(unsigned i=0;i<5;i++)step(true,0,0,0);
     assert(clock_ms-ready==250 && positions==moves && !closures && !openings);
@@ -141,5 +141,5 @@ int main(void)
   three_slots();stop_and_continue();stop_before_close();reject_before_motion();manual_selection_needs_no_stock_or_color();
   pickup_clearance_precedes_base_turn();clearance_stop_preserves_absolute_target();insufficient_clearance_rejects_before_motion();
   cancel_ends_pickup_ownership();
-  puts("car pickup: three slots, 300ms wait, lift + X30 before Base+127.5, closed claw, stop/resume PASS");
+  puts("car pickup: three slots, 300ms wait, lift + X30 before Base+117.5, closed claw, stop/resume PASS");
 }

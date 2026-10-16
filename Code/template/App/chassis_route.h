@@ -43,7 +43,16 @@ bool ChassisRoute_StationReserved(void);
 typedef struct { bool scan_qr; float qr_scan_y_mm, turn_speed_deg_s; RadarStart_Id_t start_id; } ChassisRoute_TaskOptions_t;
 bool ChassisRoute_TaskStartEx(const RadarPlan_t *plan,float speed,const ChassisRoute_TaskOptions_t *options);
 bool ChassisRoute_TaskStart(const RadarPlan_t *plan,float speed);
+/** Pause only owned active/reserved work or an existing valid pause; terminal
+ * status from an earlier match never establishes pause ownership. */
 bool ChassisRoute_TaskPause(void);
+/** Mission-only adoption of a temporary feedback loss, including the current
+ * action already stopping/failed with feedback_invalid. Keeps the original
+ * reference, phase/target and path progress, then proves a fresh monitored stop.
+ * Caller qualifies the retained map/IMU recovery and healthy motor bus. Travel
+ * requires the same nonzero action; mission-owned work may use a local action.
+ * False retains targets/phase and exposes the rejection through route reason. */
+bool ChassisRoute_TaskPauseFeedbackLoss(void);
 /** Suspend pause-monitor producers while the bus recovery owner verifies motors. */
 void ChassisRoute_TaskRecoveryHold(bool hold);
 bool ChassisRoute_TaskContinue(void);
@@ -51,7 +60,8 @@ bool ChassisRoute_TaskContinue(void);
 bool ChassisRoute_TaskResumeReady(void);
 /** @brief 工位任务接管局部移动与取放；保留路线与下一工位，不要求重设原点。 */
 bool ChassisRoute_WorkBegin(void);
-/** @brief 局部动作反馈完成后，按当前航向继续下一目标。 */
+/** @brief 局部动作反馈完成后，按当前航向继续下一目标。
+ * 加工离站核验(X观察中心,425)；其他工位保留原中心交接。 */
 bool ChassisRoute_WorkResume(void);
 /** @brief Main-loop only, after motion processing. */
 void ChassisRoute_Process(void);

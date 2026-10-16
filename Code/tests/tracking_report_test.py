@@ -114,7 +114,7 @@ class TrackingReportTest(unittest.TestCase):
         self.assertEqual(result['startup']['first_stable_ms'], 200)
         self.assertEqual(result['startup']['peak_axis_px'], [12, 6])
         self.assertAlmostEqual(result['stable_error']['rms_xy_px'], (25/2)**.5)
-        self.assertEqual(result['x_feedback_age_p95_ms'], 90)
+        self.assertEqual(result['feedback_age_p95_ms'], 90)
         self.assertEqual(result['displacement_mm'], {'forward': 3, 'left': 6, 'x': 3})
 
     def test_observation_is_not_tracking_acceptance(self):

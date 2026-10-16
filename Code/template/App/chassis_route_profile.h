@@ -24,6 +24,7 @@ typedef struct {
 } ChassisRoute_Profile_t;
 
 /** @brief Read origin at index0 or the fifteen targets at index1..15.
+ * Processing points name the380 turn/staging waypoint; task phases finish at350.
  * @return false for NULL output or an index beyond the final target.
  */
 bool ChassisRouteProfile_FixedPoint(unsigned index, RadarPlan_Point_t *out);
@@ -38,7 +39,8 @@ bool ChassisRouteProfile_Build(const RadarPlan_Point_t *from,
                               bool first_scan_leg,
                               ChassisRoute_Profile_t *out);
 /** @brief 机械臂实车任务路线；车体作业航向按原料0°、加工180°、暂存90°分别管理。
- * @note 加工区Y=300、直线进站末段125mm；暂存末段75mm，保留规划绕行路点。
+ * @note 加工接驳点Y380停车转180度，再以最高50mm/s贴近观察Y350；
+ * 暂存末段75mm，保留规划绕行路点。固定路点记录接驳点，阶段末点记录作业目标。
  */
 bool ChassisRouteProfile_BuildTask(const RadarPlan_Point_t *from,
                                  const RadarPlan_Point_t *to,

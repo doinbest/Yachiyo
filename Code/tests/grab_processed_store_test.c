@@ -8,6 +8,39 @@ static void setup(void)
  setting("dx_tol","1");setting("dy_tol","1");
  RearBase=37;RearReferenceValid=true;physical[2]=165;
 }
+static void ground_entry(bool pause)
+{
+ setup();setting("z_proc_place","-120");setting("z_place","-20");
+ setting("z_grab","-50");setting("z_pick_speed","250");setting("z_speed","250");
+ physical[1]=0;
+ char *cmd[]={"grab","store","ground","1","5"};
+ output[0]=0;assert(GrabTask_Command(5,cmd));assert(!strstr(output,"ERR"));
+ assert(ProcessedStoreActive && StationAlignRaised && Config[C_Z_GRAB]==-50);
+ run_to(GRAB_DESCEND,600,0);
+ if(pause){assert(GrabTask_Pause());run_to(GRAB_IDLE,200,0);assert(GrabTask_Continue());}
+ run_to(GRAB_CLOSE,600,0);
+ assert(physical[1]==-120 && z_position_acc==255 && z_position_rpm==468);
+ bool dropped=false;
+ for(unsigned i=0;i<800 && status().state!=GRAB_COMPLETE;i++){
+   step(true,0,0,0);
+   if(z_position_pulses==-2000)dropped=true;
+ }
+ assert(status().state==GRAB_COMPLETE && closures==1 && dropped);
+ assert(Config[C_Z_PROC_PLACE]==-120 && Config[C_Z_GRAB]==-50);
+}
+static void ground_slots_and_rejection(void)
+{
+ setup();setting("z_proc_place","-120");
+ char *automatic[]={"grab","store","ground","0","5"};
+ tray_inventory[0]=(Turntable_Inventory_t){TURNTABLE_OCCUPIED,1};
+ output[0]=0;assert(GrabTask_Command(5,automatic));assert(!strstr(output,"ERR"));
+ assert(Status.slot==2 && ProcessedStoreActive && Config[C_Z_GRAB]==0);
+ setup();unsigned before=positions;
+ char *bad[]={"grab","store","ground","4","5"};
+ output[0]=0;assert(GrabTask_Command(5,bad));assert(status().state==GRAB_IDLE && positions==before && !ProcessedStoreActive);
+ setup();for(unsigned i=0;i<3;i++)tray_inventory[i]=(Turntable_Inventory_t){TURNTABLE_OCCUPIED,1};
+ output[0]=0;assert(GrabTask_Command(5,automatic));assert(strstr(output,"no_empty_slot") && !positions);
+}
 static void finish_store(void)
 {
  run_to(GRAB_COMPLETE,600,0);
@@ -40,6 +73,7 @@ static void align_then_descend_without_vision(bool missing)
 }
 int main(void)
 {
+ ground_entry(false);ground_entry(true);ground_slots_and_rejection();
  align_then_descend_without_vision(false);align_then_descend_without_vision(true);
  setup();Config[C_Z_ROUGH_ALIGN]=NAN;assert(!GrabTask_ProcessedStoreStartEx(5,2,1,false));
  assert(!positions && !grip_custom_calls);

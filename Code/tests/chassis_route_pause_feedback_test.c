@@ -1,7 +1,11 @@
 #define main legacy_stop_main
 #define ChassisRoute_IsBusy Fixture_RouteBusy
 #define ChassisRoute_IsSubmitting Fixture_RouteSubmitting
+#define GrabTask_PoseClearanceReady CommonMotionPoseReady
+#define GrabTask_QrDepartureActive CommonMotionQrDeparture
 #include "chassis_motion_test.c"
+#undef GrabTask_PoseClearanceReady
+#undef GrabTask_QrDepartureActive
 #undef ChassisRoute_IsBusy
 #undef ChassisRoute_IsSubmitting
 #undef main

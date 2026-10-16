@@ -3,7 +3,11 @@ void MissionNavigation_Reset(void){}
 void MissionNavigation_Pause(void){}
 int MissionNavigation_Process(RadarStart_Id_t s,uint32_t g,RadarPlan_t *p,const char **r){(void)s;(void)g;(void)p;*r="radar_scanning";return 0;}
 #define main legacy_motion_main
+#define GrabTask_PoseClearanceReady CommonMotionPoseReady
+#define GrabTask_QrDepartureActive CommonMotionQrDeparture
 #include "chassis_motion_test.c"
+#undef GrabTask_PoseClearanceReady
+#undef GrabTask_QrDepartureActive
 #undef main
 #include "contest_mission.h"
 #include "GrabTask.h"
@@ -24,6 +28,7 @@ bool ChassisRoute_TaskStartEx(const RadarPlan_t *p,float s,const ChassisRoute_Ta
 bool ChassisRoute_TaskStart(const RadarPlan_t *p,float s){return ChassisRoute_TaskStartEx(p,s,NULL);}
 bool ChassisRoute_Cancel(void){route_busy=false;travel.state="cancelled";return ChassisMotion_Stop(0);}
 bool ChassisRoute_TaskPause(void){return false;}
+bool ChassisRoute_TaskPauseFeedbackLoss(void){return ChassisRoute_TaskPause();}
 bool ChassisRoute_TaskContinue(void){return false;}
 bool ChassisRoute_TaskResumeReady(void){return false;}
 void ChassisRoute_TaskRecoveryHold(bool hold){(void)hold;}

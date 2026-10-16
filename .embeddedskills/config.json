@@ -2,7 +2,7 @@
   "keil": {
     "project": "Code/template/MDK-ARM/template.uvprojx",
     "target": "template",
-    "log_dir": ".embeddedskills/mission-speed/build"
+    "log_dir": ".embeddedskills/p023-p024-dma-20261016/keil"
   },
   "eide": {
     "project": "Code/template/MDK-ARM/eide",
@@ -23,7 +23,7 @@
     "board": "C:\\Users\\xjx\\Desktop\\Code\\STM32F407VxT6\\模版搭建\\.embeddedskills\\mission-integration\\mission-dap.cfg",
     "interface": "interface/cmsis-dap.cfg",
     "target": "target/stm32f4x.cfg",
-    "adapter_speed": "1000",
+    "adapter_speed": "100",
     "transport": "swd",
     "tpiu_name": "stm32f4x.tpiu",
     "traceclk": "168000000",

@@ -21,8 +21,9 @@ static unsigned camera_calls, motor_calls, stop_calls, notice_clears, manual_arm
 static uint8_t motor_busy;
 static bool calib_ref;
 static bool grab_busy, grab_route_busy;
-static bool mission_pending,mission_recovery_accepted;
+static bool mission_pending,mission_recovery_accepted,mission_feedback_allowed;
 bool ContestMission_HasPendingWork(void){return mission_pending;}
+bool ContestMission_FeedbackPreparationAllowed(void){return mission_feedback_allowed;}
 bool ContestMission_BusRecoveryEvidenceGet(MotorBus_Recovery_t *out){(void)out;return false;}
 bool ContestMission_RequestBusRecovery(bool auto_resume){assert(!auto_resume);return mission_pending && mission_recovery_accepted;}
 static bool turntable_busy;
@@ -128,6 +129,10 @@ void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out)
   out->tick_ms=12345;out->uart_error=4;
   out->owner=MOTOR_BUS_ARM;out->address=7;out->function=0x3a;
 }
+static bool rx_error_fake_valid;
+static MotorBus_RxErrorSnapshot_t rx_error_fake;
+bool MotorBus_RxErrorGet(MotorBus_RxErrorSnapshot_t *out,bool first)
+{(void)first;if(!out || !rx_error_fake_valid)return false;*out=rx_error_fake;return true;}
 static float forward_value, left_value, yaw_value, grip_duty;
 static int32_t motor_pulses;
 static MechanicalArm_ConfigTypeDef config = {60, 20, 3200};
@@ -151,8 +156,18 @@ bool ConsoleTx_Event(const char *data,uint16_t length)
 { assert(length<sizeof(qr_event));if(qr_event[0])qr_event_dropped++;memcpy(qr_event,data,length);qr_event[length]=0;qr_event_count++;return true; }
 void ConsoleTx_EventCancel(void) {if(qr_event[0])qr_event_dropped++;qr_event[0]=0;}
 uint32_t ConsoleTx_EventDropped(void) {return qr_event_dropped;}
-bool ChassisTelemetry_Command(unsigned count,char *tokens[]) {if(count==2&&!strcmp(tokens[0],"chassis")&& !strcmp(tokens[1],"task"))
- {ArmConsole_Write("OK chassis task query\r\n");return true;}return false;}
+static unsigned feedback_queries,feedback_commands;
+bool ChassisTelemetry_Command(unsigned count,char *tokens[]) {
+ if(count<2 || strcmp(tokens[0],"chassis"))return false;
+ if(count==2 && !strcmp(tokens[1],"task"))
+ {ArmConsole_Write("OK chassis task query\r\n");return true;}
+ if(!strcmp(tokens[1],"feedback")) {
+   if(count==2){feedback_queries++;ArmConsole_Write("OK wheel=1 cached\r\n");return true;}
+   if(count==3 && (!strcmp(tokens[2],"on") || !strcmp(tokens[2],"off") ||
+      (strlen(tokens[2])==1 && tokens[2][0]>='0' && tokens[2][0]<='4')))
+   {feedback_commands++;ArmConsole_Write("OK chassis request accepted\r\n");return true;}
+ }
+ return false;}
 static bool route_reserved;
 bool ChassisRoute_IsBusy(void){return route_reserved;}
 bool ChassisRoute_Cancel(void){route_reserved=false;motion_busy=false;return true;}
@@ -260,6 +275,60 @@ static void command(const char *text)
   for(unsigned i=0;i<12 && ManualGuardActive;i++)ArmConsole_Process(); }
 static unsigned occurrences(const char *text)
 { unsigned count=0;const char *at=output;while((at=strstr(at,text))!=NULL){count++;at+=strlen(text);}return count; }
+/* The real console, including its early busy guards, must admit only the
+ * recovery owner's feedback preparation. Mission stop-proof policy is covered
+ * by contest_imu_pause_test; this fake controls that public decision. */
+static void test_paused_feedback_admission(void)
+{
+  unsigned queries=feedback_queries,writes=feedback_commands,motors=motor_calls;
+  unsigned stops=stop_calls;
+  mission_pending=grab_route_busy=true;
+  mission_feedback_allowed=true; /* Preserved PAUSED mission, current stop proven. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  command("chassis feedback 0\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  command("chassis feedback on\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  assert(mission_pending && grab_route_busy && motor_calls==motors && stop_calls==stops);
+  {
+    const char *blocked[]={"chassis feedback off\r","chassis feedback 1\r",
+      "chassis feedback 4\r","chassis feedback 00\r","chassis feedback 0 extra\r",
+      "chassis origin 0 0 0\r","chassis velocity 1 0 0\r","pos x 10\r"};
+    for(unsigned i=0;i<sizeof blocked/sizeof blocked[0];i++) {
+      command(blocked[i]);assert(strstr(output,"grab_busy"));
+      assert(feedback_commands==writes && motor_calls==motors && stop_calls==stops);
+    }
+  }
+  mission_feedback_allowed=false; /* PAUSED without current parking proof. */
+  command("chassis feedback 0\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  command("chassis feedback on\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  motion_busy=route_reserved=true; /* Running mission. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  command("chassis feedback on\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  motion_busy=route_reserved=false;
+  recovery_fake.active=true; /* Mission recovery owns all bus activity. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  command("chassis feedback 0\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  recovery_fake.active=false;
+  BusRecoveryPending=2;recovery_fake.active=true; /* Ordinary console recovery. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  command("chassis feedback on\r");assert(strstr(output,"operation_busy") && feedback_commands==writes);
+  BusRecoveryPending=0;recovery_fake.active=false;
+  ResetPending=1; /* Cached data also remains readable during a pending reset. */
+  command("chassis feedback\r");assert(feedback_queries==++queries && !strstr(output,"ERR"));
+  ResetPending=0;
+  /* A newer stop revokes the mission API decision before a queued enable. */
+  mission_feedback_allowed=true;
+  command("chassis feedback 0\r");assert(feedback_commands==++writes);
+  mission_feedback_allowed=false;
+  stop_status.tx_complete=stop_status.wheels_stopped=false;
+  command("chassis feedback on\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  mission_pending=false; /* Cancelled mission still completing its owned stop. */
+  command("chassis feedback on\r");assert(strstr(output,"grab_busy") && feedback_commands==writes);
+  grab_route_busy=false; /* Ordinary idle keeps the original preparation API. */
+  command("chassis feedback 0\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  command("chassis feedback on\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  command("chassis feedback off\r");assert(feedback_commands==++writes && !strstr(output,"ERR"));
+  assert(motor_calls==motors && stop_calls==stops);
+}
 static void qr_receive(const char *text) {while(*text)QR_ReceiveData((uint8_t)*text++);}
 static void test_qr(void)
 {
@@ -327,6 +396,7 @@ int main(void)
   }
   UART_HandleTypeDef uart={0};MechanicalArm_EventTypeDef event={0};unsigned before;
   uart.Instance=USART1;ArmConsole_Init(&uart);BusAutoFaultSeen=true;BusAutoFaultTick=12345; /* Existing guards use an already acknowledged fault. */
+  test_paused_feedback_admission();
   snapshot.UsbConfigured=1;snapshot.RequestActive=1;
   command("grab mission fixed 156+123+516+231 5000 100 upper radar lowered\r");
   assert(mission_fields==9 && !strstr(output,"ERR")); /* Full 63-byte payload plus CR. */
@@ -765,5 +835,19 @@ int main(void)
   ArmConsole_ReceiveData(3);ArmConsole_StopProcess();
   tick+=3000;ArmConsole_Process();assert(!BusRecoveryPending && !recovery_fake.active);
   bus_locked=false;
+  rx_error_fake_valid=true;rx_error_fake.sequence=42;rx_error_fake.phase=1;
+  rx_error_fake.tick_ms=UINT32_MAX;rx_error_fake.token=UINT32_MAX;rx_error_fake.request_seq=UINT32_MAX;
+  rx_error_fake.rx_total=UINT32_MAX;rx_error_fake.tx_ms=UINT32_MAX;rx_error_fake.uart_error=HAL_UART_ERROR_NE;
+  rx_error_fake.tx_length=MOTOR_BUS_FRAME_MAX;memset(rx_error_fake.tx,0xff,sizeof rx_error_fake.tx);
+  memset(rx_error_fake.dma,0xab,sizeof rx_error_fake.dma);
+  command("bus recovery\r");
+  assert(strstr(output,"OK bus rx_error seq=42 view=first phase=irq") &&
+    strstr(output,"OK bus rx_error_tx seq=42 bytes=40 hex=FFFFFFFF") &&
+    strstr(output,"OK bus rx_error_data seq=42 offset=32 bytes=32 hex=ABABABAB"));
+  output[0]=0;tick+=2000;ArmConsole_BusRecoveryProcess();
+  assert(!strstr(output,"OK bus rx_error seq=42"));
+  rx_error_fake.sequence++;output[0]=0;tick+=2000;ArmConsole_BusRecoveryProcess();
+  assert(strstr(output,"OK bus rx_error seq=43 view=latest"));
+  rx_error_fake_valid=false;
   puts("arm_console_host_test: commands, units, busy, status, CRLF and async prompts OK");return 0;
 }

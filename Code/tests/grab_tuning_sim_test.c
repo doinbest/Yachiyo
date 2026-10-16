@@ -1,5 +1,6 @@
 /* Compare tuning with production control/state logic and a synthetic plant.
- * The plant is 2 px/mm, follows commands immediately, and never loses vision.
+ * The fixed-pose plant spans 450x330 mm at 640x480 px, follows commands
+ * immediately, and never loses vision.
  * These timings are model predictions, not measurements of the vehicle. */
 #define main grab_legacy_regression_main
 #include "grab_task_test.c"
@@ -32,8 +33,8 @@ static unsigned simulate_profile(bool tuned, bool coupled, FILE *trace)
     if(!first_window && labs(lroundf(dx))<=5 && labs(lroundf(dy))<=5)
       first_window=clock_ms-origin;
     if(s.state==GRAB_HOLD) break;
-    dx+=2*s.forward_mm_s*.05f;
-    dy+=2*s.left_mm_s*.05f+2*(physical[0]-last_x); last_x=physical[0];
+    dx+=(640.0f/450.0f)*s.forward_mm_s*.05f;
+    dy+=(480.0f/330.0f)*(s.left_mm_s*.05f+physical[0]-last_x); last_x=physical[0];
     step(true,1,(int)lroundf(dx),(int)lroundf(dy));
   }
   if(status().state!=GRAB_HOLD)fprintf(stderr,"tuning stage=%s dx=%.2f dy=%.2f z=%.3f zt=%.3f lower=%u quiet=%u capture=%lu stop=%u\n",

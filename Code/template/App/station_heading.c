@@ -12,23 +12,32 @@ static enum { H_REQUEST,H_SAMPLE,H_COMMIT,H_TURN,H_MOVING,H_DONE } state;
 static unsigned station,count;
 static uint32_t begun,window,sequence,last_rx;
 static bool have_seq,have_rx,debt,calibrated,clock_started;
-static bool observe_only;
+static bool observe_only,competition_direct;
 static uint8_t source=STATION_HEADING_RING;
 static float nominal,speed,sum,low,high,first_yaw,image_angle,body_error,observation_z;
 static float first_image;
 static StationHeading_Config_t cfg;
 static const char *reason="heading_idle";
-void StationHeading_Reset(void){state=H_DONE;reason="heading_idle";source=STATION_HEADING_RING;debt=false;clock_started=false;image_angle=body_error=observation_z=NAN;}
+void StationHeading_Reset(void){state=H_DONE;reason="heading_idle";source=STATION_HEADING_RING;competition_direct=calibrated=false;speed=NAN;debt=false;clock_started=false;image_angle=body_error=observation_z=NAN;}
 static void fresh_window(void){count=0;have_seq=have_rx=false;window=HAL_GetTick();}
 void StationHeading_Begin(unsigned at,float yaw,float max_speed)
 {StationHeading_BeginSource(at,yaw,max_speed,STATION_HEADING_RING);}
 void StationHeading_BeginSource(unsigned at,float yaw,float max_speed,uint8_t target)
 {
   source=target;
-  observe_only=false;
+  observe_only=competition_direct=calibrated=false;
   station=at;nominal=yaw;speed=max_speed;debt=false;clock_started=false;image_angle=body_error=observation_z=NAN;
   begun=HAL_GetTick();state=H_REQUEST;fresh_window();reason="heading_observing";
 }
+void StationHeading_CompetitionBeginSource(unsigned at,float yaw,float max_speed,uint8_t target)
+{
+  StationHeading_BeginSource(at,yaw,max_speed,target);
+  competition_direct=target==STATION_HEADING_RING;
+  if(competition_direct)speed=fminf(max_speed,STATION_HEADING_DIRECT_MAX_DEG_S);
+}
+const char *StationHeading_Method(void)
+{return !strcmp(reason,"heading_idle")?"none":competition_direct?"direct_ring":observe_only || !calibrated?"observe":"mapped";}
+float StationHeading_TurnSpeed(void){return speed;}
 void StationHeading_ObserveBegin(unsigned at,float yaw,float max_speed)
 {StationHeading_Begin(at,yaw,max_speed);observe_only=true;}
 void StationHeading_ObserveBeginSource(unsigned at,float yaw,float max_speed,uint8_t target)
@@ -85,9 +94,18 @@ bool StationHeading_Process(void)
     if(!clock_started){begun=now;clock_started=true;}
     if(source==STATION_HEADING_LINE)GrabTask_LineHeadingConfigGet(&cfg);
     else GrabTask_HeadingConfigGet(station,&cfg);
+    if(competition_direct){
+      /* This relationship was verified by the independent inverse1:1 turn.
+       * Map nominal+image followed by TurnTo(nominal) is exactly a relative
+       * turn-image, and the corrected map reference survives the departure. */
+      cfg.zero_deg=0;cfg.gain=1;
+      cfg.tolerance_deg=STATION_HEADING_DIRECT_TOL_DEG;
+      cfg.spread_deg=STATION_HEADING_IMAGE_SPREAD_DEG;cfg.settle_ms=0;
+      cfg.turn_limit_deg=90;cfg.wait_ms=STATION_HEADING_WAIT_MS;
+    }
     if(cfg.wait_ms>STATION_HEADING_WAIT_MS)cfg.wait_ms=STATION_HEADING_WAIT_MS;
     observation_z=cfg.observation_z_mm;
-    calibrated=!observe_only && cfg.height_matches && isfinite(cfg.zero_deg) && isfinite(cfg.gain) && fabsf(cfg.gain)>0 &&
+    calibrated=!observe_only && cfg.height_matches && (!competition_direct || cfg.direct_eligible) && isfinite(cfg.zero_deg) && isfinite(cfg.gain) && fabsf(cfg.gain)>0 &&
       isfinite(cfg.tolerance_deg) && cfg.tolerance_deg>0 && cfg.tolerance_deg<=2 &&
       isfinite(cfg.spread_deg) && cfg.spread_deg>0 && isfinite(cfg.settle_ms) && cfg.settle_ms>=0;
     if(Camera_PoseStartSource(source)!=HAL_OK){reason="heading_usb_wait";if(!debt && now-begun>=cfg.wait_ms)return finish("heading_no_observation");return false;}
@@ -96,7 +114,8 @@ bool StationHeading_Process(void)
   if(state==H_TURN){
     if(!isfinite(cfg.turn_limit_deg) || fabsf(body_error)>cfg.turn_limit_deg ||
        fabsf(remainderf(nominal-motion.map_yaw_rad*180/CHASSIS_MODEL_PI,360))>cfg.turn_limit_deg){reason="heading_turn_unverified";return false;}
-    if(!ChassisMotion_TurnToPrecision(nominal,speed,cfg.tolerance_deg,CHASSIS_DISTANCE_TIMEOUT_MS)){
+    float arrival_tolerance=competition_direct?STATION_HEADING_DIRECT_MOTION_TOL_DEG:cfg.tolerance_deg;
+    if(!ChassisMotion_TurnToPrecision(nominal,speed,arrival_tolerance,CHASSIS_DISTANCE_TIMEOUT_MS)){
       ChassisMotion_StatusGet(&motion);reason=motion.reason;return false;
     }
     Camera_RequestStop();state=H_MOVING;reason="heading_turning";return false;
@@ -140,7 +159,7 @@ bool StationHeading_Process(void)
     low=fminf(low,e);high=fmaxf(high,e);sum+=e;
     if(++count>=3){
       image_angle=remainderf(sum/count,180);
-      return finish(observe_only?"heading_observed":cfg.height_matches?"heading_uncalibrated":"heading_height_unmatched");
+      return finish(observe_only?"heading_observed":!cfg.height_matches?"heading_height_unmatched":competition_direct && !cfg.direct_eligible?"heading_reference_unverified":"heading_uncalibrated");
     }
     return false;
   }
@@ -150,6 +169,7 @@ bool StationHeading_Process(void)
   low=fminf(low,e);high=fmaxf(high,e);sum+=e;
   if(++count<3)return false;
   body_error=sum/count;
+  if(competition_direct)image_angle=body_error; /* Log the same mean used for the1:1 turn. */
   /* Reject a gross branch mismatch, without revoking a previously valid map. */
   if(fabsf(body_error)>=90){count=0;reason="heading_angle_mismatch";return false;}
   state=H_COMMIT;return StationHeading_Process();

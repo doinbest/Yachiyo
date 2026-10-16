@@ -86,7 +86,7 @@ bool GrabTask_VisualResponseSet(float forward_dx,float forward_dy,float x_dx,flo
 /** @brief 只读检查所选模式标定完整性和数值/机械边界，不访问硬件。 */
 bool GrabTask_ConfigReady(const char *mode);
 #define GRAB_TASK_POSE 1
-/** @brief 从后向锚点切换姿态；按新鲜停稳反馈补齐抬Z/收X/转Base，work为后向参考+127.5°。
+/** @brief 从后向锚点切换姿态；按新鲜停稳反馈补齐抬Z/收X/转Base，work为后向参考+117.5°。
  * 手动Base就近回零已受理时，先局部验证该轴参考，再衔接准备；停止取消衔接。
  * @return 受理；work_ready前打开夹爪2450us；travel_ready保持夹爪，不重新回零。
  */
@@ -102,8 +102,9 @@ bool GrabTask_HeadingReady(void);
 bool GrabTask_QrPoseStart(void);
 /** @brief 任务内部单件取放；operation=store/take，scene=raw/proc/rough/temp1/temp2。 */
 bool GrabTask_TransferStart(const char *operation,const char *scene,uint8_t slot,uint8_t color);
-/** @brief 已受理的参考变化通知：X/Z清除绝对边界/位置，BASE清除准心/J；
+/** @brief HOME/ZERO等参考变化通知：X/Z清除绝对边界/位置，BASE清除J及参考；
  * ALL仅清除X/Z，all home调用者另通知BASE；不自动重标定或改变硬件。
+ * 手动Base位置运动不调用：保留锚点/J，作业姿态核验完成后再允许视觉任务。
  */
 void GrabTask_ReferenceInvalidate(MechanicalArm_AxisTypeDef axis);
 /** @brief align HOLD仍拥有机构；单件COMPLETE释放占用，可显式开始下一件。 */

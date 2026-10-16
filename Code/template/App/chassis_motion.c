@@ -30,6 +30,7 @@ static uint32_t TaskStopSequence;
 static bool HoldTask;
 static ChassisMotion_HoldStatus_t HoldStatus;
 static bool request_stop(const char *reason, bool error);
+static bool in_target(void);
 static void hold_status_refresh(void);
 static void heading_rate_reset(void)
 {
@@ -81,6 +82,12 @@ static ChassisModel_Velocity_t StopFrom;
 static uint32_t DistanceGeneration, DistanceTimeout, DistanceStopTick, StopSequence,
                 StableGroups;
 static uint32_t StopSpeedTime[4];
+static uint32_t StopPositionTime[4];
+static unsigned ArrivalGroups;
+static struct {
+  bool armed,passed,lateral;
+  float next_x,next_y,speed,accel;
+} Corner;
 static int64_t StopPositions[4];
 static float DistanceMaxSpeed, MapVx, MapVy;
 static float DistancePeakSpeed, DistanceRampFrom;
@@ -163,10 +170,21 @@ void ChassisMotion_AnchorInvalidate(void)
 static bool heading_read(uint32_t now)
 {
   HWT101_Angle_t angle;
+  /* These explicit workflows include yaw zeroing. Their old mapping must not
+   * survive even if no intermediate angle was consumed during the workflow. */
+  if(HWT101_Cal_IsBusy())
+  {
+    ChassisMotion_AnchorInvalidate();
+    return false;
+  }
   if (!HWT101_Cal_ControlAngleGet(&angle) || !isfinite(angle.yaw) ||
       (uint32_t)(now - angle.last_update_ms) > HWT101_DATA_FRESH_MS)
   {
-    ChassisMotion_AnchorInvalidate();
+    /* A temporary qualification/read gap is not a new coordinate origin.
+     * Keep the unwrap baseline and map offset; qualification owns recovery.
+     * Localization will withhold feedback and rebuild measured baselines. */
+    Motion.heading_valid=false;
+    HeadingPid.rate_seeded=false;
     return false;
   }
   if (HaveYaw && angle.update_count < LastYawCount)
@@ -215,6 +233,7 @@ void ChassisMotion_Init(void)
   MapVx = MapVy = 0;
   FollowingPath=false;PathProgress=0;
   StableGroups = 0;
+  ArrivalGroups=CHASSIS_DISTANCE_STOP_GROUPS;memset(&Corner,0,sizeof Corner);
   WaitingForStop = FinishAsError = ManualRamp = HaveYaw = DistanceBraking = false;
   LastControlTick = HAL_GetTick();
   LastYawCount = PidSampleCount = PidSampleTick = 0;
@@ -257,7 +276,7 @@ static bool target_valid(const ChassisMotion_Target_t *t, bool indefinite)
   total = t->transition_ms + t->hold_ms + t->stop_ms;
   return indefinite || (total >= CHASSIS_MOTION_MIN_DURATION_MS && total <= CHASSIS_MOTION_MAX_DURATION_MS);
 }
-static bool start(const ChassisMotion_Target_t *t, bool indefinite)
+static bool start(const ChassisMotion_Target_t *t, bool indefinite, bool feedback_handoff)
 {
   uint32_t now = HAL_GetTick();
   Mecanum_Status_t bus;
@@ -273,10 +292,32 @@ static bool start(const ChassisMotion_Target_t *t, bool indefinite)
     Motion.reason = "invalid_target";
     return false;
   }
-  if (HWT101_Cal_IsBusy() || GrabTask_CalibrationActive() || MechanicalArm_IsBusy() || Mecanum_IsBusy())
+  if (HWT101_Cal_IsBusy() || GrabTask_CalibrationActive() || MechanicalArm_IsBusy())
   {
     Motion.reason = "busy";
     return false;
+  }
+  if(Mecanum_IsBusy())
+  {
+    /* Ordinary map motion can adopt a retired producer's committed zero.
+     * Keep the explicit-stop latch itself intact: timed/manual velocity and
+     * IMU ownership still require their original stop path. */
+    if(!feedback_handoff){Motion.reason="busy";return false;}
+    Mecanum_StatusGet(&bus);
+    if(bus.locked || bus.stage==MECANUM_STAGE_FAULT || bus.error!=MECANUM_ERROR_NONE)
+    {Motion.reason="bus_unavailable";return false;}
+    if(GrabTask_IsBusy() && !GrabTask_PoseClearanceReady() && !GrabTask_QrDepartureActive())
+    {Motion.reason="grab_task_busy";return false;}
+    if(!Mecanum_VelocityHandoffReady())
+    {Motion.reason="chassis_handoff_wait";return false;}
+    for(unsigned i=0;i<4;i++){
+      const Mecanum_Feedback_t *wheel=&Position.wheels[i];
+      if(!wheel->speed_valid || !wheel->position_valid || !wheel->state_valid ||
+         now-wheel->speed_ms>600U || now-wheel->position_ms>600U || now-wheel->state_ms>600U)
+      {Motion.reason="feedback_invalid";return false;}
+      if((wheel->state_flags&0x0cU) || !(wheel->state_flags&1U))
+      {Motion.reason=(wheel->state_flags&0x0cU)?"resume_wheel_fault":"resume_wheels_disabled";return false;}
+    }
   }
   Mecanum_StatusGet(&bus);
   if (bus.ack_profile == MECANUM_ACK_UNKNOWN)
@@ -300,6 +341,7 @@ static bool start(const ChassisMotion_Target_t *t, bool indefinite)
     return false;
   }
   Motion.distance_mode = Motion.turn_only = Motion.stop_confirmed = false;
+  ArrivalGroups=CHASSIS_DISTANCE_STOP_GROUPS;memset(&Corner,0,sizeof Corner);
   FollowingPath=false;
   Motion.indefinite_velocity = indefinite;
   hold_status_refresh();
@@ -334,7 +376,7 @@ static bool start(const ChassisMotion_Target_t *t, bool indefinite)
   }
   return true;
 }
-bool ChassisMotion_Start(const ChassisMotion_Target_t *t) { return start(t,false); }
+bool ChassisMotion_Start(const ChassisMotion_Target_t *t) { return start(t,false,false); }
 /* This sends one initial snapshot, then the shared task process refreshes it. */
 static bool immediate_command(void)
 {
@@ -359,7 +401,7 @@ bool ChassisMotion_VelocityStart(float vx,float vy,float omega)
   ChassisMotion_Target_t target;
   memset(&target,0,sizeof target);
   target.vx_mm_s=vx;target.vy_mm_s=vy;target.omega_rad_s=omega;
-  if(!start(&target,true)) return false;
+  if(!start(&target,true,false)) return false;
   DriverAcceleration=CHASSIS_VELOCITY_ACCELERATION;
   return immediate_command();
 }
@@ -386,7 +428,7 @@ bool ChassisMotion_HoldStart(float forward,uint32_t duration)
   { HoldStatus.reason="range";return false; }
   memset(&target,0,sizeof target);
   target.vx_mm_s=forward;target.mode=CHASSIS_MOTION_HOLD_CURRENT;target.hold_ms=duration;
-  if(!start(&target,false))
+  if(!start(&target,false,false))
   {
     HoldStatus.reason=!strcmp(Motion.reason,"imu_invalid")?"imu_not_verified":
         (!strcmp(Motion.reason,"busy")?(HWT101_Cal_IsBusy()?"imu_busy":"chassis_busy"):Motion.reason);
@@ -466,7 +508,7 @@ bool ChassisMotion_MoveToTuned(float x, float y, float yaw, float speed,
   t.mode = CHASSIS_MOTION_HEADING;
   /* Convert map target to the signed module frame once; no implicit module zero. */
   t.heading_deg = Motion.current_deg + wrap_deg(yaw - Motion.map_yaw_rad*180.0f/CHASSIS_MODEL_PI);
-  if (!ChassisMotion_Start(&t)) return false;
+  if (!start(&t,false,true)) return false;
   Motion.distance_mode = true;
   Motion.curve_period_ms=p->curve_period_ms;
   Motion.linear_decel_mm_s2=p->linear_decel_mm_s2;
@@ -484,6 +526,35 @@ bool ChassisMotion_MoveToTuned(float x, float y, float yaw, float speed,
 }
 bool ChassisMotion_TurnTo(float yaw, uint32_t timeout)
 { return ChassisMotion_TurnToSpeed(yaw,CHASSIS_MOTION_MAX_OMEGA_DEG_S,timeout); }
+
+void ChassisMotion_UseRouteArrival(void)
+{if(Motion.state==CHASSIS_MOTION_RUNNING && Motion.distance_mode)ArrivalGroups=CHASSIS_ROUTE_STOP_GROUPS;}
+bool ChassisMotion_PrepareCorner(float x,float y,float speed,float accel,uint32_t timeout)
+{
+  if(Motion.state!=CHASSIS_MOTION_RUNNING || !Motion.distance_mode || Motion.turn_only ||
+     WaitingForStop || FollowingPath || Motion.profile!=CHASSIS_PROFILE_LINEAR ||
+     Corner.armed || Corner.passed || !isfinite(x) || !isfinite(y) || !isfinite(speed) || !isfinite(accel) ||
+     fabsf(Motion.target_x_mm-2100)>.01f || fabsf(Motion.target_y_mm-2100)>.01f ||
+     fabsf(wrap_deg(Motion.target_map_yaw_deg-90))>.01f || x>=Motion.target_x_mm ||
+     fabsf(y-Motion.target_y_mm)>.01f || speed<=0 || speed>CHASSIS_MOTION_MAX_LINEAR_MM_S ||
+     accel<CHASSIS_TEST_ACCEL_MIN_MM_S2 || accel>CHASSIS_TEST_ACCEL_MAX_MM_S2 ||
+     timeout<DistanceTimeout || timeout>CHASSIS_DISTANCE_MAX_TIMEOUT_MS)return false;
+  Corner.armed=true;Corner.next_x=x;Corner.next_y=y;Corner.speed=speed;Corner.accel=accel;
+  DistanceTimeout=timeout;return true;
+}
+bool ChassisMotion_CornerPassed(void){return Corner.passed;}
+
+static void corner_handoff(uint32_t now)
+{
+  if(!Corner.armed || !in_target())return;
+  Corner.armed=false;Corner.passed=Corner.lateral=true;
+  Motion.target_x_mm=Corner.next_x;Motion.target_y_mm=Corner.next_y;
+  DistanceMaxSpeed=Corner.speed;Motion.linear_accel_mm_s2=Corner.accel;
+  Motion.error_x_mm=Corner.next_x-Position.observer.feedback.x_mm;
+  Motion.error_y_mm=Corner.next_y-Position.observer.feedback.y_mm;
+  /* Preserve MapVx/MapVy, heading history, origin, action ID and deadline. */
+  distance_ramp_start(now);
+}
 float ChassisMotion_PathProgress(void){return PathProgress;}
 bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn_deg_s,
                              uint32_t timeout,float resume_mm)
@@ -526,6 +597,8 @@ bool ChassisMotion_TurnToPrecision(float yaw,float max_deg_s,float tolerance_deg
 }
 static bool request_stop(const char *reason, bool error)
 {
+  Mecanum_Feedback_Arrival(false);
+  Corner.armed=false;
   Motion.reason = reason;
   Motion.stop_confirmed = false;
   FinishAsError = error;
@@ -539,7 +612,7 @@ static bool request_stop(const char *reason, bool error)
     unsigned i;
     ChassisLocalization_Get(&Position);
     StopSequence = Position.feedback_sequence;
-    for (i=0;i<4;i++) { StopPositions[i]=Position.wheels[i].position_raw; StopSpeedTime[i]=Position.wheels[i].speed_ms; }
+    for (i=0;i<4;i++) { StopPositions[i]=Position.wheels[i].position_raw; StopSpeedTime[i]=Position.wheels[i].speed_ms;StopPositionTime[i]=Position.wheels[i].position_ms; }
   }
   Motion.sample_tick = HAL_GetTick();
   Motion.elapsed_ms = (uint32_t)(Motion.sample_tick - Motion.start_tick);
@@ -779,6 +852,7 @@ static bool stopped_feedback(uint32_t now)
 {
   unsigned i;
   bool quiet = true; /* Physical stop evidence is independent of target accuracy. */
+  bool route_arrival=ArrivalGroups==CHASSIS_ROUTE_STOP_GROUPS;
   Mecanum_Status_t bus;
   Mecanum_StatusGet(&bus);
   if(!bus.tx_complete)return false;
@@ -787,7 +861,8 @@ static bool stopped_feedback(uint32_t now)
    * for all four new speeds before consuming evidence; a reused fresh sample
    * is not movement and must not reset an already quiet interval. */
   for(i=0;i<4;i++)
-    if(Position.wheels[i].speed_ms==StopSpeedTime[i]) return false;
+    if(Position.wheels[i].speed_ms==StopSpeedTime[i] ||
+       (route_arrival && Position.wheels[i].position_ms==StopPositionTime[i])) return false;
   StopSequence = Position.feedback_sequence;
   for(i=0;i<4;i++)
   {
@@ -795,16 +870,17 @@ static bool stopped_feedback(uint32_t now)
     float delta = fabsf((float)(w->position_raw - StopPositions[i])) * CHASSIS_MODEL_PI *
                   Geometry.wheel_diameter_mm / ((float)Position.units_per_rev * Geometry.gear_ratio);
     if (!w->speed_valid || (uint32_t)(now-w->speed_ms)>600U ||
+        (route_arrival && (!w->position_valid || (uint32_t)(now-w->position_ms)>600U)) ||
         w->speed_ms == StopSpeedTime[i] || w->speed_ms==bus.sent_ms ||
         (uint32_t)(w->speed_ms-bus.sent_ms)>0x7FFFFFFFU ||
         w->position_ms==bus.sent_ms || (uint32_t)(w->position_ms-bus.sent_ms)>0x7FFFFFFFU ||
         w->speed_rpm > CHASSIS_DISTANCE_STOP_RPM || w->speed_rpm < -CHASSIS_DISTANCE_STOP_RPM ||
         delta > CHASSIS_DISTANCE_STOP_DELTA_MM) quiet = false;
-    StopPositions[i]=w->position_raw; StopSpeedTime[i]=w->speed_ms;
+    StopPositions[i]=w->position_raw; StopSpeedTime[i]=w->speed_ms;StopPositionTime[i]=w->position_ms;
   }
   if(!quiet) { StableGroups=0; return false; }
   StableGroups++;
-  return StableGroups>=CHASSIS_DISTANCE_STOP_GROUPS;
+  return StableGroups>=ArrivalGroups;
 }
 static bool distance_heading_command(ChassisModel_Velocity_t *command)
 {
@@ -945,7 +1021,15 @@ static bool distance_command(uint32_t dt, ChassisModel_Velocity_t *command)
       limit=fminf(limit,Motion.profile==CHASSIS_PROFILE_COSINE?
           fminf(CHASSIS_DISTANCE_CREEP_MM_S,CHASSIS_DISTANCE_TOLERANCE_MM/delay):
           CHASSIS_DISTANCE_CREEP_MM_S);
-    if(norm>limit) { vx*=limit/norm; vy*=limit/norm; }
+    if(Corner.lateral){
+      /* Keep Y=2100 correction independent of the long westward distance. */
+      vx=fmaxf(-limit,fminf(limit,vx));
+      float cross=fabsf(Motion.error_y_mm),a=Motion.linear_decel_mm_s2;
+      float cross_limit=fminf(CHASSIS_DISTANCE_CREEP_MM_S,sqrtf(a*a*delay*delay+2*a*cross)-a*delay);
+      vy=fmaxf(-cross_limit,fminf(cross_limit,vy));
+      norm=hypotf(vx,vy);
+      if(norm>limit){vx*=limit/norm;vy*=limit/norm;}
+    }else if(norm>limit) { vx*=limit/norm; vy*=limit/norm; }
     if(hypotf(Motion.error_x_mm,Motion.error_y_mm)<=CHASSIS_DISTANCE_TOLERANCE_MM) vx=vy=0;
     if(Motion.profile==CHASSIS_PROFILE_LINEAR){
       float dx=vx-MapVx,dy=vy-MapVy,change=hypotf(dx,dy);
@@ -953,7 +1037,16 @@ static bool distance_command(uint32_t dt, ChassisModel_Velocity_t *command)
        * It includes deceleration and reversal, in either travel direction. */
       float rate=(dx*MapVx+dy*MapVy<0)?Motion.linear_decel_mm_s2:Motion.linear_accel_mm_s2;
       float step=rate*dt/1000.0f;
-      if(change>step){dx*=step/change;dy*=step/change;}
+      if(Corner.lateral){
+        /* Reserve a Y braking/correction share before accelerating west;
+         * joint normalization would otherwise dilute Y by the 900 mm X error. */
+        float yr=dy*MapVy<0?Motion.linear_decel_mm_s2:Motion.linear_accel_mm_s2;
+        float ys=fminf(step*.70710678f,yr*dt/1000.0f);
+        dy=fmaxf(-ys,fminf(ys,dy));
+        float xr=dx*MapVx<0?Motion.linear_decel_mm_s2:Motion.linear_accel_mm_s2;
+        float xs=fminf(xr*dt/1000.0f,sqrtf(fmaxf(0,step*step-dy*dy)));
+        dx=fmaxf(-xs,fminf(xs,dx));
+      }else if(change>step){dx*=step/change;dy*=step/change;}
       MapVx+=dx;MapVy+=dy;
     }else{
       /* Bound feedback-driven vector changes by this ramp's peak acceleration;
@@ -979,6 +1072,8 @@ void ChassisMotion_Process(void)
   Mecanum_Status_t bus;
   unsigned i;
   stop_monitor_process(); /* Runs while idle too; independent of at-target checks. */
+  Mecanum_Feedback_Arrival(ChassisMotion_IsBusy() && WaitingForStop && !FinishAsError &&
+    ArrivalGroups==CHASSIS_ROUTE_STOP_GROUPS && !strcmp(Motion.reason,"position_reached"));
   if (!ChassisMotion_IsBusy())
     return;
   Motion.elapsed_ms=now-Motion.start_tick;
@@ -1015,7 +1110,12 @@ void ChassisMotion_Process(void)
       if(fresh && ChassisModel_Forward(&Geometry,rpm,&measured))
         Motion.peak_mm_s=fmaxf(Motion.peak_mm_s,hypotf(measured.vx_mm_s,measured.vy_mm_s));
     }
-    if (!feedback_ok && !FinishAsError)
+    /* A cancelled task is proving parking, not arrival at its old map target.
+     * Recovery intentionally rebuilds localization after the stop; a transient
+     * gap here must not relatch a motion error after fresh stop proof succeeds.
+     * Active motion and normal position-arrival stops still require feedback. */
+    if (!feedback_ok && !FinishAsError &&
+        (!WaitingForStop || !strcmp(Motion.reason,"position_reached")))
     {
       if (!WaitingForStop) { request_stop("feedback_invalid", true); return; }
       FinishAsError=true;Motion.reason="feedback_invalid";
@@ -1141,6 +1241,7 @@ void ChassisMotion_Process(void)
   if (Motion.distance_mode)
   {
     if(elapsed>=DistanceTimeout) { request_stop(Motion.turn_only?"turn_timeout":"distance_timeout",true);return; }
+    corner_handoff(now); /* Before the endpoint's zero-reference/stop branch. */
     /* Normal linear arrival finishes its translational ramp before zero TX.
      * Emergency/cancel and independent turn/path stops keep their own rules. */
     if(in_target() && (Motion.turn_only || FollowingPath || Motion.profile!=CHASSIS_PROFILE_LINEAR ||

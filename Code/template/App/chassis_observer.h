@@ -19,6 +19,7 @@ typedef struct
   float yaw_rad;
   uint32_t yaw_ms;
   bool yaw_time_valid; /* Legacy host callers may use now_ms when not provided. */
+  uint32_t max_span_ms; /* Zero keeps the ordinary 250 ms limit; tracking accepts its 600 ms read window. */
 } ChassisObserver_Feedback_t;
 typedef struct
 {

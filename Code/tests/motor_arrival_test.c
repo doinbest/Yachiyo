@@ -56,5 +56,25 @@ int main(void)
   reply(cfg,33);assert(frame[1]==0x48 && frame[22]==3);
   reply(ack,4);assert(frame[1]==0x42);
   reply(cfg,33);assert(MotorBus_PositionReplyEnsure(6)==-1);
+  /* A new fixed request while Receive configuration is in flight cannot
+   * change that write/readback snapshot or use an unverified old Both cache. */
+  assert(MotorBus_PositionReplyEnsureMode(7,1)==0);MotorBus_Process();
+  cfg[0]=7;cfg[22]=3;ack[0]=7;
+  assert(MotorBus_PositionReplyEnsure(7)==0);
+  reply(cfg,33);assert(frame[1]==0x48 && frame[22]==1);
+  assert(MotorBus_PositionReplyEnsure(7)==0);
+  reply(ack,4);assert(frame[1]==0x42);
+  cfg[22]=1;reply(cfg,33);
+  assert(MotorBus_PositionReplyEnsure(7)==0 && frame[1]==0x42);
+  reply(cfg,33);assert(frame[1]==0x48 && frame[22]==3);
+  reply(ack,4);cfg[22]=3;reply(cfg,33);
+  assert(MotorBus_PositionReplyEnsure(7)==1);
+  /* Receive also rejects mismatched readback of any preserved parameter. */
+  assert(MotorBus_PositionReplyEnsureMode(7,1)==0);MotorBus_Process();
+  reply(cfg,33);assert(frame[1]==0x48 && frame[22]==1);
+  reply(ack,4);cfg[22]=1;cfg[10]^=1;reply(cfg,33);
+  assert(MotorBus_PositionReplyEnsureMode(7,1)==-1);
+  assert(MotorBus_PositionReplyEnsureMode(7,2)==-1);
+  assert(MotorBus_PositionReplyEnsureMode(4,1)==-1);
   puts("motor_arrival_test: PASS");
 }

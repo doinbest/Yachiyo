@@ -8,7 +8,8 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.equal(GRAB_FORM_DEFAULTS.z_min,-150);
   assert.equal(GRAB_FORM_DEFAULTS.car_pick_drop_mm,40);
   assert.equal(GRAB_FORM_DEFAULTS.z_grab,-50);
-  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-140);
+  for(const key of ['z_speed','z_pick_speed','qr_z_speed'])assert.equal(GRAB_FORM_DEFAULTS[key],250);
+  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-120);
   assert.equal(GRAB_FORM_DEFAULTS.z_rough_align,-100);
   assert.equal(GRAB_FORM_DEFAULTS.z_temp_align,-100);
   assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-110);
@@ -34,10 +35,10 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.equal(buildCommand('grab-set-base_home_degrade',{value:0}),'grab set base_home_degrade 0');
   assert.throws(()=>buildCommand('grab-set-base_home_degrade',{value:2}));
   assert.throws(()=>buildCommand('grab-set-base_home_degrade',{value:0.5}));
-  for(const key of ['z_speed','z_pick_speed']) {
+  for(const key of ['z_speed','z_pick_speed','qr_z_speed']) {
     const field=parameterFields.find(p=>p.key===key);
     assert.equal(field.max,333.333);
-    assert.deepEqual(fieldWrites(field,{[key]:222.222}),[[key,222.222]]);
+    assert.deepEqual(fieldWrites(field,{[key]:222.222}),['z_speed','z_pick_speed','qr_z_speed'].map(k=>[k,222.222]));
     assert.equal(buildCommand(`grab-set-${key}`,{value:111.111111}),`grab set ${key} 111.111111`);
     for(const value of [0,333.334]) {
       assert.throws(()=>fieldWrites(field,{[key]:value}));
@@ -50,10 +51,27 @@ test('firmware defaults and physical ranges reach all parameter entry points',()
   assert.match(parameterFields.find(p=>p.key==='x_acc').note,/默认X20、Z255/);
 });
 
-test('material descent speed is shared and separate from ring/lift speed',()=>{
+test('visual mapping uses the measured 450 by 330 mm field at 640 by 480 pixels',()=>{
+  const p=GRAB_FORM_DEFAULTS;
+  const near=(actual,expected)=>assert.ok(Math.abs(actual-expected)<1e-6,`${actual} != ${expected}`);
+  // Test physical distances as well as the response: catch inverse units or cm/mm mistakes.
+  near(p.j00*450,640);
+  near(p.j11*330,480);
+  near(p.j12*330,480);
+  near(100/p.j00,70.3125);
+  near(100/p.j11,68.75);
+  for(const key of ['j01','j02','j10'])assert.equal(p[key],0);
+  // Explicit measured responses remain writable, including negative/coupled directions.
+  for(const [key,value] of [['j00',-1.7],['j02',0.3],['j12',1.6]]){
+    assert.deepEqual(fieldWrites(parameterFields.find(f=>f.key===key),{[key]:value}),[[key,value]]);
+    assert.equal(buildCommand(`grab-set-${key}`,{value}),`grab set ${key} ${value}`);
+  }
+});
+
+test('material Z speed retains its compatibility parameter entry',()=>{
   const speed=parameterFields.find(f=>f.key==='z_pick_speed');
   assert.ok(speed);assert.equal(speed.tab,'material');assert.equal(speed.unit,'mm/s');
-  assert.deepEqual(fieldWrites(speed,{z_pick_speed:'111.111'}),[['z_pick_speed',111.111]]);
+  assert.deepEqual(fieldWrites(speed,{z_pick_speed:'111.111'}),['z_speed','z_pick_speed','qr_z_speed'].map(k=>[k,111.111]));
 });
 
 test('distance fields preserve absolute firmware coordinates and relative clearance',()=>{

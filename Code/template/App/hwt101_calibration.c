@@ -32,11 +32,13 @@ static uint32_t run_tick, step_tick, cal_tick, verify_tick, verify_wait_tick;
 static uint32_t restore_tick, native_poll_tick;
 static uint32_t error_baseline, last_sample_tick, last_sample_count;
 static uint32_t accepted_errors, recovery_tick, recovery_errors, recovery_last_count;
+static uint32_t save_recovery_tick;
 static unsigned recovery_samples;
-static bool recovery_mode_pending;
+static bool recovery_mode_pending, save_recovery_started;
 static uint32_t control_tick, control_count;
-static uint32_t control_errors;
+static uint32_t control_errors, control_mode_tick;
 static unsigned control_recovery_samples;
+static bool control_mode_recheck_pending, control_mode_abnormal;
 static bool native_run, start_attempted, aborting, cancelled, control_valid;
 static unsigned exit_attempts;
 static bool boot_pending;
@@ -108,6 +110,7 @@ static void RecordFailure(const char *reason, HAL_StatusTypeDef hal)
 static void Fail(const char *reason, HAL_StatusTypeDef hal)
 {
   RecordFailure(reason, hal);
+  if (cal.state == HWT101_CAL_SAVING) cal.save_state = "ERROR";
   cal.reason = reason;
   cal.hal = hal;
   control_valid = false;
@@ -126,16 +129,41 @@ void HWT101_Cal_Init(void)
   cal.save_state = "NOT_REQUESTED";
   step = STEP_IDLE;
   start_attempted = control_valid = native_run = aborting = cancelled = boot_pending = false;
+  save_recovery_started = false;
+  control_mode_recheck_pending = control_mode_abnormal = false;
   control_recovery_samples = 0U;
+}
+
+static void SuspendControl(void)
+{
+  HWT101_Angle_t angle;
+  HWT101_Status_t comm;
+  control_valid = false;
+  control_recovery_samples = 0U;
+  if (HWT101_Status_Get(&comm)) control_errors = comm.i2c_error_count;
+  if (HWT101_Angle_Get(&angle))
+  { control_tick = angle.last_update_ms; control_count = angle.update_count; }
 }
 
 HAL_StatusTypeDef HWT101_Cal_RefreshRegisters(void)
 {
   uint16_t version, mode, bias, peak_time, bias_time;
   HAL_StatusTypeDef status;
+  bool was_normal = cal.normal_mode_confirmed;
   if (cal.busy) return HAL_BUSY;
   status = HWT101_ReadRegister(REG_VERSION, &version);
-  if (status == HAL_OK) status = HWT101_ReadRegister(REG_MODE, &mode);
+  if (status == HAL_OK)
+  {
+    status = HWT101_ReadRegister(REG_MODE, &mode);
+    if (status == HAL_OK)
+    {
+      /* A later BIAS failure cannot erase an actually observed bad MODE. */
+      cal.mode = mode;
+      cal.normal_mode_confirmed = mode == 0U;
+      control_mode_abnormal = mode != 0U;
+      control_mode_recheck_pending = false;
+    }
+  }
   if (status == HAL_OK) status = HWT101_ReadRegister(REG_BIAS, &bias);
   cal.registers_valid = status == HAL_OK;
   if (status == HAL_OK)
@@ -146,7 +174,12 @@ HAL_StatusTypeDef HWT101_Cal_RefreshRegisters(void)
     if (cal.run_id == 0U) cal.bias_before = bias;
     cal.bias_after = bias;
     cal.bias_after_valid = true;
-    if (mode != 0U) control_valid = false;
+    if (mode != 0U || !was_normal)
+    {
+      SuspendControl();
+      if (cal.verified) cal.reason = mode == 0U ?
+          "control_data_invalid" : "mode_not_normal";
+    }
     /* Timing is optional diagnostic evidence; unsupported/failed timing reads
      * do not turn an otherwise valid normal-mode status into a mode failure. */
     cal.timing_valid = HWT101_ReadRegister(REG_PEAK_TIME, &peak_time) == HAL_OK;
@@ -157,7 +190,11 @@ HAL_StatusTypeDef HWT101_Cal_RefreshRegisters(void)
   {
     cal.normal_mode_confirmed = false;
     cal.bias_after_valid = false;
-    control_valid = false;
+    SuspendControl();
+    control_mode_recheck_pending = !control_mode_abnormal;
+    control_mode_tick = HAL_GetTick() - COMMAND_WAIT_MS;
+    if (cal.verified) cal.reason = control_mode_abnormal ?
+        "mode_not_normal" : "control_mode_unconfirmed";
     cal.timing_valid = false;
   }
   return status;
@@ -203,6 +240,8 @@ static bool StartRun(bool native, uint32_t duration_ms)
   cal.total_ms = duration_ms + (native ? CALIBRATION_MS : 0U);
   control_valid = false;
   control_recovery_samples = 0U;
+  control_mode_recheck_pending = control_mode_abnormal = false;
+  save_recovery_started = false;
   run_tick = HAL_GetTick();
   if (!FreshAngle(&angle))
   {
@@ -324,7 +363,15 @@ static void BeginReadRecovery(const HWT101_Status_t *comm)
   cal.recovery_elapsed_ms = 0;
   cal.reason = "i2c_recovering";
   control_valid = false;
-  recovery_tick = HAL_GetTick();
+  /* MODE may recover while BIAS still fails. Every post-SAVE read attempt
+   * shares the first outage's deadline; never replay the accepted SAVE. */
+  if (step == STEP_SAVE_CHECK)
+  {
+    if (!save_recovery_started)
+    { save_recovery_tick = HAL_GetTick(); save_recovery_started = true; }
+    recovery_tick = save_recovery_tick;
+  }
+  else recovery_tick = HAL_GetTick();
   recovery_errors = comm->i2c_error_count;
   recovery_last_count = HWT101_Angle_Get(&angle) ? angle.update_count : 0U;
   recovery_samples = 0;
@@ -354,8 +401,8 @@ static void NativeModeObserve(uint16_t mode)
   }
 }
 
-/* The sensor keeps calibrating while host reads recover. Never replay MODE=1,
- * CALIYAW or SAVE here. Only a complete new verification window can pass. */
+/* Never replay MODE=1, CALIYAW or SAVE while reads recover. An interrupted
+ * verification restarts its sample window; SAVE_CHECK retains completed data. */
 static bool ReadRecoveryProcess(const HWT101_Status_t *comm)
 {
   HWT101_Angle_t angle;
@@ -404,6 +451,14 @@ static bool ReadRecoveryProcess(const HWT101_Status_t *comm)
   if (step == STEP_VERIFY) BeginVerify();
   cal.reason = mode == 0U && cal.recovery_expected_mode == 1U ?
       "native_returned_normal_wait" : "i2c_recovered";
+  if (step == STEP_START_CHECK)
+  {
+    SetState(HWT101_CAL_CALIBRATING);
+    step = STEP_CAL_WAIT;
+    /* The mode just read is the start confirmation. Resume next pass, keeping
+     * both native clocks, rather than reading START_CHECK again this pass. */
+    return false;
+  }
   return true;
 }
 
@@ -506,6 +561,26 @@ static void SaveFailed(HAL_StatusTypeDef hal)
   Fail("save_failed", hal); /* 保留verified，保存失败不改写验证测量结果。 */
 }
 
+/* Only the main loop performs automatic MODE reads. Cache getters cannot turn
+ * an unconfirmed mode or an old angle into control qualification. */
+static void ControlModeRecheck(void)
+{
+  HWT101_Angle_t angle;
+  uint16_t mode;
+  if (!control_mode_recheck_pending || !cal.verified ||
+      cal.state != HWT101_CAL_DONE || strcmp(cal.result, "PASS") ||
+      (native_run && !cal.save_readback_ok) || !FreshAngle(&angle) ||
+      (uint32_t)(HAL_GetTick() - control_mode_tick) < COMMAND_WAIT_MS) return;
+  control_mode_tick = HAL_GetTick();
+  if (HWT101_ReadRegister(REG_MODE, &mode) != HAL_OK) return;
+  cal.mode = mode;
+  cal.normal_mode_confirmed = mode == 0U;
+  control_mode_abnormal = mode != 0U;
+  control_mode_recheck_pending = false;
+  SuspendControl();
+  cal.reason = mode == 0U ? "control_data_invalid" : "mode_not_normal";
+}
+
 /* Communication availability can recover without re-zeroing a verified heading. */
 static bool ControlAngleRefresh(HWT101_Angle_t *angle)
 {
@@ -568,6 +643,7 @@ void HWT101_Cal_Process(void)
   if (cal.busy) cal.i2c_errors = (uint32_t)(comm.i2c_error_count - error_baseline);
   if (!cal.busy)
   {
+    ControlModeRecheck();
     (void)ControlAngleRefresh(&angle);
     return;
   }
@@ -584,8 +660,9 @@ void HWT101_Cal_Process(void)
      * Keep the three exit attempts for an available link, not a disconnected bus. */
     if (!HWT101_Is_Ready()) return;
   }
-  if (!aborting &&
-      step != STEP_SAVE_UNLOCK && step != STEP_SAVE_WRITE && step != STEP_SAVE_CHECK)
+  /* Only unsent SAVE writes fail immediately. Once accepted, readback shares
+   * ordinary read recovery and cannot resend the write or restart verification. */
+  if (!aborting && step != STEP_SAVE_UNLOCK && step != STEP_SAVE_WRITE)
   {
     if (comm.i2c_error_count != accepted_errors || !FreshAngle(&angle))
       BeginReadRecovery(&comm);
@@ -614,7 +691,21 @@ void HWT101_Cal_Process(void)
       if (hal != HAL_OK) {
         (void)HWT101_Status_Get(&comm); BeginReadRecovery(&comm); break;
       }
-      if (value != 1U && value != 2U) { Fail("start_readback", hal); break; }
+      if (value != 1U && value != 2U)
+      {
+        (void)HWT101_Status_Get(&comm);
+        BeginReadRecovery(&comm);
+        /* This successful mismatch is already the first observation. Count it
+         * and wait at least 100 ms before the read-only confirmation. */
+        cal.recovery_mode_first = cal.recovery_mode_last = value;
+        cal.recovery_mode_seen = cal.recovery_mode_valid = true;
+        cal.recovery_mode_hal = HAL_OK;
+        cal.recovery_mode_reads = 1U;
+        cal.recovery_mode_tick = HAL_GetTick();
+        recovery_mode_pending = true;
+        cal.reason = "recovery_mode_recheck";
+        break;
+      }
       NativeModeObserve(value);
       SetState(HWT101_CAL_CALIBRATING); step = STEP_CAL_WAIT;
       break;
@@ -660,7 +751,7 @@ void HWT101_Cal_Process(void)
       if (value != 0U) { ExitFailed(hal); break; }
       cal.normal_mode_confirmed = true;
       if (aborting)
-      { Finish(cancelled ? HWT101_CAL_CANCELLED : (cal.verified ? HWT101_CAL_DONE : HWT101_CAL_FAILED)); break; }
+      { Finish(cancelled ? HWT101_CAL_CANCELLED : HWT101_CAL_FAILED); break; }
       /* Only faults already reconciled by read recovery may continue. */
       if (comm.i2c_error_count != accepted_errors)
       { cal.reason = "i2c"; cal.hal = HAL_ERROR; Finish(HWT101_CAL_FAILED); break; }
@@ -715,13 +806,19 @@ void HWT101_Cal_Process(void)
     case STEP_SAVE_CHECK:
       hal = HWT101_ReadRegister(REG_MODE, &value);
       if (hal == HAL_OK) cal.mode = value;
-      if (hal != HAL_OK || value != 0U) { SaveFailed(hal); break; }
+      if (hal != HAL_OK || value != 0U) {
+        (void)HWT101_Status_Get(&comm); BeginReadRecovery(&comm); break;
+      }
       hal = HWT101_ReadRegister(REG_BIAS, &value);
       cal.bias_after_valid = hal == HAL_OK;
-      if (hal != HAL_OK) { SaveFailed(hal); break; }
+      if (hal != HAL_OK) {
+        (void)HWT101_Status_Get(&comm); BeginReadRecovery(&comm); break;
+      }
       cal.bias_after = value;
       cal.save_readback_ok = true;
       cal.save_state = "READBACK_OK";
+      cal.reason = "none";
+      cal.hal = HAL_OK;
       /* 回读只能证实当前寄存器可读，断电保持需实物验证。 */
       if (FreshAngle(&angle) && comm.i2c_error_count == accepted_errors)
       { control_valid = true; control_tick = angle.last_update_ms; control_count = angle.update_count; }

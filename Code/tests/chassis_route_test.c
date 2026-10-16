@@ -16,6 +16,9 @@ static unsigned starts,stops,feedback_selections;
 static float last_speed;
 static uint32_t last_timeout,tick;
 static bool accept=true,last_turn,feedback_enabled;
+static const char *reject_reason;
+static bool resume_feedback_override,resume_feedback_missing;
+static Mecanum_Feedback_t resume_feedback[4];
 static bool independent_stop, mission_pending;
 static ChassisMotion_Profile_t selected_profile;
 bool ContestMission_HasPendingWork(void){return mission_pending;}
@@ -24,6 +27,8 @@ bool ChassisMotion_ProfileSet(ChassisMotion_Profile_t p){selected_profile=p;retu
 bool Mecanum_Feedback_Select(uint8_t wheel){assert(wheel==0);feedback_selections++;return true;}
 void Mecanum_Feedback_Enable(bool enabled){feedback_enabled=enabled;}
 static bool grab_busy, clearance;
+static bool qr_departure,corner_prepared,corner_passed;
+static float corner_speed,corner_accel;
 bool GrabTask_IsBusy(void){return grab_busy;}
 bool GrabTask_PoseClearanceReady(void){return clearance;}
 static unsigned qr_pose_calls;
@@ -35,14 +40,25 @@ uint32_t HAL_GetTick(void){return tick;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *s){*s=loc;}
 void ChassisMotion_StatusGet(ChassisMotion_Status_t *s){*s=motion;}
 void Mecanum_StatusGet(Mecanum_Status_t *s){*s=bus;}
+bool Mecanum_FeedbackGet(unsigned wheel,Mecanum_Feedback_t *out)
+{
+  assert(wheel<4);
+  if(resume_feedback_missing)return false;
+  if(resume_feedback_override){*out=resume_feedback[wheel];return true;}
+  memset(out,0,sizeof *out);
+  out->speed_valid=out->position_valid=out->state_valid=true;
+  out->speed_ms=out->position_ms=out->state_ms=tick;out->state_flags=3;
+  return true;
+}
 bool ChassisMotion_IsBusy(void){return motion.state==CHASSIS_MOTION_RUNNING||motion.state==CHASSIS_MOTION_STOPPING;}
 static bool action(float x,float y,float yaw,float speed,uint32_t timeout,bool turn)
 {
   assert(timeout>0 && timeout<=400000);assert(turn || (speed>=10 && speed<=5000));
   assert(isfinite(yaw) && yaw>=-180 && yaw<=180);
   assert((!ChassisRoute_IsBusy() && !ChassisRoute_StationReserved()) || ChassisRoute_IsSubmitting());
-  if(!accept){motion.reason="busy";return false;}
+  if(!accept){motion.reason=reject_reason?reject_reason:"busy";return false;}
   starts++;last_speed=speed;last_timeout=timeout;last_turn=turn;
+  corner_prepared=corner_passed=false;
   motion.profile=selected_profile;motion.action_id++;motion.state=CHASSIS_MOTION_RUNNING;motion.reason="running";
   motion.target_x_mm=x;motion.target_y_mm=y;motion.target_map_yaw_deg=yaw;motion.stop_confirmed=false;
   return true;
@@ -68,6 +84,10 @@ bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn,uint
 }
 bool ChassisMotion_TurnToSpeed(float yaw,float speed,uint32_t timeout)
 {turn_limit=speed;return ChassisMotion_TurnTo(yaw,timeout);}
+void ChassisMotion_UseRouteArrival(void){}
+bool ChassisMotion_PrepareCorner(float x,float y,float speed,float accel,uint32_t timeout)
+{assert(x==1200 && y==2100 && timeout>0);corner_speed=speed;corner_accel=accel;corner_prepared=true;return true;}
+bool ChassisMotion_CornerPassed(void){return corner_passed;}
 bool ChassisMotion_Stop(uint32_t ms){assert(ms==0);stops++;motion.state=CHASSIS_MOTION_STOPPING;return true;}
 bool ChassisMotion_StopRequest(uint32_t token){assert(!token);return true;}
 bool ChassisMotion_StopPending(void){return false;}
@@ -95,8 +115,10 @@ static void setup(void)
   motion.reason="idle";loc.origin_valid=loc.feedback_valid=loc.speed_valid=true;
   loc.origin.x_mm=loc.observer.feedback.x_mm=2250;loc.origin.y_mm=loc.observer.feedback.y_mm=150;
   loc.origin.yaw_rad=loc.observer.feedback.yaw_rad=CHASSIS_MODEL_PI;
-  loc.generation=4;tick=100;loc.feedback_tick=tick;starts=stops=feedback_selections=0;accept=true;last_turn=false;
-  independent_stop=grab_busy=clearance=qr_pose_delayed=mission_pending=false;selected_profile=CHASSIS_PROFILE_LINEAR;ChassisRoute_Init();
+  loc.generation=4;tick=100;loc.feedback_tick=tick;starts=stops=feedback_selections=0;accept=true;reject_reason=NULL;last_turn=false;
+  independent_stop=grab_busy=clearance=qr_pose_delayed=mission_pending=false;
+  resume_feedback_override=resume_feedback_missing=false;
+  qr_departure=corner_prepared=corner_passed=false;selected_profile=CHASSIS_PROFILE_LINEAR;ChassisRoute_Init();
 }
 static void feedback_arrival(float dx,float dy,float dyaw)
 {
@@ -367,4 +389,4 @@ int main(void)
   return 0;
 }
 
-bool GrabTask_QrDepartureActive(void){return false;}
+bool GrabTask_QrDepartureActive(void){return qr_departure;}

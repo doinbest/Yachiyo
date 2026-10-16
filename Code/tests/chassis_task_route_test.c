@@ -54,7 +54,7 @@ static void linear_entry(void)
       }
       arrive();ChassisRoute_Process();
       if(phase==0)assert(last_turn && motion.target_map_yaw_deg==90 && qr_pose_calls==calls);
-      if(phase==1)assert(!last_turn && motion.target_y_mm==1250 && qr_pose_calls==calls+1 && last_speed==1000);
+      if(phase==1)assert(!last_turn && motion.target_y_mm==1250 && qr_pose_calls==calls+1 && last_speed==800);
     }
     assert(!strcmp(status().state,"station") && status().station==5 && status().stop_confirmed);
     assert(qr_pose_calls==calls+1);

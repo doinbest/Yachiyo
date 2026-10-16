@@ -489,6 +489,13 @@ static bool append_leg(const RadarMap_t *m,int16_t sx,int16_t sy,int16_t ex,int1
   } else if(!append_checked_point(p,mask,x,sy,0U,0U))return false;
   for(i=0U;i<count;i++) {
     cell_center(path[i],&x,&y);
+    /* Processing's goal-cell center is350, below its380 turn point. When
+     * already approaching on the same column from outside, keep the original
+     * clear edge only up to380; do not overshoot then reverse before turning.
+     * A lateral obstacle connector keeps its original points. */
+    const RadarPlan_Point_t *last=&p->points[p->count-1U];
+    if(i+1U==count && station==2U && ey==380 && x==ex && y<ey &&
+       last->x_mm==ex && last->y_mm>=ey)continue;
     if(!append_checked_point(p,mask,x,y,0U,0U)) return false;
   }
   if(path[count-1U]/5U==path[count-2U]/5U)

@@ -31,9 +31,18 @@ int main(void)
   ChassisRoute_Profile_t approach=build((RadarPlan_Point_t){1200,1200,0,0},proc,-90);
   assert(approach.phases[0].y_mm==380 && !approach.phases[0].turn);
   assert(approach.phases[1].turn && approach.phases[1].y_mm==380);
-  assert(approach.count==2 && approach.final_yaw_deg==180);
+  assert(approach.count==3 && approach.final_yaw_deg==180);
+  assert(!approach.phases[2].turn && !strcmp(approach.phases[2].phase,"work_dock"));
+  assert(approach.phases[2].x_mm==1200 && approach.phases[2].y_mm==350);
+  assert(approach.phases[2].yaw_deg==180 && approach.phases[2].speed_mm_s==50);
+  /* A nonstandard approach still turns at the absolute outer point. */
+  ChassisRoute_Profile_t oblique=build((RadarPlan_Point_t){1500,700,0,0},proc,-90);
+  for(unsigned i=0;i<oblique.count;i++)if(!strcmp(oblique.phases[i].phase,"work_turn"))
+    assert(oblique.phases[i].x_mm==1200 && oblique.phases[i].y_mm==380);
+  assert(oblique.phases[oblique.count-1].y_mm==350);
   ChassisRoute_Profile_t leaving=build(proc,(RadarPlan_Point_t){1200,1200,0,0},180);
   assert(!leaving.phases[0].turn && leaving.phases[0].y_mm==425 && leaving.phases[0].yaw_deg==180);
+  assert(fabsf(leaving.nominal_time_s-(75.0f/50+90.0f/100+775.0f/200))<.01f);
   RadarPlan_Point_t corner={2100,2100,0,0},raw={1200,2100,4,2};
   ChassisRoute_Profile_t north=build((RadarPlan_Point_t){2100,1250,5,1},corner,90);
   assert(north.count==1 && !north.phases[0].turn && north.final_yaw_deg==90);
@@ -52,7 +61,7 @@ int main(void)
   assert(p.phases[0].turn && p.phases[0].yaw_deg==-90);
   assert(p.phases[1].y_mm==380 && p.phases[1].yaw_deg==-90);
   assert(p.phases[2].turn && p.phases[2].yaw_deg==180);
-  assert(p.final_yaw_deg==180 && p.phases[p.count-1].y_mm==380);
+  assert(p.final_yaw_deg==180 && p.phases[p.count-1].y_mm==350);
   p=build((RadarPlan_Point_t){1200,1200,0,0},(RadarPlan_Point_t){350,1200,3,4},90);
   assert(p.count==4 && p.phases[0].turn && p.phases[0].yaw_deg==0);
   assert(p.phases[1].x_mm==425 && !strcmp(p.phases[1].direction,"reverse"));

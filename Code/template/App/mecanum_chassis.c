@@ -64,6 +64,8 @@ static Mecanum_Status_t BusStatus = {.ack_profile = MECANUM_ACK_RECEIVE};
 static Mecanum_Feedback_t Feedback[4];
 static bool FeedbackEnabled;
 static bool StopFeedbackDemand;
+static bool ArrivalFeedbackDemand;
+static bool ArrivalStateRead;
 static bool PlannedStopPending;
 static uint8_t FeedbackIndex;
 static uint8_t FeedbackAddress;
@@ -219,7 +221,9 @@ static void FeedbackProcess(void)
       else
       {
         f->state_flags = e.data[2];
-        f->state_ms = e.tick_ms;
+        /* A late first reply and the retried reply are indistinguishable.
+         * Use the earliest TX as a conservative age, never as new stop proof. */
+        f->state_ms = e.read_retries ? e.first_read_tx_ms : e.tick_ms;
         f->state_valid = true;
       }
     }
@@ -272,9 +276,15 @@ static void FeedbackProcess(void)
   {
     /* Finish a normal four-position scan before starting another wheel command
      * batch. Other bus owners stay fair; urgent stops never wait on this flag. */
-    if(kind==1 && wheel==0 && !TrackingEnabled && !FeedbackAddress && !StopFeedbackDemand)
+    if(kind==1 && wheel==0 && !TrackingEnabled && !FeedbackAddress && !StopFeedbackDemand && !ArrivalFeedbackDemand)
       FeedbackPositionGroup=true;
-    if(TrackingEnabled && !StopFeedbackDemand)
+    if(ArrivalFeedbackDemand && !StopFeedbackDemand){
+      if(!ArrivalStateRead){
+        if(wheel==3U){ArrivalStateRead=true;FeedbackIndex=0;}
+        else FeedbackIndex=(uint8_t)((wheel+1U)*3U+2U);
+      }else FeedbackIndex=(uint8_t)(((wheel+1U)%4U)*3U+(wheel==3U?(kind==0?1:0):(kind==2?0:kind)));
+    }
+    else if(TrackingEnabled && !StopFeedbackDemand)
     {
       /* Four positions, then one wheel's speed/state pair. With X writes and
        * reads sharing UART5, the former 40-read slow cycle exceeded 2 seconds. */
@@ -519,11 +529,21 @@ bool Mecanum_RecoveryAfterBusCheck(void)
 }
 void Mecanum_Feedback_StopMonitor(bool active)
 {
+  MotorBus_PositionConfigStopHold(active || ArrivalFeedbackDemand);
   if (StopFeedbackDemand == active) return;
   StopFeedbackDemand = active;
   FeedbackPositionGroup = false;
   /* Keep the user's enable/selection policy; only the effective scan changes. */
   FeedbackIndex = active ? 0 : (FeedbackAddress ? (uint8_t)((FeedbackAddress - 1) * 3) : 0);
+}
+void Mecanum_Feedback_Arrival(bool active)
+{
+  MotorBus_PositionConfigStopHold(active || StopFeedbackDemand);
+  if(ArrivalFeedbackDemand==active)return;
+  ArrivalFeedbackDemand=active;
+  ArrivalStateRead=false;
+  FeedbackPositionGroup=false;
+  if(!StopFeedbackDemand)FeedbackIndex=active?2:(FeedbackAddress?(uint8_t)((FeedbackAddress-1U)*3U):0);
 }
 void Mecanum_Feedback_Enable(bool enabled)
 {
@@ -730,6 +750,16 @@ bool Mecanum_IsBusy(void)
   return PlannedStopPending || MecanumMotionPending ||
          BusStatus.stop_pending || BatchActive || NextValid ||
          BusStatus.stage == MECANUM_STAGE_FAULT;
+}
+bool Mecanum_VelocityHandoffReady(void)
+{
+  if(PlannedStopPending || FaultStopPending || BusStatus.stop_pending ||
+     BatchActive || BatchWaiting || NextValid || BusStatus.locked ||
+     BusStatus.error!=MECANUM_ERROR_NONE || MotorBus_IsQuarantined() ||
+     !BusStatus.tx_complete || !BusStatus.sent_velocity_valid ||
+     MotorBus_OwnerBusy(MOTOR_BUS_CHASSIS))return false;
+  for(unsigned i=0;i<4;i++)if(BusStatus.sent_rpm[i])return false;
+  return true; /* Retain MecanumMotionPending for ordinary stop/IMU ownership. */
 }
 
 /**********************************************************

@@ -75,3 +75,63 @@ test('changing the connection during feedback polling cancels the remaining sequ
  assert.equal(await f.s.start(),false);assert.notEqual(f.s.phase,'ready');
  assert.equal(f.events.at(-1),'release');
 });
+
+const missionAccepted='OK bus recover requested mission_preserved=1 tasks_resumed=0';
+const missionRecovered='OK grab route state=paused mode=mission stop_confirmed=1 reason=bus_recovered auto_resume=0';
+
+test('mission recovery completion continues the same unlock and feedback sequence',async()=>{
+ const f=fixture({locked:1,reply:(w,l)=>w==='bus recover'?[missionAccepted,missionRecovered]:l});
+ assert.equal(await f.s.start(),true);
+ assert.equal(f.wires.filter(w=>w==='bus recover').length,1);
+ assert.ok(f.events.indexOf('bus recover')<f.events.indexOf('resume'));
+ assert.match(f.s.message,/比赛保持暂停/);
+ assert.equal(f.wires.some(w=>/^(?:grab mission continue|chassis (?:test|origin|turn|run) )/.test(w)),false);
+});
+
+test('mission acceptance, retries and unconfirmed stops do not unlock early',async()=>{
+ let finish;
+ const f=fixture({locked:1,reply(w,l,{s}){if(w!=='bus recover')return l;
+  finish=()=>s.receive(missionRecovered);
+  return [missionAccepted,
+   'OK grab route state=bus_recovery_retry reason=reply_timeout auto_resume=0',
+   missionRecovered.replace('stop_confirmed=1','stop_confirmed=0'),
+   missionRecovered.replace('state=paused','state=resuming').replace('auto_resume=0','auto_resume=1')];}});
+ const work=f.s.start();await new Promise(setImmediate);
+ assert.equal(f.events.includes('resume'),false);
+ finish();assert.equal(await work,true);
+});
+
+test('mission recovery failure reports its reason without unlocking or replaying recovery',async()=>{
+ const f=fixture({locked:1,reply:(w,l)=>w==='bus recover'?[missionAccepted,
+  'OK grab route state=bus_recovery_wait reason=motor_disabled stop_confirmed=0 auto_resume=0']:l});
+ assert.equal(await f.s.start(),false);assert.match(f.s.message,/motor_disabled/);
+ assert.equal(f.events.includes('resume'),false);
+ assert.equal(f.wires.filter(w=>w==='bus recover').length,1);
+});
+
+test('mission completion from before the current request acceptance is ignored',async()=>{
+ let finish;
+ const f=fixture({locked:1,reply(w,l,{s}){if(w!=='bus recover')return l;
+  finish=()=>s.receive(missionRecovered);return [missionRecovered,missionAccepted];}});
+ const work=f.s.start();await new Promise(setImmediate);
+ assert.equal(f.events.includes('resume'),false);
+ finish();assert.equal(await work,true);
+});
+
+test('new stop cancels mission recovery and a late success cannot unlock it',async()=>{
+ const f=fixture({locked:1,reply:(w,l)=>w==='bus recover'?[missionAccepted]:l});
+ const work=f.s.start();await new Promise(setImmediate);
+ f.bridge.stopToken=8;f.bridge.commandEpoch++;
+ f.s.observeStop({latched:true,token:8});f.s.receive(missionRecovered);
+ assert.equal(await work,false);assert.equal(f.events.includes('resume'),false);
+ assert.equal(f.bridge.stopLatched,true);
+});
+
+test('mission success still requires current chassis isolation to be cleared',async()=>{
+ let reads=0;
+ const f=fixture({locked:1,reply(w,l){
+  if(w==='bus recover')return [missionAccepted,missionRecovered];
+  if(w==='chassis task'&&++reads===2)return [task(1)];return l;}});
+ assert.equal(await f.s.start(),false);assert.equal(f.events.includes('resume'),false);
+ assert.equal(f.wires.includes('chassis feedback on'),false);
+});

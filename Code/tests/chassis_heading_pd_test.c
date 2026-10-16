@@ -64,7 +64,7 @@ int main(void)
   held=sent_omega;angle.update_count++;tick=64;
   ChassisMotion_Process();near(sent_omega,held);
 
-  /* Pure turns retain the original .02 P and their independent speed ceiling. */
+  /* Pure turns use P=.1 with their independent100 deg/s ceiling. */
   reset();valid=true;reading(100,0);assert(ChassisMotion_AnchorSet(0));
   location.origin_valid=location.feedback_valid=location.speed_valid=true;
   location.units_per_rev=65536;
@@ -78,7 +78,7 @@ int main(void)
     for(unsigned i=0;i<4;i++)location.wheels[i].position_ms=location.wheels[i].speed_ms=now;
     ChassisMotion_Process();
   }
-  assert(status().state==CHASSIS_MOTION_RUNNING);near(sent_omega,.1f);
+  assert(status().state==CHASSIS_MOTION_RUNNING);near(sent_omega,.5f);
   puts("heading pure P .1: zero D contribution, cached samples, wrap, reset, .5 ceiling and independent turns PASS");
   return 0;
 }

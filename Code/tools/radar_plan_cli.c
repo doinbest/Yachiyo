@@ -112,11 +112,17 @@ static void print_profile(const RadarPlan_Point_t *points,unsigned count,float s
   ChassisRoute_Profile_t profile;
   printf("{\"points\":");print_points(points,count);printf(",\"initial_yaw_deg\":180,\"phases\":[");
   for(segment=1U;segment<count;segment++) {
-    const RadarPlan_Point_t *to=&points[segment];
-    if(!(task?ChassisRouteProfile_BuildTaskEntry(&points[segment-1U],to,yaw,speed,first_scan_leg,continuous_entry,&profile):
-        ChassisRouteProfile_Build(&points[segment-1U],to,yaw,speed,first_scan_leg,&profile))) break;
+    const RadarPlan_Point_t *from=&points[segment-1U],*to=&points[segment];
+    /* Match the live WorkResume: discard only the obsolete same-column
+     * pre-exit neutral connectors, then show the mission-owned retreat425. */
+    if(task && from->station==2U)
+      while(!to->station && to->x_mm==from->x_mm &&
+            to->y_mm<=CHASSIS_PROCESSING_EXIT_Y_MM && segment+1U<count)
+        to=&points[++segment];
+    if(!(task?ChassisRouteProfile_BuildTaskEntry(from,to,yaw,speed,first_scan_leg,continuous_entry,&profile):
+        ChassisRouteProfile_Build(from,to,yaw,speed,first_scan_leg,&profile))) break;
     float accels[CHASSIS_ROUTE_PROFILE_MAX_PHASES];
-    ChassisRouteProfile_ApplyTaskLinear(&points[segment-1U],to,&profile,task && !continuous_entry,accels);
+    ChassisRouteProfile_ApplyTaskLinear(from,to,&profile,task && !continuous_entry,accels);
     for(index=0U;index<profile.count;index++) {
       const ChassisRoute_Phase_t *phase=&profile.phases[index];
       printf("%s{\"kind\":\"%s\",\"phase\":\"%s\",\"direction\":\"%s\",\"segment\":%u,"
@@ -125,7 +131,7 @@ static void print_profile(const RadarPlan_Point_t *points,unsigned count,float s
              (unsigned)to->station,(unsigned)to->visit,(double)phase->x_mm,(double)phase->y_mm,
              (double)phase->yaw_deg,(double)phase->speed_mm_s);
       if(!strcmp(phase->direction,"curve")){
-        ChassisPath path={0};const RadarPlan_Point_t *from=&points[segment-1];
+        ChassisPath path={0};
         unsigned kind=!strcmp(phase->phase,"entry_curve")?1:from->x_mm==2100?2:3;
         ChassisPath_Build(&path,kind,from->x_mm,from->y_mm,to->x_mm,to->y_mm,speed);
         printf(",\"path\":[");

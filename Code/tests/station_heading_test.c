@@ -14,7 +14,8 @@ static ChassisMotion_Status_t motion;
 static ChassisStop_Status_t independent_stop;
 static unsigned requests,commits,turns;
 static uint8_t requested_source;
-static bool ready=true,accept=true;
+static bool ready=true,accept=true,turn_accept=true;
+static float turn_yaw,turn_speed,turn_tolerance,turn_delta;
 static HAL_StatusTypeDef camera_start_result;
 uint32_t HAL_GetTick(void){return tick;}
 bool GrabTask_HeadingReady(void){return ready;}
@@ -30,9 +31,9 @@ void ChassisMotion_StopStatusGet(ChassisStop_Status_t *out){*out=independent_sto
 bool ChassisMotion_IsBusy(void){return motion.state==CHASSIS_MOTION_RUNNING;}
 void ChassisLocalization_Get(ChassisLocalization_Status_t *out){memset(out,0,sizeof *out);out->origin_valid=out->feedback_valid=out->speed_valid=true;out->feedback_tick=tick;for(unsigned i=0;i<4;i++){out->wheels[i].state_valid=true;out->wheels[i].state_flags=1;out->wheels[i].state_ms=tick;}}
 bool ChassisHeading_Apply(float yaw){if(!accept)return false;commits++;motion.map_yaw_rad=yaw;return true;}
-bool ChassisMotion_TurnToPrecision(float yaw,float speed,float tol,uint32_t timeout){assert(yaw==180 && speed==10 && tol==.1f && timeout);turns++;motion.state=CHASSIS_MOTION_RUNNING;return true;}
+bool ChassisMotion_TurnToPrecision(float yaw,float speed,float tol,uint32_t timeout){assert(timeout);if(!turn_accept)return false;turn_yaw=yaw;turn_speed=speed;turn_tolerance=tol;turn_delta=remainderf(yaw-motion.map_yaw_rad*180/CHASSIS_MODEL_PI,360);turns++;motion.state=CHASSIS_MOTION_RUNNING;return true;}
 static bool sample(int angle,int stop){tick+=100;frame.HasFrame=frame.Valid=1;frame.Sequence++;frame.ReceivedTick=tick;frame.AngleCdeg=angle;frame.Stop=stop;return StationHeading_Process();}
-static void reset(void){memset(&independent_stop,0,sizeof independent_stop);tick=0;requests=commits=turns=0;ready=accept=true;camera_start_result=HAL_OK;memset(&motion,0,sizeof motion);motion.heading_valid=motion.map_anchor_valid=motion.stop_confirmed=true;motion.map_yaw_rad=CHASSIS_MODEL_PI;config=(StationHeading_Config_t){.zero_deg=0,.gain=1,.tolerance_deg=.1f,.spread_deg=.05f,.settle_ms=0,.turn_limit_deg=1,.wait_ms=1200,.observation_z_mm=0,.height_matches=true};StationHeading_Reset();}
+static void reset(void){memset(&independent_stop,0,sizeof independent_stop);tick=0;requests=commits=turns=0;ready=accept=turn_accept=true;turn_yaw=turn_speed=turn_tolerance=turn_delta=NAN;camera_start_result=HAL_OK;memset(&motion,0,sizeof motion);motion.heading_valid=motion.map_anchor_valid=motion.stop_confirmed=true;motion.map_yaw_rad=CHASSIS_MODEL_PI;config=(StationHeading_Config_t){.zero_deg=0,.gain=1,.tolerance_deg=.1f,.spread_deg=.05f,.settle_ms=0,.turn_limit_deg=1,.wait_ms=1200,.observation_z_mm=0,.height_matches=true,.direct_eligible=true};StationHeading_Reset();}
 static void intermittent_samples(void)
 {
   /* Invalid reports and long gaps must not discard consistent new samples. */

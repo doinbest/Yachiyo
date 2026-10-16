@@ -18,6 +18,7 @@ static bool TaskRoute, RequestTask, QrRoute, RequestQr;
 static bool QrLowerStart, RequestQrLower, QrPoseStarted;
 static ChassisRoute_TaskOptions_t TaskOptions;
 static const char *PauseState;
+static const char *FeedbackResumeState;
 static bool ResumeFeedbackStarted;
 static bool RecoveryHold;
 static bool PauseMonitoring;
@@ -32,6 +33,9 @@ static unsigned PlannedCount, PhaseIndex;
 static ChassisRoute_Profile_t Profile;
 static float PhaseAccel[CHASSIS_ROUTE_PROFILE_MAX_PHASES];
 static bool Pending;
+static bool CornerCandidate,CornerActive;
+static unsigned CornerNext;
+static bool submit_leg(unsigned index,bool running_handoff);
 static unsigned PendingIndex;
 static ChassisRoute_Phase_t PendingPhase;
 static ChassisLocalization_Status_t Position;
@@ -50,7 +54,8 @@ void ChassisRoute_Init(void)
   Route.phase="idle";Route.direction="none";Route.total=CHASSIS_ROUTE_TARGET_COUNT;
   Submitting=Automatic=Stations=FirstScanLeg=false;PlannedCount=PhaseIndex=0;
   Pending=false;TaskRoute=RequestTask=QrRoute=RequestQr=false;
-  memset(&TaskOptions,0,sizeof TaskOptions);PauseState=NULL;ResumeFeedbackStarted=RecoveryHold=PauseMonitoring=false;
+  CornerCandidate=CornerActive=false;
+  memset(&TaskOptions,0,sizeof TaskOptions);PauseState=FeedbackResumeState=NULL;ResumeFeedbackStarted=RecoveryHold=PauseMonitoring=false;
   QrLowerStart=RequestQrLower=false;
   CurveActive=false;CurveProgress=0;
   RouteSpeed=CHASSIS_ROUTE_DEFAULT_SPEED_MM_S;AcceptedYaw=90;
@@ -65,8 +70,23 @@ bool ChassisRoute_StationReserved(void)
   return Stations && (ChassisRoute_IsBusy() || (Route.state &&
       (!strcmp(Route.state,"station") || !strcmp(Route.state,"work") || !strcmp(Route.state,"paused") || !strcmp(Route.state,"pausing"))));
 }
+static bool resumable_state(const char *state)
+{
+  return state && (!strcmp(state,"running") || !strcmp(state,"waiting") ||
+                   !strcmp(state,"station") || !strcmp(state,"work"));
+}
+static void release_ownership(void)
+{
+  /* Keep Route and the accepted options for terminal status; they no longer
+   * authorize a pause or carry a reference into the next match's preparation. */
+  TaskRoute=QrRoute=Stations=Automatic=false;
+  Pending=CornerCandidate=CornerActive=CurveActive=false;
+  PauseState=FeedbackResumeState=NULL;
+  ResumeFeedbackStarted=RecoveryHold=PauseMonitoring=false;
+}
 static void stop_route(const char *reason)
 {
+  if(!strcmp(reason,"feedback_invalid") && resumable_state(Route.state))FeedbackResumeState=Route.state;
   (void)ChassisMotion_Stop(0);Route.state="stopping";Route.reason=reason;Route.stop_confirmed=false;
 }
 static uint32_t remaining(void)
@@ -103,17 +123,23 @@ static bool submit_phase(const ChassisRoute_Phase_t *phase)
   Submitting=false;
   ChassisMotion_StatusGet(&Motion);
   if(!ok) {
-    if(TaskRoute && Motion.reason && (!strcmp(Motion.reason,"busy") || !strcmp(Motion.reason,"grab_task_busy")))
+    if(TaskRoute && Motion.reason && (!strcmp(Motion.reason,"busy") || !strcmp(Motion.reason,"grab_task_busy") ||
+       !strcmp(Motion.reason,"chassis_handoff_wait")))
     { Route.state="running";Route.reason=Motion.reason;return true; }
     Pending=false;Route.state="error";Route.reason=Motion.reason;return false;
   }
   PhaseIndex=PendingIndex;Pending=false;
+  if(TaskRoute)ChassisMotion_UseRouteArrival();
   CurveActive=!strcmp(phase->direction,"curve");
   Route.action_id=Motion.action_id;Route.phase=phase->phase;Route.direction=phase->direction;
   Route.phase_speed_mm_s=phase->speed_mm_s;
   Route.phase_target_x_mm=phase->x_mm;Route.phase_target_y_mm=phase->y_mm;Route.phase_target_yaw_deg=phase->yaw_deg;
-  PauseMonitoring=false;
+  PauseMonitoring=false;FeedbackResumeState=NULL;
   Route.state="running";Route.reason=phase->phase;Route.stop_confirmed=false;
+  if(CornerCandidate && !phase->turn && PhaseIndex+1U==Profile.count){
+    CornerActive=ChassisMotion_PrepareCorner(1200,2100,
+      fminf(RouteSpeed,CHASSIS_MISSION_RAW_LATERAL_MM_S),CHASSIS_MISSION_LOADED_ACCEL_MM_S2,timeout);
+  }
   return true;
 }
 static void defer_phase(const ChassisRoute_Phase_t *phase,unsigned index)
@@ -138,7 +164,7 @@ static bool repair_position(void)
   else if(fabsf(forward)<0.01f) phase.direction="lateral";
   return queue_phase(&phase,Profile.count);
 }
-static bool submit(unsigned index)
+static bool submit_leg(unsigned index,bool running_handoff)
 {
   RadarPlan_Point_t from,to;
   if(Route.planned)
@@ -157,6 +183,23 @@ static bool submit(unsigned index)
     if(to.station==5U && to.visit==1U)to.y_mm=(int16_t)lroundf(TaskOptions.qr_scan_y_mm);
     if(from.station==5U && from.visit==1U)from.y_mm=(int16_t)lroundf(TaskOptions.qr_scan_y_mm);
   }
+  if(TaskRoute && from.station==2U){
+    /* WorkResume admits only the freshly stopped processing exit. The
+     * observation handoff is350; route geometry starts at the actual425
+     * handoff. Discard only collinear pre-exit neutral radar connectors. */
+    from.y_mm=(int16_t)CHASSIS_PROCESSING_EXIT_Y_MM;
+    while(Route.planned && !to.station && to.x_mm==from.x_mm &&
+          to.y_mm<=from.y_mm && index+1U<Route.total)
+      to=Planned[++index];
+  }
+  /* Same-heading QR departure is a translation, not a sub-tolerance turn
+   * that would serialize the arm restoration with the chassis. */
+  float profile_yaw=AcceptedYaw;
+  if(TaskRoute && TaskOptions.scan_qr && TaskOptions.start_id==RADAR_START_LOWER &&
+     ChassisMotion_ProfileGet()==CHASSIS_PROFILE_LINEAR &&
+     from.station==5U && from.visit==1U && to.x_mm==2100 && to.y_mm==2100 &&
+     fabsf(angle_error(AcceptedYaw,90))<=CHASSIS_DISTANCE_HEADING_DEG)profile_yaw=90;
+  CornerCandidate=CornerActive=false;
   if(QrRoute)
   {
     if(!index)from=(RadarPlan_Point_t){2250,QrLowerStart?150:2250,1,0};
@@ -176,7 +219,7 @@ static bool submit(unsigned index)
       Profile.nominal_time_s+=180.0f/CHASSIS_MOTION_MAX_OMEGA_DEG_S;
     }
   }
-  else if(!(TaskRoute?ChassisRouteProfile_BuildTaskEntry(&from,&to,AcceptedYaw,RouteSpeed,FirstScanLeg,
+  else if(!(TaskRoute?ChassisRouteProfile_BuildTaskEntry(&from,&to,profile_yaw,RouteSpeed,FirstScanLeg,
       ChassisMotion_ProfileGet()==CHASSIS_PROFILE_COSINE,&Profile):
       ChassisRouteProfile_Build(&from,&to,AcceptedYaw,RouteSpeed,FirstScanLeg,&Profile)))
   { Route.state="error";Route.reason="route_profile_invalid";return false; }
@@ -219,16 +262,47 @@ static bool submit(unsigned index)
   }
   ChassisRouteProfile_ApplyTaskLinear(&from,&to,&Profile,
     TaskRoute && ChassisMotion_ProfileGet()==CHASSIS_PROFILE_LINEAR,PhaseAccel);
+  if(TaskRoute && TaskOptions.scan_qr && TaskOptions.start_id==RADAR_START_LOWER &&
+     ChassisMotion_ProfileGet()==CHASSIS_PROFILE_LINEAR && from.station==5U && from.visit==1U &&
+     to.x_mm==2100 && to.y_mm==2100 && !to.station && Profile.count==1U &&
+     !Profile.phases[0].turn && fabsf(angle_error(Profile.final_yaw_deg,90))<.01f && index+1U<Route.total){
+    RadarPlan_Point_t next;
+    bool have_next=Route.planned?(next=Planned[index+1U],true):ChassisRouteProfile_FixedPoint(index+2U,&next);
+    CornerCandidate=have_next && next.station==4U && next.visit==2U && next.x_mm==1200 && next.y_mm==2100;
+    CornerNext=index+1U;
+  }
   LegStartTick=HAL_GetTick();
   LegBudget=(uint32_t)fminf(CHASSIS_DISTANCE_MAX_TIMEOUT_MS,
                fmaxf(CHASSIS_DISTANCE_TIMEOUT_MS,2000.0f*Profile.nominal_time_s+10000.0f));
+  if(CornerCandidate)LegBudget=(uint32_t)fminf(CHASSIS_DISTANCE_MAX_TIMEOUT_MS,
+      (float)LegBudget+CHASSIS_DISTANCE_TIMEOUT_MS); /* Both moves, frozen once. */
   PhaseIndex=0;
   Route.segment=index+1U;Route.target_x_mm=to.x_mm;Route.target_y_mm=to.y_mm;
+  /* Processing's plan waypoint is its safe turn point. Station/local work
+   * owns the final observation endpoint after the post-turn approach. */
+  if(TaskRoute && to.station==2U && Profile.count)
+    Route.target_y_mm=Profile.phases[Profile.count-1U].y_mm;
   Route.target_yaw_deg=Profile.final_yaw_deg;Route.station=to.station;Route.visit=to.visit;
   Route.speed_mm_s=RouteSpeed;
   ChassisLocalization_Get(&Position);
+  if(running_handoff){
+    /* Motion already changed its endpoint in-place. Adopt its route phase
+     * without calling MoveTo (which would require rest and clear velocity). */
+    ChassisMotion_StatusGet(&Motion);
+    if(!Profile.count || Profile.phases[0].turn ||
+       fabsf(Motion.target_x_mm-Profile.phases[0].x_mm)>.01f ||
+       fabsf(Motion.target_y_mm-Profile.phases[0].y_mm)>.01f)return false;
+    Pending=false;CurveActive=false;PauseMonitoring=false;FeedbackResumeState=NULL;
+    Route.action_id=Motion.action_id;Route.phase=Profile.phases[0].phase;Route.direction=Profile.phases[0].direction;
+    Route.phase_speed_mm_s=Profile.phases[0].speed_mm_s;
+    Route.phase_target_x_mm=Profile.phases[0].x_mm;Route.phase_target_y_mm=Profile.phases[0].y_mm;
+    Route.phase_target_yaw_deg=Profile.phases[0].yaw_deg;
+    Route.state="running";Route.reason="corner_passed";Route.stop_confirmed=false;
+    return true;
+  }
   return Profile.count?queue_phase(&Profile.phases[0],0):repair_position();
 }
+static bool submit(unsigned index){return submit_leg(index,false);}
 static bool start_at_speed(float speed, bool automatic, bool planned)
 {
   unsigned i;
@@ -295,7 +369,7 @@ bool ChassisRoute_TaskStartEx(const RadarPlan_t *plan,float speed,const ChassisR
   if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved())return false;
   if(!options || !isfinite(options->qr_scan_y_mm) || options->qr_scan_y_mm<1100 || options->qr_scan_y_mm>1300 ||
      !isfinite(options->turn_speed_deg_s) || options->turn_speed_deg_s<5 || options->turn_speed_deg_s>CHASSIS_MOTION_MAX_OMEGA_DEG_S)return false;
-  TaskOptions=*options;PauseState=NULL;ResumeFeedbackStarted=RecoveryHold=false;RequestTask=true;
+  TaskOptions=*options;PauseState=FeedbackResumeState=NULL;ResumeFeedbackStarted=RecoveryHold=false;RequestTask=true;
   bool ok;
   if(!plan && options->start_id==RADAR_START_UPPER){
     PlannedCount=CHASSIS_ROUTE_TARGET_COUNT;
@@ -305,37 +379,107 @@ bool ChassisRoute_TaskStartEx(const RadarPlan_t *plan,float speed,const ChassisR
   }else ok=plan?ChassisRoute_PlanStart(plan,speed,true):station_start(speed);
   RequestTask=false;return ok;
 }
-bool ChassisRoute_TaskPause(void)
+static bool pause_task(const char *resume)
 {
-  if(!TaskRoute || !Stations)return false;
-  if(CurveActive && !Pending)CurveProgress=ChassisMotion_PathProgress();
   ResumeFeedbackStarted=false;
   if(PauseState){ChassisMotion_StatusGet(&Motion);if(Motion.state==CHASSIS_MOTION_ERROR || !strcmp(Route.state,"error"))
     {PauseMonitoring=false;Route.state="pausing";Route.reason="operator_stop";(void)ChassisMotion_Stop(0);}return true;}
-  PauseState=Route.state;Route.state="pausing";Route.reason="operator_stop";
+  if(CornerActive && ChassisMotion_CornerPassed()){
+    unsigned next=CornerNext;CornerActive=false;AcceptedYaw=90;
+    if(!submit_leg(next,true)){stop_route("corner_handoff_failed");return false;}
+    resume="running";
+  }
+  if(CurveActive && !Pending)CurveProgress=fmaxf(CurveProgress,ChassisMotion_PathProgress());
+  PauseState=resume;FeedbackResumeState=NULL;Route.state="pausing";Route.reason="operator_stop";
   PauseMonitoring=false;
   Route.stop_confirmed=false;(void)ChassisMotion_Stop(0);return true;
 }
+bool ChassisRoute_TaskPause(void)
+{
+  if(!TaskRoute || !Stations)return false;
+  if(resumable_state(PauseState))return pause_task(PauseState);
+  if(resumable_state(Route.state))return pause_task(Route.state);
+  /* A normal arrival stop can still be paused. Terminal fault/cancel stops
+   * need their own recovery path rather than becoming a resumable route. */
+  if(!strcmp(Route.state,"stopping") && strcmp(Route.reason,"feedback_invalid") &&
+     strcmp(Route.reason,"route_timeout") && strcmp(Route.reason,"cancelled"))return pause_task("running");
+  return false;
+}
+bool ChassisRoute_TaskPauseFeedbackLoss(void)
+{
+  if(!TaskRoute || !Stations)return false;
+  ChassisMotion_StatusGet(&Motion);
+  if(Motion.state==CHASSIS_MOTION_ERROR && strcmp(Motion.reason,"feedback_invalid"))
+  {Route.reason=Motion.reason;return false;}
+  if(Motion.state==CHASSIS_MOTION_STOPPING && strcmp(Motion.reason,"feedback_invalid") &&
+     strcmp(Motion.reason,"cancelled") && strcmp(Motion.reason,"position_reached"))
+  {Route.reason=Motion.reason;return false;}
+  if(resumable_state(PauseState))return pause_task(PauseState);
+  bool feedback_stop=(!strcmp(Route.state,"stopping") || !strcmp(Route.state,"error")) &&
+                     !strcmp(Route.reason,"feedback_invalid");
+  if(!resumable_state(Route.state) && !feedback_stop)return false;
+  /* Work is owned by the mission's local producer. Its action can differ;
+   * route travel must still identify the interrupted nonzero route action. */
+  if(strcmp(Route.state,"work") && (!Route.action_id || Motion.action_id!=Route.action_id))
+  {Route.reason="action_mismatch";return false;}
+  Mecanum_Status_t bus;Mecanum_StatusGet(&bus);
+  if(bus.locked || bus.error!=MECANUM_ERROR_NONE || bus.stage==MECANUM_STAGE_FAULT)
+  {Route.reason="resume_bus_wait";return false;}
+  ChassisLocalization_Get(&Position);
+  if(!Position.origin_valid || Position.units_per_rev!=StartUnits ||
+     fabsf(Position.origin.x_mm-StartOrigin.x_mm)>.1f || fabsf(Position.origin.y_mm-StartOrigin.y_mm)>.1f ||
+     fabsf(angle_error(Position.origin.yaw_rad*180/CHASSIS_MODEL_PI,StartOrigin.yaw_rad*180/CHASSIS_MODEL_PI))>.1f)
+  {Route.reason="station_reference_changed";return false;}
+  /* The caller has qualified the IMU interruption. Its loss can precede
+   * localization invalidation in this loop, so a cached valid pose is allowed. */
+  bool local_work=!strcmp(Route.state,"work");
+  uint32_t local_action=Motion.action_id;
+  const char *resume=feedback_stop?(resumable_state(FeedbackResumeState)?FeedbackResumeState:"running"):Route.state;
+  bool ok=pause_task(resume);
+  if(ok && local_work)Route.action_id=local_action;
+  return ok;
+}
 bool ChassisRoute_TaskResumeReady(void)
 {
-  if(RecoveryHold || !PauseState || strcmp(Route.state,"paused") || !Route.stop_confirmed || ChassisMotion_IsBusy())return false;
+  if(RecoveryHold || !PauseState || strcmp(Route.state,"paused") || !Route.stop_confirmed || ChassisMotion_IsBusy())
+  {Route.reason="resume_stop_wait";return false;}
   /* Explicit continue restores reads disabled by bus recovery; it never resets
    * the map origin or admits motion against the pre-recovery cached pose. */
   /* Select resets the four-wheel polling index, so do it once per resume.
    * Repeating it while waiting for fresh positions starves wheels 2..4. */
   if(!ResumeFeedbackStarted)
   {
-    if(!Mecanum_Feedback_Select(0))return false;
+    if(!Mecanum_Feedback_Select(0)){Route.reason="resume_feedback_wait";return false;}
     ResumeFeedbackStarted=true;
   }
   Mecanum_Feedback_Enable(true);
   ChassisLocalization_Get(&Position);
   Mecanum_Status_t bus;Mecanum_StatusGet(&bus);
-  if(!Position.origin_valid || !Position.feedback_valid || !Position.speed_valid || HAL_GetTick()-Position.feedback_tick>600 ||
-     bus.locked || bus.stop_pending || bus.error!=MECANUM_ERROR_NONE)return false;
+  if(bus.locked || bus.stop_pending || bus.error!=MECANUM_ERROR_NONE || bus.stage==MECANUM_STAGE_FAULT)
+  {Route.reason="resume_bus_wait";return false;}
+  if(!Position.origin_valid)
+  {Route.reason="resume_origin_invalid";return false;}
   if(Position.units_per_rev!=StartUnits || fabsf(Position.origin.x_mm-StartOrigin.x_mm)>.1f ||
      fabsf(Position.origin.y_mm-StartOrigin.y_mm)>.1f || fabsf(angle_error(Position.origin.yaw_rad*180/CHASSIS_MODEL_PI,StartOrigin.yaw_rad*180/CHASSIS_MODEL_PI))>.1f)
   {Route.reason="station_reference_changed";return false;}
+  if(!Position.feedback_valid || HAL_GetTick()-Position.feedback_tick>600U)
+  {Route.reason="resume_feedback_wait";return false;}
+  if(!Position.speed_valid){Route.reason="resume_speed_wait";return false;}
+  /* A drive can become disabled/protected after the original pause was
+   * proved. Every ready/continue caller must qualify the current four wheels,
+   * not just the aggregate position and the old physical-stop snapshot. */
+  uint32_t now=HAL_GetTick();
+  for(unsigned i=0;i<4;i++){
+    Mecanum_Feedback_t wheel;
+    if(!Mecanum_FeedbackGet(i,&wheel) || !wheel.speed_valid || !wheel.position_valid || !wheel.state_valid ||
+       now-wheel.speed_ms>600U || now-wheel.position_ms>600U || now-wheel.state_ms>600U)
+    {Route.reason="resume_feedback_wait";return false;}
+    if((wheel.state_flags&0x0cU) || !(wheel.state_flags&1U))
+    {Route.reason=(wheel.state_flags&0x0cU)?"resume_wheel_fault":"resume_wheels_disabled";return false;}
+    if(wheel.speed_rpm>1 || wheel.speed_rpm<-1)
+    {Route.reason="feedback_moving";return false;}
+  }
+  Route.reason="resume_ready";
   return true;
 }
 bool ChassisRoute_TaskContinue(void)
@@ -392,8 +536,9 @@ bool ChassisRoute_WorkResume(void)
     resumed_stop=stop.tx_complete && stop.wheels_stopped &&
       (uint32_t)(stop.requested_ms-PauseStopTick)<0x80000000U;
   }
+  float exit_y=Route.station==2U?CHASSIS_PROCESSING_EXIT_Y_MM:Route.target_y_mm;
   if((!resumed_stop && (Motion.state!=CHASSIS_MOTION_DONE || !Motion.stop_confirmed)) ||
-     hypotf(Route.target_x_mm-Position.observer.feedback.x_mm,Route.target_y_mm-Position.observer.feedback.y_mm)>CHASSIS_DISTANCE_TOLERANCE_MM ||
+     hypotf(Route.target_x_mm-Position.observer.feedback.x_mm,exit_y-Position.observer.feedback.y_mm)>CHASSIS_DISTANCE_TOLERANCE_MM ||
      fabsf(angle_error(Route.target_yaw_deg,Position.observer.feedback.yaw_rad*180/CHASSIS_MODEL_PI))>CHASSIS_DISTANCE_HEADING_DEG) return false;
   /* A recovered stationary feedback gap resets the observer baseline, not its
    * origin. The completed local return has fresh stop/arrival evidence. */
@@ -413,7 +558,7 @@ bool ChassisRoute_StationFinish(void)
   if (!Stations || !Route.state || strcmp(Route.state,"station") || Route.station!=4U || Route.visit!=2U) return false;
   ChassisRoute_Process();
   if (strcmp(Route.state,"station")) return false;
-  Route.state="done";Route.reason="station_handoff";Stations=false;
+  Route.state="done";Route.reason="station_handoff";release_ownership();
   return true;
 }
 static bool route_next(void)
@@ -427,8 +572,7 @@ bool ChassisRoute_Cancel(void)
 {
   bool active=ChassisRoute_IsBusy() || ChassisRoute_StationReserved();
   bool ok=true;
-  Stations=false;PauseState=NULL;ResumeFeedbackStarted=RecoveryHold=PauseMonitoring=false;
-  Pending=false;
+  release_ownership();
   if(active || ChassisMotion_IsBusy()) ok=ChassisMotion_Stop(0);
   if(active) { Route.state=ChassisMotion_IsBusy()?"stopping":"cancelled";Route.reason="cancelled";Route.stop_confirmed=false; }
   return ok;
@@ -486,7 +630,7 @@ void ChassisRoute_Process(void)
       stop_route("feedback_invalid");
     else if(strcmp(Route.state,"station") && Automatic)
     {
-      if(Route.segment==Route.total){Route.state="done";Route.reason="route_complete";}
+      if(Route.segment==Route.total){Route.state="done";Route.reason="route_complete";release_ownership();}
       else (void)submit(Route.segment);
     }
     return;
@@ -495,10 +639,18 @@ void ChassisRoute_Process(void)
   {
     (void)submit_phase(&PendingPhase);return;
   }
+  if(CornerActive && ChassisMotion_CornerPassed()){
+    unsigned next=CornerNext;CornerActive=false;AcceptedYaw=90;
+    if(!submit_leg(next,true))stop_route("corner_handoff_failed");
+    return;
+  }
   if(Motion.action_id!=Route.action_id)
   { (void)ChassisMotion_Stop(0);Route.state="error";Route.reason="action_mismatch";return; }
   if(Motion.state==CHASSIS_MOTION_ERROR)
-  { Route.state="error";Route.reason=Motion.reason;Route.stop_confirmed=Motion.stop_confirmed;return; }
+  {
+    if(!strcmp(Motion.reason,"feedback_invalid") && resumable_state(Route.state))FeedbackResumeState=Route.state;
+    Route.state="error";Route.reason=Motion.reason;Route.stop_confirmed=Motion.stop_confirmed;return;
+  }
   if(!remaining()) { stop_route("route_timeout");return; }
   if(CurveActive){
     CurveProgress=ChassisMotion_PathProgress();
@@ -563,6 +715,7 @@ void ChassisRoute_Process(void)
     if (Stations && (TaskRoute?((TaskOptions.scan_qr && Route.station==5U && Route.visit==1U) || Route.station==4U || Route.station==2U || Route.station==3U):
         ((Route.station==5U && Route.visit==1U) || (Route.station==4U && Route.visit==2U))))
     { Route.state="station";Route.reason="station_handoff"; }
+    if(!strcmp(Route.state,"done"))release_ownership();
   }
   else
   {

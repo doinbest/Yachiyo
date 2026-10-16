@@ -293,4 +293,5 @@ int main(void)
   Mecanum_StatusGet(&s);assert(s.tx_complete && !s.locked);
   assert(Mecanum_Test_Stop());advance(60);
   puts("mecanum_bus_test: frozen batch, latest target, synchronized TX, stop and fault lock OK");
+  return 0;
 }

@@ -1,5 +1,5 @@
 /** @file chassis_motion.h
- * @brief 主循环20ms运动任务；距离及转向完成需要反馈到位和实际停车证据。
+ * @brief 主循环运动任务（控制目标1ms）；距离及转向完成核验实际反馈。
  */
 #ifndef CHASSIS_MOTION_H
 #define CHASSIS_MOTION_H
@@ -97,7 +97,11 @@ typedef struct
 } ChassisMotion_HoldStatus_t;
 void ChassisMotion_HoldStatusGet(ChassisMotion_HoldStatus_t *status);
 /** @brief Feedback-position task in map mm/deg; main-loop, qualified fresh IMU,
- * valid origin and four-wheel feedback required. True means accepted only.
+ * valid origin and four-wheel feedback required. A retired producer's fully
+ * committed zero may transfer into map motion (including turn/path) without
+ * FE or clearing the explicit-stop latch. Active grab control, queued motion,
+ * stale/unhealthy wheels and stop/fault work still block the handoff.
+ * True means accepted only.
  */
 bool ChassisMotion_MoveTo(float x_mm, float y_mm, float map_yaw_deg,
                           float max_speed_mm_s, uint32_t timeout_ms);
@@ -112,6 +116,15 @@ void ChassisMotion_TestParametersDefaults(ChassisMotion_TestParameters_t *parame
 /** @brief Per-action independent-test tuning; defaults do not persist to later tasks. */
 bool ChassisMotion_MoveToTuned(float x_mm, float y_mm, float map_yaw_deg, float max_speed_mm_s,
                               const ChassisMotion_TestParameters_t *parameters, uint32_t timeout_ms);
+/** Formal route only: normal position arrivals use two fresh stop groups.
+ * Explicit stop monitoring, cancellation and faults retain their own rules. */
+void ChassisMotion_UseRouteArrival(void);
+/** Arm the standard north-to-west connection before its current endpoint.
+ * The linear task keeps yaw, action and velocity; total timeout is frozen here. */
+bool ChassisMotion_PrepareCorner(float next_x_mm,float next_y_mm,float speed_mm_s,
+                                 float accel_mm_s2,uint32_t total_timeout_ms);
+/** Sticky until the next motion starts, including across an explicit stop. */
+bool ChassisMotion_CornerPassed(void);
 /** @brief Legacy symmetric test override, 10..5000 mm/s^2; next MoveTo uses default.
  * Applies to linear translation; cosine retains its own transition model.
  */
@@ -156,7 +169,8 @@ void ChassisMotion_StopStatusGet(ChassisStop_Status_t *status);
  * @return 成功重建展开角和地图锚点；不修改模块归零或Flash。
  */
 bool ChassisMotion_AnchorSet(float map_yaw_rad);
-/** @brief 归零/重校准/重启通知；角度失效也会自动撤销锚点。 */
+/** @brief 归零/重校准或角度流重启时撤销锚点。
+ * 短暂缺数据只撤销当前航向有效性，保留映射；恢复须重新取得有效反馈。 */
 void ChassisMotion_AnchorInvalidate(void);
 /** Internal half of ChassisHeading_Apply; preserves raw IMU unwrap. */
 bool ChassisMotion_AnchorCorrect(float map_yaw_rad);

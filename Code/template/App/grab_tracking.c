@@ -263,7 +263,8 @@ static void visual_update(GrabTracking_t *t,const GrabTracking_Config_t *c,
   float body_a=feedback?c->body_accel_mm_s2:c->accel_mm_s2;
   float x_a=feedback?c->x_accel_mm_s2:c->accel_mm_s2;
   float delay=fmaxf(c->control_ms,fmaxf(c->batch_ms,in->batch_interval_ms))/1000.f;
-  if(feedback)delay+=in->feedback_age_ms/1000.f;
+  float body_delay=delay+in->feedback_age_ms/1000.f;
+  if(feedback)delay=body_delay;
   if(t->have_update){timing_add(&t->control_timing,in->now_ms-t->last_update_ms);if(!fresh)timing_add(&t->prediction_timing,in->now_ms-t->last_update_ms);}
   if(fresh){t->visual_updates++;if(in->receive_time_valid)timing_add(&t->visual_delay,in->now_ms-in->received_ms);}
   else t->timer_updates++;
@@ -271,10 +272,10 @@ static void visual_update(GrabTracking_t *t,const GrabTracking_Config_t *c,
   t->last_update_ms=in->now_ms;t->have_update=true;
   memset(out,0,sizeof *out);
   out->x_target_mm=in->x_mm;
-  out->body_room_mm=t->reference_valid?fmaxf(0,50-(in->motion_mm[1]-t->reference_left_mm)):0;
+  out->body_room_mm=t->reference_valid?fmaxf(0,50-(in->body_left_mm-t->reference_left_mm)):0;
   out->x_room_mm=fminf(in->x_max_mm-in->x_mm,in->x_mm-in->x_min_mm);
   for(unsigned k=0;k<3;k++){high[k]=k==2?c->x_speed_mm_s:c->body_speed_mm_s;low[k]=-high[k];}
-  high[1]=room_speed(out->body_room_mm,body_a,delay,c->body_speed_mm_s);
+  high[1]=room_speed(out->body_room_mm,body_a,body_delay,c->body_speed_mm_s);
   high[2]=room_speed(in->x_max_mm-in->x_mm,x_a,c->horizon_ms/1000.f,c->x_speed_mm_s);
   low[2]=-room_speed(in->x_mm-in->x_min_mm,x_a,c->horizon_ms/1000.f,c->x_speed_mm_s);
   out->model_valid=model_valid(c,in);
@@ -380,7 +381,7 @@ void GrabTracking_Update(GrabTracking_t *t,const GrabTracking_Config_t *c,
   dt=t->have_update?bounded((in->now_ms-t->last_update_ms)/1000.f,0,.2f):0;
   t->last_update_ms=in->now_ms; t->have_update=true;
   push(t->motion,&t->motions,in->now_ms,in->motion_mm);
-  out->body_room_mm=t->reference_valid?fmaxf(0,50-(in->motion_mm[1]-t->reference_left_mm)):0;
+  out->body_room_mm=t->reference_valid?fmaxf(0,50-(in->body_left_mm-t->reference_left_mm)):0;
   out->x_room_mm=fminf(in->x_max_mm-in->x_mm,in->x_mm-in->x_min_mm);
   out->x_target_mm=in->x_mm;
   out->model_valid=model_valid(c,in);
@@ -459,7 +460,8 @@ void GrabTracking_Update(GrabTracking_t *t,const GrabTracking_Config_t *c,
     demand[axis]=-out->target_px_s[axis]+correct[axis];
   }
   for(k=0;k<3;k++) { low[k]=-(k==2?c->x_speed_mm_s:c->body_speed_mm_s); high[k]=-low[k]; }
-  high[1]=room_speed(out->body_room_mm,c->accel_mm_s2,fmaxf(c->batch_ms,in->batch_interval_ms)/1000.f,c->body_speed_mm_s);
+  high[1]=room_speed(out->body_room_mm,c->accel_mm_s2,
+    (fmaxf(c->control_ms,fmaxf(c->batch_ms,in->batch_interval_ms))+in->feedback_age_ms)/1000.f,c->body_speed_mm_s);
   high[2]=room_speed(in->x_max_mm-in->x_mm,c->accel_mm_s2,c->horizon_ms/1000.f,c->x_speed_mm_s);
   low[2]=-room_speed(in->x_mm-in->x_min_mm,c->accel_mm_s2,c->horizon_ms/1000.f,c->x_speed_mm_s);
   out->model_valid=allocate(in->j,(float[2]){0,0},weight,low,high,c->body_speed_mm_s,out->velocity_mm_s);

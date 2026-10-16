@@ -133,7 +133,7 @@ void ChassisObserver_Feedback(ChassisObserver_t *o, const ChassisModel_Geometry_
   yaw_sample(h,yaw_ms,f->yaw_rad);
   if(o->feedback_baseline && !new_group) return;
   o->feedback_span_ms=oldest-newest;
-  if(o->feedback_span_ms>250U) goto invalid;
+  if(o->feedback_span_ms>(f->max_span_ms?f->max_span_ms:250U)) goto invalid;
   common=f->now_ms-oldest;
   if(f->now_ms-yaw_ms>oldest) common=yaw_ms;
   if(o->aligned_baseline && (int32_t)(common-o->feedback_ms)<=0) return;

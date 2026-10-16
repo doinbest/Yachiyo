@@ -62,7 +62,11 @@ bool HWT101_Cal_VerifyStart(uint32_t duration_ms);
 /** @brief 取消并清除RAM验证资格；必要时异步恢复正常模式，不擦除零偏。 */
 void HWT101_Cal_Cancel(void);
 /** @brief HWT101_Process之后在主循环调用；读取中断最多等待5秒恢复。
- * 恢复须有两个新鲜更新及模式读回；验证窗口重采，不重放原生标定或归零。 */
+ * 恢复须有两个新鲜更新及模式读回；验证窗口重采，不重放原生标定或归零。
+ * 启动首次成功但异常的模式读回也计入复核证据，至少100 ms后只读确认；
+ * 恢复为1/2直接续接原生等待，不重启计时或同轮重复启动确认。
+ * SAVE发送后的模式/零偏读回共用首次读取异常起5秒窗口，只续接读取，
+ * 保留已完成验证，不重发SAVE；确认失败总体FAIL，verified仍描述测量结果。 */
 void HWT101_Cal_Process(void);
 /** @brief 获取缓存状态，失败不写输出；不访问I2C。 */
 bool HWT101_Cal_GetStatus(HWT101_CalStatus_t *status);
@@ -70,11 +74,14 @@ bool HWT101_Cal_GetStatus(HWT101_CalStatus_t *status);
 bool HWT101_Cal_IsBusy(void);
 /** @brief 本次验证通过且数据新鲜时返回模块角度，不进行外部漂移扣除。
  * @return 失败不修改angle；运行中通信异常暂停使用，通过后连续两帧新鲜数据可恢复。
- * @note 恢复不归零、不保存、不重启运动；验证失败、取消或模式未确认仍不可用。 */
+ * @note 不访问I2C；诊断读取中断由Process只读复核正常模式后重取两帧。
+ * 恢复不归零、不保存、不重启运动；验证失败、取消或已确认异常模式仍不可用。 */
 bool HWT101_Cal_ControlAngleGet(HWT101_Angle_t *angle);
 /** @brief 空闲时读取版本/模式/零偏及两段时长供status诊断；不写寄存器。
  * 两段时长为可选诊断，失败时timing_valid=false并使用20秒等待下限。
- * @return HAL_BUSY表示流程运行中；读取失败保留数值并清除有效标志。 */
+ * VERSION/MODE/BIAS读取失败暂挂控制资格；未知模式由Process自动只读复核，
+ * 已读到的异常MODE不会因后续诊断读取失败降级为未知或自动放行。
+ * @return HAL_BUSY表示流程运行中；失败保留未读回值并清除诊断有效标志。 */
 HAL_StatusTypeDef HWT101_Cal_RefreshRegisters(void);
 
 #endif

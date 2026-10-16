@@ -6,7 +6,7 @@ export const TRACK_PRESET=Object.freeze(Object.fromEntries(Object.entries(TRACK_
 const profileNames={predict:'原预测追踪',visual:'纯视觉追踪',feedback:'纯视觉＋反馈减速'};
 const profileDefaults=profile=>profile==='predict'?TRACK_PARAMETER_DEFAULTS:TRACK_COMPARISON_DEFAULTS;
 const labels={body_speed:'底盘合速度 / mm/s',x_speed:'伸缩速度 / mm/s',accel:'联合加速度 / mm/s²',lambda:'残余误差增益 / s⁻¹',x_weight:'伸缩分配权重',lead_mm:'最大领先 / mm',tol_px:'位置窗口 / px',control_ms:'控制间隔（新视觉包即时修正）/ ms',batch_ms:'额外批次限频（0为应答驱动）/ ms',latency_ms:'延迟联调初值 / ms',fit_ms:'拟合窗口 / ms',horizon_ms:'X位置目标前瞻 / ms',grace_ms:'短漏检宽限 / ms',body_accel:'底盘加减速联调值 / mm/s²',x_accel:'X加减速联调值 / mm/s²'};
-const text={track_observe:'仅观察 · 不运动',track_match:'正在匹配速度',track_follow:'稳定跟随',track_pause:'保持姿态',idle:'空闲',stopping:'停车中',error:'故障停止',settle:'确认停稳',descend:'下降并持续对准',close:'闭爪',lift:'提起物料',complete:'动作完成',track_pick_stopping:'Z已到夹取高度 · 精确对准后停车确认',track_pick_descend:'进入±50 px · 下降并继续追踪',track_pick_descend_wait:'偏差移出±50 px · 暂停Z，继续追踪',track_pick_close:'Z已到夹取高度且对准 · 停稳后闭爪',track_pick_reacquire:'停车时目标移动 · 继续追踪',track_pick_complete:'已夹取并提起 · 等待下一步',track_observing:'正在观察和估计',track_matching:'位置与速度匹配',track_following:'像素到点后仍持续跟随',track_visual_wait:'视觉暂停 · 新观测恢复后继续',track_window_end:'行程暂不足 · 保持观察，目标返回可追范围后继续',track_window_recovered:'目标已返回可追范围 · 自动续追',track_recovered:'视觉已恢复',cancelled:'人工停止',stop_unconfirmed:'停车尚未取得反馈确认'};
+const text={track_observe:'仅观察 · 不运动',track_match:'正在匹配速度',track_follow:'稳定跟随',track_pause:'保持姿态',idle:'空闲',stopping:'停车中',error:'故障停止',settle:'确认停稳',descend:'下降并持续对准',close:'闭爪',lift:'提起物料',complete:'动作完成',track_pick_stopping:'旧流程：夹取高度对准后停车确认',track_pick_descend:'高位进入夹取窗口 · 连续下降并追踪',track_pick_descend_wait:'旧流程：偏差超窗 · 暂停Z并继续追踪',track_pick_close:'Z已到夹取高度 · 闭爪并请求底盘/X停止',track_pick_reacquire:'停车时目标移动 · 继续追踪',track_pick_complete:'已夹取并提起 · 等待下一步',track_observing:'正在观察和估计',track_matching:'位置与速度匹配',track_following:'像素到点后仍持续跟随',track_visual_wait:'视觉暂停 · 新观测恢复后继续',track_window_end:'行程暂不足 · 保持观察，目标返回可追范围后继续',track_window_recovered:'目标已返回可追范围 · 自动续追',track_recovered:'视觉已恢复',cancelled:'人工停止',stop_unconfirmed:'停车尚未取得反馈确认'};
 export const trackText=value=>text[value]??deviceText(value);
 export function trackCrc(line){
   let crc=0xffffffff;
@@ -106,8 +106,8 @@ export function mountTracking({root,send,canSend=()=>false}){
   let transferBusy=false,transferReply='';
   const el=(tag,value,cls)=>{const e=document.createElement(tag);if(value!==undefined)e.textContent=value;if(cls)e.className=cls;return e;};
   const card=el('section',undefined,'tracking-card');card.id='grab-material-tracking';
-  const header=el('div',undefined,'tracking-header');header.append(el('h3','原料追踪夹取与入仓'),el('span','观察与参考自动衔接','tracking-badge'));card.append(header);
-  card.append(el('p','先准备抓取姿态，Base转完后自动打开夹爪2450 µs。选择颜色与仓位；双轴±50 px开始下降，下降时继续追踪。Z到位且双轴进入夹取窗口（默认±100 px）保持至少10 ms后停车，核验坐标再闭爪。追踪夹取并入仓由STM32连续执行提起、收X、车仓分度、Base回仓、下降松爪和返回观察。','form-note'));
+  const header=el('div',undefined,'tracking-header');header.append(el('h3','物料夹取与入仓'),el('span','地面 / 物料台转盘','tracking-badge'));card.append(header);
+  card.append(el('p','选择物料颜色和目标仓位。地面夹取沿用比赛加工取回：高位静态对准后下降夹取；转盘夹取沿用原料追踪：高位DX/DY进入窗口后连续下降，Z到位即闭爪。随后由STM32完成提起、收X、分度、回仓与下降放料。','form-note'));
   const color=el('select');color.setAttribute('aria-label','追踪颜色');
   for(const [value,label]of [[1,'红'],[2,'黄'],[3,'蓝'],[4,'绿'],[5,'黑'],[6,'浅蓝']]){const o=el('option',label);o.value=value;color.append(o);}color.value=3;
   const actions=el('div',undefined,'actions');actions.append(color);
@@ -134,8 +134,9 @@ export function mountTracking({root,send,canSend=()=>false}){
   const pickup=el('div',undefined,'tracking-parameters');
   function numberField(label,value,step,min,max,parent=pickup){const wrap=el('label',label),input=el('input');input.type='number';input.step=step;input.min=min;input.max=max;input.value=value;wrap.append(input);parent.append(wrap);return input;}
   const budget=numberField('首次建立参考：剩余接近余量 / mm',50,1,0,50,trackingFields);
-  const pickupZ=numberField('物料夹取 Z 绝对高度 / mm',GRAB_FORM_DEFAULTS.z_grab,1,-150,0);
-  const pickupSpeed=numberField('物料夹取下降速度 / mm/s',GRAB_FORM_DEFAULTS.z_pick_speed,1,GRAB_PARAMETER_METADATA.z_pick_speed.min,GRAB_PARAMETER_METADATA.z_pick_speed.max);
+  const groundZ=numberField('地面放取 Z 绝对高度 / mm',GRAB_FORM_DEFAULTS.z_proc_place,1,-150,0);groundZ.dataset.pickupSource='ground';
+  const pickupZ=numberField('转盘夹取 Z 绝对高度 / mm',GRAB_FORM_DEFAULTS.z_grab,1,-150,0);pickupZ.dataset.pickupSource='turntable';
+  const pickupSpeed=numberField('Z统一速度 / mm/s（下降、抬升、放置、扫码）',GRAB_FORM_DEFAULTS.z_speed,1,GRAB_PARAMETER_METADATA.z_speed.min,GRAB_PARAMETER_METADATA.z_speed.max);
   pickupSpeed.exclusiveMin=GRAB_PARAMETER_METADATA.z_pick_speed.exclusiveMin;
   const pickupConditions=new Map();
   for(const [key,label]of [['track_pick_tol_px','夹取误差窗口 / ±px'],['track_pick_hold_ms','高位窗口保持时间 / ms（0为立即下降）']]){
@@ -144,14 +145,15 @@ export function mountTracking({root,send,canSend=()=>false}){
   }
   const pickupReadback=el('p','夹取条件：尚未读取设备；输入为草稿。','form-note');
   const pickupValues=new Map();
-  const lift=numberField('入仓前：夹取后上升距离 / mm',GRAB_FORM_DEFAULTS.z_lift-GRAB_FORM_DEFAULTS.z_grab,1,0.1,150);lift.dataset.transferKey='lift';
+  const lift=numberField('转盘夹取后上升距离 / mm',GRAB_FORM_DEFAULTS.z_lift-GRAB_FORM_DEFAULTS.z_grab,1,0.1,150);lift.dataset.transferKey='lift';
   const drop=numberField('入仓时：从转移高度下降距离 / mm',GRAB_FORM_DEFAULTS.track_store_drop_mm,1,0.1,150);drop.dataset.transferKey='drop';
   const slotLabel=el('label','目标车仓'),storeSlot=el('select');storeSlot.dataset.storeSlot='1';
   for(const [value,label]of [['0','自动：最低编号空仓'],['1','1号料盘'],['2','2号料盘'],['3','3号料盘']]){const option=el('option',label);option.value=value;storeSlot.append(option);}storeSlot.value='1';slotLabel.append(storeSlot);pickup.append(slotLabel);
-  const profileLabel=el('label','夹取追踪方式'),storeProfile=el('select');storeProfile.setAttribute('aria-label','入仓夹取追踪方式');
+  const profileLabel=el('label','转盘夹取追踪方式'),storeProfile=el('select');storeProfile.setAttribute('aria-label','入仓夹取追踪方式');
   for(const [value,label]of Object.entries(profileNames)){const option=el('option',label);option.value=value;storeProfile.append(option);}storeProfile.value='feedback';profileLabel.append(storeProfile);pickup.append(profileLabel);
-  function showPickupReadback(){pickupReadback.textContent=`夹取条件最近读回：窗口 ±${pickupValues.get('track_pick_tol_px')??'未读取'} px，保持 ${pickupValues.get('track_pick_hold_ms')??'未读取'} ms。`;}
+  function showPickupReadback(){pickupReadback.textContent=`设备最近读回：Z抬升/放置 ${pickupValues.get('z_speed')??'未读取'}、夹取 ${pickupValues.get('z_pick_speed')??'未读取'}、扫码 ${pickupValues.get('qr_z_speed')??'未读取'} mm/s；窗口 ±${pickupValues.get('track_pick_tol_px')??'未读取'} px，保持 ${pickupValues.get('track_pick_hold_ms')??'未读取'} ms。`;}
   const number=(input,label)=>{const value=Number(input.value);if(input.value===''||!Number.isFinite(value)||value<Number(input.min)||(input.exclusiveMin&&value===Number(input.min))||value>Number(input.max))throw new Error(`${label}输入无效`);return value;};
+  const zSpeedValues=()=>{const speed=number(pickupSpeed,'Z统一速度');return ['z_speed','z_pick_speed','qr_z_speed'].map(key=>[key,speed]);};
   button(actions,'准备抓取姿态','grab pose work',async()=>{if(await send('grab pose work')){poseReply='抓取姿态已请求 · 等待设备确认到位';poseBusy=true;}});
   button(actions,'读取抓取任务状态','grab status',()=>send('grab status'));
   button(trackingActions,'预测追踪','grab track begin',()=>send(`grab track begin ${color.value} ${number(budget,'接近余量')}`));
@@ -163,23 +165,24 @@ export function mountTracking({root,send,canSend=()=>false}){
     if(revision!==pickupRevision||!connected||!canSend(wire))throw new Error('操作状态已变化，未启动夹取；请重新操作。');
     await send(wire);
   });
-  const startStore=button(actions,'追踪夹取并入仓','grab track pickstore',async()=>{
+  const startStore=button(actions,'转盘夹取并入仓','grab track pickstore',async()=>{
     const revision=pickupRevision,wire=`grab track pickstore ${color.value} ${storeSlot.value} ${storeProfile.value}`;
     await applyTransfer(true);
     if(revision!==pickupRevision||!connected||!canSend(wire))throw new Error('操作状态已变化，未启动入仓；请重新操作。');
     await send(wire);
   });
   startStore.className='primary';
-  button(actions,'将已夹取物料入仓 / 继续入仓','grab track store',async()=>{
-    const revision=pickupRevision,wire=`grab track store ${storeSlot.value}`;
-    await applyTransfer(false);
+  const groundStore=button(actions,'地面夹取并入仓','grab store ground',async()=>{
+    const revision=pickupRevision,wire=`grab store ground ${storeSlot.value} ${color.value}`;
+    await applyGroundTransfer();
     if(revision!==pickupRevision||!connected||!canSend(wire))throw new Error('操作状态已变化，未启动入仓；请重新操作。');
     await send(wire);
   });
-  button(actions,'读取夹取条件','grab get track_pick_tol_px',readPickup);
-  button(actions,'应用夹取条件并核对','grab set track_pick_tol_px 100',applyPickup);
+  groundStore.className='primary';
+  button(trackingActions,'读取Z速度与夹取条件','grab get track_pick_tol_px',readPickup);
+  button(trackingActions,'应用Z速度与夹取条件','grab set track_pick_tol_px 100',applyPickup);
   const stop=button(actions,'停止追踪 / 入仓','grab track stop',()=>{cancelTrace();cancel('参数操作已取消');return send(poseBusy||transferBusy?'grab stop':'grab track stop');});stop.className='danger';
-  const trackStatus=button(actions,'读取追踪状态','grab track status',()=>send(poseBusy||transferBusy?'grab status':'grab track status'));
+  const trackStatus=button(trackingActions,'读取追踪状态','grab track status',()=>send(poseBusy||transferBusy?'grab status':'grab track status'));
   const logActions=el('div',undefined,'actions'),logStatus=el('p','实时记录默认关闭；启用后由本地服务持续写入磁盘，不会启动机构。','form-note');
   const logPeriod=el('select');logPeriod.setAttribute('aria-label','实时记录间隔');
   for(const ms of [200,100,50,500,1000]){const option=el('option',`速度诊断 ${ms} ms / ${1000/ms} Hz`);option.value=ms;logPeriod.append(option);}logPeriod.value=200;
@@ -195,7 +198,7 @@ export function mountTracking({root,send,canSend=()=>false}){
   });
   button(logActions,'关闭实时记录','grab track log stop',async()=>{try{await send('grab track log stop');}finally{await send('camera log stop');}});
   button(logActions,'读取记录状态','grab track log status',async()=>{await send('camera log status');await send('grab track log status');});
-  button(actions,'导出本段','grab track trace',async()=>{
+  button(logActions,'导出本段','grab track trace',async()=>{
     cancelTrace();exportRequested=true;busy=true;model.count=null;model.records=[];model.complete=false;model.ended=false;
     if(!await send('grab track trace'))cancelTrace();
     else{message.textContent='正在读取冻结记录；只补读缺失或校验失败的记录。';traceTimer=setTimeout(()=>{model.ended=true;finishTrace();},40000);}
@@ -232,7 +235,8 @@ export function mountTracking({root,send,canSend=()=>false}){
     if(busy)throw new Error('已有参数请求，请等待');
     busy=true;render();try{
       for(const [key,input]of pickupConditions){const result=await pickupExchange.readGrab(key);pickupValues.set(key,result.value);input.value=result.value;}
-      showPickupReadback();message.textContent='夹取条件已读回；未发送运动命令。';
+      for(const key of ['z_speed','z_pick_speed','qr_z_speed']){const result=await pickupExchange.readGrab(key);pickupValues.set(key,result.value);}
+      showPickupReadback();message.textContent='Z速度与夹取条件已读回；输入速度仍是草稿，未发送运动命令。';
     }finally{busy=false;render();}
   }
   async function applyPickup(){
@@ -241,10 +245,10 @@ export function mountTracking({root,send,canSend=()=>false}){
       const value=number(input,key==='track_pick_tol_px'?'夹取误差窗口':'夹取保持时间');
       if(key==='track_pick_hold_ms'&&!Number.isInteger(value))throw new Error('夹取保持时间必须为整数毫秒');
       return[key,value];
-    });
+    }).concat(zSpeedValues());
     busy=true;render();try{
       for(const [key,value]of values){const result=await pickupExchange.setGrab(key,value);if(!result.confirmed)throw new Error('夹取条件读回不一致，未启动夹取');pickupValues.set(key,result.value);}
-      showPickupReadback();message.textContent='夹取条件已写入并读回确认。';
+       showPickupReadback();message.textContent='Z统一速度与夹取条件已写入并读回确认。';
     }finally{busy=false;render();}
   }
   async function applyTransfer(withPickup){
@@ -252,12 +256,28 @@ export function mountTracking({root,send,canSend=()=>false}){
     const revision=pickupRevision,z=number(pickupZ,'夹取高度'),rise=number(lift,'上升距离'),fall=number(drop,'入仓下降距离'),target=z+rise;
     if(target>0||target<-150||target-fall<-150)throw new Error('上升或入仓下降目标超出Z行程−150～0 mm');
     if(!['0','1','2','3'].includes(String(storeSlot.value))||!Object.hasOwn(profileNames,storeProfile.value))throw new Error('请选择仓位与追踪方式');
-    const values=withPickup?[['z_grab',z],['z_pick_speed',number(pickupSpeed,'下降速度')],['z_lift',target],['track_store_drop_mm',fall]]:[['z_lift',target],['track_store_drop_mm',fall]];
+    const values=withPickup?[['z_grab',z],['z_lift',target],['track_store_drop_mm',fall]]:[['z_lift',target],['track_store_drop_mm',fall]];
     if(withPickup)await applyPickup();
     if(revision!==pickupRevision||!connected)throw new Error('参数操作已取消，未启动入仓');
     busy=true;render();try{
       for(const [key,value]of values){const result=await pickupExchange.setGrab(key,value);if(!result.confirmed)throw new Error('入仓参数读回不一致，未启动任务');}
       message.textContent=`入仓参数已确认：提起到${target} mm，放料到${target-fall} mm。`;
+    }finally{busy=false;render();}
+  }
+  async function applyGroundTransfer(){
+    if(busy)throw new Error('已有参数请求，请等待');
+    const revision=pickupRevision,z=number(groundZ,'地面夹取高度'),fall=number(drop,'入仓下降距离');
+    const target=GRAB_FORM_DEFAULTS.z_car_lift;
+    if(z>=target||target-fall<-150||!['0','1','2','3'].includes(String(storeSlot.value)))throw new Error('地面夹取或入仓高度、仓位无效');
+    const values=[['z_proc_place',z],...zSpeedValues(),['z_car_lift',target],['z_place',target-fall]];
+    busy=true;render();try{
+      for(const [key,value]of values){
+        if(revision!==pickupRevision||!connected)throw new Error('参数操作已取消，未启动入仓');
+        const result=await pickupExchange.setGrab(key,value);if(!result.confirmed)throw new Error('地面入仓参数读回不一致，未启动任务');
+        if(['z_speed','z_pick_speed','qr_z_speed'].includes(key))pickupValues.set(key,result.value);
+      }
+      showPickupReadback();
+      message.textContent=`地面参数已确认：夹取${z} mm，抬升到${target} mm，入仓放料${target-fall} mm。`;
     }finally{busy=false;render();}
   }
   const profileKeys=profile=>Object.keys(TRACK_PARAMETER_DEFAULTS).filter(key=>!(['body_accel','x_accel'].includes(key)&&profile!=='feedback') && !(profile!=='predict'&&['latency_ms','fit_ms'].includes(key)));
@@ -274,7 +294,7 @@ export function mountTracking({root,send,canSend=()=>false}){
   button(parameterActions,'应用并核对','grab track set body_speed 160',apply);
   button(parameterActions,'填入追踪预设','local',()=>{for(const [key,value]of Object.entries(profileDefaults(parameterProfile.value)))inputs.get(key).value=value;message.textContent='预设只填入草稿，尚未写入设备。';});
   parameterProfile.onchange=()=>{cancel('参数模式已切换');for(const [key,input]of inputs)input.value=profileDefaults(parameterProfile.value)[key];message.textContent=`正在编辑${profileNames[parameterProfile.value]}参数；请显式读取设备值。`;render();};
-  card.append(actions,statusGuide,pickup,pickupReadback,el('p','夹取默认±100 px、保持至少10 ms、Z绝对高度−50 mm，速度保持原值；实际保持按新视觉帧确认。入仓上升距离从夹取高度算起，放料下降距离从转移高度算起。车仓先分度到位，Base再回到已验证的车仓参考角，不重发HOME。需要有效车仓参考；指定1/2/3号料盘即按该盘可用执行，无需另行确认空仓，完成入仓后自动记库存。自动选仓仍按库存选择空仓。只夹取按钮仍保持物料等待；停止不自动续跑；仍持料或放料未完成时选原仓继续入仓，已放料并记账后可直接换颜色和仓位，新任务自动补齐抓取姿态。','form-note'),status,readout,message);
+  card.append(actions,statusGuide,pickup,pickupReadback,el('p','地面默认Z−120 mm，静态对准后夹取并抬至Z0；转盘默认Z−50 mm，追踪夹取后按所填距离抬升。入仓默认从转移高度下降20 mm。夹取下降速度默认250 mm/s，使用比赛同一Z驱动加速度配置（默认档位255）。转盘下降窗口默认±100 px、高位保持0 ms；地面采用静态对准稳定条件。两种入口均先写入并核对所需参数，停止和断线不自动续发；自动选仓按库存，指定仓沿用原规则。','form-note'),status,readout,message);
   const records=el('details',undefined,'advanced material-records');records.append(el('summary','追踪记录与诊断'),logActions,logStatus,diagnostics);mountLogArchive({root:records});
   card.append(trackingOnly,parameters,records);root.append(card);
   function render(){
@@ -285,7 +305,7 @@ export function mountTracking({root,send,canSend=()=>false}){
     status.textContent=poseReply||transferReply||(s.state?`${old}${profileNames[mode]??mode} · ${phase} · ${reason}${s.base_home_degraded===1?' · Base 使用降级参考':''}`:'尚无设备追踪状态');
     readout.replaceChildren();
     for(const [label,display]of [['目标像素 / 误差',s.valid===1?`${value('cx')}, ${value('cy')} / ${value('dx')}, ${value('dy')} px`:'未取得新鲜坐标'],['命令前向 / 左向 / X速度',`${value('vf')} / ${value('vl')} / ${value('vx')} mm/s`],['X位置 / 最近端剩余',`${value('x')} / ${value('xr')} mm`],['底盘剩余接近预算',s.ref===1?`${value('room')} mm`:'未建立参考'],['料台参考',s.ref===1?'已建立 · 停止不重置预算':'未建立'],['停车反馈',s.stop_confirmed===1?'实际反馈已确认':s.stop_requested===1?'已请求 · 等待发送及反馈':'未请求']])readout.append(el('dt',label),el('dd',display));
-    const d=model.diag;diagnosticText.textContent=`目标运动 ${d.du??'—'}, ${d.dv??'—'} px/s\n前馈 ${d.ff??'—'} mm/s · 修正 ${d.correction??'—'} mm/s\n延迟联调值 ${d.latency??'—'} ms（不是实测拍摄延迟）\n实际批次 ${d.batch??'—'} ms · X反馈年龄 ${d.feedback_age??'—'} ms\n局部位移 ${d.forward??'—'}, ${d.left??'—'} mm\nRMS ${model.stats.rms_u??'—'}, ${model.stats.rms_v??'—'} px · 95% ${model.stats.p95_u??'—'}, ${model.stats.p95_v??'—'} px`;
+    const d=model.diag;diagnosticText.textContent=`目标运动 ${d.du??'—'}, ${d.dv??'—'} px/s\n前馈 ${d.ff??'—'} mm/s · 修正 ${d.correction??'—'} mm/s\n延迟联调值 ${d.latency??'—'} ms（不是实测拍摄延迟）\n实际批次 ${d.batch??'—'} ms · 实测反馈最大年龄 ${d.feedback_age??'—'} ms\n控制用局部坐标 ${d.forward??'—'}, ${d.left??'—'} mm\nRMS ${model.stats.rms_u??'—'}, ${model.stats.rms_v??'—'} px · 95% ${model.stats.p95_u??'—'}, ${model.stats.p95_v??'—'} px`;
     logStatus.textContent=`逐帧像素：${model.pixels.enabled?'已订阅':'关闭或尚未读回'} · 本页收到 ${model.pixels.received} 帧 · 缺号 ${model.pixels.gaps} 帧；速度诊断收到 ${model.log.received} 条。像素随每个B2帧记录，间隔选项只控制速度诊断。本页计数受刷新影响；整段数据和完整性以“整段记录与完整 TXT 导出”为准。“导出本段”仍是最近128条。`;
     if(model.live?.io){const r=model.live,io=r.io;diagnosticText.textContent+=`\n实时请求 ${r.cmd} mm/s · 反馈推算 ${r.actual} mm/s\n已发送轮RPM ${io.slice(0,4).join(',')} · 位置年龄 ${io.slice(8,12).join(',')} ms\nX已发送 ${io[12]} 脉冲 / ${io[13]} RPM · TX年龄 ${io[14]} ms\n总线阶段 ${io[17]} / 错误 ${io[18]} / 锁定 ${io[19]}（发送不等于运动）`;}
     const profile=parameterProfile.value;

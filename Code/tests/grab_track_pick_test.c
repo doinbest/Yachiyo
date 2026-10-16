@@ -102,9 +102,36 @@ static void descent_bus_feedback_fairness(void)
   }
 }
 
+static void next_raw_pick_after_zero_velocity(void)
+{
+  /* Real Mecanum retains its explicit-stop busy latch after a committed zero
+   * batch. A completed raw store must still hand over to the next color. */
+  for(unsigned blocked=0;blocked<5;blocked++)
+  {
+    reset();configure(true);RearReferenceValid=true;
+    Status.state=GRAB_COMPLETE;Status.mode="fixed";Status.result="stored";
+    Operation=OP_STORE;Scene=SCENE_RAW;Status.slot=1;
+    ActiveColor=CAMERA_COLOR_RED;OutsidePose=OutsideReferenceValid=true;
+    chassis_bus_busy=true;chassis_velocity_handoff_ready=blocked!=1;
+    bus.tx_complete=bus.sent_velocity_valid=true;
+    if(blocked==2)bus.sent_rpm[0]=1;
+    if(blocked==3)bus.stop_pending=true;
+    if(blocked==4)Status.result="returned";
+    bool accepted=GrabTask_TrackedStoreStart(CAMERA_COLOR_YELLOW,2,GRAB_TRACK_FEEDBACK);
+    assert(accepted==(blocked==0));
+    if(!accepted){assert(!strcmp(Status.reason,"bus_unavailable"));continue;}
+    assert(Status.state==GRAB_TRACK_OBSERVE && ActiveColor==CAMERA_COLOR_YELLOW && Status.slot==2);
+    assert(!stops && !positions); /* No FE chain, added pose move or waiting stage. */
+    unsigned before=velocity_requests;
+    for(unsigned i=0;i<80 && velocity_requests==before;i++)step(true,0,120,20);
+    assert(velocity_requests>before && Status.state==GRAB_TRACK_MATCH);
+    assert(!closures); /* Outside the high-plane pickup window. */
+  }
+}
 int main(void)
 {
  high_window_continuous_descent();hold_only_at_high_plane();
  interrupted_descent_remains_cancellable();descent_bus_feedback_fairness();
+ next_raw_pick_after_zero_velocity();
  puts("grab_track_pick_test: high-window continuous descent, completion-driven closure, cancel/fault coverage");
 }

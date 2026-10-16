@@ -14,6 +14,9 @@ static MotorBus_Owner_t active_owner;
 static MotorBus_Owner_t reserved_owner = MOTOR_BUS_OWNER_COUNT;
 static bool running, waiting_reply, cancelled, quarantined;
 static bool active_tx_completed;
+static bool status_retry_pending;
+static uint8_t status_read_retries;
+static uint32_t status_first_tx_ms;
 /* Startup FE may precede the first request while shared TTL nodes power up.
  * Never reopen this exception after a TX attempt, including explicit recovery. */
 static bool tx_attempted;
@@ -22,7 +25,10 @@ static uint32_t rx_warning_count, rx_warning_ms, rx_warning_error;
 static uint32_t started_ms;
 static volatile bool tx_done, io_error;
 static volatile bool io_overflow;
-static volatile uint32_t io_uart_error, io_tick_ms;
+static volatile uint32_t io_uart_error, io_tick_ms, io_request_serial;
+static volatile uint16_t io_rx_end, io_rx_pending;
+static uint32_t rx_preserved_replies;
+static uint16_t rx_error_pending;
 static MotorBus_Diagnostic_t first_fault;
 static volatile uint32_t tx_done_ms;
 static volatile bool wire_tx_completed;
@@ -42,18 +48,72 @@ static unsigned next_owner;
 static bool chassis_yield;
 static uint32_t chassis_yield_mask;
 static MotorBus_Timing_t timing;
-static uint8_t position_reply_mode[8], position_config_id, position_config_phase;
+static uint8_t position_reply_mode[8], position_reply_requested[8], position_reply_failed[8];
+static uint8_t position_config_id, position_config_phase, position_config_mode;
 static bool position_config_pending;
+static bool position_config_stop_hold;
 static uint8_t position_config[33];
 static struct { bool active, reached; uint32_t tx_ms; } position_motion[8];
 static void PositionConfigProcess(void);
+static bool PositionConfigAllowed(void);
+/* Copies are CPU-only. The real DMA destination stays in ordinary SRAM. */
+#if defined(__CC_ARM) || defined(__ARMCC_VERSION)
+static MotorBus_RxErrorSnapshot_t RxErrorLatest __attribute__((section("CCM_BUS_DIAG"), zero_init));
+static MotorBus_RxErrorSnapshot_t RxErrorFirst __attribute__((section("CCM_BUS_DIAG"), zero_init));
+#else
+static MotorBus_RxErrorSnapshot_t RxErrorLatest,RxErrorFirst;
+#endif
+static bool rx_error_irq_pending;
+static void RxErrorCapture(UART_HandleTypeDef *uart,uint32_t sr,uint8_t phase)
+{
+  uint32_t sequence=RxErrorLatest.sequence+1U;if(!sequence)sequence=1U;
+  memset(&RxErrorLatest,0,sizeof RxErrorLatest);
+  RxErrorLatest.sequence=sequence;RxErrorLatest.tick_ms=HAL_GetTick();
+  RxErrorLatest.uart_sr=sr;RxErrorLatest.phase=phase;
+  RxErrorLatest.request_seq=timing.transactions;RxErrorLatest.rx_total=rx_total;
+  RxErrorLatest.queued=(uint16_t)((rx_write-rx_read)&255U);RxErrorLatest.partial=parse_length;
+  RxErrorLatest.dma_cursor=dma_rx_position;
+  RxErrorLatest.dma_remaining=uart->hdmarx?(uint16_t)__HAL_DMA_GET_COUNTER(uart->hdmarx):0xffffU;
+  const volatile uint8_t *dma=dma_rx;
+  for(unsigned i=0;i<sizeof dma_rx;i++)RxErrorLatest.dma[i]=dma[i];
+  RxErrorLatest.dma_remaining_end=uart->hdmarx?(uint16_t)__HAL_DMA_GET_COUNTER(uart->hdmarx):0xffffU;
+  RxErrorLatest.owner=(uint8_t)(running?active_owner:MOTOR_BUS_OWNER_COUNT);
+  RxErrorLatest.active=running;RxErrorLatest.waiting=waiting_reply;
+  if(running) {
+    RxErrorLatest.token=active.token;RxErrorLatest.tx_length=active.length;
+    memcpy(RxErrorLatest.tx,active.data,active.length);
+    RxErrorLatest.tx_complete=active_tx_completed || tx_done;
+    if(RxErrorLatest.tx_complete)RxErrorLatest.tx_ms=tx_done_ms;
+  }
+}
+void MotorBus_UartErrorIRQ(UART_HandleTypeDef *uart,uint32_t status_register)
+{
+  if(!uart || uart!=bus_uart || io_error || rx_error_irq_pending)return;
+  RxErrorCapture(uart,status_register,1);rx_error_irq_pending=true;
+}
+bool MotorBus_RxErrorGet(MotorBus_RxErrorSnapshot_t *out,bool first_fault)
+{
+  if(!out)return false;
+  uint32_t mask=__get_PRIMASK();__disable_irq();
+  const MotorBus_RxErrorSnapshot_t *source=first_fault?&RxErrorFirst:&RxErrorLatest;
+  bool valid=source->sequence!=0;if(valid)*out=*source;
+  __set_PRIMASK(mask);return valid;
+}
 
 int MotorBus_PositionReplyEnsure(uint8_t address)
 {
-  if(address<5 || address>8)return -1;
-  if(position_reply_mode[address-1]==2)return 1;
-  if(position_reply_mode[address-1]==3)return -1;
-  position_reply_mode[address-1]=1;
+  return MotorBus_PositionReplyEnsureMode(address,3);
+}
+int MotorBus_PositionReplyEnsureMode(uint8_t address,uint8_t mode)
+{
+  if(address<5 || address>8 || (mode!=1 && mode!=3))return -1;
+  unsigned id=address-1U;
+  position_reply_requested[id]=mode;
+  /* A mode being read/written is not verified, even when an older cached
+   * mode matches a new request. Finish this snapshot before switching again. */
+  if(position_config_id==address)return 0;
+  if(position_reply_mode[id]==mode)return 1;
+  if(position_reply_failed[id]==mode)return -1;
   return 0;
 }
 bool MotorBus_PositionReached(uint8_t address,uint32_t accepted_ms)
@@ -70,21 +130,40 @@ static void PositionConfigProcess(void)
     bool valid=event.result==MOTOR_BUS_REPLY &&
       (position_config_phase==1 ? event.length==4 && event.data[2]==2 :
        event.length==33 && event.data[2]==33 && event.data[3]==21);
-    if(!valid) { position_reply_mode[position_config_id-1]=event.result==MOTOR_BUS_CANCELLED?0:3;position_config_id=0;return; }
+    unsigned id=position_config_id-1U;
+    if(!valid) {
+      position_reply_mode[id]=0;
+      /* A write was already ACKed: keep its exact expected snapshot. The old
+       * cancelled read drains separately; a NEW read must still verify all
+       * preserved fields after stop ownership ends, never replay the write. */
+      if(event.result==MOTOR_BUS_CANCELLED && position_config_phase==2)return;
+      if(event.result==MOTOR_BUS_CANCELLED) {
+        if(position_reply_requested[id]==position_config_mode)position_reply_requested[id]=0;
+      } else position_reply_failed[id]=position_config_mode;
+      position_config_id=0;return;
+    }
     if(position_config_phase==0) {
       memcpy(position_config,event.data,33);
-      if(position_config[22]==3) {position_reply_mode[position_config_id-1]=2;position_config_id=0;return;}
+      if(position_config[22]==position_config_mode) {
+        position_reply_mode[id]=position_config_mode;position_reply_failed[id]=0;
+        position_config_id=0;return;
+      }
       position_config[1]=0x48;position_config[2]=0xd1;position_config[3]=0;
-      position_config[22]=3;position_config_phase=1;
+      position_config[22]=position_config_mode;position_config_phase=1;
     } else if(position_config_phase==1)position_config_phase=2;
     else {
-      position_reply_mode[position_config_id-1]=memcmp(position_config+4,event.data+4,28)?3:2;
+      bool mismatch=memcmp(position_config+4,event.data+4,28)!=0;
+      position_reply_mode[id]=mismatch?0:position_config_mode;
+      position_reply_failed[id]=mismatch?position_config_mode:0;
       position_config_id=0;return;
     }
   }
-  if(position_config_pending || quarantined || MotorBus_ProbeActive())return;
-  if(!position_config_id)for(unsigned i=4;i<8;i++)if(position_reply_mode[i]==1) {
-    position_config_id=(uint8_t)(i+1);position_config_phase=0;break;
+  if(position_config_pending || quarantined || MotorBus_ProbeActive() || !PositionConfigAllowed())return;
+  if(!position_config_id)for(unsigned i=4;i<8;i++)if(position_reply_requested[i] &&
+    position_reply_requested[i]!=position_reply_mode[i] &&
+    position_reply_requested[i]!=position_reply_failed[i]) {
+    position_config_id=(uint8_t)(i+1);position_config_phase=0;
+    position_config_mode=position_reply_requested[i];position_reply_mode[i]=0;break;
   }
   if(!position_config_id)return;
   const uint8_t read[]={position_config_id,0x42,0x6c,0x6b};
@@ -135,6 +214,7 @@ static uint8_t recovery_step, recovery_round, recovery_kind;
 static uint32_t recovery_started, recovery_wait;
 static bool recovery_motion_wait;
 static uint32_t recovery_rx_start;
+static uint32_t recovery_request_token;
 static volatile uint32_t last_rx_ms;
 static bool probe_active, probe_ready;
 static uint8_t probe_address;
@@ -145,6 +225,25 @@ static void RecoveryFail(const char *reason);
 static bool RecoveryRequest(MotorBus_Owner_t owner)
 {
   return recovery.active && owner == MOTOR_BUS_RECOVERY;
+}
+
+static bool PositionConfigAllowed(void)
+{
+  if(position_config_stop_hold || recovery.active ||
+     reserved_owner==MOTOR_BUS_STOP || reserved_owner==MOTOR_BUS_RECOVERY || UrgentPending())return false;
+  if(running && Urgent(active.data,active.length,active.priority))return false;
+  for(unsigned i=0;i<MOTOR_BUS_OWNER_COUNT;i++)
+    if(slots[i].queued && Urgent(slots[i].data,slots[i].length,slots[i].priority))return false;
+  return true;
+}
+
+void MotorBus_PositionConfigStopHold(bool hold)
+{
+  position_config_stop_hold=hold;
+  /* Cancelling a queued write is harmless; never abort an on-wire write here.
+   * Its ACK/readback state is retained until stop ownership is released. */
+  if(hold && !MotorBus_OwnerInFlight(MOTOR_BUS_POSITION_CONFIG))
+    MotorBus_Cancel(MOTOR_BUS_POSITION_CONFIG);
 }
 
 /* Main-loop only. Preserve the first cause across subsequent rejected requests. */
@@ -160,8 +259,15 @@ static void Quarantine(const char *reason, uint32_t tick_ms, uint32_t uart_error
     first_fault.function = active.length ? active.data[1] : 0U;
     first_fault.active = running;
     first_fault.waiting_reply = waiting_reply;
+    first_fault.tx_length=active.length;
+    memcpy(first_fault.tx_sample,active.data,active.length<16U?active.length:16U);
+    first_fault.tx_ms=(active_tx_completed || tx_done)?tx_done_ms:0;
     uint32_t mask=__get_PRIMASK();
     __disable_irq();
+    if(RxErrorLatest.sequence && RxErrorLatest.active &&
+       RxErrorLatest.request_seq==timing.transactions &&
+       (int32_t)(tick_ms-RxErrorLatest.tick_ms)>=0)RxErrorFirst=RxErrorLatest;
+    else RxErrorFirst.sequence=0;
     uint32_t total=rx_total;
     first_fault.rx_bytes=total-request_rx_start;
     first_fault.last_rx_ms=last_rx_ms;
@@ -188,6 +294,32 @@ static bool FeedbackRead(MotorBus_Owner_t owner, const uint8_t *data,
   return address_valid && ((data[1]==0x35 && reply_length==6U) ||
     (data[1]==0x36 && reply_length==8U) ||
     ((data[1]==0x3a || data[1]==0x3b) && reply_length==4U));
+}
+
+static bool StatusReadMayRetry(void)
+{
+  return !quarantined && !cancelled && waiting_reply && active_tx_completed &&
+    !status_read_retries && active_owner==MOTOR_BUS_FEEDBACK && !active.priority &&
+    active.length==3U && active.reply_length==4U &&
+    active.data[0]>=1U && active.data[0]<=4U && active.reply_address==active.data[0] &&
+    active.data[1]==0x3a && active.data[2]==0x6b;
+}
+
+static void QueueStatusReadRetry(uint32_t now)
+{
+  /* One missing wheel-state reply can overlap an asynchronous arm 9F. Retry
+   * only this pure read, keeping its token/owner and the first TX age bound. */
+  status_read_retries=1;status_retry_pending=true;waiting_reply=false;started_ms=now;
+  timing.id[active.reply_address-1U].timeouts++;
+  first_fault.read_retry_count++;first_fault.read_retry_ms=now;
+  first_fault.read_retry_address=active.reply_address;
+  uint32_t mask=__get_PRIMASK();__disable_irq();
+  uint32_t total=rx_total;
+  first_fault.read_retry_rx_bytes=total-request_rx_start;
+  first_fault.read_retry_sample_length=(uint8_t)(first_fault.read_retry_rx_bytes<16U?first_fault.read_retry_rx_bytes:16U);
+  for(unsigned i=0;i<first_fault.read_retry_sample_length;i++)
+    first_fault.read_retry_sample[i]=rx_recent[(total-first_fault.read_retry_sample_length+i)&15U];
+  __set_PRIMASK(mask);
 }
 
 static bool ProbeRead(MotorBus_Owner_t owner, const uint8_t *data,
@@ -247,11 +379,14 @@ static void Complete(MotorBus_Result_t result, const uint8_t *data, uint8_t leng
   s->event.tx_completed = active_tx_completed;
   s->event.tx_ms = active_tx_completed ? tx_done_ms : 0U;
   s->event.uart_error = 0U;
+  s->event.read_retries=status_read_retries;
+  s->event.first_read_tx_ms=status_first_tx_ms;
   if (length)
     memcpy(s->event.data, data, length);
   s->event_ready = true;
   running = false;
   waiting_reply = false;
+  status_retry_pending=false;
   if (active_owner==MOTOR_BUS_PROBE && result!=MOTOR_BUS_REPLY) {
     probe_ready=false;probe_since=HAL_GetTick();
   }
@@ -375,9 +510,11 @@ void MotorBus_Cancel(MotorBus_Owner_t owner)
     s->event.length = 0;
     s->event.tx_completed = false;
     s->event.uart_error = 0U;
+    s->event.read_retries=0;s->event.first_read_tx_ms=0;
   }
   if (running && owner == active_owner)
   {
+    bool retry_wait=status_retry_pending;
     cancelled = true;
     if (active.reply_length)
     {
@@ -385,10 +522,15 @@ void MotorBus_Cancel(MotorBus_Owner_t owner)
            owner == MOTOR_BUS_TURNTABLE || owner == MOTOR_BUS_PROBE) &&
           active.length == 3U && (active.data[1] == 0x35 || active.data[1] == 0x36 ||
                                  active.data[1] == 0x3a || active.data[1] == 0x3b)) ||
+          (owner == MOTOR_BUS_POSITION_CONFIG && active.length == 4U && active.reply_length == 33U &&
+           active.data[0]>=5U && active.data[0]<=8U && active.data[1]==0x42 &&
+           active.data[2]==0x6c && active.data[3]==0x6b) ||
           (owner == MOTOR_BUS_CHASSIS && active.length == 8U && active.data[1] == 0xf6 &&
            active.data[3] == 0U && active.data[4] == 0U))
       {
-        /* A zero-RPM F6 cannot leave latent motion. Drain its unsequenced ACK
+        /* A pure 42/6C parameter read cannot leave motion or change config.
+         * Drain its old 33-byte reply, never treating it as a new verification.
+         * A zero-RPM F6 cannot leave latent motion. Drain its unsequenced ACK
          * before later requests, while priority FE stops remain immediately
          * eligible. Nonzero/position cancellation retains quarantine below. */
         if (!drain_pending)
@@ -414,7 +556,7 @@ void MotorBus_Cancel(MotorBus_Owner_t owner)
         Quarantine("cancelled_reply", HAL_GetTick(), 0U);
       }
     }
-    if (waiting_reply)
+    if (waiting_reply || retry_wait)
       Complete(MOTOR_BUS_CANCELLED, NULL, 0);
   }
 }
@@ -488,11 +630,14 @@ static void ParseByte(uint8_t value, uint32_t arrival_ms)
       memmove(parse, parse + 1, --parse_length);
       continue;
     }
+    /* Every complete frame used the shared driver TX line, even an urgent
+     * stop ACK or a late/unmatched 9F. Apply the existing handover to ordinary
+     * traffic without granting that frame any command/completion authority. */
+    reply_complete_ms=arrival_ms;reply_complete_valid=true;
     if(length==4 && parse[1]==0xfd && parse[2]==0x9f) {
       unsigned id=parse[0]-1U;
       if(position_motion[id].active && (int32_t)(arrival_ms-position_motion[id].tx_ms)>=0) {
         position_motion[id].reached=true;
-        reply_complete_ms=arrival_ms;reply_complete_valid=true;
         /* Completion is stronger evidence than a missing Receive ACK, but
          * only the same on-wire FD can consume it; unrelated queries cannot. */
         if(running && waiting_reply && !quarantined && active.data[1]==0xfd &&
@@ -511,7 +656,9 @@ static void ParseByte(uint8_t value, uint32_t arrival_ms)
     else if (drain_pending && (int32_t)(arrival_ms-drain_started_ms)<(int32_t)MOTOR_BUS_TIMEOUT_MS &&
         parse[0] == drain_address && parse[1] == drain_function &&
         (length == drain_length || (length==4 && (parse[2]==0xe2 || parse[2]==0xee))))
-    { drain_pending = false; timing.drained++; }
+    {
+      drain_pending=false;timing.drained++;
+    }
     else if (running && waiting_reply &&
         (int32_t)(arrival_ms-started_ms)>=0 &&
         (int32_t)(arrival_ms-started_ms)<(int32_t)MOTOR_BUS_TIMEOUT_MS &&
@@ -523,7 +670,6 @@ static void ParseByte(uint8_t value, uint32_t arrival_ms)
           (length==4 && (parse[2]==0xe2 || parse[2]==0xee))) &&
         !(active.length>3 && parse[2]==0x9f))
     {
-      reply_complete_ms=arrival_ms;reply_complete_valid=true;
       Complete(MOTOR_BUS_REPLY, parse, length);
       slots[active_owner].event.tick_ms = arrival_ms;
       if(active.reply_address>=1 && active.reply_address<=8) {
@@ -538,71 +684,14 @@ static void ParseByte(uint8_t value, uint32_t arrival_ms)
     memmove(parse, parse + length, parse_length);
   }
 }
-void MotorBus_Process(void)
+/* Establish TX timestamps before parsing replies queued before a UART error. */
+static void TxDoneProcess(void)
 {
-  unsigned i, pass;
-  uint32_t now = HAL_GetTick();
-  HAL_StatusTypeDef result;
-  if (!bus_uart)
-    return;
-  process_gap_ms=process_seen?now-process_last_ms:0U;
-  process_last_ms=now;process_seen=true;
-  process_rx_pending=(uint16_t)((rx_write-rx_read)&255U);
-  if (io_error)
-  {
-    uint32_t error_tick, error_code;
-    bool overflow, startup_fe;
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    error_tick = io_tick_ms; error_code = io_uart_error; overflow = io_overflow;
-    io_error = false;
-    __set_PRIMASK(primask);
-    if(probe_active) { probe_ready=false;probe_since=now; }
-    startup_fe = !tx_attempted && !running && !quarantined && !recovery.active &&
-                 !overflow && error_code == HAL_UART_ERROR_FE;
-    /* HAL has already aborted RX DMA and restored RxState before this callback.
-     * Restart RX only: DMAStop would also abort the in-flight HOME/position TX.
-     * Keep its original deadline and require a complete real reply; never replay motion. */
-    if(!startup_fe && !quarantined && !recovery.active && !probe_active && !overflow && error_code &&
-       !(error_code & ~(HAL_UART_ERROR_NE | HAL_UART_ERROR_FE | HAL_UART_ERROR_ORE)))
-    {
-      rx_read=rx_write;parse_length=0;
-      result=ReceiveStart();
-      if(result==HAL_OK) {
-        rx_warning_count++;rx_warning_ms=error_tick;rx_warning_error=error_code;
-        goto io_processed;
-      }
-      Quarantine("rx_restart_failed",error_tick,error_code);
-    }
-    if (recovery.active) {recovery.uart_error=error_code;RecoveryFail("uart_error");}
-    if (!startup_fe) Quarantine(overflow ? "rx_overflow" : "uart_error", error_tick, error_code);
-    diagnostic_reads = false;
-    result = HAL_UART_DMAStop(bus_uart);
-    if (startup_fe)
-    {
-      /* No pre-restart fragment can become a response to a later request. */
-      rx_read = rx_write;
-      parse_length = 0;
-      if (result == HAL_OK) result = ReceiveStart();
-      if (result == HAL_OK)
-      {
-        startup_fe_recovered++;
-        startup_fe_last_ms = error_tick;
-      }
-      else Quarantine("rx_restart_failed", error_tick, error_code);
-    }
-    else (void)ReceiveStart();
-    if (running) {
-      Complete(MOTOR_BUS_IO_ERROR, NULL, 0);
-      slots[active_owner].event.uart_error=error_code;
-    }
-    tx_done = false;
-  }
-io_processed:
   if (running && tx_done)
   {
     tx_done = false;
     active_tx_completed = true;
+    if(!status_read_retries)status_first_tx_ms=tx_done_ms;
     if(active.data[0]>=1 && active.data[0]<=8) {
       unsigned id=active.data[0]-1U;
       if(active.data[1]==0xfd) {
@@ -636,15 +725,102 @@ io_processed:
     if (!running)
       slots[active_owner].event.tick_ms = tx_done_ms;
   }
+}
+void MotorBus_Process(void)
+{
+  unsigned i, pass;
+  uint32_t now = HAL_GetTick();
+  HAL_StatusTypeDef result;
+  if (!bus_uart)
+    return;
+  process_gap_ms=process_seen?now-process_last_ms:0U;
+  process_last_ms=now;process_seen=true;
+  process_rx_pending=(uint16_t)((rx_write-rx_read)&255U);
+  if (io_error)
+  {
+    uint32_t error_tick, error_code, error_request;
+    uint16_t error_end, error_pending;
+    bool overflow, startup_fe;
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    error_tick = io_tick_ms; error_code = io_uart_error; overflow = io_overflow;
+    error_end=io_rx_end;error_request=io_request_serial;error_pending=io_rx_pending;
+    io_error = false;
+    __set_PRIMASK(primask);
+    if(probe_active) { probe_ready=false;probe_since=now; }
+    startup_fe = !tx_attempted && !running && !quarantined && !recovery.active &&
+                 !overflow && error_code == HAL_UART_ERROR_FE;
+    /* HAL has already aborted RX DMA and restored RxState before this callback.
+     * Restart RX only: DMAStop would also abort the in-flight HOME/position TX.
+     * Keep its original deadline and require a complete real reply; never replay motion. */
+    bool stop_read=diagnostic_reads && (!running ||
+      FeedbackRead(active_owner,active.data,active.length,active.reply_length));
+    if(!startup_fe && (!quarantined || recovery.active || stop_read) && !probe_active && !overflow && error_code &&
+       !(error_code & ~(HAL_UART_ERROR_NE | HAL_UART_ERROR_FE | HAL_UART_ERROR_ORE)))
+    {
+      /* Only bytes already queued at the FIRST error boundary may complete
+       * the original transaction. Never stitch an error fragment to later RX. */
+      if(error_request==timing.transactions) {
+        TxDoneProcess();
+        bool pending_reply=running && active.reply_length;
+        MotorBus_Owner_t owner=active_owner;
+        while(rx_read!=error_end) {
+          uint8_t b=rx_ring[rx_read];uint32_t arrival=rx_time[rx_read];
+          rx_read=(uint16_t)((rx_read+1U)&255U);ParseByte(b,arrival);
+        }
+        if(pending_reply && !running && slots[owner].event_ready &&
+           slots[owner].event.result==MOTOR_BUS_REPLY)rx_preserved_replies++;
+      }
+      rx_read=rx_write;parse_length=0;
+      result=ReceiveStart();
+      if(result==HAL_OK) {
+        rx_warning_count++;rx_warning_ms=error_tick;rx_warning_error=error_code;rx_error_pending=error_pending;
+        goto io_processed;
+      }
+      Quarantine("rx_restart_failed",error_tick,error_code);
+      if(recovery.active){recovery.uart_error=error_code;RecoveryFail("rx_restart_failed");}
+    }
+    if (recovery.active) {recovery.uart_error=error_code;RecoveryFail("uart_error");}
+    if (!startup_fe) Quarantine(overflow ? "rx_overflow" : "uart_error", error_tick, error_code);
+    diagnostic_reads = false;
+    result = HAL_UART_DMAStop(bus_uart);
+    if (startup_fe)
+    {
+      /* No pre-restart fragment can become a response to a later request. */
+      rx_read = rx_write;
+      parse_length = 0;
+      if (result == HAL_OK) result = ReceiveStart();
+      if (result == HAL_OK)
+      {
+        startup_fe_recovered++;
+        startup_fe_last_ms = error_tick;
+      }
+      else Quarantine("rx_restart_failed", error_tick, error_code);
+    }
+    else (void)ReceiveStart();
+    if (running) {
+      Complete(MOTOR_BUS_IO_ERROR, NULL, 0);
+      slots[active_owner].event.uart_error=error_code;
+    }
+    tx_done = false;
+  }
+io_processed:
+  TxDoneProcess();
   /* A fast driver may reply before foreground observes TX complete. Keep those bytes. */
-  if (!running || waiting_reply)
-    while (rx_read != rx_write)
+  if (!running || waiting_reply || status_retry_pending)
+    while (rx_read != rx_write && !io_error)
     {
       uint8_t b = rx_ring[rx_read];
       uint32_t arrival_ms = rx_time[rx_read];
       rx_read = (uint16_t)((rx_read + 1U) & 255U);
       ParseByte(b, arrival_ms);
     }
+  /* An error raised during parsing owns the next pass, before any timeout
+   * or new dispatch can misattribute its queued bytes to a different request. */
+  if(io_error)return;
+  /* TX/RX IRQs can advance one tick after the entry snapshot. Their actual
+   * timestamps must never look like an unsigned, already-expired deadline. */
+  now=HAL_GetTick();
   /* Only frames completed before the deadline can clear the wait above. */
   if (drain_pending && (uint32_t)(now - drain_started_ms) >= MOTOR_BUS_TIMEOUT_MS)
   {
@@ -656,18 +832,35 @@ io_processed:
       first_fault.owner = drain_owner;
       first_fault.address = drain_address;
       first_fault.function = drain_function;
+      first_fault.tx_length=0;first_fault.tx_ms=0; /* Drained request may no longer own active. */
     }
   }
   if (running && (uint32_t)(now - started_ms) >= MOTOR_BUS_TIMEOUT_MS)
   {
-    diagnostic_reads = false;
-    Quarantine(waiting_reply ? "reply_timeout" : "tx_timeout", now, 0U);
-    if (!waiting_reply)
-    {
-      (void)HAL_UART_DMAStop(bus_uart);
-      (void)ReceiveStart();
+    if(StatusReadMayRetry())QueueStatusReadRetry(now);
+    else {
+      bool retry_wait=status_retry_pending;
+      diagnostic_reads = false;
+      Quarantine(waiting_reply || retry_wait ? "reply_timeout" : "tx_timeout", now, 0U);
+      if (!waiting_reply && !retry_wait)
+      {
+        (void)HAL_UART_DMAStop(bus_uart);
+        (void)ReceiveStart();
+      }
+      Complete(MOTOR_BUS_TIMEOUT, NULL, 0);
     }
-    Complete(MOTOR_BUS_TIMEOUT, NULL, 0);
+  }
+  if(running && status_retry_pending &&
+     (int32_t)(now-last_rx_ms)>=2 &&
+     (!reply_complete_valid || (int32_t)(now-reply_complete_ms)>=(int32_t)reply_settle_ms))
+  {
+    tx_done=false;active_tx_completed=false;
+    result=HAL_UART_Transmit_DMA(bus_uart,active.data,active.length);
+    if(result==HAL_OK) {
+      status_retry_pending=false;started_ms=now;
+      timing.transactions++;timing.ordinary++;timing.id[active.reply_address-1U].requests++;
+    }else if(result==HAL_BUSY)active_tx_completed=true;
+    else Complete(MOTOR_BUS_IO_ERROR,NULL,0);
   }
   RecoveryProcess();
   PositionConfigProcess();
@@ -692,18 +885,23 @@ io_processed:
       Slot *s = &slots[candidate];
       if (!s->queued || s->priority != (pass == 0))
         continue;
+      if(candidate==MOTOR_BUS_POSITION_CONFIG && !PositionConfigAllowed())continue;
       if(probe_active && !Urgent(s->data,s->length,s->priority) &&
          !ProbeRead((MotorBus_Owner_t)candidate,s->data,s->length,s->reply_length)) continue;
       /* Complete response is necessary, but the shared line must also hand over.
        * Do not add a TX-based gap or delay urgent stopping behind normal ACKs. */
-      if(!Urgent(s->data,s->length,s->priority) && reply_complete_valid &&
-         (uint32_t)(now-reply_complete_ms)<reply_settle_ms) continue;
+      if(!Urgent(s->data,s->length,s->priority)) {
+        if(reply_complete_valid && (int32_t)(now-reply_complete_ms)<(int32_t)reply_settle_ms)continue;
+        /* HT/TC may split an asynchronous 9F while its last bytes are on wire.
+         * A truncated fragment only defers ordinary TX for 2 ms of silence. */
+        if(parse_length && (int32_t)(now-last_rx_ms)<2)continue;
+      }
       /* Live TTL tests: an immediate FE overlaps the preceding query reply,
        * and back-to-back FE frames lose ACKs. Bound only urgent-stop spacing;
        * ordinary Receive transactions use the short reply handover above.
        * Do not make emergency delivery depend on a potentially missing ACK. */
       if (Urgent(s->data,s->length,s->priority) && wire_tx_completed &&
-          (uint32_t)(now-wire_tx_ms)<2U)
+          (int32_t)(now-wire_tx_ms)<2)
         continue;
       if ((drain_pending || UrgentPending()) && !Urgent(s->data,s->length,s->priority))
         continue;
@@ -731,6 +929,7 @@ io_processed:
       tx_done = false;
       started_ms = now;
       active_tx_completed = false;
+      status_read_retries=0;status_retry_pending=false;status_first_tx_ms=0;
       /* Preserve partial asynchronous 9F frames across a query submission;
        * ordinary replies still require a reception timestamp after this TX. */
       if (quarantined && (!active.priority || active.reply_length) && !RecoveryRequest(active_owner) &&
@@ -783,16 +982,23 @@ void MotorBus_TxCpltCallback(UART_HandleTypeDef *uart)
     tx_done_ms = HAL_GetTick();
     wire_tx_ms = tx_done_ms;
     wire_tx_completed = true;
-    if(active_owner==MOTOR_BUS_RECOVERY)recovery.tx_sent=true;
+    if(active_owner==MOTOR_BUS_RECOVERY && recovery.active && active.token==recovery_request_token)recovery.tx_sent=true;
     tx_done = true;
   }
 }
 void MotorBus_ErrorCallback(UART_HandleTypeDef *uart)
 {
-  if (uart && uart == bus_uart && !io_error)
+  if (uart && uart == bus_uart)
   {
+    /* Keep the FIRST receive boundary, but never hide a later fatal DMA bit
+     * behind an already pending recoverable NE/FE/ORE notification. */
+    if(io_error){io_uart_error|=uart->ErrorCode;RxErrorLatest.uart_error|=uart->ErrorCode;return;}
+    if(!rx_error_irq_pending)RxErrorCapture(uart,0,0);
+    RxErrorLatest.uart_error=uart->ErrorCode;rx_error_irq_pending=false;
     io_overflow = false;
     io_uart_error = uart->ErrorCode; /* ReceiveStart clears this HAL field. */
+    io_rx_end=rx_write;io_rx_pending=(uint16_t)((rx_write-rx_read)&255U);
+    io_request_serial=timing.transactions;
     io_tick_ms = HAL_GetTick();
     io_error = true;
   }
@@ -804,6 +1010,7 @@ void MotorBus_DiagnosticGet(MotorBus_Diagnostic_t *out)
   *out = first_fault;
   out->locked = quarantined;
   out->rx_warning_count=rx_warning_count;out->rx_warning_ms=rx_warning_ms;out->rx_warning_error=rx_warning_error;
+  out->rx_error_pending=rx_error_pending;out->rx_preserved_replies=rx_preserved_replies;
   out->startup_fe_recovered = startup_fe_recovered;
   out->startup_fe_last_ms = startup_fe_last_ms;
   if (!out->reason)
@@ -831,9 +1038,11 @@ bool MotorBus_RecoverAfterReset(void)
   memset(urgent_drain,0,sizeof urgent_drain);
   diagnostic_reads = false;
   quarantined = false;
-  memset(&first_fault, 0, sizeof(first_fault));
+  memset(&first_fault, 0, sizeof(first_fault));RxErrorFirst.sequence=0;
   memset(position_motion,0,sizeof position_motion);
   memset(position_reply_mode,0,sizeof position_reply_mode);
+  memset(position_reply_requested,0,sizeof position_reply_requested);
+  memset(position_reply_failed,0,sizeof position_reply_failed);
   position_config_id=position_config_phase=0;position_config_pending=false;
   return true;
 }
@@ -842,6 +1051,12 @@ static void RecoveryEvidence(MotorBus_Recovery_t *out)
 {
   out->elapsed_ms=HAL_GetTick()-recovery_started;
   out->process_gap_ms=process_gap_ms;
+  out->tx_length=0;out->tx_ms=0;
+  if(active_owner==MOTOR_BUS_RECOVERY && active.token==recovery_request_token && out->function &&
+     active.data[0]==out->address && active.data[1]==out->function) {
+    out->tx_length=active.length;memcpy(out->tx_sample,active.data,active.length<16U?active.length:16U);
+    out->tx_ms=(active_tx_completed || tx_done)?tx_done_ms:0;
+  }
   uint32_t mask=__get_PRIMASK();__disable_irq();
   uint32_t total=rx_total;
   out->rx_bytes=total-recovery_rx_start;out->last_rx_ms=last_rx_ms;
@@ -985,6 +1200,8 @@ static void RecoveryProcess(void)
         quarantined=false;reserved_owner=MOTOR_BUS_OWNER_COUNT;
         memset(position_motion,0,sizeof position_motion);
         memset(position_reply_mode,0,sizeof position_reply_mode);
+        memset(position_reply_requested,0,sizeof position_reply_requested);
+        memset(position_reply_failed,0,sizeof position_reply_failed);
         position_config_id=position_config_phase=0;position_config_pending=false;
         /* Preserve first_fault for diagnosis; locked reports current state. */
         return;
@@ -1011,6 +1228,7 @@ submit:
     cmd[1]=0xff;cmd[2]=0x66;cmd[3]=0x6b;length=4;reply=4;
   }
   else { cmd[1]=functions[recovery_kind];cmd[2]=0x6b;length=3;reply=recovery_kind==0?6:4; }
-  if (!MotorBus_Submit(MOTOR_BUS_RECOVERY,cmd,length,reply,0,true)) RecoveryFail("submit_failed");
-  else {recovery.function=cmd[1];recovery.tx_sent=false;}
+  uint32_t token=recovery_request_token+1U;if(!token)token=1U;
+  if (!MotorBus_Submit(MOTOR_BUS_RECOVERY,cmd,length,reply,token,true)) RecoveryFail("submit_failed");
+  else {recovery_request_token=token;recovery.function=cmd[1];recovery.tx_sent=false;}
 }

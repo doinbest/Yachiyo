@@ -12,8 +12,8 @@ int main(void)
   setting("head_line_zero","1.5");setting("head_line_gain","-1");
   GrabTask_LineHeadingConfigGet(&line);GrabTask_HeadingConfigGet(3,&ring);
   assert(line.zero_deg==1.5f && line.gain==-1 && ring.zero_deg==7 && ring.gain==2);
-  Status.base_home_degraded=1;GrabTask_LineHeadingConfigGet(&line);assert(isnan(line.gain));
-  Status.base_home_degraded=0;
+  Status.base_home_degraded=1;GrabTask_LineHeadingConfigGet(&line);assert(isnan(line.gain) && !line.direct_eligible);
+  Status.base_home_degraded=0;GrabTask_HeadingConfigGet(2,&ring);assert(ring.direct_eligible);
   setting("z_car_lift","-11");GrabTask_LineHeadingConfigGet(&line);
   assert(isnan(line.gain));
   setting("head_line_gain","-1");GrabTask_ReferenceInvalidate(MECHANICAL_ARM_AXIS_BASE);

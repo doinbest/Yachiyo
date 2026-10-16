@@ -232,7 +232,7 @@ def summarize(text, source='auto'):
         'timing_sample_sufficient': bool(firmware_timing and firmware_timing.get('updates',0)>=20 and firmware_timing.get('batch_samples',0)>=20),
         'visual_receive_to_control_p95_ms': firmware_timing.get('visual_delay_p95') if firmware_timing and firmware_timing.get('rx_samples',0) else None,
         'prediction_interval_p95_ms': firmware_timing.get('prediction_p95') if firmware_timing and firmware_timing.get('timer',0) else None,
-        'x_feedback_age_p95_ms': percentile([r['age'] for r in rows if 'age' in r]),
+        'feedback_age_p95_ms': percentile([r['age'] for r in rows if 'age' in r]),
         'actual_speed_peak_mm_s': [max(abs(r['actual'][k]) for r in rows) for k in range(3)] if rows else None,
         'command_speed_peak_mm_s': [max(abs(r['cmd'][k]) for r in rows) for k in range(3)] if rows else None,
         'displacement_mm': displacement, 'minimum_approach_room_mm': min(r['room'] for r in rows) if rows else None,

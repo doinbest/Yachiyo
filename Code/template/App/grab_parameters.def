@@ -3,12 +3,14 @@
  * validation: 1=integer, 2=exclusive minimum. phase: 1=init, 2=X home,
  * 4=Z home, 8=visual reference restore. NAN means operator-supplied height.
  * Speed units mm/s; accel is MCU mm/s^2, not the motor driver gear.
- * Z task speeds default to 111.11111111 mm/s, equivalent to 1000 RPM at 480 ppm.
+ * All Z task speeds default to250 mm/s (2250 RPM at480 ppm); speed keys are aliases.
  * Keep row order: task readiness checks use the existing contiguous key groups.
  */
-#define GRAB_BASE_WORK_OFFSET_DEG 127.5f
+#define GRAB_BASE_WORK_OFFSET_DEG 117.5f
 #define GRAB_BASE_HOME_STABLE_TOL_DEG 5.0f
 #define GRAB_CAR_PICK_CLEARANCE_MM 30.0f
+#define GRAB_FIRST_TRAY_CLEARANCE_DEG 90.0f /* First station placement: move remaining stock away. */
+#define GRAB_CAR_PICK_OPEN_PULSE_US 2120U /* Tray descent clearance; ordinary open remains2450. */
 /* User measurement: 100 motor degrees -> 28 mm; 3200 command pulses/rev. */
 PARAM(C_X_PPM, "x_ppm", 31.746031746, 0, 100000, 2, 2)
 PARAM(C_Z_PPM, "z_ppm", 480, 0, 100000, 2, 4)
@@ -30,39 +32,41 @@ PARAM(C_TRAVEL, "travel_mm", 0, 0, 10000, 0, 1)
 PARAM(C_LEAD, "lead_mm", 12, 0, 10000, 2, 1)
 PARAM(C_DX_TOL, "dx_tol", 1, 0, 100, 2, 1)
 PARAM(C_DY_TOL, "dy_tol", 1, 0, 100, 2, 1)
-PARAM(C_J00, "j00", 2, -10000, 10000, 0, 8)
+/* Fixed observation pose: 640x480 px spans 450x330 mm (45x33 cm).
+ * Scale only; retain existing motion directions and explicit response calibration. */
+PARAM(C_J00, "j00", 1.422222222222, -10000, 10000, 0, 8)
 PARAM(C_J01, "j01", 0, -10000, 10000, 0, 8)
 PARAM(C_J02, "j02", 0, -10000, 10000, 0, 8)
 PARAM(C_J10, "j10", 0, -10000, 10000, 0, 8)
-PARAM(C_J11, "j11", 2, -10000, 10000, 0, 8)
-PARAM(C_J12, "j12", 2, -10000, 10000, 0, 8)
+PARAM(C_J11, "j11", 1.454545454545, -10000, 10000, 0, 8)
+PARAM(C_J12, "j12", 1.454545454545, -10000, 10000, 0, 8)
 PARAM(C_LAMBDA, "lambda", 2.5, 0.001, 10, 0, 1)
 PARAM(C_BODY_SPEED, "body_speed", 160, 0, 300, 2, 1)
 PARAM(C_X_SPEED, "x_speed", 60, 0, 100, 2, 1)
-PARAM(C_Z_SPEED, "z_speed", 111.11111111, 0, 333.333, 2, 1)
+PARAM(C_Z_SPEED, "z_speed", 250, 0, 333.333, 2, 1)
 PARAM(C_STABLE_MS, "stable_ms", 200, 200, 120000, 1, 1)
 PARAM(C_FRAMES, "frames", 3, 3, 100, 1, 1)
 PARAM(C_RETRIES, "retries", 2, 0, 10, 1, 1)
 PARAM(C_X_WEIGHT, "x_weight", 2.333333, 0.01, 100, 0, 1)
-PARAM(C_Z_PLACE, "z_place", -40, -10000, 10000, 0, 4)
+PARAM(C_Z_PLACE, "z_place", -20, -10000, 10000, 0, 4)
 PARAM(C_LOSS_GRACE_MS, "loss_grace_ms", 250, 0, 300, 1, 1)
 PARAM(C_Z_CAR_LIFT, "z_car_lift", 0, -10000, 10000, 0, 5)
-PARAM(C_Z_PROC_PLACE, "z_proc_place", -140, -10000, 10000, 0, 4)
+PARAM(C_Z_PROC_PLACE, "z_proc_place", -120, -10000, 10000, 0, 4)
 PARAM(C_Z_STACK_PLACE, "z_stack_place", -110, -10000, 10000, 0, 4)
 /* User-confirmed station alignment and second-layer release heights. */
 PARAM(C_Z_ROUGH_ALIGN, "z_rough_align", -100, -10000, 10000, 0, 4)
 PARAM(C_Z_TEMP_ALIGN, "z_temp_align", -100, -10000, 10000, 0, 4)
-/* Base home faces the car mouth: work +127.5 degrees returns home by -127.5.
+/* Base home faces the car mouth: work +117.5 degrees returns home by -117.5.
  * ID8 slot offsets (0/-90/-180) are independent of this Base parameter. */
-PARAM(C_BASE_CAR_OFFSET, "base_car_offset", -127.5, -360, 360, 0, 1)
+PARAM(C_BASE_CAR_OFFSET, "base_car_offset", -117.5, -360, 360, 0, 1)
 PARAM(C_VISION_WAIT_MS, "vision_wait_ms", 12000, 1500, 120000, 1, 1)
 PARAM(C_X_TRANSFER_SPEED, "x_transfer_speed", 60, 0, 100, 2, 1)
-PARAM(C_Z_PICK_SPEED, "z_pick_speed", 111.11111111, 0, 333.333, 2, 1)
+PARAM(C_Z_PICK_SPEED, "z_pick_speed", 250, 0, 333.333, 2, 1)
 
 /* QR control test: official right-side scan region and Z search. */
 PARAM(C_QR_SCAN_Y, "qr_scan_y", 1200, 1100, 1300, 0, 1)
 PARAM(C_QR_Z_MIN, "qr_z_min", -50, -150, 0, 0, 1)
-PARAM(C_QR_Z_SPEED, "qr_z_speed", 111.11111111, 0, 333.333, 2, 1)
+PARAM(C_QR_Z_SPEED, "qr_z_speed", 250, 0, 333.333, 2, 1)
 PARAM(C_QR_WAIT_MS, "qr_wait_ms", 1000, 0, 10000, 1, 1)
 
 /* Competition continuity: Base HOME bit3 may use a freshly verified quiet anchor.
@@ -71,7 +75,7 @@ PARAM(C_BASE_HOME_DEGRADE, "base_home_degrade", 1, 0, 1, 1, 1)
 /* Tracking pickup only: independent from the controller's correction window. */
 PARAM(C_TRACK_PICK_TOL_PX, "track_pick_tol_px", 100, 1, 100, 0, 1)
 PARAM(C_TRACK_PICK_HOLD_MS, "track_pick_hold_ms", 0, 0, 10000, 1, 1)
-PARAM(C_TRACK_STORE_DROP_MM, "track_store_drop_mm", 40, 0, 10000, 2, 1)
+PARAM(C_TRACK_STORE_DROP_MM, "track_store_drop_mm", 20, 0, 10000, 2, 1)
 PARAM(C_CAR_PICK_DROP_MM, "car_pick_drop_mm", 40, 0, 150, 2, 1)
 
 /* Independent tracking profiles. Predict defaults/ranges are preserved.

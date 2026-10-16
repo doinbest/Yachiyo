@@ -1,5 +1,6 @@
 import {chineseTerminalLine,replyIsFault} from './terminal-format.mjs?v=lidar-poses-20261012';
 import {deviceText,reasonText} from './device-text.mjs';
+import {missionResumeStatus} from './mission-resume-status.mjs';
 export {deviceText,reasonText};
 import {GRAB_FORM_DEFAULTS,GRAB_TEST_PRESET} from './grab-params.mjs?v=car-transfer-speed-20261007';
 import {GRAB_PARAMETER_METADATA} from './grab-parameter-metadata.mjs';
@@ -86,7 +87,7 @@ export const commands = [
   command('grab-pick-slot','vision','指定仓位视觉夹取','grab start pick {color} {slot}',[choice('color','物料颜色',grabColorOptions,'3'),choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']])]),
   command('grab-store-proc','vision','粗加工取回入仓','grab store proc {slot} {color}',[choice('slot','入仓位置',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('color','物料颜色',grabColorOptions,'3')]),
   command('grab-take','vision','车载取出并释放','grab take {slot} {scene}',[choice('slot','取出仓位',[['1','第一仓'],['2','第二仓'],['3','第三仓']]),choice('scene','释放场景',[['rough','粗加工'],['temp1','暂存第一层'],['temp2','暂存第二层']])]),
-  command('grab-take-work','vision','车仓夹取并转到作业朝向','grab take {slot} work {depth}',[choice('slot','夹取几号料盘',[['1','1号料盘'],['2','2号料盘'],['3','3号料盘']]),number('depth','下降 / 等量上升距离 / mm',GRAB_FORM_DEFAULTS.car_pick_drop_mm,0.1,150,0.1)],'按所选料盘直接取出，无需登记库存或颜色。提起收X，ID8先分度到位，Base回车仓参考；等待取料开口稳定（默认300 ms），默认下降40mm闭爪，再上升40mm。1/2号盘提起同时向外伸X30mm，3号盘保持收回；两轴到位后Base转到参考+127.5°并保持闭爪。已中断时选择原仓显式继续，保留本次绝对目标；完成后仓位置空。'),
+  command('grab-take-work','vision','车仓夹取并转到作业朝向','grab take {slot} work {depth}',[choice('slot','夹取几号料盘',[['1','1号料盘'],['2','2号料盘'],['3','3号料盘']]),number('depth','下降 / 等量上升距离 / mm',GRAB_FORM_DEFAULTS.car_pick_drop_mm,0.1,150,0.1)],'按所选料盘直接取出，无需登记库存或颜色。提起收X，ID8先分度到位，Base回车仓参考；等待取料开口稳定（默认300 ms），默认下降40mm闭爪，再上升40mm。1/2号盘提起同时向外伸X30mm，3号盘保持收回；两轴到位后Base转到参考+117.5°并保持闭爪。已中断时选择原仓显式继续，保留本次绝对目标；完成后仓位置空。'),
   command('grab-return','vision','返回外侧观察姿态','grab return'),
   command('grab-base-pos','vision','手动 Base 转到转盘','pos base {degree}',[number('degree','Base 电机轴相对角度 / °',-180,-360,360,0.1)],'自动取放已包含转向，此处仅用于手动定位。默认相对转动 −180°，每次执行都会再转一次，已在转盘方向时无需重复。若抓取处于 hold，先结束本次抓取并确认停止，再操作 Base。'),
   ...[['fixed','固定位置抓取'],['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}`,'vision',label,mode==='align'?'grab align color 3 0':`grab start ${mode}`)),
@@ -391,7 +392,7 @@ export function describeGrabRoute(r) {
   if(r?.mode==='single'){const stage=({stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',car_pick:'车仓取出并保持',held_place:'持料视觉对准',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向姿态',driving:'行驶中',prepare_transfer:'准备抓取',transfer:'抓取入仓',prepare_departure:'准备收回',leaving:'收回朝后',config_wait:`等待补齐 ${describeGrabMissing(r.reason)} 后继续本件`,done:'入仓及收回完成',error:'任务故障',cancelled:'已取消'})[r.state]||r.state;return `蓝色首件 · 第一仓 · ${stage}`;}
   if(!['mission','ring_place'].includes(r?.mode))return `组合路线：${({idle:'空闲',driving:'行驶中',scan_wait:'扫码等待 1 秒',display_wait:'等待屏幕发送',handoff:'物料台已交接',error:'路线故障',cancelled:'已取消',done:'首件任务完成'})[r?.state]||r?.state||'未报告'}`;
   const stage=({cancelling:'正在结束本轮',cancel_wait:'结束中 · 停车尚未确认',stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',empty_ring_align:'空爪对准目标编号环',empty_material_align:'空爪对准第一层同色物料',car_pick:'车仓取出并保持',held_place:'放置所取物料',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向行驶姿态',driving:'行驶中',ring_clear:'抬升收回',ring_move:'移动到指定环',transfer:'单件取放',leaving:'恢复后向姿态',return_center:'返回工位中心',config_wait:'等待补齐参数',done:'两批任务结束',error:'任务故障',cancelled:'已取消',prepare_ring:'准备换环',prepare_departure:'准备离站',prepare_transfer:'准备下一件取放'})[r.state]||r.state;
-  const recoveryStage=({bus_recovery_stopping:'通信异常 · 保留进度停车',bus_recovering:'恢复电机总线',bus_recovery_verify:'恢复后确认停稳',bus_recovery_wait:'总线恢复待处理',bus_recovery_retry:'通信恢复重试'})[r.state];
+  const recoveryStage=missionResumeStatus(r)?.label||({bus_recovery_stopping:'通信异常 · 保留进度停车',bus_recovering:'恢复电机总线',bus_recovery_verify:'恢复后确认停稳',bus_recovery_wait:'总线恢复待处理',bus_recovery_retry:'通信恢复重试'})[r.state];
   if(r?.mode==='ring_place')return `编号环自动放置 · ${r.ring??'—'}号环 · ${r.slot??'—'}号料盘 · ${r.state==='done'?'取仓放置完成':recoveryStage||stage}`;
   return `${r.batch===2?'第二批':'第一批'} · 第 ${r.item??'—'} 件 · ${recoveryStage||stage}${r.state==='config_wait'?`：补齐 ${describeGrabMissing(r.reason)} 后继续本件`:''}`;
 }

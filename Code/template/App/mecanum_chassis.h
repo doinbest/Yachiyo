@@ -91,6 +91,9 @@ bool Mecanum_RecoveryAfterBusCheck(void);
 /** @brief Main-loop temporary all-wheel stop feedback, independent of user selection.
  * Release retains the most recent user/task enable and selection policy. */
 void Mecanum_Feedback_StopMonitor(bool active);
+/** Normal route arrival: refresh drive states once, then four speeds/positions.
+ * Does not alter user selection; independent stop monitoring takes precedence. */
+void Mecanum_Feedback_Arrival(bool active);
 void Mecanum_Feedback_Enable(bool enabled);
 /** @brief Select the next poll's motor address 1..4, or 0 for all.
  * Disables new polling until Enable(true). An outstanding read/reply completes
@@ -169,5 +172,9 @@ bool Mecanum_RequestPlannedStop(void);
  * Mecanum_Test_Stop()且四条停止命令均发送成功，才能解除记录。
  */
 bool Mecanum_IsBusy(void);
+/** Read-only velocity handoff gate: committed four-wheel zero, no queued motion
+ * or stop/fault work. Does not clear IsBusy's explicit-stop latch or claim
+ * measured standstill; the receiving task still validates fresh feedback. */
+bool Mecanum_VelocityHandoffReady(void);
 
 #endif /* MECANUM_CHASSIS_H */

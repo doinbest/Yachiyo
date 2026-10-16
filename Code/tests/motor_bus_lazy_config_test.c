@@ -25,6 +25,61 @@ static void reply(const uint8_t *p,uint16_t n)
   MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(p,n);MotorBus_Process();
   MechanicalArm_Process();tick+=3;MotorBus_Process();
 }
+static void tracking_modes(bool stopped)
+{
+  uint8_t cfg[33]={7,0x42,33,21};
+  const uint8_t config_ack[]={7,0x48,2,0x6b},move_ack[]={7,0xfd,2,0x6b};
+  MechanicalArm_EventTypeDef event;
+  for(unsigned i=4;i<32;i++)cfg[i]=(uint8_t)i;
+  cfg[22]=1;cfg[32]=0x6b;
+  /* A driver already in Receive needs only readback, with no RAM write. */
+  assert(MechanicalArm_PositionTrackingEx(MECHANICAL_ARM_AXIS_X,100,20,20,
+    MECHANICAL_ARM_POSITION_ABSOLUTE)==MECHANICAL_ARM_RESULT_BUSY);
+  if(stopped) {
+    const uint8_t stop_ack[]={7,0xfe,2,0x6b};
+    assert(MechanicalArm_Stop(MECHANICAL_ARM_AXIS_X)==MECHANICAL_ARM_RESULT_NONE);
+    MotorBus_Process();assert(frame[0]==7 && frame[1]==0xfe);
+    reply(stop_ack,sizeof stop_ack);
+    assert(MechanicalArm_ResultGet(&event) && event.Action==MECHANICAL_ARM_ACTION_STOP);
+    assert(MechanicalArm_PositionTrackingEx(MECHANICAL_ARM_AXIS_X,100,20,20,
+      MECHANICAL_ARM_POSITION_ABSOLUTE)==MECHANICAL_ARM_RESULT_BUSY);
+  }
+  MotorBus_Process();assert(frame[0]==7 && frame[1]==0x42);
+  unsigned before=sends;reply(cfg,sizeof cfg);
+  assert(sends==before); /* Legacy Both preflight writes here. */
+  assert(MechanicalArm_PositionTrackingEx(MECHANICAL_ARM_AXIS_X,100,20,20,
+    MECHANICAL_ARM_POSITION_ABSOLUTE)==MECHANICAL_ARM_RESULT_NONE);
+  MotorBus_Process();assert(frame[1]==0xfd);
+  reply(move_ack,sizeof move_ack);
+  assert(MechanicalArm_ResultGet(&event) && event.Result==MECHANICAL_ARM_RESULT_OK);
+  assert(!MotorBus_PositionReached(7,event.TxDoneMs)); /* 02 only accepts the target. */
+  /* Fixed -> tracking -> fixed must each select and verify their own mode. */
+  for(unsigned turn=0;turn<3;turn++) {
+    const uint8_t wanted=turn==1?1:3;
+    MechanicalArm_ResultTypeDef result=turn==1?
+      MechanicalArm_PositionTrackingEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE):
+      MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE);
+    assert(result==MECHANICAL_ARM_RESULT_BUSY);
+    MotorBus_Process();assert(frame[0]==7 && frame[1]==0x42);
+    reply(cfg,sizeof cfg);
+    assert(frame[1]==0x48 && frame[3]==0 && frame[22]==wanted);
+    for(unsigned i=4;i<32;i++)if(i!=22)assert(frame[i]==cfg[i]);
+    reply(config_ack,sizeof config_ack);assert(frame[1]==0x42);
+    /* Before verification even a repeated request cannot submit FD. */
+    result=turn==1?
+      MechanicalArm_PositionTrackingEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE):
+      MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE);
+    assert(result==MECHANICAL_ARM_RESULT_BUSY && !MechanicalArm_IsBusy());
+    cfg[22]=wanted;reply(cfg,sizeof cfg);
+    result=turn==1?
+      MechanicalArm_PositionTrackingEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE):
+      MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE);
+    assert(result==MECHANICAL_ARM_RESULT_NONE);MotorBus_Process();assert(frame[1]==0xfd);
+    reply(move_ack,sizeof move_ack);assert(MechanicalArm_ResultGet(&event));
+    assert(!MotorBus_PositionReached(7,event.TxDoneMs));
+  }
+  puts("tracking Receive, fixed Both, verified mode transitions PASS");
+}
 int main(int argc,char **argv)
 {
   /* Same ordering as production main: ID8 initialization precedes bus/arm init. */
@@ -32,6 +87,9 @@ int main(int argc,char **argv)
   assert(MechanicalArm_Init(&uart)==HAL_OK);
   for(tick=0;tick<1000;tick++)MotorBus_Process();
   assert(sends==0 && !MotorBus_IsQuarantined());
+  if(argc>1 && (!strcmp(argv[1],"tracking") || !strcmp(argv[1],"tracking_stop"))) {
+    tracking_modes(!strcmp(argv[1],"tracking_stop"));return 0;
+  }
   if(argc>1 && !strcmp(argv[1],"turntable_home")) {
     Turntable_BootHomeProcess(false);assert(!Turntable_IsBusy());
     Turntable_BootHomeProcess(true);assert(Turntable_IsBusy());

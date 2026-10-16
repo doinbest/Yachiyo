@@ -2,17 +2,21 @@
 #include "station_heading.h"
 #include <math.h>
 #include <stddef.h>
-unsigned test_heading_starts,test_heading_processes,test_heading_pauses;
+unsigned test_heading_starts,test_heading_processes,test_heading_pauses,test_heading_competition_starts;
+static float test_heading_speed;
 uint8_t test_heading_source;
 bool test_heading_done;
 float test_heading_image;
 const char *test_heading_result;
 static bool observation;
-void StationHeading_Reset(void){test_heading_source=STATION_HEADING_RING;test_heading_starts=test_heading_processes=test_heading_pauses=0;test_heading_done=false;observation=false;test_heading_image=.5f;test_heading_result=NULL;}
-void StationHeading_Begin(unsigned s,float yaw,float speed){(void)s;(void)yaw;(void)speed;test_heading_starts++;}
+void StationHeading_Reset(void){test_heading_source=STATION_HEADING_RING;test_heading_starts=test_heading_processes=test_heading_pauses=test_heading_competition_starts=0;test_heading_speed=NAN;test_heading_done=false;observation=false;test_heading_image=.5f;test_heading_result=NULL;}
+void StationHeading_Begin(unsigned s,float yaw,float speed){(void)s;(void)yaw;test_heading_speed=speed;test_heading_starts++;}
 void StationHeading_ObserveBegin(unsigned s,float yaw,float speed){StationHeading_Begin(s,yaw,speed);observation=true;test_heading_done=false;}
 void StationHeading_BeginSource(unsigned s,float y,float v,uint8_t source){StationHeading_Begin(s,y,v);test_heading_source=source;}
 void StationHeading_ObserveBeginSource(unsigned s,float y,float v,uint8_t source){StationHeading_ObserveBegin(s,y,v);test_heading_source=source;}
+void StationHeading_CompetitionBeginSource(unsigned s,float y,float v,uint8_t source){StationHeading_BeginSource(s,y,source==STATION_HEADING_RING?fminf(v,10):v,source);test_heading_competition_starts++;}
+float StationHeading_TurnSpeed(void){return test_heading_speed;}
+const char *StationHeading_Method(void){return test_heading_competition_starts && test_heading_source==STATION_HEADING_RING?"direct_ring":observation?"observe":"mapped";}
 uint8_t StationHeading_Source(void){return test_heading_source;}
 void StationHeading_Pause(void){test_heading_pauses++;}
 bool StationHeading_Process(void){test_heading_processes++;return test_heading_done;}

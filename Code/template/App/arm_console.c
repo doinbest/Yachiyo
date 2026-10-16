@@ -79,6 +79,8 @@ static uint8_t BusRecoveryPending;
 static uint32_t BusRecoveryStarted;
 static bool BusRecoveryAutomatic, BusAutoFaultSeen;
 static uint32_t BusAutoFaultTick, BusRxWarningShown, BusRxWarningTick, BusSyncWarningTick;
+static uint32_t BusRxSnapshotShown,BusRxSnapshotTick;
+static uint32_t BusReadRetryShown;
 static struct {
   bool active, pending;
   uint8_t address;
@@ -527,7 +529,8 @@ static void ArmConsole_HelpShow(void)
   ArmConsole_Write("bus recover (stop tasks, verify motors, never resume) | bus status\r\n");
   ArmConsole_Write("bus test <id 1..8> [rounds 1..100] | bus test status | bus test stop (read only)\r\n");
   ArmConsole_Write("turntable get/set <key> [value] | enable | disable | save_zero | home | origin | index <slot> | jog <degree> | stop | status\r\n");
-  ArmConsole_Write("grab store proc <slot> <color> | grab take <slot> rough|temp1|temp2 | grab return\r\n");
+  ArmConsole_Write("grab store ground <slot 0..3> <color 1..6> | grab store proc <slot> <color>\r\n"
+                   "grab take <slot> rough|temp1|temp2 | grab return\r\n");
   /* 按命令组入队，由USART1 DMA发送；不占用底盘控制周期等待串口。 */
   ArmConsole_Write("chassis move <map_dx_mm> <map_dy_mm> (norm 1..300 mm, qualified feedback)\r\n");
   ArmConsole_Printf("chassis route start|auto [10..5000mm/s, default 1000] | next | status | cancel (15 targets, auto dwell %lums)\r\n",
@@ -596,7 +599,7 @@ static void ArmConsole_HelpShow(void)
                    "grab status | grab stop | grab rehome | grab set <key> <value> | grab get <key>\r\n");
   ArmConsole_Write("grab ring align [1|2|3] [z_mm] [stay] | grab ring place <z_mm> | grab ring take <slot 1..3>\r\n");
   ArmConsole_Write("grab mission qr|fixed [code] [speed] [turn_deg_s] [lower|upper] [fixed|radar] | grab mission pause|stop|continue | grab pose rear|work | grab place car\r\n");
-  ArmConsole_Write("grab take <slot 1..3> work [depth_mm, default 40]; wait 1s, pick, lift, Base +127.5, hold claw\r\n");
+  ArmConsole_Write("grab take <slot 1..3> work [depth_mm, default 40]; wait 1s, pick, lift, Base +117.5, hold claw\r\n");
   ArmConsole_Write("grab track observe [color] | reference | start [color] | stop | status | trace [index]\r\n"
                    "grab track begin [color] [remaining_mm] | grab track pick [color] [z_mm] [speed_mm_s]\r\n"
                    "grab track pickstore <color> <slot 0..3> [predict|visual|feedback] | grab track store <slot 0..3>\r\n"
@@ -1876,6 +1879,27 @@ static uint8_t ArmConsole_BusTestCommand(unsigned count,char *tokens[])
   return 1U;
 }
 
+static void ArmConsole_BusRxErrorShow(bool first,bool force)
+{
+  MotorBus_RxErrorSnapshot_t s;
+  if(!MotorBus_RxErrorGet(&s,first) || (!force && s.sequence==BusRxSnapshotShown))return;
+  if(!first)BusRxSnapshotShown=s.sequence;
+  ArmConsole_Printf("OK bus rx_error seq=%lu view=%s phase=%s error_ms=%lu uart_error=0x%08lX uart_sr=0x%08lX\r\n",
+    (unsigned long)s.sequence,first?"first":"latest",s.phase?"irq":"callback",
+    (unsigned long)s.tick_ms,(unsigned long)s.uart_error,(unsigned long)s.uart_sr);
+  ArmConsole_Printf("OK bus rx_error_context seq=%lu request_seq=%lu token=%lu owner=%u active=%u wait=%u tx_complete=%u tx_ms=%lu\r\n",
+    (unsigned long)s.sequence,(unsigned long)s.request_seq,(unsigned long)s.token,s.owner,s.active,s.waiting,s.tx_complete,(unsigned long)s.tx_ms);
+  ArmConsole_Printf("OK bus rx_error_dma seq=%lu cursor=%u ndtr=%u ndtr_end=%u queued=%u partial=%u rx_total=%lu\r\n",
+    (unsigned long)s.sequence,s.dma_cursor,s.dma_remaining,s.dma_remaining_end,s.queued,s.partial,(unsigned long)s.rx_total);
+  char hex[2*MOTOR_BUS_RX_ERROR_DMA_BYTES+1];unsigned i;
+  for(i=0;i<s.tx_length;i++)(void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",s.tx[i]);
+  if(!i)strcpy(hex,"none");
+  ArmConsole_Printf("OK bus rx_error_tx seq=%lu bytes=%u hex=%s\r\n",(unsigned long)s.sequence,s.tx_length,hex);
+  for(unsigned offset=0;offset<MOTOR_BUS_RX_ERROR_DMA_BYTES;offset+=32U) {
+    for(i=0;i<32U;i++)(void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",s.dma[offset+i]);
+    ArmConsole_Printf("OK bus rx_error_data seq=%lu offset=%u bytes=32 hex=%s\r\n",(unsigned long)s.sequence,offset,hex);
+  }
+}
 static void ArmConsole_BusRecoveryEvidenceShow(void)
 {
   MotorBus_Recovery_t s;
@@ -1887,11 +1911,20 @@ static void ArmConsole_BusRecoveryEvidenceShow(void)
   if(!i)strcpy(hex,"none");
   ArmConsole_Printf("OK bus attempt_rx bytes=%lu pending=%u partial=%u gap_ms=%lu ndtr=%u cursor=%u hex=%s\r\n",
     (unsigned long)s.rx_bytes,s.rx_pending,s.parse_bytes,(unsigned long)s.process_gap_ms,s.dma_remaining,s.dma_position,hex);
+  for(i=0;i<s.tx_length && i<16U;i++)(void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",s.tx_sample[i]);
+  if(!i)strcpy(hex,"none");
+  ArmConsole_Printf("OK bus attempt_tx bytes=%u tx_ms=%lu hex=%s\r\n",
+    s.tx_length,(unsigned long)s.tx_ms,hex);
   MotorBus_Diagnostic_t first;MotorBus_DiagnosticGet(&first);
   for(i=0;i<first.rx_sample_length;i++)(void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",first.rx_sample[i]);
   if(!i)strcpy(hex,"none");
   ArmConsole_Printf("OK bus first reason=%s addr=%u func=0x%02X uart_error=0x%08lX rx_bytes=%lu gap_ms=%lu hex=%s\r\n",
     first.reason,first.address,first.function,(unsigned long)first.uart_error,(unsigned long)first.rx_bytes,(unsigned long)first.process_gap_ms,hex);
+  for(i=0;i<first.tx_length && i<16U;i++)(void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",first.tx_sample[i]);
+  if(!i)strcpy(hex,"none");
+  ArmConsole_Printf("OK bus first_tx bytes=%u tx_ms=%lu hex=%s\r\n",
+    first.tx_length,(unsigned long)first.tx_ms,hex);
+  ArmConsole_BusRxErrorShow(true,true);ArmConsole_BusRxErrorShow(false,true);
 }
 static void ArmConsole_BusStatusShow(void)
 {
@@ -1940,8 +1973,20 @@ static void ArmConsole_BusRecoveryProcess(void)
   }
   if(fault.rx_warning_count!=BusRxWarningShown && now-BusRxWarningTick>=500U) {
     BusRxWarningShown=fault.rx_warning_count;BusRxWarningTick=now;
-    ArmConsole_Printf("WARN bus rx_restarted count=%lu uart_error=0x%08lX tasks_interrupted=0\r\n",
-      (unsigned long)fault.rx_warning_count,(unsigned long)fault.rx_warning_error);
+    ArmConsole_Printf("WARN bus rx_restarted count=%lu uart_error=0x%08lX tasks_interrupted=0 error_ms=%lu queued=%u preserved_replies=%lu\r\n",
+      (unsigned long)fault.rx_warning_count,(unsigned long)fault.rx_warning_error,
+      (unsigned long)fault.rx_warning_ms,fault.rx_error_pending,(unsigned long)fault.rx_preserved_replies);
+  }
+  if(now-BusRxSnapshotTick>=2000U){BusRxSnapshotTick=now;ArmConsole_BusRxErrorShow(false,false);}
+  if(!fault.read_retry_count)BusReadRetryShown=0;
+  else if(fault.read_retry_count!=BusReadRetryShown) {
+    BusReadRetryShown=fault.read_retry_count;
+    char hex[33];unsigned i;
+    for(i=0;i<fault.read_retry_sample_length && i<16U;i++)
+      (void)snprintf(hex+2*i,sizeof hex-2*i,"%02X",fault.read_retry_sample[i]);
+    if(!i)strcpy(hex,"none");
+    ArmConsole_Printf("WARN bus read_retry count=%lu addr=%u func=0x3A rx_bytes=%lu hex=%s limit=1 motion_replayed=0\r\n",
+      (unsigned long)fault.read_retry_count,fault.read_retry_address,(unsigned long)fault.read_retry_rx_bytes,hex);
   }
   if(!BusRecoveryPending) {
     /* Mission recovery owns its saved task. Outside a mission repair only the
@@ -2237,7 +2282,7 @@ static uint8_t ArmConsole_GrabQueryHandle(unsigned count,char *tokens[])
   /* Cached status queries do not compete for actuator ownership. */
   if(!strcmp(tokens[0],"chassis"))
   {
-    if(count==2U && !strcmp(tokens[1],"task"))
+    if(count==2U && (!strcmp(tokens[1],"task") || !strcmp(tokens[1],"feedback")))
       return ChassisTelemetry_Command(count,tokens)?1U:0U;
     if(count==3U && !strcmp(tokens[1],"route") && !strcmp(tokens[2],"status"))
       return ChassisRoute_Command(count,tokens)?1U:0U;
@@ -2263,6 +2308,9 @@ static bool ArmConsole_GrabBusyGuard(unsigned TokenCount,char *Tokens[])
          (TokenCount==3U && !strcmp(Tokens[1],"mission") && !strcmp(Tokens[2],"continue")))) &&
       !(TokenCount==3U && !strcmp(Tokens[0],"grab") && !strcmp(Tokens[1],"qr") &&
         (!strcmp(Tokens[2],"status") || !strcmp(Tokens[2],"stop"))) &&
+      !(TokenCount==3U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"feedback") &&
+        (!strcmp(Tokens[2],"0") || !strcmp(Tokens[2],"on")) &&
+        ContestMission_FeedbackPreparationAllowed()) &&
       !((TokenCount==1U && (!strcmp(Tokens[0],"help") || !strcmp(Tokens[0],"info"))) ||
         (TokenCount==2U && ((!strcmp(Tokens[1],"status") &&
            (!strcmp(Tokens[0],"camera") ||   !strcmp(Tokens[0],"console") || !strcmp(Tokens[0],"qr"))) ||
@@ -2298,6 +2346,10 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
   /* Queries and log subscription never operate actuators and bypass motion guards. */
   if (ArmConsole_StopCommandHandle(TokenCount, Tokens)) return 1U;
   if (ArmConsole_PixelLogCommand(TokenCount, Tokens)) return 1U;
+  /* This exact query only reads four cached values, including while another
+   * owner is stopping/recovering. Feedback writes keep all guards below. */
+  if(TokenCount==2U && !strcmp(Tokens[0],"chassis") && !strcmp(Tokens[1],"feedback") &&
+     ArmConsole_GrabQueryHandle(TokenCount,Tokens))return 1U;
   if (!strcmp(Tokens[0],"turntable") &&
       ((TokenCount==2U && (!strcmp(Tokens[1],"status") || !strcmp(Tokens[1],"inventory"))) ||
        (TokenCount==3U && !strcmp(Tokens[1],"get"))))
@@ -2463,7 +2515,7 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   ConsoleTx_Init(huart);
   ResetPending = ResetAckDrained = 0U;
   BusRecoveryPending=ManualGuardActive=ManualGuardExecuting=0U;
-  BusRecoveryAutomatic=BusAutoFaultSeen=false;BusRxWarningShown=BusRxWarningTick=BusSyncWarningTick=0;
+  BusRecoveryAutomatic=BusAutoFaultSeen=false;BusRxWarningShown=BusRxWarningTick=BusSyncWarningTick=BusReadRetryShown=0;
   memset(&BusTest,0,sizeof BusTest);BusTestToken=0U;
   ArmConsole_ImuStream = 0U;
   ArmConsole_QrStream = 0U;
@@ -2487,7 +2539,7 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   memset(ArmConsole_LineBuffer, 0, sizeof(ArmConsole_LineBuffer));
   ArmConsole_Write("\r\nSTM32 mechanical arm console ready\r\n");
   ArmConsole_BuildShow();
-  ArmConsole_Write("Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2450us -> Base negative direction home -> IMU verify=5s; enable_verify=on; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
+  ArmConsole_Write("Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2450us -> Base near home -> IMU verify=5s; enable_verify=on; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
   ArmConsole_PromptShow();
   return HAL_OK;
 }

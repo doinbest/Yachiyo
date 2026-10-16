@@ -32,7 +32,7 @@ function consoleFixture(){
     renderStatus:empty,displayReply:protocol.formatTerminalLine,visualStateText:t=>t??'—',bootProgress:(_l,s)=>s,
     parseRadar:()=>null,radarModel:{snapshots:{},params:{}},localStorage:{setItem:empty},
     radarExchange:{busy:false,cancel:empty},radarHostClient:null,radarDirectView:null,
-    paramsView:{receive:empty,cancel:empty,update:empty},trackingPanel:null,materialTrackingPanel:null,stackingPanel:null,missionPanel:null,headingPanel:null,chassisTestResult:null,chassisTestSession:null,stopRecovery:null,
+    paramsView:{receive:empty,cancel:empty,update:empty},staticAlignGain:null,trackingPanel:null,materialTrackingPanel:null,stackingPanel:null,missionPanel:null,headingPanel:null,chassisTestResult:null,chassisTestSession:null,stopRecovery:null,
     radarView:{receive:empty,connection:empty,render:empty},mapView:null,wheelView:null,
     qrView:{receive:empty,connection:empty,refreshControls:empty},
     prepView:{busy:false,pending:null,connection(){this.busy=false;this.pending=null;},cancel(){this.busy=false;this.pending=null;},receive:empty},
@@ -49,10 +49,12 @@ function consoleFixture(){
     ${section('function mayQuery(wire)','async function requestStop()')}
     ${section('async function send(wire','async function refreshPorts()')}
     ${section('function definition(id)','async function copyText(text)')}
+    ${section('function buildGrabPreparation(body)','function parameterLink(')}
     ${section('function receive(line)','function communicationError(error)')}
     ${section('function renderGrabCalibrationStatus()','function buildVisionWorkspace(')}
     ${section('function renderGrabStatus()','function buildPages()')}
-    globalThis.sim={canSend,send,receive,connection,controlForm,updateControls,buildGrabCalibrationPanel,
+    globalThis.sim={canSend,send,receive,connection,controlForm,updateControls,buildGrabCalibrationPanel,buildGrabPreparation,
+      setStaticAlignGain(panel){staticAlignGain=panel;},
       get grabSnapshot(){return grabSnapshot;},get calibrationSnapshot(){return grabCalibrationSnapshot;},
       mountGrabStatus(){grabPanel=$('grab-task-status');renderGrabStatus();},
       configure(p){
@@ -66,6 +68,17 @@ function consoleFixture(){
   `,ctx);
   return {sim:ctx.sim,bridge,elements,wires,messages,logs,$};
 }
+
+test('Base quick HOME stays passive until clicked and sends nearest mode',async()=>{
+  const f=consoleFixture();f.sim.buildGrabPreparation(f.$('home-test-root'));
+  const button=f.elements.find(e=>e.tag==='button'&&e.title==='home base near');
+  assert.ok(button);assert.equal(button.textContent,'就近回零');
+  assert.ok(f.elements.some(e=>e.title==='home x collision'));
+  assert.ok(f.elements.some(e=>e.title==='home z collision'));
+  assert.deepEqual(f.wires,[]);
+  button.onclick();await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(f.wires,['home base near']);
+});
 
 test('gripper microsecond edits stay passive and apply once through existing firmware',async()=>{
   const f=consoleFixture();f.sim.controlForm('grip-pulse',{compact:true});
@@ -424,4 +437,19 @@ test('standalone ring task status omits unused route and QR fields',()=>{
  assert.match(text,/编号环自动放置.*2号环.*3号料盘/);
  assert.doesNotMatch(text,/第 — 段|来源 qr|none|路线原因/);
  assert.deepEqual(f.wires,[]);
+});
+
+
+test('static gain hooks receive replies and cancel on stop, reboot and disconnect',async()=>{
+  const f=consoleFixture(),calls=[];
+  f.sim.setStaticAlignGain({receive:line=>calls.push(['reply',line]),cancel:reason=>calls.push(['cancel',reason]),connection:connected=>calls.push(['connection',connected]),update(){}});
+  f.sim.receive('OK grab config key=lambda value=4');
+  assert.ok(calls.some(([kind,line])=>kind==='reply'&&line==='OK grab config key=lambda value=4'));
+  await f.sim.send('grab stop');
+  assert.ok(calls.some(([kind,reason])=>kind==='cancel'&&reason.includes('停止')));
+  f.sim.receive('STM32 mechanical arm console ready');
+  assert.ok(calls.some(([kind,reason])=>kind==='cancel'&&reason.includes('重启')));
+  f.sim.connection('disconnected');
+  assert.ok(calls.some(([kind,value])=>kind==='connection'&&value===false));
+  assert.deepEqual(f.wires,['grab stop']);
 });

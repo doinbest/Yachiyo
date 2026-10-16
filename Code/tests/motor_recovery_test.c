@@ -9,6 +9,8 @@ static unsigned sends, handled;
 static int moving, missing, rx_fail, zero_nack, sync_missing, post_moving;
 static bool restart_noise, sync_nack;
 static bool tx_never_completes;
+static uint32_t injected_noise;
+static uint8_t noise_address=7,noise_function=0x35;
 static unsigned transient_moving, speed_reads;
 static unsigned post_transient;
 static uint8_t speed_sign, stopped_speed;
@@ -60,6 +62,9 @@ static void step(void)
       else abort_mask|=1U<<(sent[0]-1);
     }
   }
+  if(injected_noise && sent[0]==noise_address && sent[1]==noise_function){
+    uart.ErrorCode=injected_noise;injected_noise=0;MotorBus_ErrorCallback(&uart);
+  }
   tick+=10;MotorBus_Process();
 }
 static MotorBus_Recovery_t run(void)
@@ -96,6 +101,12 @@ int main(void)
   assert(zero_mask==15 && sync_mask==15 && post_mask==15);
   for(unsigned i=0;i<4;i++)assert(cached[i]==0);
   for(unsigned i=4;i<8;i++)assert(cached[i]==(int)(i+2)*10);
+  /* Complete replies before a transient UART error must survive in recovery too. */
+  const uint32_t noise_codes[]={HAL_UART_ERROR_NE,HAL_UART_ERROR_FE,HAL_UART_ERROR_ORE};
+  for(unsigned i=0;i<3;i++) {
+    injected_noise=noise_codes[i];assert(MotorBus_RecoveryStart());s=run();
+    assert(!injected_noise && s.success && !MotorBus_IsQuarantined());
+  }
   /* Base can report residual speed after FE/abort; fresh stopped reads must
    * allow the same recovery request to finish without a second click. */
   transient_moving=2;speed_reads=0;
@@ -158,12 +169,15 @@ int main(void)
   state_flags=3;home_flags=7;assert(MotorBus_RecoveryStart());s=run();assert(!s.success);
   home_flags=3;assert(MotorBus_RecoveryStart());
   uart.ErrorCode=4;MotorBus_ErrorCallback(&uart);step();
+  MotorBus_RecoveryGet(&s);assert(s.active && !s.success && MotorBus_IsQuarantined());
+  s=run();assert(s.success);
+  assert(MotorBus_RecoveryStart());
+  uart.ErrorCode=HAL_UART_ERROR_DMA;MotorBus_ErrorCallback(&uart);step();
   MotorBus_RecoveryGet(&s);assert(!s.active && !s.success && MotorBus_IsQuarantined());
   assert(MotorBus_RecoveryStart());MotorBus_RecoveryCancel();
   MotorBus_RecoveryGet(&s);assert(!s.active && !s.success && MotorBus_IsQuarantined());
   restart_noise=true;assert(MotorBus_RecoveryStart());s=run();
-  assert(!s.success && s.uart_error==HAL_UART_ERROR_NE && s.elapsed_ms>=500 && s.checked_mask==0);
-  assert(!strcmp(s.stage,"rx_restart") && !s.function && !s.tx_sent);
+  assert(s.success && !MotorBus_IsQuarantined()); /* Noise during RX restart is retained for the next pass. */
   tx_never_completes=true;assert(MotorBus_RecoveryStart());s=run();
   assert(!strcmp(s.reason,"tx_timeout") && !s.tx_sent && !MotorBus_RecoveryRetryable(&s));
   puts("motor_recovery_test: recover, motion rejection, missing driver, RX failure and cancel OK");

@@ -48,6 +48,24 @@ int main(void)
   uint8_t other[] = {1, 0x35, 0x6b}, ack[] = {5, 0xf3, 2, 0x6b};
   assert(MotorBus_Init(&uart) == HAL_OK);
   assert(MechanicalArm_Init(&uart) == HAL_OK);
+  /* Nearest HOME uses the saved mechanical origin directly, without Both
+   * preparation or direction-parameter writes. Already-at-zero is accepted
+   * as a command response; task-level HOME verification is still required. */
+  for(unsigned sample=0;sample<3;sample++) {
+    const uint8_t code=sample==0?2:sample==1?0x12:0xe2;
+    const uint8_t home_reply[]={5,0x9a,code,0x6b};
+    unsigned before=tx_count;
+    assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_BASE,0)==MECHANICAL_ARM_RESULT_NONE);
+    tick+=10;MotorBus_Process();
+    assert(tx_count==before+1 && frame[0]==5 && frame[1]==0x9a && frame[2]==0 && frame[3]==0);
+    MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(home_reply,sizeof home_reply);
+    MotorBus_Process();MechanicalArm_Process();
+    assert(MechanicalArm_ResultGet(&e) && e.HomeMode==0 && e.MotorCode==code);
+    assert(e.Result==(sample==2?MECHANICAL_ARM_RESULT_MOTOR_ERROR:MECHANICAL_ARM_RESULT_OK));
+    assert(e.Transmitted && e.Acknowledged && e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_TRIGGER);
+    assert(e.Diagnostic.Function==0x9a && e.Diagnostic.ReplyLength==4);
+    assert(!memcmp(e.Diagnostic.Reply,home_reply,4) && tx_count==before+1);
+  }
   fixture_both_modes(&uart,&tick);
   /* Base direction HOME: read, preserve settings, set negative direction,
    * verify, then HOME. Driver names need not match the installed top view. */
@@ -70,25 +88,38 @@ int main(void)
     MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(home_ack,sizeof home_ack);
     MotorBus_Process();MechanicalArm_Process();
     assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_OK && e.HomeMode==1);
+    assert(e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_TRIGGER && e.Diagnostic.Function==0x9a);
+    assert(e.Diagnostic.WireTransmitted && e.Diagnostic.ReplyReceived);
+    assert(e.Diagnostic.ReplyLength==4 && !memcmp(e.Diagnostic.Reply,home_ack,4));
     tick+=10;tx_count=0;
   }
   /* Rejected settings, mismatching readback and a stop must never launch HOME. */
-  for(unsigned scenario=0;scenario<3;scenario++) {
+  for(unsigned scenario=0;scenario<4;scenario++) {
     uint8_t params[18]={5,0x22,0,1,0,30,0,0,0x27,0x10,0,20,3,0xe8,0,60,0,0x6b};
-    uint8_t reply[4]={5,0x4c,scenario==0?0xee:2,0x6b};
+    uint8_t reply[4]={5,0x4c,scenario==0?0xee:scenario==1?0xe2:2,0x6b};
     assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_BASE,1)==MECHANICAL_ARM_RESULT_NONE);
     MotorBus_Process();assert(frame[1]==0x22);
     MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(params,sizeof params);
     MotorBus_Process();MechanicalArm_Process();tick+=10;MotorBus_Process();assert(frame[1]==0x4c);
     MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(reply,sizeof reply);
     MotorBus_Process();MechanicalArm_Process();
-    if(scenario==0) {
+    if(scenario<2) {
       assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_MOTOR_ERROR && !e.Transmitted);
-    } else if(scenario==1) {
+      assert(e.MotorCode==reply[2] && !e.Acknowledged);
+      assert(e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_PARAMS_WRITE && e.Diagnostic.Function==0x4c);
+      assert(e.Diagnostic.BusEventValid && e.Diagnostic.BusResult==MOTOR_BUS_REPLY);
+      assert(e.Diagnostic.WireTransmitted && e.Diagnostic.ReplyReceived);
+      assert(e.Diagnostic.ReplyLength==4 && !memcmp(e.Diagnostic.Reply,reply,4));
+    } else if(scenario==2) {
       tick+=10;MotorBus_Process();assert(frame[1]==0x22);
       MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(params,sizeof params); /* Old settings. */
       MotorBus_Process();MechanicalArm_Process();
       assert(MechanicalArm_ResultGet(&e) && e.Result==MECHANICAL_ARM_RESULT_MOTOR_ERROR && !e.Transmitted);
+      assert(e.MotorCode==0 && !e.Acknowledged);
+      assert(e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_PARAMS_VERIFY && e.Diagnostic.Function==0x22);
+      assert(e.Diagnostic.VerifyMismatch && e.Diagnostic.VerifyOffset==0);
+      assert(e.Diagnostic.VerifyExpected==1 && e.Diagnostic.VerifyActual==0);
+      assert(e.Diagnostic.ReplyLength==18 && !memcmp(e.Diagnostic.Reply,params,18));
     } else {
       assert(MechanicalArm_Stop(MECHANICAL_ARM_AXIS_BASE)==MECHANICAL_ARM_RESULT_NONE);
       for(unsigned n=0;n<20 && MechanicalArm_IsBusy();n++) {
@@ -293,6 +324,9 @@ int main(void)
   MotorBus_Process();
   MechanicalArm_Process();
   assert(MechanicalArm_ResultGet(&e) && e.Result == MECHANICAL_ARM_RESULT_ACK_TIMEOUT);
+  assert(e.Diagnostic.BusEventValid && e.Diagnostic.BusResult==MOTOR_BUS_TIMEOUT);
+  assert(e.Diagnostic.Function==0xf3 && e.Diagnostic.HomeStage==MECHANICAL_ARM_HOME_NONE);
+  assert(e.Diagnostic.WireTransmitted && !e.Diagnostic.ReplyReceived && !e.Diagnostic.ReplyLength);
   assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_Z,2)==MECHANICAL_ARM_RESULT_TX_ERROR);
   assert(Emm_V5_TxStatusGet()==HAL_ERROR); /* A locked bus must not retry as BUSY. */
   assert(MechanicalArm_Stop(MECHANICAL_ARM_AXIS_BASE) == MECHANICAL_ARM_RESULT_NONE);

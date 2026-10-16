@@ -8,6 +8,21 @@ const wheelLines=lines=>{
  return wheels.length===4&&wheels.every((w,i)=>w.wheel===String(i+1)&&/^-?\d+$/.test(w.raw_rpm??'')&&
   /^[01],[01],[01]$/.test(w.valid??'')&&/^\d+,\d+,\d+$/.test(w.rx_ms??''))?wheels:null;
 };
+const recoveryResult=lines=>{
+ const normal=lines.findLast(l=>l.startsWith('OK bus recover complete '));
+ if(normal)return {mission:false,...fields(normal)};
+ // Mission reports are asynchronous. Only use those following this request's
+ // mission-preserved acceptance; a prior paused snapshot cannot finish it.
+ const accepted=lines.findLastIndex(l=>l.startsWith('OK bus recover requested ')&&fields(l).mission_preserved==='1');
+ if(accepted<0)return null;
+ const report=lines.slice(accepted+1).findLast(l=>l.startsWith('OK grab route '));
+ if(!report)return null;
+ const result=fields(report);
+ if(result.state==='bus_recovery_wait')return {mission:true,failed:true,...result};
+ if(result.state==='paused'&&result.reason==='bus_recovered'&&result.stop_confirmed==='1'&&result.auto_resume==='0')
+  return {mission:true,...result};
+ return null;
+};
 
 /** Explicit stop-bar action. Construction, connection and refresh stay passive. */
 export class StopRecovery {
@@ -54,15 +69,21 @@ export class StopRecovery {
   if(this.busy)return false;
   const b=this.bridge,revision=++this.revision;this.busy=true;
   this.stopToken=b.stopToken;this.commandEpoch=b.commandEpoch;this.connectionRevision=b.connectionRevision;
-  let acquired=false;this.show('recovering','正在读取底盘隔离状态…');
+  let acquired=false,missionPreserved=false;this.show('recovering','正在读取底盘隔离状态…');
   try{
    this.check(revision);let task=await this.readTask(revision);
    if(!['0','3','4'].includes(task.state))throw Error('底盘任务尚未停止，请等待停车确认后再恢复。');
    if(task.locked!=='0'||task.error!=='0'){
     this.show('recovering','正在恢复电机总线，等待实际检查完成…');
-    const lines=await this.query('bus recover',v=>v.some(l=>l.startsWith('OK bus recover complete ')),revision,{timeout:25000});
-    const result=fields(lines.findLast(l=>l.startsWith('OK bus recover complete ')));
-    if(result.chassis_ready!=='1'||result.wheels_stopped!=='1')throw Error('总线恢复后底盘尚未就绪，请查看具体设备原因。');
+    const lines=await this.query('bus recover',v=>!!recoveryResult(v),revision,{timeout:25000});
+    const result=recoveryResult(lines);missionPreserved=result.mission;
+    if(result.failed)throw Error(`比赛总线恢复未完成：${result.reason??'unknown'}；比赛进度保留，请处理后重试。`);
+    if(missionPreserved){
+     task=await this.readTask(revision);
+     if(task.locked!=='0'||task.error!=='0'||!['0','3','4'].includes(task.state))
+      throw Error('比赛已报告恢复，但当前底盘仍未就绪；请查看设备状态后重试。');
+    }else if(result.chassis_ready!=='1'||result.wheels_stopped!=='1')
+     throw Error('总线恢复后底盘尚未就绪，请查看具体设备原因。');
    }
    await b.resume();this.check(revision);
    if(b.stopLatched)throw Error('网页停车锁尚未解除，请读取最新停车状态。');
@@ -84,7 +105,9 @@ export class StopRecovery {
    if(task.locked!=='0'||task.error!=='0'||(task.origin_valid==='1'&&
     (task.feedback_valid!=='1'||Number(task.feedback_age_ms)>600)))throw Error('底盘或定位反馈仍未就绪，请查看设备状态。');
    await b.releasePreparation();acquired=false;this.check(revision);
-   this.show('ready',task.origin_valid==='1'?'底盘锁定已解除，四轮反馈已恢复；重新点击测试才运动。':'底盘锁定已解除，四轮反馈已恢复；独立测试仍需准备定位参考。');return true;
+   this.show('ready',missionPreserved?
+    (task.origin_valid==='1'?'底盘锁定已解除，四轮反馈已恢复；比赛保持暂停，请在比赛卡片显式继续。':'底盘锁定已解除，四轮反馈已恢复；比赛保持暂停，定位参考无效，请先处理参考问题。'):
+    (task.origin_valid==='1'?'底盘锁定已解除，四轮反馈已恢复；重新点击测试才运动。':'底盘锁定已解除，四轮反馈已恢复；独立测试仍需准备定位参考。'));return true;
   }catch(e){if(revision===this.revision)this.show('failed',e.message);return false;}
   finally{
    if(acquired){try{await b.releasePreparation();}catch(e){if(revision===this.revision)this.show('failed','释放准备状态失败：'+e.message);}}

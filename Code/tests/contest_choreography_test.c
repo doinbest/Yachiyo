@@ -35,7 +35,44 @@ static void overlap_pause(void)
   assert(ContestMission_Continue());pose_clearance=false;ContestMission_Process();
   assert(State==M_LEAVE && grab.state==GRAB_ROUTE_POSE);
   tx=-1;ContestMission_Process();assert(tx==-1);
-  pose_clearance=true;ContestMission_Process();assert(State==M_CENTER && tx==1200);
+  pose_clearance=true;ContestMission_Process();assert(State==M_CENTER && tx==1200 && ty==425);
+}
+static void raw_departure_waits_then_continues(void)
+{
+ for(unsigned batch=0;batch<2;batch++){
+  fixture(M_LEAVE);Station=4;Batch=batch;Item=3;CenterX=1200;CenterY=2100;WorkYaw=0;
+  grab.state=GRAB_COMPLETE;grab.result="travel_ready";pose_clearance=false;
+  unsigned old=resumes,poses=pose_calls;
+  reject_move="chassis_handoff_wait";
+  for(unsigned i=0;i<6;i++)ContestMission_Process();
+  assert(State==M_LEAVE && tx==-1 && resumes==old && pose_calls==poses);
+  reject_move=NULL;ContestMission_Process();assert(State==M_CENTER && tx==1200 && ty==2100);
+  motion.state=CHASSIS_MOTION_DONE;motion.stop_confirmed=true;motion.reason="feedback_arrived";
+  ContestMission_Process();assert(State==M_DRIVING && resumes==old+1);
+ }
+}
+static void processing_exit_target(void)
+{
+  for(unsigned batch=0;batch<2;batch++){
+    fixture(M_LEAVE);Batch=batch;Item=3;Pass=1;CenterY=350;
+    unsigned before=resumes;
+    ContestMission_Process();assert(tx==-1); /* Lift/retract evidence is required. */
+    pose_clearance=true;reject_move="busy";
+    ContestMission_Process();assert(tx==-1 && State==M_LEAVE);
+    reject_move=NULL;ContestMission_Process();
+    assert(State==M_CENTER && tx==1200 && ty==425 && WorkYaw==180);
+    assert(!strcmp(Reason,"return_processing_exit") && CenterY==350);
+    motion.state=CHASSIS_MOTION_DONE;motion.stop_confirmed=false;motion.reason="feedback_arrived";
+    grab.state=GRAB_COMPLETE;grab.result="travel_ready";
+    ContestMission_Process();assert(State==M_CENTER && resumes==before);
+    motion.stop_confirmed=true;grab.state=GRAB_ROUTE_POSE;grab.result="pending";
+    ContestMission_Process();assert(State==M_CENTER && resumes==before);
+    grab.state=GRAB_COMPLETE;grab.result="travel_ready";
+    ContestMission_Process();assert(State==M_DRIVING && resumes==before+1);
+  }
+  fixture(M_LEAVE);Station=3;CenterX=350;CenterY=1200;WorkYaw=90;
+  pose_clearance=true;ContestMission_Process();
+  assert(tx==350 && ty==1200 && !strcmp(Reason,"return_station_center"));
 }
 static void qr_departure_and_upper_start(void)
 {
@@ -94,7 +131,9 @@ static void stale_pose_does_not_start_work(void)
 }
 int main(void)
 {
+  raw_departure_waits_then_continues();
   legacy_mission_main();assert(store_travel_calls==5); /* four batches + single-piece route */
+  processing_exit_target();
   overlap_and_rendezvous(false);overlap_and_rendezvous(true);overlap_pause();
   qr_departure_and_upper_start();
   late_work_pose(4,false,false);late_work_pose(4,true,true);

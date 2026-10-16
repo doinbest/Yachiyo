@@ -12,7 +12,8 @@ export const materialScenarios=[
   ['原料夹取','z_grab','z_lift'],['车载取放','z_place','z_car_lift'],
   ['加工取放 / 第一层暂存','z_proc_place'],['暂存第二层','z_stack_place']
 ];
-const labels={base_car_offset:'车载 Base 偏转角',x_speed:'自动 X 运动速度',z_speed:'Z 观察 / 提起 / 放置速度',z_pick_speed:'物料夹取下降速度',close_ms:'闭爪后等待',release_ms:'松爪后等待',car_pick_wait_ms:'车仓开口后等待',x_ppm:'X 尺度',z_ppm:'Z 尺度'};
+const zSpeedKeys=new Set(['z_speed','z_pick_speed','qr_z_speed']);
+const labels={base_car_offset:'车载 Base 偏转角',x_speed:'自动 X 运动速度',z_speed:'Z 统一任务速度',z_pick_speed:'Z 统一速度（夹取兼容）',close_ms:'闭爪后等待',release_ms:'松爪后等待',car_pick_wait_ms:'车仓开口后等待',x_ppm:'X 尺度',z_ppm:'Z 尺度'};
 function separateUnit(field){
   if(field.unit)return field;
   const match=field.label.match(/^(.*)\s\/\s([^/]+)$/);
@@ -42,6 +43,7 @@ const number=(value,label)=>{if(String(value??'').trim()===''||!Number.isFinite(
 export function fieldWrites(field,drafts){
   const value=number(drafts[field.key],field.label);
   if(value<field.min||(field.exclusiveMin&&value===field.min)||value>field.max||(field.step===1&&!Number.isInteger(value)))throw new Error(`${field.label}超出范围或数值类型不符 ${field.min}～${field.max}`);
+  if(field.kind==='grab'&&zSpeedKeys.has(field.key))return [...zSpeedKeys].map(key=>[key,value]);
   if(field.conversion==='down'){
     const target=-value;
     return field.lift?[[field.key,target],[field.lift,target+number(drafts[field.lift],'对应抬升距离')]]:[[field.key,target]];
