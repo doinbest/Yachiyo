@@ -12,12 +12,12 @@ import {grabParameters,buildCommand} from '../protocol.mjs';
 
 test('firmware defaults and physical ranges reach all parameter entry points',()=>{
   assert.equal(GRAB_FORM_DEFAULTS.z_min,-150);
-  assert.equal(GRAB_FORM_DEFAULTS.car_pick_drop_mm,25);
+  assert.equal(GRAB_FORM_DEFAULTS.car_pick_drop_mm,18);
   assert.equal(GRAB_FORM_DEFAULTS.z_grab,-45);
   assert.equal(GRAB_FORM_DEFAULTS.z_place,-25);
   assert.equal(GRAB_FORM_DEFAULTS.track_store_drop_mm,25);
   for(const key of ['z_speed','z_pick_speed','qr_z_speed'])assert.equal(GRAB_FORM_DEFAULTS[key],250);
-  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-110);
+  assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-85);
   assert.equal(GRAB_FORM_DEFAULTS.z_rough_align,-100);
   assert.equal(GRAB_FORM_DEFAULTS.z_temp_align,-100);
   assert.equal(GRAB_FORM_DEFAULTS.z_stack_place,-100);

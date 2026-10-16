@@ -272,8 +272,8 @@ test('ground and turntable pickup are distinct, use competition Z settings and s
     assert.equal(ui.all().find(e=>e.title==='grab track pickstore').textContent,'转盘夹取并入仓');
     await ground.onclick();
     assert.equal(wires.at(-1),'grab store ground 1 3');
-    assert.equal(values.get('z_proc_place'),-110);assert.equal(values.get('z_grab'),-50);
-    assert.equal(values.get('z_car_lift'),0);assert.equal(values.get('z_place'),-25);
+    assert.equal(values.get('z_proc_place'),-85);assert.equal(values.get('z_grab'),-50);
+    assert.equal(values.get('z_car_lift'),0);assert.equal(values.get('z_place'),-18);
     assert.equal(values.get('z_pick_speed'),250);
     assert.equal(values.get('z_speed'),250);assert.equal(values.get('qr_z_speed'),250);
     const count=wires.length;panel.connection(false);panel.connection(true);assert.equal(wires.length,count);

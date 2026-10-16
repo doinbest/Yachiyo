@@ -444,7 +444,7 @@ static void car_x_default_survives_reset_and_verified_home(void)
   assert(GrabTask_Command(3,read));assert(strstr(output,"ERR grab config"));
   GrabTask_BootHomeStart();run_to(GRAB_IDLE,250,0);
   assert(GrabTask_ConfigReady("fixed"));
-  assert(Config[C_Z_PROC_PLACE]==-110 && Config[C_Z_ROUGH_ALIGN]==-100);
+  assert(Config[C_Z_PROC_PLACE]==-85 && Config[C_Z_ROUGH_ALIGN]==-100);
 }
 static void missing_and_fixed(void)
 {
@@ -816,7 +816,7 @@ static void boot_homing(void)
   for(i=0;i<20;i++) step(false,0,0,0);
   assert(homes==2 && !boot_verify_calls); /* Idle HOME flags alone are not verified origins. */
   physical[1]=0; run_to(GRAB_IDLE,250,0);
-  assert(boot_verify_calls==1 && homes==3 && !strcmp(status().reason,"home_complete") && Config[C_Z_GRAB]==-45 && Config[C_Z_PLACE]==-25 && Config[C_Z_TEMP_ALIGN]==-100 && Config[C_Z_STACK_PLACE]==-100);
+  assert(boot_verify_calls==1 && homes==3 && !strcmp(status().reason,"home_complete") && Config[C_Z_GRAB]==-45 && Config[C_Z_PLACE]==-18 && Config[C_Z_TEMP_ALIGN]==-100 && Config[C_Z_STACK_PLACE]==-100);
   assert(GrabTask_ConfigReady("fixed") && GrabTask_ConfigReady("align"));
   assert(!strcmp(status().missing,"none"));
   for(i=0;i<50;i++) step(false,0,0,0);
