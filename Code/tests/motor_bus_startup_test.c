@@ -57,10 +57,10 @@ int main(int argc,char **argv)
   assert(!MotorBus_IsQuarantined() && rx_starts==3);
   tick=1000;
   assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_Z,2)==MECHANICAL_ARM_RESULT_BUSY);
-  /* The third startup transient preserves the pending Receive preflight. */
+  /* The third startup transient preserves the pending None preflight. */
   frame_error(); assert(tx_count==1 && !MotorBus_IsQuarantined());
   assert(sent[0]==6 && sent[1]==0x42);
-  uint8_t cfg[33]={6,0x42,33,21};cfg[22]=1;cfg[32]=0x6b;
+  uint8_t cfg[33]={6,0x42,33,21};cfg[22]=0;cfg[32]=0x6b;
   MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(cfg,sizeof cfg);MotorBus_Process();
   tick+=3;MotorBus_Process();tx_count=0; /* Subsequent counts isolate HOME, not preflight. */
   assert(MechanicalArm_Home(MECHANICAL_ARM_AXIS_Z,2)==MECHANICAL_ARM_RESULT_NONE);
@@ -74,23 +74,24 @@ int main(int argc,char **argv)
     MotorBus_DiagnosticGet(&d);
     assert(!d.locked && tx_count==1 && d.rx_warning_count==1);
     assert(!MechanicalArm_ResultGet(&event));
-    MotorBus_TxCpltCallback(&uart);MotorBus_Process();
     if(!strcmp(argv[1],"active_missing")) {
+      /* No TX completion is still a real transport failure in None. */
       tick+=100;MotorBus_Process();MechanicalArm_Process();
       assert(MotorBus_IsQuarantined());
       assert(MechanicalArm_ResultGet(&event) && event.Result!=MECHANICAL_ARM_RESULT_OK);
     } else {
+      MotorBus_TxCpltCallback(&uart);MotorBus_Process();
       MotorBus_RxBytes(ack,sizeof ack);MotorBus_Process();MechanicalArm_Process();
       assert(MechanicalArm_ResultGet(&event) && event.Result==MECHANICAL_ARM_RESULT_OK);
     }
     assert(tx_count==1); /* HOME was never replayed. */
-    puts("motor_bus_startup_test: in-flight RX restart, real reply or timeout PASS");
+    puts("motor_bus_startup_test: in-flight RX restart, None TX completion or TX timeout PASS");
     return 0;
   }
   MotorBus_TxCpltCallback(&uart); MotorBus_Process(); MechanicalArm_Process();
-  assert(!MechanicalArm_ResultGet(&event)); /* Stale pre-HOME data cannot ACK. */
+  assert(MechanicalArm_ResultGet(&event) && event.Result==MECHANICAL_ARM_RESULT_OK && !event.Acknowledged);
   MotorBus_RxBytes(ack,sizeof ack); MotorBus_Process(); MechanicalArm_Process();
-  assert(MechanicalArm_ResultGet(&event) && event.Result==MECHANICAL_ARM_RESULT_OK);
+  assert(!MechanicalArm_ResultGet(&event)); /* Late ACK cannot duplicate completion. */
   tick+=20; frame_error();
   MotorBus_DiagnosticGet(&d);
   assert(!d.locked && tx_count==1);

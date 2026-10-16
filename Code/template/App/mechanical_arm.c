@@ -352,7 +352,7 @@ static MechanicalArm_ResultTypeDef MechanicalArm_RequestStartEx(MechanicalArm_Ac
     return MECHANICAL_ARM_RESULT_BUSY;
   }
 
-  /* ALL advances directly on ACK: prepare every axis before accepting it. */
+  /* ALL advances on TX completion: prepare every axis before accepting it. */
   if(Axis==MECHANICAL_ARM_AXIS_ALL &&
      (Action==MECHANICAL_ARM_ACTION_ENABLE || Action==MECHANICAL_ARM_ACTION_HOME)){
     if(MotorBus_IsQuarantined())return MECHANICAL_ARM_RESULT_TX_ERROR;
@@ -547,7 +547,7 @@ HAL_StatusTypeDef MechanicalArm_Init(UART_HandleTypeDef *huart)
   MechanicalArm_Uart = huart;
   MechanicalArm_State = MECHANICAL_ARM_STATE_IDLE;
   MechanicalArm_EventReady = 0;
-  /* Initialization stays quiet. Enable, HOME and FD prepare verified Receive
+  /* Initialization stays quiet. Enable, HOME and FD prepare verified None
    * on demand before their first command; no drive Flash or origin changes. */
   MechanicalArm_StopPendingMask=MechanicalArm_StopMask=0;
   memset(&MechanicalArm_Request, 0, sizeof(MechanicalArm_Request));
@@ -658,9 +658,21 @@ void MechanicalArm_Process(void)
   }
   if (event.result == MOTOR_BUS_TX_DONE &&
       (MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_STOP ||
-       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_HOME_ABORT))
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_HOME_ABORT ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_ENABLE ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_DISABLE ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_HOME ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_POSITION ||
+       MechanicalArm_Request.Action == MECHANICAL_ARM_ACTION_ZERO))
   {
     MechanicalArm_Transmitted = 1;
+    /* A sent command is not an ACK, arrival, enabled or HOME confirmation.
+     * The owning task must obtain those facts from fresh real feedback. */
+    MechanicalArm_Request.SuccessMask |= (uint8_t)(1U << MechanicalArm_Request.CurrentAxis);
+    if(MechanicalArm_Request.RequestedAxis==MECHANICAL_ARM_AXIS_ALL &&
+       MechanicalArm_Request.CurrentAxis<MECHANICAL_ARM_AXIS_X){
+      (void)MechanicalArm_NextAxisStart();return;
+    }
     MechanicalArm_RequestFinish(MECHANICAL_ARM_RESULT_OK, MECHANICAL_ARM_AXIS_INVALID, 0);
     return;
   }
@@ -843,7 +855,7 @@ MechanicalArm_ResultTypeDef MechanicalArm_OriginSet(MechanicalArm_AxisTypeDef Ax
  * 函    数：触发单轴或全部轴执行指定模式回零
  * 参    数：Axis 目标轴；HomeMode 回零模式0至3
  * 返 回 值：请求接收结果
- * 说    明：成功结果只表示驱动器接受回零命令，不代表机械运动已经完成
+ * 说    明：None模式成功结果仅表示回零命令已发送；实际回零由任务反馈核验
  */
 MechanicalArm_ResultTypeDef MechanicalArm_Home(MechanicalArm_AxisTypeDef Axis, uint8_t HomeMode)
 {

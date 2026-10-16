@@ -35,14 +35,14 @@ static volatile bool wire_tx_completed;
 static volatile uint32_t wire_tx_ms;
 static volatile bool wire_tx_only;
 static bool wheel_receive_ack; /* Current wheel policy: default None. */
-static uint8_t wheel_none_observed;
+/* Last physical RAM mode, kept through communication recovery. Unknown=0,
+ * otherwise mode+1; only an explicit driver reset invalidates this evidence. */
+static uint8_t drive_reply_observed[8];
 static bool WheelReceiveRequired(unsigned address)
-{return wheel_receive_ack && !(wheel_none_observed&(1U<<(address-1U)));}
-static void WheelModeObserved(unsigned address,uint8_t mode)
+{return wheel_receive_ack && drive_reply_observed[address-1U]!=1U;}
+static void DriveModeObserved(unsigned address,uint8_t mode)
 {
-  if(address<1 || address>4)return;
-  if(mode==0)wheel_none_observed|=(uint8_t)(1U<<(address-1U));
-  else wheel_none_observed&=(uint8_t)~(1U<<(address-1U));
+  if(address>=1 && address<=8)drive_reply_observed[address-1U]=(uint8_t)(mode+1U);
 }
 static uint8_t dma_rx[64], rx_ring[256], parse[MOTOR_BUS_FRAME_MAX];
 static uint32_t rx_time[256];
@@ -115,11 +115,11 @@ bool MotorBus_RxErrorGet(MotorBus_RxErrorSnapshot_t *out,bool first_fault)
 
 int MotorBus_PositionReplyEnsure(uint8_t address)
 {
-  return MotorBus_PositionReplyEnsureMode(address,1);
+  return MotorBus_PositionReplyEnsureMode(address,0);
 }
 int MotorBus_PositionReplyEnsureMode(uint8_t address,uint8_t mode)
 {
-  if(address<5 || address>8 || (mode!=1 && mode!=3))return -1;
+  if(address<5 || address>8 || (mode!=0 && mode!=1 && mode!=3))return -1;
   unsigned id=address-1U;
   position_reply_requested[id]=(uint8_t)(mode+1U);
   if(position_config_id==address)return 0;
@@ -173,7 +173,7 @@ static void PositionConfigProcess(void)
       /* A cancelled diagnostic must not turn a completed read into a new write. */
       if(!position_reply_requested[id]){position_config_id=0;return;}
       memcpy(position_config,event.data,33);
-      WheelModeObserved(position_config_id,event.data[22]);
+      DriveModeObserved(position_config_id,event.data[22]);
       if(position_config[22]==position_config_mode) {
         position_reply_mode[id]=(uint8_t)(position_config_mode+1U);position_reply_failed[id]=0;
         position_config_id=0;return;
@@ -181,10 +181,10 @@ static void PositionConfigProcess(void)
       position_config[1]=0x48;position_config[2]=0xd1;position_config[3]=0;
       position_config[22]=position_config_mode;position_config_phase=1;
     } else if(position_config_phase==1){
-      WheelModeObserved(position_config_id,position_config_mode);position_config_phase=2;
+      DriveModeObserved(position_config_id,position_config_mode);position_config_phase=2;
     }
     else {
-      WheelModeObserved(position_config_id,event.data[22]);
+      DriveModeObserved(position_config_id,event.data[22]);
       bool mismatch=memcmp(position_config+4,event.data+4,28)!=0;
       position_reply_mode[id]=mismatch?0:(uint8_t)(position_config_mode+1U);
       position_reply_failed[id]=mismatch?(uint8_t)(position_config_mode+1U):0;
@@ -221,11 +221,18 @@ static uint8_t urgent_drain[8][2];
 static uint32_t urgent_started[8][2];
 static bool Urgent(const uint8_t *data, uint8_t length, bool priority)
 { return priority && ((length==5U && data[1]==0xfe) || (length==4U && data[1]==0x9c)); }
-static bool WheelControlNoReply(MotorBus_Owner_t owner,const uint8_t *data,uint8_t length)
+static bool ControlNoReply(MotorBus_Owner_t owner,const uint8_t *data,uint8_t length)
 {
   if(!data || length<3)return false;
   if(!data[0])return !wheel_receive_ack && owner==MOTOR_BUS_CHASSIS && length==4U && data[1]==0xff;
-  if(data[0]>4 || WheelReceiveRequired(data[0]))return false;
+  if(data[0]>8)return false;
+  if(data[0]<=4) {
+    if(WheelReceiveRequired(data[0]))return false;
+  } else if(position_reply_mode[data[0]-1U]>1U) {
+    /* Explicit diagnostic Receive/Both compatibility; normal mechanisms
+     * always prepare verified None before enable, HOME or position motion. */
+    return false;
+  }
   switch(data[1]) {
     case 0xf6:case 0xfd:case 0xfe:case 0xff:case 0xf3:
     case 0x9a:case 0x9c:case 0x0a:case 0x0e:case 0x0f:return true;
@@ -573,7 +580,7 @@ bool MotorBus_SubmitReplyTo(MotorBus_Owner_t owner,const uint8_t *data,uint8_t l
                            uint8_t reply_address,uint8_t reply_length,uint32_t token,bool priority)
 {
   Slot *s;
-  if(WheelControlNoReply(owner,data,length))reply_length=0;
+  if(ControlNoReply(owner,data,length))reply_length=0;
   else if(data && length>=3U && data[0]>=1U && data[0]<=8U && !reply_length && !Urgent(data,length,priority))
     reply_length=ExpectedReplyLength(data,length);
   if (!bus_uart || owner >= MOTOR_BUS_OWNER_COUNT || !data || length < 3 ||
@@ -757,7 +764,7 @@ static uint8_t ReplyLength(uint8_t function)
     return 8;
   if (function == 0x3a)
     return 4;
-  if (running && function == active.data[1])
+  if (running && function == active.data[1] && active.reply_length>=4U)
     return active.reply_length;
   return 4;
 }
@@ -875,7 +882,7 @@ static void TxDoneProcess(void)
       unsigned k=active.data[1]==0x9c?1:0;
       unsigned first=active.data[0]?active.data[0]-1U:0U,last=active.data[0]?first+1U:8U;
       for(unsigned id=first;id<last;id++) {
-        if(id<4U && !WheelReceiveRequired(id+1U))continue;
+        if(id<4U ? !WheelReceiveRequired(id+1U) : drive_reply_observed[id]<=1U)continue;
         if(urgent_drain[id][k]<255)urgent_drain[id][k]++;
         urgent_started[id][k]=tx_done_ms;
       }
@@ -1213,7 +1220,7 @@ bool MotorBus_RecoverAfterReset(void)
   quarantined = false;
   memset(&first_fault, 0, sizeof(first_fault));RxErrorFirst.sequence=0;
   memset(position_motion,0,sizeof position_motion);
-  wheel_none_observed=0; /* This API follows an explicit physical driver reset. */
+  memset(drive_reply_observed,0,sizeof drive_reply_observed);
   memset(position_reply_mode,0,sizeof position_reply_mode);
   memset(position_reply_requested,0,sizeof position_reply_requested);
   memset(position_reply_failed,0,sizeof position_reply_failed);

@@ -187,7 +187,7 @@ static void standalone_ring_tray_place(void)
     lift_checked=true;z_arrives=false;unsigned turns=base_moves;
     for(unsigned wait=0;wait<25;wait++){
      ContestMission_Process();step(true,0,0,0);
-     assert(base_moves==turns && physical[1]<0); /* Standalone ring pickup must lift first. */
+     assert(base_moves==turns && physical[1]<0 && physical[0]==0); /* Lift first, with X kept retracted. */
     }
     z_arrives=true;physical[1]=destination[1];
    }

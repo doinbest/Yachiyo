@@ -144,7 +144,7 @@ static void standalone_ring_lifts_before_turn(unsigned slot,bool pause)
   unsigned turns=base_moves,closed=closures;z_arrives=false;
   for(unsigned i=0;i<30;i++)step(true,0,0,0);
   assert(Status.state==GRAB_LIFT && base_moves==turns && physical[1]==-25);
-  assert(physical[0]==(slot<=2?30:0));
+  assert(physical[0]==0 && CarPickClearanceX==0); /* Standalone ring pickup keeps X retracted. */
   if(pause){
     assert(GrabTask_Pause());run_to(GRAB_IDLE,200,0);
     Config[C_CAR_PICK_DROP_MM]=60;assert(GrabTask_Continue());
@@ -164,7 +164,16 @@ static void standalone_ring_prepare_lift_and_retract_overlap(void)
   assert(Axes[0].commanded && Axes[1].commanded && physical[0]==0 && physical[1]==-10);
   assert(Status.state==GRAB_RETRACT && base_moves==turns && !closures);
   z_arrives=true;physical[1]=destination[1];run_to(GRAB_COMPLETE,600,0);
-  assert(physical[0]==30 && physical[1]==0 && closures==1);
+  assert(physical[0]==0 && physical[1]==0 && closures==1);
+}
+static void standalone_ring_needs_no_extra_x_clearance_room(void)
+{
+  for(unsigned offset=0;offset<2;offset++){
+    setup();Config[C_X_MIN]=offset?10:0;Config[C_X_MAX]=Config[C_X_MIN]+20;
+    physical[0]=Config[C_X_MIN];
+    assert(GrabTask_RingCarPickStart(1,25));run_to(GRAB_COMPLETE,600,0);
+    assert(physical[0]==Config[C_X_MIN] && physical[1]==0 && closures==1);
+  }
 }
 int main(void)
 {
@@ -172,6 +181,7 @@ int main(void)
   pickup_clearance_precedes_base_turn();clearance_stop_preserves_absolute_target();insufficient_clearance_rejects_before_motion();
   cancel_ends_pickup_ownership();
   standalone_ring_prepare_lift_and_retract_overlap();
+  standalone_ring_needs_no_extra_x_clearance_room();
   for(unsigned slot=1;slot<=3;slot++)standalone_ring_lifts_before_turn(slot,slot==1);
-  puts("car pickup: ordinary X30/Base overlap; standalone ring parallel preparation, lifted Z before turn, three trays and pause/resume PASS");
+  puts("car pickup: ordinary X30/Base overlap; standalone ring no X30, lifted Z before turn, three trays and pause/resume PASS");
 }

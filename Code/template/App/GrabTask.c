@@ -2471,10 +2471,10 @@ static bool car_pick_start(uint8_t slot,float depth,bool lift_first)
   if(CarPickActive && slot!=CarPickSlot){Status.reason="car_pick_slot_mismatch";return false;}
   float top=CarPickActive?CarPickLiftTarget:Config[C_Z_MAX];
   float target=CarPickActive?CarPickTarget:top-depth;
-  /* Current match order picks trays 1,2,3. The first two need clearance from
-   * the remaining materials; tray3 is last and keeps X retracted. */
+  /* Normal match pickups retain X30 for trays1/2. Standalone ring pickups
+   * lift Z fully before turning and keep X at the retracted reference. */
   float clearance=CarPickActive?CarPickClearanceX:
-    Config[C_X_MIN]+(slot<=2U?GRAB_CAR_PICK_CLEARANCE_MM:0.0f);
+    Config[C_X_MIN]+(!lift_first && slot<=2U?GRAB_CAR_PICK_CLEARANCE_MM:0.0f);
   if(!isfinite(depth) || depth<=0 || depth>150 || !isfinite(top) ||
      !isfinite(target) || target<Config[C_Z_MIN] || target>=top)
   {Status.reason="car_pick_z_targets";return false;}
@@ -2682,7 +2682,7 @@ static void transfer_process(uint32_t now)
   {
     /* Empty-claw ring preparation may retract X while Z rises. Keep absolute
      * goals and require both actual arrivals before the turn toward the tray. */
-    float x=CarPickClearanceX-(CarPickSlot<=2U?GRAB_CAR_PICK_CLEARANCE_MM:0.0f);
+    float x=CarPickClearanceX;
     if(!Axes[1].commanded && !axis_move(1,CarPickLiftTarget))return;
     if(!Axes[0].commanded || fabsf(Axes[0].target-x)>.5f/Config[C_X_PPM])
       if(!axis_move(0,x))return;

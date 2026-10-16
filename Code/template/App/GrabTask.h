@@ -138,7 +138,7 @@ bool GrabTask_CarPickStart(uint8_t slot);
 /* One-request depth; lift returns to the same captured upper reference. */
 bool GrabTask_CarPickStartEx(uint8_t slot,float drop_mm);
 /* Standalone ring run/take: parallel empty-claw lift/retraction, then wait
- * for both lifted Z and X clearance before turning with material. NAN depth
+ * for lifted Z and retracted X before turning with material (no X30). NAN depth
  * selects the configured car_pick_drop; accepted goals survive pause/resume. */
 bool GrabTask_RingCarPickStart(uint8_t slot,float drop_mm);
 /* Current aligned work pose -> pickup -> selected tray -> X30 -> work pose. */

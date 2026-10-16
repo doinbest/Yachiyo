@@ -1,4 +1,4 @@
-/* None on cold drives: no enable/HOME may precede verified RAM Receive. */
+/* Receive/Both on cold drives: no enable/HOME may precede verified RAM None. */
 #define main old_lazy_main
 #include "motor_bus_lazy_config_test.c"
 #undef main
@@ -13,18 +13,18 @@ static void step(void)
     assert(id>=4 && id<8);handled=sends;
     if(frame[1]==0x42){
       memcpy(r,saved[id],33);r[22]=mode[id];reads[id]++;n=drop?0:33;
-      if(mode[id]==1 && writes[id])verified[id]=true;
+      if(mode[id]==0 && writes[id])verified[id]=true;
     }else if(frame[1]==0x48){
-      assert(frame[2]==0xd1 && frame[3]==0 && frame[22]==1);
+      assert(frame[2]==0xd1 && frame[3]==0 && frame[22]==0);
       for(unsigned i=4;i<32;i++)if(i!=22)assert(frame[i]==saved[id][i]);
-      mode[id]=1;writes[id]++;
+      mode[id]=0;writes[id]++;
     }else if(frame[1]==0xf3 || frame[1]==0x9a){
-      assert(mode[id]==1 && verified[id] && reads[id]>=2);
-      if(frame[1]==0xf3)enables++;else homes++;
+      assert(mode[id]==0 && verified[id] && reads[id]>=2);
+      if(frame[1]==0xf3)enables++;else homes++;n=0;
     }else if(frame[1]==0x35){n=6;r[2]=r[3]=r[4]=0;r[5]=0x6b;}
     else if(frame[1]==0x36){memset(r+2,0,5);n=8;r[7]=0x6b;}
     else if(frame[1]==0x3a || frame[1]==0x3b){r[2]=3;}
-    else assert(frame[1]==0xfe || frame[1]==0x9c);
+    else {assert(frame[1]==0xfe || frame[1]==0x9c);n=0;}
     MotorBus_TxCpltCallback(&uart);if(n)MotorBus_RxBytes(r,n);
   }
   tick+=3;MotorBus_Process();MechanicalArm_Process();Turntable_Process();
@@ -36,7 +36,7 @@ int main(int argc,char **argv)
   for(unsigned id=4;id<8;id++){
     uint8_t *c=saved[id];c[0]=id+1;c[1]=0x42;c[2]=33;c[3]=21;
     for(unsigned i=4;i<32;i++)c[i]=(uint8_t)(i+id);
-    c[22]=0;c[32]=0x6b;
+    c[22]=mode[id]=(id&1)?3:1;c[32]=0x6b;
   }
   for(unsigned i=0;i<20;i++)step();
   assert(!sends);
@@ -60,7 +60,7 @@ int main(int argc,char **argv)
       !strcmp(kind,"disable")?MechanicalArm_Disable(MECHANICAL_ARM_AXIS_Z):MechanicalArm_HomeAbort(MECHANICAL_ARM_AXIS_Z);
     assert(r==MECHANICAL_ARM_RESULT_NONE);MotorBus_Process();
     assert(sends==1 && frame[0]==6 && frame[1]==(!strcmp(kind,"stop")?0xfe:!strcmp(kind,"disable")?0xf3:0x9c));
-    assert(!writes[5] && !reads[5]);puts("stop/disable/HOME_ABORT do not wait for Receive PASS");return 0;
+    assert(!writes[5] && !reads[5]);puts("stop/disable/HOME_ABORT do not wait for configuration PASS");return 0;
   }
   if(!strncmp(kind,"tray",4)){
     assert(!strcmp(kind,"tray_enable")?Turntable_Enable(true):Turntable_Home());
@@ -85,5 +85,5 @@ int main(int argc,char **argv)
       assert((enable?enables:homes)==(all?3U:1U));
     }
   }
-  puts("motor_home_receive_test: verified RAM Receive precedes enable/HOME PASS");
+  puts("motor_home_none_test: verified RAM None precedes enable/HOME PASS");
 }

@@ -61,7 +61,7 @@ int main(void)
   char *speed[]={"turntable","set","speed_rpm","1"};
   char *slot[]={"turntable","set","slot2_deg","270"};
   static const uint8_t arm_address[]={7,6,5},functions[]={0x35,0x36,0x3a};
-  assert(MotorBus_Init(&uart)==HAL_OK);fixture_receive_modes(&uart,&tick);
+  assert(MotorBus_Init(&uart)==HAL_OK);fixture_none_modes(&uart,&tick);
   handled=sends;Turntable_Init();
   assert(Turntable_Origin());
   for(unsigned i=0;i<1000 && Turntable_IsBusy();i++)step();

@@ -10,7 +10,7 @@
 #include <string.h>
 
 /* Emm42 默认 1.8°/16细分：指令3200脉冲/圈，实时位置65536单位/圈。
- * 二者不可互换；车载转盘与电机1:1直连。固定分度只在RAM选择Receive应答。 */
+ * 二者不可互换；车载转盘与电机1:1直连。固定分度只在RAM选择None动作应答。 */
 #define COMMAND_PULSES_PER_REV 3200.0
 #define FEEDBACK_UNITS_PER_REV 65536.0
 #define FIXED_FEEDBACK_PERIOD_MS 25U
@@ -136,7 +136,7 @@ static void fail(const char *reason)
 }
 void Turntable_Init(void)
 {
-  /* Initialization stays quiet; enable/HOME prepare Receive before sending. */
+  /* Initialization stays quiet; enable/HOME prepare None before sending. */
   unsigned i;
   static const float Defaults[PARAM_COUNT] = {0, 90, 180, 30, 8, 2.5f, 200, 2000};
   memcpy(Params, Defaults, sizeof(Params));
@@ -490,7 +490,9 @@ void Turntable_Process(void)
         else if(MotionStarted && (Op==OP_INDEX || Op==OP_ANGLE || Op==OP_JOG) &&
                 (uint32_t)(now-Started)>MotionBudget)position_timeout(now);
       } else if (((Step == TT_PHASE_STOP_FRAME || Step == TT_PHASE_ABORT_HOME) && event.result != MOTOR_BUS_TX_DONE) ||
-          (Step != TT_PHASE_STOP_FRAME && Step != TT_PHASE_ABORT_HOME && event.result != MOTOR_BUS_REPLY)) {
+          ((Step == TT_PHASE_ENABLE || Step == TT_PHASE_MOVE || Step == TT_PHASE_HOME) ?
+             (event.result != MOTOR_BUS_TX_DONE && event.result != MOTOR_BUS_REPLY) :
+             (Step != TT_PHASE_STOP_FRAME && Step != TT_PHASE_ABORT_HOME && event.result != MOTOR_BUS_REPLY))) {
         Status.feedback_valid = false;
         fail(event.result == MOTOR_BUS_TIMEOUT ? "feedback_timeout" : "transport_error");
       } else if (Step == TT_PHASE_ABORT_HOME) {
@@ -512,7 +514,7 @@ void Turntable_Process(void)
         memset(SampleTick, 0, sizeof(SampleTick));
         LastCycle = now - 50U;
       } else if (Step == TT_PHASE_ENABLE || Step == TT_PHASE_MOVE || Step == TT_PHASE_HOME) {
-        if (event.length != 4 || event.data[2] != 2U) { fail("driver_rejected"); return; }
+        if (event.result == MOTOR_BUS_REPLY && (event.length != 4 || event.data[2] != 2U)) { fail("driver_rejected"); return; }
         if (Step == TT_PHASE_ENABLE && Op == OP_POWER) {
           Step = TT_PHASE_SAMPLE;
           SampleKind = 0;

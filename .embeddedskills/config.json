@@ -2,7 +2,7 @@
   "keil": {
     "project": "Code/template/MDK-ARM/template.uvprojx",
     "target": "template",
-    "log_dir": ".embeddedskills/ring-lift-first-20261017/keil"
+    "log_dir": ".embeddedskills/ring-no-x30-20261017/keil"
   },
   "eide": {
     "project": "Code/template/MDK-ARM/eide",

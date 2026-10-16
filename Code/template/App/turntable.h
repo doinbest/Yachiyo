@@ -36,7 +36,7 @@ bool Turntable_IsBusy(void);
 /** @brief 请求 ID8 停止；普通停止保留参考、参数和库存。
  * 总线隔离时只能确认停止帧发送，status 报 stopped_unverified。 */
 void Turntable_Stop(void);
-/** @brief 单独使能/失能 ID 8；应答后读取状态确认，保留仓位参数、参考及库存。 */
+/** @brief 单独使能/失能 ID 8；发送完成后读取状态确认，保留仓位参数、参考及库存。 */
 bool Turntable_Enable(bool enabled);
 /** @brief 将当前单圈机械零点保存到 ID 8 驱动器，并同步第一仓软件参考。 */
 bool Turntable_SaveZero(void);

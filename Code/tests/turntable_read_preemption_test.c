@@ -15,7 +15,7 @@ static void setup_preemption(void)
   reached_missing=home_failed=force_home_running=motor_fault=power_disabled=0;
   home_busy=arrival_bias=0;position_raw=16384;saved_zero=0;console[0]=0;
   assert(MotorBus_Init(&uart)==HAL_OK);
-  fixture_receive_modes(&uart,&tick);handled=sends;Turntable_Init();
+  fixture_none_modes(&uart,&tick);handled=sends;Turntable_Init();
   assert(Turntable_Origin());run();
   assert(Turntable_InventorySet(1,TURNTABLE_OCCUPIED,2));
   console[0]=0;
@@ -89,12 +89,14 @@ static void cancelled_command_is_not_replayed(uint8_t function)
     if(sends!=handled && sent[1]==function)break;
     assert(i<499);
   }
-  handled=sends;MotorBus_TxCpltCallback(&uart);MotorBus_Process();
+  handled=sends; /* Cancel while TX is still in flight; None finishes at TC. */
   const uint8_t command[]={1,0xfe,0x98,0,0x6b};
   assert(MotorBus_Submit(MOTOR_BUS_STOP,command,5,0,999,true));
+  MotorBus_TxCpltCallback(&uart);MotorBus_Process();
   Turntable_Process();
   assert(strstr(console,"ERR turntable fault reason=transport_error"));
-  assert(MotorBus_IsQuarantined());
+  /* A parameter write can be uncertain; a None action has no abandoned ACK. */
+  assert(MotorBus_IsQuarantined()==(function==0x93));
 }
 static void repeated_preemption_keeps_motion_deadline(bool dense)
 {

@@ -32,7 +32,7 @@ static void step(void)
     handled=sends;MotorBus_TxCpltCallback(&uart);
     assert(sent[0]==8);
     if(sent[1]==0x42) {
-      r[2]=33;r[3]=21;r[22]=1;r[32]=0x6b;length=33;
+      r[2]=33;r[3]=21;r[22]=0;r[32]=0x6b;length=33;
     } else if(sent[1]==0x36) {
       uint32_t mag=position_raw<0?(uint32_t)-(int64_t)position_raw:(uint32_t)position_raw;
       r[2]=position_raw<0;r[3]=mag>>24;r[4]=mag>>16;r[5]=mag>>8;r[6]=mag;length=8;
@@ -80,7 +80,7 @@ int main(void)
   char *get[]={"turntable","get","slot2_deg"};
   char *set[]={"turntable","set","slot2_deg","270"};
   char *empty[]={"turntable","inventory","empty"};
-  assert(MotorBus_Init(&uart)==HAL_OK);fixture_receive_modes(&uart,&tick);Turntable_Init();
+  assert(MotorBus_Init(&uart)==HAL_OK);fixture_none_modes(&uart,&tick);Turntable_Init();
   sends=handled=0;
   /* The coordinator releases startup once; no early traffic before that gate. */
   for(unsigned i=0;i<10;i++) {
@@ -223,8 +223,9 @@ int main(void)
   assert(!s.arrived && !strcmp(s.reason,"position_timeout"));disabled=0;
   hold_position=1;assert(Turntable_Index(3));run();Turntable_StatusGet(&s);
   assert(!s.arrived && !strcmp(s.reason,"position_timeout"));hold_position=0;
-  reject=1;assert(Turntable_Index(2));run();Turntable_StatusGet(&s);
-  assert(!s.arrived && !strcmp(s.reason,"driver_rejected"));reject=0;
+  reject=1;assert(Turntable_Index(3));run();Turntable_StatusGet(&s);
+  /* With no action ACK, a refused move is detected by its actual position. */
+  assert(!s.arrived && !strcmp(s.reason,"position_timeout"));reject=0;
   /* Cancel during read: consume late read reply, then fresh stop confirmation. */
   assert(Turntable_Index(2));step();Turntable_Stop();run();
   assert(!MotorBus_IsQuarantined());
@@ -264,7 +265,7 @@ int main(void)
     assert(strstr(console,"ERR turntable fault reason=transport_error"));
     assert(strstr(console,"bus_reason=uart_error addr=8 func=0x3A uart_error=0x00000010"));
     assert(MotorBus_IsQuarantined() && Turntable_ReferenceValid());
-    assert(MotorBus_RecoverAfterReset());fixture_receive_modes(&uart,&tick);handled=sends;console[0]=0;
+    assert(MotorBus_RecoverAfterReset());fixture_none_modes(&uart,&tick);handled=sends;console[0]=0;
   }
   {
     assert(Turntable_Index(2));run();
@@ -286,22 +287,22 @@ int main(void)
   Turntable_Stop();run();Turntable_StatusGet(&s);
   assert(!strcmp(s.reason,"stopped_unverified") && Turntable_ReferenceValid());
   assert(Turntable_InventoryGet(1).state==TURNTABLE_OCCUPIED);
-  missing=0;assert(MotorBus_RecoverAfterReset());fixture_receive_modes(&uart,&tick);handled=sends;
+  missing=0;assert(MotorBus_RecoverAfterReset());fixture_none_modes(&uart,&tick);handled=sends;
   {
     unsigned before_stop=stop_commands;
-    /* The motor executes, but its ACK is missing: still send priority Stop. */
+    /* The motor executes without an ACK: real feedback may confirm arrival. */
     int32_t old_position=position_raw;
     missing_motion_ack=1;assert(Turntable_Index(3));run();Turntable_StatusGet(&s);
     assert(position_raw!=old_position);
-    assert(stop_commands==before_stop+1 && !s.arrived && !s.feedback_valid);
-    assert(MotorBus_IsQuarantined());missing_motion_ack=0;
+    assert(stop_commands==before_stop && s.arrived && s.feedback_valid);
+    assert(!MotorBus_IsQuarantined());missing_motion_ack=0;
   }
   assert(position_commands>=6);
   /* Direct positive half-turn to slot3+90, with no intermediate slot3 command. */
   missing=reject=hold_position=missing_motion_ack=disabled=motor_fault=0;
   reached_missing=moving=speed_rpm=arrival_bias=0;handled=sends;position_raw=0;
   assert(MotorBus_RecoverAfterReset());
-  assert(MotorBus_Init(&uart)==HAL_OK);fixture_receive_modes(&uart,&tick);handled=sends;Turntable_Init();assert(Turntable_Origin());run();
+  assert(MotorBus_Init(&uart)==HAL_OK);fixture_none_modes(&uart,&tick);handled=sends;Turntable_Init();assert(Turntable_Origin());run();
   float slot3;assert(Turntable_SlotAngleGet(3,&slot3) && slot3==180);
   position_raw=16300; /* Slightly below 90 must still take the positive half-turn. */
   unsigned before_clearance=position_commands;

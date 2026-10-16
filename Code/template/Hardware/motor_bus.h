@@ -101,11 +101,11 @@ typedef struct
 /** @brief Main-loop RAM snapshot; timestamps/durations in MCU milliseconds. */
 void MotorBus_TimingGet(MotorBus_Timing_t *out);
 bool MotorBus_EventGet(MotorBus_Owner_t owner, MotorBus_Event_t *event);
-/* IDs5..8: read/preserve parameters, select Receive in RAM, then verify.
+/* IDs5..8: read/preserve parameters, select None in RAM, then verify.
  * Returns 1 ready, 0 pending, -1 failed; no motion is sent by this helper. */
 int MotorBus_PositionReplyEnsure(uint8_t address);
-/* Same preserved RAM configuration/readback, selecting driver Receive=1 or
- * Both=3. Pending transitions never grant readiness from an older mode cache. */
+/* Explicit diagnostic compatibility: None=0, Receive=1 or Both=3.
+ * Pending transitions never grant readiness from an older mode cache. */
 int MotorBus_PositionReplyEnsureMode(uint8_t address,uint8_t mode);
 /* IDs1..4: preserve full parameters, RAM-select None/Receive, verify readback.
  * TX-only control policy never changes data-query or configuration replies. */
@@ -210,9 +210,10 @@ static inline bool MotorBus_RecoveryRetryable(const MotorBus_Recovery_t *s)
 /** @brief Start explicit recovery after all producers have stopped and drained.
  * Keeps normal traffic locked; stops/aborts IDs 1..8, drains old replies, then
  * checks three rounds of speed/state/home flags, overwrites IDs1..4 sync caches
- * with 0 RPM (Receive ACK each), triggers addressed sync, then verifies fresh
- * wheel speed/state/home flags. Refused addressed sync is a warning only after
- * all zero-cache ACKs; success still requires fresh stopped wheel feedback.
+ * with 0 RPM, triggers addressed sync, then verifies fresh wheel feedback.
+ * None uses TX completion; explicit Receive compatibility still requires ACKs.
+ * Refused addressed sync is a warning only after all Receive zero-cache ACKs;
+ * success always requires fresh stopped wheel speed/state/home flags.
  * Rechecks residual speed every 100 ms within the existing 8 s limit; any
  * moving sample restarts stopped validation, persistent motion stays locked.
  * Never enables, resets position, homes, broadcasts sync or resumes a task.

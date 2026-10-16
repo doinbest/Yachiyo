@@ -98,7 +98,7 @@ extern "C"
     uint8_t SuccessMask;
     uint8_t FailureMask;
     uint8_t Transmitted;  /* Complete TX observed; never inferred from accepted request. */
-    uint8_t Acknowledged; /* Matched reply; stop uses TX-only and leaves this zero. */
+    uint8_t Acknowledged; /* Matched reply only; None actions leave this zero. */
     uint8_t StopIdMask; /* Priority STOP targets, bit0=ID1; 0xFF only for true ALL. */
     MechanicalArm_DiagnosticTypeDef Diagnostic;
   } MechanicalArm_EventTypeDef;
@@ -117,8 +117,8 @@ extern "C"
                                                        uint8_t Acceleration,
                                                        MechanicalArm_PositionModeTypeDef Mode);
   MechanicalArm_ResultTypeDef MechanicalArm_PositionRead(MechanicalArm_AxisTypeDef Axis);
-  /* Dynamic X absolute lookahead: Receive only, with ordinary ACK scheduling.
-   * Fixed position entry points share the same Receive mode. */
+  /* Dynamic X absolute lookahead: verified None, advance on actual TX complete.
+   * Fixed positions share the same mode; arrival still needs real feedback. */
   MechanicalArm_ResultTypeDef MechanicalArm_PositionTrackingEx(MechanicalArm_AxisTypeDef Axis,
                                                        int32_t Position,uint16_t SpeedRpm,
                                                        uint8_t Acceleration,

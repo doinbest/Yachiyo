@@ -201,8 +201,8 @@ MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef a
     base_position_mode=mode;
     if(Operation==OP_CAR_PICK && Status.state==GRAB_RETURN_TURN)
     {
-      assert(CarPickClosed && (CarPickSlot<=2U || physical[1]>=CarPickLiftTarget-.11f));
-      assert(fabsf(physical[0]-(Config[C_X_MIN]+(CarPickSlot<=2U?30.0f:0.0f)))<.11f);
+      assert(CarPickClosed && ((!CarPickLiftFirst && CarPickSlot<=2U) || physical[1]>=CarPickLiftTarget-.11f));
+      assert(fabsf(physical[0]-(Config[C_X_MIN]+(!CarPickLiftFirst && CarPickSlot<=2U?30.0f:0.0f)))<.11f);
     }
     else assert(fabsf(physical[0]-Config[C_X_MIN])<.11f);
     if(pending_valid) return MECHANICAL_ARM_RESULT_BUSY;

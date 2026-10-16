@@ -42,7 +42,7 @@ def build_test(name, *sources):
         sources = (*sources, "template/App/chassis_model.c")
     # Existing virtual UART fixtures freeze time at ACK; the dedicated settle
     # test exercises the production 2 ms handover and emergency bypass.
-    if name not in ("motor_bus_mode_test", "motor_bus_reply_settle_test", "motor_bus_probe_test", "chassis_feedback_alignment_test", "motor_recovery_evidence_test", "turntable_bus_fairness_test", "turntable_read_preemption_test", "chassis_none_bus_test"):
+    if name not in ("mechanism_none_bus_test", "motor_bus_mode_test", "motor_bus_reply_settle_test", "motor_bus_probe_test", "chassis_feedback_alignment_test", "motor_recovery_evidence_test", "turntable_bus_fairness_test", "turntable_read_preemption_test", "chassis_none_bus_test"):
         flags = [*flags, "-DMOTOR_BUS_REPLY_SETTLE_MS=0"]
     run(flags + ["tests/" + name + ".c", *sources, "-lm", "-o", exe])
     run([exe])
@@ -214,7 +214,10 @@ if __name__ == "__main__":
     build_test("motor_bus_diagnostic_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_startup_test", "template/App/mechanical_arm.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
     build_test("motor_bus_lazy_config_test", "template/App/mechanical_arm.c", "template/App/turntable.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
-    build_test("motor_home_receive_test", "template/App/mechanical_arm.c", "template/App/turntable.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
+    build_test("motor_home_none_test", "template/App/mechanical_arm.c", "template/App/turntable.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
+    build_test("mechanism_none_bus_test", "template/App/mechanical_arm.c", "template/App/turntable.c", "template/Hardware/Emm_V5.c", "template/Hardware/motor_bus.c", "-Wno-old-style-declaration")
+    for case in ("query_missing", "config_missing", "config_mismatch"):
+        run([OUT / "mechanism_none_bus_test.exe", case])
     for scenario in ("home5","home7","enable5","enable6","enable7","enable_all","home_all","tray_home","tray_enable","home6_fail","tray_fail","stop","disable","abort","parallel"):
         run([OUT / "motor_home_receive_test.exe",scenario])
     run([OUT / "motor_bus_lazy_config_test.exe", "turntable_home"])

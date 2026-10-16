@@ -9,6 +9,12 @@ int main(int argc,char **argv)
   Mecanum_Status_t status;
   const uint8_t move[]={5,0xfd,0,0,10,20,0,0,0,100,0,0,0x6b};
   assert(MotorBus_Init(&uart)==HAL_OK);
+  /* This regression deliberately exercises abandoned Receive compatibility;
+   * the production default None path has no pending motion ACK to cancel. */
+  assert(MotorBus_PositionReplyEnsureMode(5,1)==0);MotorBus_Process();
+  uint8_t cfg[33]={5,0x42,33,21};cfg[22]=1;cfg[32]=0x6b;
+  MotorBus_TxCpltCallback(&uart);MotorBus_RxBytes(cfg,33);MotorBus_Process();in_flight=false;
+  assert(MotorBus_PositionReplyEnsureMode(5,1)==1);count=0;
   tick=1000;
   assert(MotorBus_Submit(MOTOR_BUS_ARM,move,sizeof move,4,99,false));
   MotorBus_Process();MotorBus_TxCpltCallback(&uart);MotorBus_Process();in_flight=false;
