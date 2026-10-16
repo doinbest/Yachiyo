@@ -29,7 +29,7 @@ static void config_reply(unsigned mode)
 }
 static void begin_config(void)
 {
-  assert(MotorBus_PositionReplyEnsure(6)==0);MotorBus_Process();
+  assert(MotorBus_PositionReplyEnsureMode(6,3)==0);MotorBus_Process();
   assert(sends==1 && sent[0]==6 && sent[1]==0x42);
 }
 static void cancel_read(bool after_tx,bool missing)
@@ -55,7 +55,7 @@ static void cancel_read(bool after_tx,bool missing)
   later(1);assert(!MotorBus_IsQuarantined() && sends==before+2 && sent[1]==0x35);
   tx_done();const uint8_t measured[]={1,0x35,0,0,0,0x6b};receive(measured,sizeof measured);
   assert(MotorBus_EventGet(MOTOR_BUS_FEEDBACK,&event) && event.result==MOTOR_BUS_REPLY && event.token==77);
-  assert(MotorBus_PositionReplyEnsure(6)==0); /* A new action must prepare again. */
+  assert(MotorBus_PositionReplyEnsureMode(6,3)==0); /* A new action must prepare again. */
   later(3);assert(sends==before+3 && sent[1]==0x42);
 }
 int main(int argc,char **argv)
@@ -65,13 +65,13 @@ int main(int argc,char **argv)
   if(!strcmp(which,"hold_queued")){
     const uint8_t q[]={1,0x35,0x6b},r[]={1,0x35,0,0,0,0x6b};
     assert(MotorBus_Submit(MOTOR_BUS_FEEDBACK,q,3,6,11,false));
-    assert(MotorBus_PositionReplyEnsure(6)==0);MotorBus_Process();assert(sent[1]==0x35);
+    assert(MotorBus_PositionReplyEnsureMode(6,3)==0);MotorBus_Process();assert(sent[1]==0x35);
     MotorBus_PositionConfigStopHold(true);MotorBus_Process();tx_done();receive(r,sizeof r);
     later(3);assert(sends==1 && !MotorBus_IsQuarantined());
     MotorBus_PositionConfigStopHold(false);later(3);assert(sends==1);
-    assert(MotorBus_PositionReplyEnsure(6)==0);later(3);assert(sent[1]==0x42 && sends==2);
+    assert(MotorBus_PositionReplyEnsureMode(6,3)==0);later(3);assert(sent[1]==0x42 && sends==2);
   }else if(!strcmp(which,"recovery")){
-    assert(MotorBus_PositionReplyEnsure(6)==0);assert(MotorBus_RecoveryStart());
+    assert(MotorBus_PositionReplyEnsureMode(6,3)==0);assert(MotorBus_RecoveryStart());
     later(501);assert(sends==1 && sent[1]==0xfe);
   }else{
     begin_config();
@@ -82,7 +82,7 @@ int main(int argc,char **argv)
       tx_done();const uint8_t ack[]={6,0x48,2,0x6b};receive(ack,sizeof ack);
       later(3);assert(sent[1]==0x42);cancel_read(false,false);
       tx_done();alter_params=true;config_reply(3);
-      assert(MotorBus_PositionReplyEnsure(6)==-1); /* Full snapshot must survive cancellation. */
+      assert(MotorBus_PositionReplyEnsureMode(6,3)==-1); /* Full snapshot must survive cancellation. */
     }else if(!strcmp(which,"write")){
       tx_done();config_reply(1);later(3);assert(sent[1]==0x48);
       const uint8_t stop[]={6,0xfe,0x98,0,0x6b};
@@ -96,7 +96,7 @@ int main(int argc,char **argv)
       MotorBus_PositionConfigStopHold(false);later(3);assert(sent[1]==0x48 && sends==2);
       tx_done();const uint8_t ack[]={6,0x48,2,0x6b};receive(ack,sizeof ack);
       later(3);assert(sent[1]==0x42 && sends==3);
-      tx_done();config_reply(3);assert(MotorBus_PositionReplyEnsure(6)==1);
+      tx_done();config_reply(3);assert(MotorBus_PositionReplyEnsureMode(6,3)==1);
     }else assert(!"unknown case");
   }
   printf("config/stop case %s PASS\n",which);return 0;

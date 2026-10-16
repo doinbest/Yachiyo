@@ -69,6 +69,27 @@ static void until_saved(void)
  for(unsigned waited=0;!saves && waited<60000U;waited+=10U)advance(10);
  assert(saves==1 && status().busy && status().verified && status().samples==301);
 }
+static void quick_recovery_cases(void)
+{
+ setup(100);assert(HWT101_Cal_QuickStart());
+ for(unsigned i=0;i<2300 && status().state!=HWT101_CAL_VERIFYING;i++)advance(10);
+ assert(status().state==HWT101_CAL_VERIFYING);advance(3000);
+ angle_failures=1;advance(10);assert(status().read_recovering && !status().verified);
+ for(unsigned i=0;i<400 && status().read_recovering;i++)advance(10);
+ assert(!status().read_recovering && status().verify_elapsed_ms==0);
+ advance(9500);assert(!status().verified && !saves);
+ advance(1500);assert(status().verified && status().samples==101 && status().control_ready);
+ assert(status().verify_elapsed_ms==10000 && starts==1 && exits==1 && zeros==1 && saves==1);
+ /* A post-SAVE read outage keeps the completed ten-second measurement. */
+ setup(100);assert(HWT101_Cal_QuickStart());
+ for(unsigned i=0;i<3500 && !saves;i++)advance(10);
+ assert(saves==1 && status().verified && status().samples==101);
+ fail_read_reg=0x4c;register_failures=1;advance(120);
+ assert(status().read_recovering && status().verified && status().samples==101);
+ advance(2500);assert(!strcmp(status().result,"PASS") && status().save_readback_ok);
+ assert(status().control_ready && status().verify_elapsed_ms==10000);
+ assert(starts==1 && exits==1 && zeros==1 && saves==1);
+}
 static void start_mode_recheck_cases(void)
 {
  /* The first successful bad START_CHECK read already counts as evidence.
@@ -368,7 +389,7 @@ int main(void)
  /* Cancel while waiting never resumes native calibration or saves on recovery. */
  setup(100);assert(HWT101_Cal_Start());advance(1000);stuck=true;advance(100);HWT101_Cal_Cancel();
  advance(3000);assert(!status().busy && status().state==HWT101_CAL_CANCELLED && !saves && starts==1);
- save_read_recovery_cases();
+ save_read_recovery_cases();quick_recovery_cases();
  puts("IMU read recovery: native continuation, SAVE readback, full fresh verification, mode check, timeout, cancel and tick wrap PASS");
  return 0;
 }

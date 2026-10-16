@@ -18,22 +18,22 @@ int main(void)
 {
  stored_raw();
  for(unsigned i=0;i<3;i++){
-  assert(!GrabTask_Start("align",CAMERA_COLOR_BLUE));
+  assert(!GrabTask_Start("align"));
   assert(status().state==GRAB_COMPLETE && !strcmp(status().result,"stored"));
   assert(Operation==OP_STORE && Scene==SCENE_RAW);
   assert(tray_inventory[0].state==TURNTABLE_OCCUPIED);
  }
  chassis_velocity_handoff_ready=true;
- assert(GrabTask_Start("align",CAMERA_COLOR_BLUE));
+ assert(GrabTask_Start("align"));
  assert(status().state==GRAB_PREPARE && !strcmp(status().result,"pending"));
  stored_raw();chassis_velocity_handoff_ready=true;
- pending_valid=true;assert(!GrabTask_Start("align",CAMERA_COLOR_BLUE));pending_valid=false;
+ pending_valid=true;assert(!GrabTask_Start("align"));pending_valid=false;
  assert(status().state==GRAB_COMPLETE && !strcmp(status().result,"stored"));
- assert(GrabTask_Start("align",CAMERA_COLOR_BLUE));
+ assert(GrabTask_Start("align"));
  setup();chassis_bus_busy=true;chassis_velocity_handoff_ready=false;
- assert(!GrabTask_Start("align",CAMERA_COLOR_BLUE)); /* Unproven zero retains the veto. */
+ assert(!GrabTask_Start("align")); /* Unproven zero retains the veto. */
  chassis_velocity_handoff_ready=true;
- assert(GrabTask_Start("align",CAMERA_COLOR_BLUE)); /* PREPARE still proves real stopping. */
+ assert(GrabTask_Start("align")); /* PREPARE still proves real stopping. */
  puts("raw handoff: repeated busy preserves result/inventory, committed zero admits next owner PASS");
  return 0;
 }

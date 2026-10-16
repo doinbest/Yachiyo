@@ -2,6 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {commands, buildCommand, moduleForWire, describeReply} from '../protocol.mjs';
 
+test('quick IMU calibration is explicit and full calibration stays available',()=>{
+  assert.equal(buildCommand('imu-cal-quick'),'imu cal quick');
+  assert.equal(buildCommand('imu-cal-start'),'imu cal start');
+  const quick=commands.find(c=>c.id==='imu-cal-quick');
+  assert.equal(quick.owner,'system');assert.equal(quick.section,'calibration');
+  assert.match(quick.note,/20.*10/);
+  assert.match(commands.find(c=>c.id==='imu-cal-start').note,/20.*30/);
+});
+
 test('distance acceleration tests normalize diagonals and leave legacy timed controls separate', () => {
   const vectors={forward:[1,0],back:[-1,0],left:[0,1],right:[0,-1],fl:[1,1],fr:[1,-1],bl:[-1,1],br:[-1,-1]};
   for(const [direction,[x,y]] of Object.entries(vectors)){

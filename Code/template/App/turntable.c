@@ -10,9 +10,10 @@
 #include <string.h>
 
 /* Emm42 默认 1.8°/16细分：指令3200脉冲/圈，实时位置65536单位/圈。
- * 二者不可互换；车载转盘与电机1:1直连。固定分度只在RAM选择Both应答。 */
+ * 二者不可互换；车载转盘与电机1:1直连。固定分度只在RAM选择Receive应答。 */
 #define COMMAND_PULSES_PER_REV 3200.0
 #define FEEDBACK_UNITS_PER_REV 65536.0
+#define FIXED_FEEDBACK_PERIOD_MS 25U
 enum { SLOT1_DEG, SLOT2_DEG, SLOT3_DEG, SPEED_RPM, ACC, POS_TOL_DEG,
        STABLE_MS, FEEDBACK_MS, PARAM_COUNT };
 static const char *const Names[PARAM_COUNT] = {
@@ -35,9 +36,10 @@ static uint32_t Started, MotionBudget, StopStarted;
 static bool Pending, Stable, MotionStarted, PowerEnabled, BootHomePending;
 static const char *StopReason;
 static bool PositiveHalfTurn;
-static bool ArrivalReply;
-static uint32_t ArrivalReplyTick;
-static uint32_t PositionAccepted;
+static bool ConfirmedTargetValid;
+static float ConfirmedTargetDeg;
+static bool VerifyConfirmed;
+static bool VerifyBeforeIndex;
 
 static float wrap(float degree)
 {
@@ -60,6 +62,20 @@ static bool fresh(void)
       return false;
   return true;
 }
+static bool confirmed_target(float angle)
+{
+  return !Turntable_IsBusy() && ConfirmedTargetValid && Status.arrived && fresh() &&
+    !MotorBus_IsQuarantined() && (Flags&0x0dU)==1U && fabsf(Status.speed_rpm)<=1.f &&
+    fabs(shortest(ConfirmedTargetDeg-wrap(angle)))<0.0001 &&
+    fabs(shortest(Status.angle_deg-ConfirmedTargetDeg))<=Params[POS_TOL_DEG];
+}
+static bool observed_hold(uint32_t now)
+{
+  if(!Stable){Stable=true;StableSince=now;return false;}
+  for(unsigned i=0;i<3;i++)
+    if((int32_t)(SampleTick[i]-StableSince)<(int32_t)Params[STABLE_MS])return false;
+  return true;
+}
 static void reply(const char *format, ...)
 {
   char line[256];
@@ -73,6 +89,9 @@ static void reply(const char *format, ...)
 }
 static void finish(const char *reason, bool arrived)
 {
+  if(arrived) {
+    ConfirmedTargetValid=true;ConfirmedTargetDeg=Status.target_deg;
+  } else ConfirmedTargetValid=false;
   Op = OP_NONE;
   Pending = false;
   Status.state = arrived ? "arrived" : "idle";
@@ -85,6 +104,7 @@ static void finish(const char *reason, bool arrived)
 }
 static void stop_start(const char *reason)
 {
+  ConfirmedTargetValid=VerifyConfirmed=false;
   MotorBus_Cancel(MOTOR_BUS_TURNTABLE);
   MotorBus_Release(MOTOR_BUS_TURNTABLE);
   Step = Op == OP_HOME ? TT_PHASE_ABORT_HOME : TT_PHASE_STOP_FRAME;
@@ -116,7 +136,7 @@ static void fail(const char *reason)
 }
 void Turntable_Init(void)
 {
-  /* Fixed index/jog/angle actions prepare Both in start(); boot HOME does not. */
+  /* Fixed index/jog/angle actions prepare Receive in start(); boot HOME does not. */
   unsigned i;
   static const float Defaults[PARAM_COUNT] = {0, 90, 180, 30, 8, 2.5f, 200, 2000};
   memcpy(Params, Defaults, sizeof(Params));
@@ -131,6 +151,7 @@ void Turntable_Init(void)
   Status.angle_deg = Status.target_deg = NAN;
   Op = OP_NONE;
   Pending = Stable = MotionStarted = false;
+  ConfirmedTargetValid=VerifyConfirmed=false;
   Token = 0;
   BootHomePending = true; /* The boot coordinator releases the one-shot near HOME. */
 }
@@ -162,20 +183,21 @@ void Turntable_StatusGet(Turntable_Status_t *out)
 {
   if (!out) return;
   *out = Status;
-  out->feedback_valid = (fresh() || (ArrivalReply && HAL_GetTick()-ArrivalReplyTick<=Params[FEEDBACK_MS])) && !MotorBus_IsQuarantined();
+  out->feedback_valid = fresh() && !MotorBus_IsQuarantined();
 }
 static bool start(Operation op)
 {
   if (Turntable_IsBusy()) { Status.reason = "busy"; return false; }
-  ArrivalReply=false;
   if (MotorBus_IsQuarantined()) { Status.reason = "bus_locked"; return false; }
   if(op==OP_INDEX || op==OP_ANGLE || op==OP_JOG) {
     int ready=MotorBus_PositionReplyEnsure(MOTOR_ID_TURNTABLE);
     if(ready!=1){Status.reason=ready<0?"reply_mode_failed":"bus_busy";return false;}
   }
   if (!MotorBus_Reserve(MOTOR_BUS_TURNTABLE)) { Status.reason = "bus_busy"; return false; }
+  if(op!=OP_VERIFY)ConfirmedTargetValid=false;
   BootHomePending = false; /* An accepted explicit operation owns the turntable. */
   Op = op;
+  VerifyBeforeIndex=false;
   Step = TT_PHASE_SAMPLE;
   SampleKind = 0;
   memset(SampleTick, 0, sizeof(SampleTick));
@@ -198,6 +220,16 @@ bool Turntable_Index(uint8_t slot)
 {
   if (!Status.reference_valid) { Status.reason = "reference_required"; return false; }
   if (!Turntable_SlotConfigured(slot)) { Status.reason = "slot_unset"; return false; }
+  if(slot!=1U && confirmed_target(Params[slot-1U])) {
+    Status.slot=slot;Status.reason="target_reused";return true;
+  }
+  if(slot!=1U && ConfirmedTargetValid &&
+     fabs(shortest(ConfirmedTargetDeg-wrap(Params[slot-1U])))<0.0001) {
+    if(!start(OP_INDEX))return false;
+    Op=OP_VERIFY;
+    VerifyConfirmed=false;VerifyBeforeIndex=true;
+    Status.slot=slot;Status.target_deg=wrap(Params[slot-1U]);return true;
+  }
   /* Slot 1 is the verified saved mechanical zero. Use HOME completion rather
    * than a near-zero position command's reached flag; preserve software stock. */
   if (slot == 1U) {
@@ -215,7 +247,9 @@ bool Turntable_VerifySlot(uint8_t slot)
 {
   if(!Status.reference_valid){Status.reason="reference_required";return false;}
   if(!Turntable_SlotConfigured(slot)){Status.reason="slot_unset";return false;}
+  bool reuse=confirmed_target(Params[slot-1U]);
   if(!start(OP_VERIFY))return false;
+  VerifyConfirmed=reuse;if(!reuse)ConfirmedTargetValid=false;
   Status.slot=slot;Status.target_deg=wrap(Params[slot-1U]);return true;
 }
 bool Turntable_SlotAngleGet(uint8_t slot,float *out)
@@ -227,6 +261,9 @@ bool Turntable_AngleStart(float angle,uint8_t slot,bool positive_half_turn)
 {
   if(!Status.reference_valid){Status.reason="reference_required";return false;}
   if(!isfinite(angle) || slot>TURNTABLE_SLOT_COUNT){Status.reason="invalid_degree";return false;}
+  if(confirmed_target(angle)) {
+    Status.slot=slot;Status.reason="target_reused";return true;
+  }
   if(!start(OP_ANGLE))return false;
   Status.slot=slot;Status.target_deg=wrap(angle);PositiveHalfTurn=positive_half_turn;return true;
 }
@@ -234,7 +271,9 @@ bool Turntable_AngleVerify(float angle,uint8_t slot)
 {
   if(!Status.reference_valid){Status.reason="reference_required";return false;}
   if(!isfinite(angle) || slot>TURNTABLE_SLOT_COUNT){Status.reason="invalid_degree";return false;}
+  bool reuse=confirmed_target(angle);
   if(!start(OP_VERIFY))return false;
+  VerifyConfirmed=reuse;if(!reuse)ConfirmedTargetValid=false;
   Status.slot=slot;Status.target_deg=wrap(angle);return true;
 }
 bool Turntable_Jog(float degree)
@@ -279,7 +318,6 @@ void Turntable_BootHomeProcess(bool startup_allowed)
 }
 void Turntable_Stop(void)
 {
-  ArrivalReply=false;
   BootHomePending = false;
   if (Op != OP_STOP) stop_start("stopped");
 }
@@ -291,9 +329,19 @@ static bool submit(const uint8_t *data, uint8_t length, uint8_t reply_length, bo
   Pending = true;
   return true;
 }
+static void position_timeout(uint32_t now)
+{
+  double error=(double)PositionRaw*360.0/FEEDBACK_UNITS_PER_REV-TargetRaw;
+  reply("ERR turntable position_timeout angle_deg=%.6g target_deg=%.6g error_deg=%.6g tol_deg=%.6g speed_rpm=%.6g flags=0x%02X fresh=%u elapsed_ms=%lu budget_ms=%lu\r\n",
+    (double)Status.angle_deg,(double)Status.target_deg,error,(double)Params[POS_TOL_DEG],
+    (double)Status.speed_rpm,(unsigned)Flags,(unsigned)Status.feedback_valid,
+    (unsigned long)(now-Started),(unsigned long)MotionBudget);
+  fail("position_timeout");
+}
 static void sampled(void)
 {
   uint32_t now = HAL_GetTick();
+  bool continuous=(uint32_t)(now-LastCycle)<=(uint32_t)Params[FEEDBACK_MS];
   bool stationary = fabsf(Status.speed_rpm) <= 1.0f && !(Flags & 0x0cU);
   Status.feedback_valid = fresh();
   Status.moving = !stationary || !(Flags & 2U);
@@ -302,7 +350,7 @@ static void sampled(void)
   LastCycle = now;
   /* Reserve only one complete position/speed/state sample, never the whole
    * rotation. Arm and wheel feedback must remain fresh during slow indexing. */
-  if (MotionStarted || Op == OP_STOP) MotorBus_Release(MOTOR_BUS_TURNTABLE);
+  if (MotionStarted || Op == OP_STOP || Op == OP_VERIFY) MotorBus_Release(MOTOR_BUS_TURNTABLE);
   if (Flags & 0x0cU) { fail("driver_fault"); return; }
   if (Op == OP_STOP) {
     /* Position/state/speed come from a complete post-stop cycle. */
@@ -316,7 +364,15 @@ static void sampled(void)
   if (Op == OP_VERIFY) {
     bool ready=Status.feedback_valid && stationary && (Flags & 1U) &&
       fabs(shortest((double)Status.target_deg-Status.angle_deg))<=Params[POS_TOL_DEG];
-    finish(ready?"arrived":"position_changed",ready);return;
+    if(ready){
+      if(!continuous)Stable=false;
+      if(VerifyConfirmed || observed_hold(now))finish("arrived",true);
+      return;
+    }
+    if(!VerifyBeforeIndex){finish("position_changed",false);return;}
+    /* Explicit index still corrects a real displacement. Mere feedback age
+     * above does not send another position command to an unchanged target. */
+    VerifyBeforeIndex=false;ConfirmedTargetValid=false;Stable=false;Op=OP_INDEX;
   }
   if (Op == OP_SAVE_ZERO) {
     if (!stationary) { finish("motor_moving", false); return; }
@@ -393,22 +449,16 @@ static void sampled(void)
      * reached bit may remain clear; keep its exact position command active. */
     bool at_target = Status.feedback_valid && fabs(error) <= Params[POS_TOL_DEG] &&
                      stationary && (Flags & 1U);
+    if(!continuous)Stable=false;
     if (!at_target) Stable = false;
-    else if (!Stable) { Stable = true; StableSince = now; }
-    else if ((uint32_t)(now - StableSince) >= (uint32_t)Params[STABLE_MS]) {
+    else if (observed_hold(now)) {
       finish("arrived", true);
       reply("OK turntable arrived angle_deg=%.6g target_deg=%.6g speed_rpm=%.6g ref=%u\r\n",
             (double)Status.angle_deg,(double)Status.target_deg,
             (double)Status.speed_rpm,(unsigned)Status.reference_valid);
       return;
     }
-    if ((uint32_t)(now - Started) > MotionBudget) {
-      reply("ERR turntable position_timeout angle_deg=%.6g target_deg=%.6g error_deg=%.6g tol_deg=%.6g speed_rpm=%.6g flags=0x%02X fresh=%u elapsed_ms=%lu budget_ms=%lu\r\n",
-        (double)Status.angle_deg,(double)Status.target_deg,error,(double)Params[POS_TOL_DEG],
-        (double)Status.speed_rpm,(unsigned)Flags,(unsigned)Status.feedback_valid,
-        (unsigned long)(now-Started),(unsigned long)MotionBudget);
-      fail("position_timeout");
-    }
+    if ((uint32_t)(now - Started) > MotionBudget) position_timeout(now);
   }
 }
 void Turntable_Process(void)
@@ -421,7 +471,25 @@ void Turntable_Process(void)
      * here so neither mechanical arm nor chassis can consume this owner's event. */
     if (Pending && event.token == PendingToken) {
       Pending = false;
-      if (((Step == TT_PHASE_STOP_FRAME || Step == TT_PHASE_ABORT_HOME) && event.result != MOTOR_BUS_TX_DONE) ||
+      if (Step == TT_PHASE_SAMPLE && event.result == MOTOR_BUS_CANCELLED &&
+          !event.uart_error && !MotorBus_IsQuarantined()) {
+        /* A priority wheel/arm stop can cancel this owner's pure read without
+         * stopping ID8. MotorBus drains the abandoned reply on its original
+         * deadline. Reacquire the whole feedback group; never replay motion,
+         * HOME/enable/save or recharge Started/MotionBudget/StopStarted. */
+        SampleKind=0;memset(SampleTick,0,sizeof SampleTick);
+        Stable=HomeSampleValid=VerifyConfirmed=false;
+        Status.arrived=Status.feedback_valid=false;
+        Status.reason="feedback_read_interrupted";
+        MotorBus_Release(MOTOR_BUS_TURNTABLE);
+        reply("WARN turntable feedback_read_cancelled resume=read_only target_deg=%.6g\r\n",
+              (double)Status.target_deg);
+        /* Repeated preemption may prevent any complete sample group. It must
+         * not defer the existing HOME/move deadline until sampled() can run. */
+        if(Op==OP_HOME && (uint32_t)(now-Started)>60000U)fail("home_timeout");
+        else if(MotionStarted && (Op==OP_INDEX || Op==OP_ANGLE || Op==OP_JOG) &&
+                (uint32_t)(now-Started)>MotionBudget)position_timeout(now);
+      } else if (((Step == TT_PHASE_STOP_FRAME || Step == TT_PHASE_ABORT_HOME) && event.result != MOTOR_BUS_TX_DONE) ||
           (Step != TT_PHASE_STOP_FRAME && Step != TT_PHASE_ABORT_HOME && event.result != MOTOR_BUS_REPLY)) {
         Status.feedback_valid = false;
         fail(event.result == MOTOR_BUS_TIMEOUT ? "feedback_timeout" : "transport_error");
@@ -444,7 +512,7 @@ void Turntable_Process(void)
         memset(SampleTick, 0, sizeof(SampleTick));
         LastCycle = now - 50U;
       } else if (Step == TT_PHASE_ENABLE || Step == TT_PHASE_MOVE || Step == TT_PHASE_HOME) {
-        if (event.length != 4 || (event.data[2] != 2U && !(Step==TT_PHASE_MOVE && event.data[2]==0x9fU))) { fail("driver_rejected"); return; }
+        if (event.length != 4 || event.data[2] != 2U) { fail("driver_rejected"); return; }
         if (Step == TT_PHASE_ENABLE && Op == OP_POWER) {
           Step = TT_PHASE_SAMPLE;
           SampleKind = 0;
@@ -478,13 +546,6 @@ void Turntable_Process(void)
     }
   }
   if (Op == OP_NONE || Pending) return;
-  if(MotionStarted && (Op==OP_INDEX || Op==OP_ANGLE || Op==OP_JOG) &&
-     MotorBus_PositionReached(MOTOR_ID_TURNTABLE,PositionAccepted)) {
-    ArrivalReply=true;ArrivalReplyTick=now;
-    finish("arrived_reply",true);Status.feedback_valid=true;Status.moving=false;
-    reply("OK turntable arrived source=reached_reply target_deg=%.6g ref=%u\r\n",
-      (double)Status.target_deg,(unsigned)Status.reference_valid);return;
-  }
   if (Op == OP_STOP && (uint32_t)(now - StopStarted) > (uint32_t)Params[FEEDBACK_MS] + 500U) {
     finish("stop_unconfirmed", false); return;
   }
@@ -520,8 +581,9 @@ void Turntable_Process(void)
     cmd[10] = 1; cmd[11] = 0; cmd[12] = 0x6b;
     /* Once copied for transmission, a lost/rejected ACK cannot prove the motor
      * stayed still. The failure path must issue Stop as well as report failure. */
-    if (submit(cmd, 13, 4, false)) {MotionStarted = true;PositionAccepted=now;}
-  } else if (SampleKind || (uint32_t)(now - LastCycle) >= 50U) {
+    if (submit(cmd, 13, 4, false)) MotionStarted = true;
+  } else if (SampleKind || (uint32_t)(now - LastCycle) >=
+      (MotionStarted && (Op==OP_INDEX || Op==OP_ANGLE || Op==OP_JOG)?FIXED_FEEDBACK_PERIOD_MS:50U)) {
     static const uint8_t functions[] = {0x36, 0x35, 0x3a, 0x3b};
     static const uint8_t lengths[] = {8, 6, 4, 4};
     if (!SampleKind && !MotorBus_Reserve(MOTOR_BUS_TURNTABLE)) return;

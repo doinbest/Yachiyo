@@ -561,7 +561,7 @@ bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn_deg_
 {
   if(!path || path->count<2 || path->count>CHASSIS_PATH_CAPACITY ||
      !isfinite(resume_mm) || resume_mm<0 || resume_mm>path->length ||
-     !isfinite(turn_deg_s) || turn_deg_s<5 || turn_deg_s>CHASSIS_MOTION_MAX_OMEGA_DEG_S)return false;
+     !isfinite(turn_deg_s) || turn_deg_s<5 || turn_deg_s>CHASSIS_TURN_MAX_SPEED_DEG_S)return false;
   for(unsigned i=0;i<path->count;i++){
     ChassisPath_Point p=path->point[i];
     if(!isfinite(p.x) || !isfinite(p.y) || !isfinite(p.yaw) || !isfinite(p.s) ||
@@ -574,7 +574,7 @@ bool ChassisMotion_PathStart(const ChassisPath *path,float speed,float turn_deg_
 }
 bool ChassisMotion_TurnToSpeed(float yaw,float max_deg_s,uint32_t timeout)
 {
-  if(!isfinite(max_deg_s) || max_deg_s<5 || max_deg_s>CHASSIS_MOTION_MAX_OMEGA_DEG_S)
+  if(!isfinite(max_deg_s) || max_deg_s<5 || max_deg_s>CHASSIS_TURN_MAX_SPEED_DEG_S)
   { Motion.reason="turn_speed_range";return false; }
   if (ChassisMotion_IsBusy()) return false;
   if (!isfinite(yaw) || yaw < -180.0f || yaw > 180.0f)

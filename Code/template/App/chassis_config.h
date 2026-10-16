@@ -91,6 +91,8 @@
 #define CHASSIS_MOTION_DEFAULT_RAMP_MS     500U
 #define CHASSIS_MOTION_MAX_LINEAR_MM_S     5000.0f
 #define CHASSIS_MOTION_MAX_OMEGA_DEG_S     100.0f
+/* Explicit route/turn requests may select a higher limit; defaults stay100. */
+#define CHASSIS_TURN_MAX_SPEED_DEG_S       360.0f
 #define CHASSIS_MOTION_MAX_OMEGA_RAD_S     (CHASSIS_MOTION_MAX_OMEGA_DEG_S * 3.14159265358979323846f / 180.0f)
 /* Emm F6/FD speed field is documented as 0..3000 RPM; loaded speed is unverified. */
 #define CHASSIS_EMM_MAX_COMMAND_RPM         3000U

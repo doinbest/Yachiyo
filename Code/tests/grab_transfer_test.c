@@ -116,7 +116,7 @@ static void pick_and_align_share_gap_control(void)
     for(unsigned i=0;i<5;i++) step(true,1,-95,0);
     assert(status().state==GRAB_VISION_PAUSE);
     camera_valid=true; run_to(GRAB_ALIGN,80,1);
-    assert(camera_requests==requests[mode]+1 && RecoveryUsed==1 && !closures);
+    assert(camera_requests==requests[mode] && RecoveryUsed==1 && !closures);
   }
   assert(fabsf(speed[0]-speed[1])<1e-5f);
 }

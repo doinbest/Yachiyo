@@ -109,7 +109,8 @@ extern "C"
   MechanicalArm_ResultTypeDef MechanicalArm_Disable(MechanicalArm_AxisTypeDef Axis);
   MechanicalArm_ResultTypeDef MechanicalArm_Position(MechanicalArm_AxisTypeDef Axis,
                                                      int32_t Pulses);
-  /* Explicit speed and driver acceleration gear (1..255) for this request;
+  /* Explicit speed and driver acceleration gear (X/Z:0..255, Base:1..255);
+   * X/Z gear0 means direct-speed operation without the drive ramp;
    * saved axis configuration and homing parameters are not changed. */
   MechanicalArm_ResultTypeDef MechanicalArm_PositionEx(MechanicalArm_AxisTypeDef Axis,
                                                        int32_t Position, uint16_t SpeedRpm,
@@ -117,7 +118,7 @@ extern "C"
                                                        MechanicalArm_PositionModeTypeDef Mode);
   MechanicalArm_ResultTypeDef MechanicalArm_PositionRead(MechanicalArm_AxisTypeDef Axis);
   /* Dynamic X absolute lookahead: Receive only, with ordinary ACK scheduling.
-   * Fixed position entry points retain Both and restore it before their FD. */
+   * Fixed position entry points share the same Receive mode. */
   MechanicalArm_ResultTypeDef MechanicalArm_PositionTrackingEx(MechanicalArm_AxisTypeDef Axis,
                                                        int32_t Position,uint16_t SpeedRpm,
                                                        uint8_t Acceleration,

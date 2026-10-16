@@ -194,7 +194,7 @@ test('recovery counter is diagnostic and the 12-second wait is readable',()=>{
 });
 
 test('rear-home mission commands and resumable scene configuration have explicit status',()=>{
-  assert.equal(protocol.buildCommand('grab-mission',{speed:200,turnSpeed:50}),'grab mission qr 200 50');
+  assert.equal(protocol.buildCommand('grab-mission',{speed:200,turnSpeed:50}),'grab mission qr 200 50 lower fixed vhigh linear');
   assert.equal(protocol.buildCommand('grab-mission-continue'),'grab mission continue');
   assert.equal(protocol.buildCommand('grab-pose-rear'),'grab pose rear');
   assert.equal(protocol.buildCommand('grab-pose-work'),'grab pose work');

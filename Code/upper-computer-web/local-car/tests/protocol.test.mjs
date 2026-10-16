@@ -5,10 +5,10 @@ import {buildMissionCommand} from '../mission-panel.mjs';
 
 test('mission start frames preserve origin and route mode for both code sources', () => {
   const cases = [
-    [{source:'qr',speed:500,turnSpeed:500,start:'lower',radar:false}, 'grab mission qr 500 500 lower fixed raised linear\r\n'],
-    [{source:'fixed',code:'156+123+516+231',speed:500,turnSpeed:100,start:'upper',radar:true,align:'raised'}, 'grab mission fixed 156+123+516+231 500 100 upper radar raised linear\r\n'],
+    [{source:'qr',speed:500,turnSpeed:500,start:'lower',radar:false}, 'grab mission qr 500 500 lower fixed vhigh linear\r\n'],
+    [{source:'fixed',code:'156+123+516+231',speed:500,turnSpeed:100,start:'upper',radar:true,align:'raised'}, 'grab mission fixed 156+123+516+231 500 100 upper radar vhigh linear\r\n'],
   ];
-  cases.push([{source:'fixed',code:'156+123+516+231',speed:5000,turnSpeed:100,start:'upper',radar:true,align:'lowered'}, 'grab mission fixed 156+123+516+231 5000 100 upper radar lowered linear\r\n']);
+  cases.push([{source:'fixed',code:'156+123+516+231',speed:5000,turnSpeed:100,start:'upper',radar:true,align:'lowered'}, 'grab mission fixed 156+123+516+231 5000 100 upper radar vlow linear\r\n']);
   for (const [request, expected] of cases)
     assert.equal(frameCommand(buildMissionCommand(request)), expected);
 });

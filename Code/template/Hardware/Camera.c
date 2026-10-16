@@ -79,6 +79,28 @@ static HAL_StatusTypeDef Camera_RequestStart(uint8_t Function, uint8_t Target)
   }
   return HAL_OK;
 }
+HAL_StatusTypeDef Camera_RestartIfMissing(uint8_t Target,uint32_t AfterTick,uint32_t FreshMs,uint8_t *Retained)
+{
+  uint32_t primask,tick,received;HAL_StatusTypeDef result;
+  if(!Retained)return HAL_ERROR;
+  *Retained=0;
+  primask=__get_PRIMASK();__disable_irq();
+  tick=HAL_GetTick();
+  received=Camera_LatestData.HasReceiveTime?Camera_LatestData.ReceivedTick:Camera_LatestData.Tick;
+  if(!Camera_RequestActive || Camera_RequestFunction!=0xB2U || Camera_RequestTarget!=Target ||
+     !((Target>=1U && Target<=6U) || (Target>=10U && Target<=12U)))result=HAL_ERROR;
+  else if(Camera_HasFrame && Camera_HasValidData && Camera_TargetValid &&
+          Camera_LatestData.Function==0xB2U && Camera_LatestData.Target==Target &&
+          (int32_t)(received-AfterTick)>=0 && tick-received<=FreshMs){
+    *Retained=1;result=HAL_OK;
+  }else if(Camera_InputLength && !Camera_InputOverflow){
+    /* A packet can arrive during stop verification after Camera_Process ran.
+     * Let the next main-loop parse it before a restart discards its bytes. */
+    result=HAL_BUSY;
+  }else result=Camera_RequestStart(0xB2U,Target);
+  __set_PRIMASK(primask);
+  return result;
+}
 
 /**
   * 函    数：计算一帧摄像头数据的累加校验

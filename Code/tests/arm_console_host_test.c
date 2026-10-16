@@ -212,6 +212,7 @@ bool HWT101_Angle_Is_Fresh(const HWT101_Angle_t *out,uint32_t age) { (void)out;(
 bool HWT101_Status_Get(HWT101_Status_t *out) { memset(out,0,sizeof(*out));out->valid_read_count=44;out->i2c_error_count=UINT32_MAX;return true; }
 static HWT101_CalStatus_t cal_status;
 static unsigned cal_starts, cal_cancels, refresh_calls;
+static unsigned quick_cal_starts;
 static uint32_t verify_duration;
 static bool chassis_busy;
 bool HWT101_Cal_IsBusy(void) { return cal_status.busy; }
@@ -220,6 +221,12 @@ bool HWT101_Cal_Start(void)
 {
   assert(!chassis_busy && !motor_busy && !grab_busy);
   cal_starts++; cal_status.busy=true; cal_status.state=HWT101_CAL_CALIBRATING; cal_status.native_wait_ms=20000; return true;
+}
+bool HWT101_Cal_QuickStart(void)
+{
+  assert(!chassis_busy && !motor_busy && !grab_busy);
+  quick_cal_starts++;cal_status.busy=true;cal_status.state=HWT101_CAL_CALIBRATING;
+  cal_status.native_wait_ms=20000;cal_status.verify_ms=10000;return true;
 }
 bool HWT101_Cal_VerifyStart(uint32_t duration)
 {
@@ -849,5 +856,17 @@ int main(void)
   rx_error_fake.sequence++;output[0]=0;tick+=2000;ArmConsole_BusRecoveryProcess();
   assert(strstr(output,"OK bus rx_error seq=43 view=latest"));
   rx_error_fake_valid=false;
+  /* Quick native calibration has its own command, the same motion guards and
+   * a ten-second verification report; it never silently uses full mode. */
+  memset(&cal_status,0,sizeof cal_status);
+  chassis_busy=false;motor_busy=grab_busy=motion_busy=0;heading_status.active=false;
+  command("imu cal quick\r");
+  assert(quick_cal_starts==1 && strstr(output,"cal_ms=20000") && strstr(output,"verify_ms=10000"));
+  command("imu cal quick\r");assert(quick_cal_starts==1 && strstr(output,"busy"));
+  command("imu cal cancel\r");
+  chassis_busy=true;command("imu cal quick\r");assert(quick_cal_starts==1 && strstr(output,"motion_busy"));chassis_busy=false;
+  grab_busy=1;command("imu cal quick\r");assert(quick_cal_starts==1 && strstr(output,"grab_busy"));grab_busy=0;
+  motor_busy=1;command("imu cal quick\r");assert(quick_cal_starts==1 && strstr(output,"motion_busy"));motor_busy=0;
+  command("imu cal quick extra\r");assert(quick_cal_starts==1 && strstr(output,"ERR imu format"));
   puts("arm_console_host_test: commands, units, busy, status, CRLF and async prompts OK");return 0;
 }

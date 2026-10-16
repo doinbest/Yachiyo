@@ -59,8 +59,8 @@ void Mecanum_TrackingTiming(bool enabled,uint32_t interval_ms)
 { if(enabled && !TrackingEnabled)memset(&BatchTiming,0,sizeof BatchTiming);
   if(TrackingEnabled!=enabled) FeedbackPositionGroup=false;
   TrackingEnabled=enabled;TrackingBatchMs=interval_ms<=200?interval_ms:0; }
-/* Confirmed Emm42 factory configuration: receive acknowledgement. */
-static Mecanum_Status_t BusStatus = {.ack_profile = MECANUM_ACK_RECEIVE};
+/* Motion advances on TX completion; query replies still prove actual motion. */
+static Mecanum_Status_t BusStatus = {.ack_profile = MECANUM_ACK_NONE};
 static Mecanum_Feedback_t Feedback[4];
 static bool FeedbackEnabled;
 static bool StopFeedbackDemand;
@@ -422,6 +422,13 @@ void Mecanum_Process(void)
       (!TrackingEnabled || !TrackingBatchMs || !LastBatchValid ||
        (uint32_t)(HAL_GetTick()-LastBatchMs)>=TrackingBatchMs))
   {
+    bool ready=true;
+    for(unsigned id=1;id<=4;id++) {
+      int configured=MotorBus_WheelReplyEnsure((uint8_t)id,BusStatus.ack_profile==MECANUM_ACK_RECEIVE);
+      if(configured<0){BatchFault(MECANUM_ERROR_PROFILE);FeedbackProcess();return;}
+      if(!configured)ready=false;
+    }
+    if(!ready){FeedbackProcess();return;}
     if (!MotorBus_Reserve(MOTOR_BUS_CHASSIS))
     {
       FeedbackProcess(); /* Consume/queue feedback even while yielding a batch. */
@@ -459,7 +466,8 @@ void Mecanum_Process(void)
     else
     {
       BusStatus.stage = MECANUM_STAGE_SYNC;
-      if (MotorBus_SubmitReplyTo(MOTOR_BUS_CHASSIS, sync, 4, 1, 4, BusStatus.sequence, false))
+      if (MotorBus_SubmitReplyTo(MOTOR_BUS_CHASSIS, sync, 4, 1,
+                                BusStatus.ack_profile==MECANUM_ACK_RECEIVE?4:0,BusStatus.sequence,false))
         BatchWaiting = true;
       else
         BatchFault(MECANUM_ERROR_TX);
@@ -486,6 +494,7 @@ bool Mecanum_AckProfile_Set(Mecanum_AckProfile_t profile)
   if (profile > MECANUM_ACK_RECEIVE || Mecanum_IsBusy() || BatchActive || NextValid)
     return false;
   BusStatus.ack_profile = profile;
+  MotorBus_WheelReceiveSet(profile==MECANUM_ACK_RECEIVE);
   BusStatus.error = MECANUM_ERROR_NONE;
   return true;
 }

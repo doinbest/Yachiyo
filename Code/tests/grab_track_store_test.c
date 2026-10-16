@@ -10,7 +10,7 @@ static void setup(void)
   setting("x_min","0");setting("x_max","100");
   setting("z_min","-150");setting("z_max","0");
   setting("z_grab","-50");setting("z_lift","0");
-  setting("z_car_lift","0");
+  setting("z_car_lift","0");setting("track_store_drop_mm","40");
   physical[0]=30;physical[1]=0;physical[2]=37+GRAB_BASE_WORK_OFFSET_DEG;
   RearBase=37;RearReferenceValid=true;OutsidePose=true;
 }

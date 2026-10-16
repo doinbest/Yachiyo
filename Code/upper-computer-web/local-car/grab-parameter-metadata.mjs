@@ -369,11 +369,11 @@ export const GRAB_FORM_DEFAULTS = Object.freeze({
   "z_max": 0.0,
   "x_pre": 0.0,
   "z_observe": 0.0,
-  "z_grab": -50.0,
+  "z_grab": -45.0,
   "z_lift": 0.0,
   "pos_tol": 1.0,
   "stop_speed": 2.0,
-  "close_ms": 300.0,
+  "close_ms": 100.0,
   "age_ms": 1000.0,
   "feedback_ms": 2000.0,
   "accel": 300.0,
@@ -395,7 +395,7 @@ export const GRAB_FORM_DEFAULTS = Object.freeze({
   "frames": 3.0,
   "retries": 2.0,
   "x_weight": 2.333333,
-  "z_place": -20.0,
+  "z_place": -25.0,
   "loss_grace_ms": 250.0,
   "z_car_lift": 0.0,
   "z_proc_place": -120.0,
@@ -413,11 +413,11 @@ export const GRAB_FORM_DEFAULTS = Object.freeze({
   "base_home_degrade": 1.0,
   "track_pick_tol_px": 100.0,
   "track_pick_hold_ms": 0.0,
-  "track_store_drop_mm": 20.0,
-  "car_pick_drop_mm": 40.0,
+  "track_store_drop_mm": 25.0,
+  "car_pick_drop_mm": 25.0,
   "arrival_hold_ms": 200.0,
-  "release_ms": 300.0,
-  "car_pick_wait_ms": 300.0
+  "release_ms": 100.0,
+  "car_pick_wait_ms": 100.0
 });
 export const TRACK_PARAMETER_DEFAULTS = Object.freeze({
   "body_speed": 160.0,

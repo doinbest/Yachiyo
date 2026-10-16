@@ -575,6 +575,7 @@ static void ArmConsole_HelpShow(void)
       "camera stop\r\n"
       "imu status     readonly HWT101 angle and I2C statistics\r\n"
       "imu cal start  keep still: 20s native calibration + 30s verification\r\n"
+      "imu cal quick  keep still: 20s native calibration + 10s verification\r\n"
       "imu cal cancel  cancel and clear boot verification\r\n"
       "system reset  restart STM32 when motion and IMU tasks are idle\r\n"
       "imu zero  zero Z angle only; reverify and reset map origin afterwards\r\n"
@@ -1369,7 +1370,8 @@ static uint8_t ArmConsole_MechanicalArmCommandHandle(uint8_t TokenCount, char *T
       ArmConsole_Write("ERR range speed\r\n");
       return 1U;
     }
-    if ((Acceleration < 1) || (Acceleration > 255))
+    if ((Acceleration < 0) || (Acceleration > 255) ||
+        ((Acceleration == 0) && (Axis != MECHANICAL_ARM_AXIS_X) && (Axis != MECHANICAL_ARM_AXIS_Z)))
     {
       ArmConsole_Write("ERR range accel\r\n");
       return 1U;
@@ -1420,15 +1422,17 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
     return 1U;
   }
   if ((!strcmp(Tokens[0], "imu")) &&
-      (((TokenCount == 3U) && !strcmp(Tokens[1], "cal") && !strcmp(Tokens[2], "start")) ||
+      (((TokenCount == 3U) && !strcmp(Tokens[1], "cal") &&
+        (!strcmp(Tokens[2], "start") || !strcmp(Tokens[2], "quick"))) ||
        ((TokenCount == 2U) && !strcmp(Tokens[1], "zero")) ||
        ((TokenCount == 2U) && !strcmp(Tokens[1], "verify")) ||
        ((TokenCount == 3U) && !strcmp(Tokens[1], "verify") && !strcmp(Tokens[2], "5"))))
   {
     HWT101_CalStatus_t Cal;
     uint8_t Native = !strcmp(Tokens[1], "cal");
+    uint8_t Quick = Native && !strcmp(Tokens[2], "quick");
     uint8_t ZeroOnly = !strcmp(Tokens[1], "zero");
-    uint32_t VerifyMs = Native ? 30000U : ZeroOnly ? 0U : 5000U;
+    uint32_t VerifyMs = Native ? (Quick ? 10000U : 30000U) : ZeroOnly ? 0U : 5000U;
     bool Started;
     if (HWT101_Cal_IsBusy())
     {
@@ -1440,7 +1444,8 @@ static uint8_t ArmConsole_StatusCommandHandle(uint8_t TokenCount, char *Tokens[]
       ArmConsole_Write("ERR imu motion_busy stop all motion first\r\n");
       return 1U;
     }
-    Started = Native ? HWT101_Cal_Start() : ZeroOnly ? HWT101_Cal_ZeroStart() : HWT101_Cal_VerifyStart(VerifyMs);
+    Started = Native ? (Quick ? HWT101_Cal_QuickStart() : HWT101_Cal_Start()) :
+      ZeroOnly ? HWT101_Cal_ZeroStart() : HWT101_Cal_VerifyStart(VerifyMs);
     if (Started)
     {
       (void)HWT101_Cal_GetStatus(&Cal);
@@ -2483,7 +2488,7 @@ static uint8_t ArmConsole_CommandExecute(char *Line)
 
   if (strcmp(Tokens[0], "imu") == 0)
   {
-    ArmConsole_Write("ERR imu format: imu status | imu cal start|cancel | imu zero | imu verify | imu stream on|off\r\n");
+    ArmConsole_Write("ERR imu format: imu status | imu cal start|quick|cancel | imu zero | imu verify | imu stream on|off\r\n");
     return 1U;
   }
 
@@ -2539,7 +2544,7 @@ HAL_StatusTypeDef ArmConsole_Init(UART_HandleTypeDef *huart)
   memset(ArmConsole_LineBuffer, 0, sizeof(ArmConsole_LineBuffer));
   ArmConsole_Write("\r\nSTM32 mechanical arm console ready\r\n");
   ArmConsole_BuildShow();
-  ArmConsole_Write("Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2450us -> Base near home -> IMU verify=5s; enable_verify=on; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification\r\n");
+  ArmConsole_Write("Boot: Z/X collision home + ID8 near home in parallel -> gripper open 2450us -> Base near home -> IMU verify=5s; enable_verify=on; keep still after homing; stream=off; imu cal start: 20s native calibration + 30s verification; imu cal quick: 20s native calibration + 10s verification\r\n");
   ArmConsole_PromptShow();
   return HAL_OK;
 }

@@ -20,12 +20,12 @@ int main(void)
   for(unsigned i=4;i<32;i++)cfg[i]=(uint8_t)i;
   cfg[22]=1;cfg[32]=0x6b;
   assert(MotorBus_Init(&uart)==HAL_OK);
-  assert(MotorBus_PositionReplyEnsure(5)==0);MotorBus_Process();
+  assert(MotorBus_PositionReplyEnsureMode(5,3)==0);MotorBus_Process();
   assert(frame[0]==5 && frame[1]==0x42);
   reply(cfg,33);assert(frame[1]==0x48 && frame[3]==0 && frame[22]==3);
   for(unsigned i=4;i<32;i++)if(i!=22)assert(frame[i]==cfg[i]);
   reply(ack,4);assert(frame[1]==0x42);
-  cfg[22]=3;reply(cfg,33);assert(MotorBus_PositionReplyEnsure(5)==1);
+  cfg[22]=3;reply(cfg,33);assert(MotorBus_PositionReplyEnsureMode(5,3)==1);
   uint32_t accepted=tick;
   uint8_t move[]={5,0xfd,0,0,60,20,0,0,3,32,1,0,0x6b};
   uint8_t received[]={5,0xfd,2,0x6b},reached[]={5,0xfd,0x9f,0x6b};
@@ -51,24 +51,24 @@ int main(void)
   assert(MotorBus_EventGet(MOTOR_BUS_STOP,&event));
   uint8_t stop_ack[]={5,0xfe,2,0x6b};MotorBus_RxBytes(stop_ack,4);MotorBus_Process();tick+=3;
   /* Rejected/mismatching configuration must not grant movement readiness. */
-  assert(MotorBus_PositionReplyEnsure(6)==0);MotorBus_Process();
+  assert(MotorBus_PositionReplyEnsureMode(6,3)==0);MotorBus_Process();
   cfg[0]=6;cfg[22]=1;ack[0]=6;
   reply(cfg,33);assert(frame[1]==0x48 && frame[22]==3);
   reply(ack,4);assert(frame[1]==0x42);
-  reply(cfg,33);assert(MotorBus_PositionReplyEnsure(6)==-1);
+  reply(cfg,33);assert(MotorBus_PositionReplyEnsureMode(6,3)==-1);
   /* A new fixed request while Receive configuration is in flight cannot
    * change that write/readback snapshot or use an unverified old Both cache. */
   assert(MotorBus_PositionReplyEnsureMode(7,1)==0);MotorBus_Process();
   cfg[0]=7;cfg[22]=3;ack[0]=7;
-  assert(MotorBus_PositionReplyEnsure(7)==0);
+  assert(MotorBus_PositionReplyEnsureMode(7,3)==0);
   reply(cfg,33);assert(frame[1]==0x48 && frame[22]==1);
-  assert(MotorBus_PositionReplyEnsure(7)==0);
+  assert(MotorBus_PositionReplyEnsureMode(7,3)==0);
   reply(ack,4);assert(frame[1]==0x42);
   cfg[22]=1;reply(cfg,33);
-  assert(MotorBus_PositionReplyEnsure(7)==0 && frame[1]==0x42);
+  assert(MotorBus_PositionReplyEnsureMode(7,3)==0 && frame[1]==0x42);
   reply(cfg,33);assert(frame[1]==0x48 && frame[22]==3);
   reply(ack,4);cfg[22]=3;reply(cfg,33);
-  assert(MotorBus_PositionReplyEnsure(7)==1);
+  assert(MotorBus_PositionReplyEnsureMode(7,3)==1);
   /* Receive also rejects mismatched readback of any preserved parameter. */
   assert(MotorBus_PositionReplyEnsureMode(7,1)==0);MotorBus_Process();
   reply(cfg,33);assert(frame[1]==0x48 && frame[22]==1);

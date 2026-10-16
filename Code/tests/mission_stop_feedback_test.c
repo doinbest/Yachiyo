@@ -17,7 +17,7 @@ int MissionNavigation_Process(RadarStart_Id_t s,uint32_t g,RadarPlan_t *p,const 
 #include "motor_bus.h"
 static GrabTask_Status_t child;
 static ChassisRoute_Status_t travel;
-static char report[512];
+static char report[1024];
 bool Mecanum_Feedback_Select(uint8_t n){assert(!n);return true;}
 void Mecanum_Feedback_Enable(bool on){(void)on;}
 bool ConsoleTx_Write(const uint8_t *d,uint16_t n){assert(n<sizeof report);memcpy(report,d,n);report[n]=0;return true;}

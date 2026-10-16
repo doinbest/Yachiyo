@@ -2,12 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parameterFields,displayValue,fieldWrites,deviceRequests} from '../parameter-schema.mjs';
 import {GRAB_FORM_DEFAULTS} from '../grab-params.mjs';
+
+test('automatic gripper defaults use 100ms without changing stability windows',()=>{
+  for(const key of ['close_ms','release_ms','car_pick_wait_ms'])assert.equal(GRAB_FORM_DEFAULTS[key],100);
+  assert.equal(GRAB_FORM_DEFAULTS.stable_ms,200);
+  assert.equal(GRAB_FORM_DEFAULTS.arrival_hold_ms,200);
+});
 import {grabParameters,buildCommand} from '../protocol.mjs';
 
 test('firmware defaults and physical ranges reach all parameter entry points',()=>{
   assert.equal(GRAB_FORM_DEFAULTS.z_min,-150);
-  assert.equal(GRAB_FORM_DEFAULTS.car_pick_drop_mm,40);
-  assert.equal(GRAB_FORM_DEFAULTS.z_grab,-50);
+  assert.equal(GRAB_FORM_DEFAULTS.car_pick_drop_mm,25);
+  assert.equal(GRAB_FORM_DEFAULTS.z_grab,-45);
+  assert.equal(GRAB_FORM_DEFAULTS.z_place,-25);
+  assert.equal(GRAB_FORM_DEFAULTS.track_store_drop_mm,25);
   for(const key of ['z_speed','z_pick_speed','qr_z_speed'])assert.equal(GRAB_FORM_DEFAULTS[key],250);
   assert.equal(GRAB_FORM_DEFAULTS.z_proc_place,-120);
   assert.equal(GRAB_FORM_DEFAULTS.z_rough_align,-100);
@@ -100,7 +108,7 @@ test('claw waiting is an optional motion timing field and units are separate fro
   for(const key of ['close_ms','release_ms','car_pick_wait_ms']){
     const f=parameterFields.find(f=>f.key===key);
     assert.equal(f.tab,'motion');assert.equal(f.group,'夹爪动作时序');assert.equal(f.unit,'ms');
-    assert.equal(GRAB_FORM_DEFAULTS[key],300);
+    assert.equal(GRAB_FORM_DEFAULTS[key],100);
     assert.deepEqual(fieldWrites(f,{[key]:450}),[[key,450]]);
   }
   const wait=parameterFields.find(f=>f.key==='close_ms');

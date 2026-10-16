@@ -48,6 +48,7 @@ int main(void)
   uint8_t other[] = {1, 0x35, 0x6b}, ack[] = {5, 0xf3, 2, 0x6b};
   assert(MotorBus_Init(&uart) == HAL_OK);
   assert(MechanicalArm_Init(&uart) == HAL_OK);
+  MotorBus_WheelReceiveSet(true);
   /* Nearest HOME uses the saved mechanical origin directly, without Both
    * preparation or direction-parameter writes. Already-at-zero is accepted
    * as a command response; task-level HOME verification is still required. */
@@ -66,7 +67,7 @@ int main(void)
     assert(e.Diagnostic.Function==0x9a && e.Diagnostic.ReplyLength==4);
     assert(!memcmp(e.Diagnostic.Reply,home_reply,4) && tx_count==before+1);
   }
-  fixture_both_modes(&uart,&tick);
+  fixture_receive_modes(&uart,&tick);
   /* Base direction HOME: read, preserve settings, set negative direction,
    * verify, then HOME. Driver names need not match the installed top view. */
   {
@@ -262,7 +263,7 @@ int main(void)
       assert(frame[0] == 6 && frame[1] == 0xfd && frame[2] == negative);
       /* Default motion must carry the selected speed/acceleration on wire;
        * explicit-speed callers retain their own parameters. */
-      assert((((unsigned)frame[3] << 8) | frame[4]) == (explicit_speed ? 10U : 1000U));
+      assert((((unsigned)frame[3] << 8) | frame[4]) == (explicit_speed ? 10U : 2250U));
       MechanicalArm_ConfigTypeDef selected_config;
       assert(MechanicalArm_ConfigGet(MECHANICAL_ARM_AXIS_Z,&selected_config));
       assert(frame[5] == (explicit_speed ? 20U : selected_config.Acceleration));
@@ -276,12 +277,12 @@ int main(void)
   /* Absolute origin is a valid destination; a relative zero is still a no-op error. */
   assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 8,
            MECHANICAL_ARM_POSITION_RELATIVE_CURRENT) == MECHANICAL_ARM_RESULT_PARAM_ERROR);
-  assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 0,
+  assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_BASE, 0, 8, 0,
            MECHANICAL_ARM_POSITION_ABSOLUTE) == MECHANICAL_ARM_RESULT_PARAM_ERROR);
-  assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 255,
+  assert(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X, 0, 8, 0,
            MECHANICAL_ARM_POSITION_ABSOLUTE) == MECHANICAL_ARM_RESULT_NONE);
   tick += 10; MotorBus_Process();
-  assert(frame[0] == 7 && frame[1] == 0xfd && frame[10] == 1 && frame[5] == 255);
+  assert(frame[0] == 7 && frame[1] == 0xfd && frame[10] == 1 && frame[5] == 0);
   assert(frame[6] == 0 && frame[7] == 0 && frame[8] == 0 && frame[9] == 0);
   MotorBus_TxCpltCallback(&uart);
   const uint32_t x_tx_tick=tick;

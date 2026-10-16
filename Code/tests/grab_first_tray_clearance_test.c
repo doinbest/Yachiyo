@@ -1,5 +1,4 @@
-/* User confirmed first placed object: after Base reaches work, ID8+90.
- * Prepared source only; no C compiler/executable or hardware in this round. */
+/* First placement joins the owned +90 goal only before external descent. */
 #define main legacy_grab_main
 #include "grab_task_test.c"
 #undef main
@@ -17,27 +16,17 @@ static void setup(GrabScene_t scene,unsigned slot)
 }
 static void first_pick_waits_for_table(GrabScene_t scene)
 {
- setup(scene,1);run_to(GRAB_RETURN_TURN,600,0);
- assert(physical[0]==30 && physical[1]==0 && !tray_angle_moves);
- /* Base may still be turning: tray movement starts only once outside. */
- base_arrives=false;unsigned closed=closures;
- for(unsigned i=0;i<4;i++)step(true,0,0,0);
- assert(!tray_angle_moves);base_arrives=true;physical[2]=destination[2];tray_arrives=false;
- for(unsigned i=0;i<40 && !tray_angle_moves;i++)step(true,0,0,0);
- assert(tray_angle_moves==1 && tray_status.target_deg==90 && tray_status.slot==0);
- assert(fabsf(physical[2]-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))<.15f);
- assert(physical[1]==0 && status().state==GRAB_RETURN_TURN && !AlignedPlace.picked);
- assert(!strcmp(status().reason,"car_pick_tray_clearance"));
+ setup(scene,1);run_to(GRAB_LIFT,600,0);tray_arrives=false;run_to(GRAB_COMPLETE,600,0);
+ assert(physical[0]==30 && physical[1]==0 && tray_angle_moves==1 && tray_moving);
+ assert(AlignedPlace.picked && CarPickTrayClearance.active);
  assert(tray_inventory[0].state==TURNTABLE_EMPTY);
  assert(tray_inventory[1].state==TURNTABLE_OCCUPIED && tray_inventory[2].state==TURNTABLE_OCCUPIED);
- assert(!GrabTask_AlignedPlaceStart(SceneNames[scene],AlignedPlace.ring,1));
- for(unsigned i=0;i<10;i++)step(true,0,0,0);
- assert(tray_angle_moves==1 && !openings && closures==closed && physical[1]==0);
- tray_arrives=true;run_to(GRAB_COMPLETE,200,0);
- assert(AlignedPlace.picked && !strcmp(status().result,"picked"));
- assert(tray_status.angle_deg==90 && !CarPickTrayClearance.active);
+ unsigned closed=closures;
  assert(GrabTask_AlignedPlaceStart(SceneNames[scene],AlignedPlace.ring,1));
- run_to(GRAB_RELEASE,600,0);assert(tray_angle_moves==1 && physical[1]==AlignedPlace.release_z);
+ for(unsigned i=0;i<100;i++)step(true,0,0,0);
+ assert(physical[0]==40 && physical[1]==0 && !openings && closures==closed && tray_angle_moves==1);
+ tray_arrives=true;run_to(GRAB_RELEASE,600,0);
+ assert(tray_angle_moves==1 && physical[1]==AlignedPlace.release_z);
  assert(tray_status.angle_deg==90 && tray_inventory[1].state==TURNTABLE_OCCUPIED);
 }
 static void pause_keeps_target(void)
@@ -59,6 +48,7 @@ static void stale_arrival_is_read_only(void)
  tray_status.angle_deg=90;tray_status.feedback_valid=false;
  step(true,0,0,0);assert(CarPickTrayClearance.verified && !CarPickTrayClearance.submitted);
  unsigned verified=tray_verifies;run_to(GRAB_COMPLETE,200,0);
+ assert(GrabTask_AlignedPlaceStart("temp2",3,1));run_to(GRAB_DESCEND,300,0);
  assert(tray_verifies==verified+1 && tray_angle_moves==1 && !openings);
 }
 static void cancel_drops_goal(void)

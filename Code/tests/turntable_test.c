@@ -27,11 +27,13 @@ bool ConsoleTx_Write(const uint8_t *p,uint16_t n)
 static void step(void)
 {
   if(sends!=handled) {
-    uint8_t r[8]={sent[0],sent[1],0,0,0,0,0,0x6b};
+    uint8_t r[33]={sent[0],sent[1],0,0,0,0,0,0x6b};
     unsigned length=4;
     handled=sends;MotorBus_TxCpltCallback(&uart);
     assert(sent[0]==8);
-    if(sent[1]==0x36) {
+    if(sent[1]==0x42) {
+      r[2]=33;r[3]=21;r[22]=1;r[32]=0x6b;length=33;
+    } else if(sent[1]==0x36) {
       uint32_t mag=position_raw<0?(uint32_t)-(int64_t)position_raw:(uint32_t)position_raw;
       r[2]=position_raw<0;r[3]=mag>>24;r[4]=mag>>16;r[5]=mag>>8;r[6]=mag;length=8;
     } else if(sent[1]==0x35) {
@@ -78,7 +80,8 @@ int main(void)
   char *get[]={"turntable","get","slot2_deg"};
   char *set[]={"turntable","set","slot2_deg","270"};
   char *empty[]={"turntable","inventory","empty"};
-  assert(MotorBus_Init(&uart)==HAL_OK);fixture_both_modes(&uart,&tick);Turntable_Init();
+  assert(MotorBus_Init(&uart)==HAL_OK);fixture_receive_modes(&uart,&tick);Turntable_Init();
+  sends=handled=0;
   /* The coordinator releases startup once; no early traffic before that gate. */
   for(unsigned i=0;i<10;i++) {
     Turntable_BootHomeProcess(false);step();
@@ -261,7 +264,7 @@ int main(void)
     assert(strstr(console,"ERR turntable fault reason=transport_error"));
     assert(strstr(console,"bus_reason=uart_error addr=8 func=0x3A uart_error=0x00000010"));
     assert(MotorBus_IsQuarantined() && Turntable_ReferenceValid());
-    assert(MotorBus_RecoverAfterReset());console[0]=0;
+    assert(MotorBus_RecoverAfterReset());fixture_receive_modes(&uart,&tick);handled=sends;console[0]=0;
   }
   {
     assert(Turntable_Index(2));run();
@@ -270,6 +273,9 @@ int main(void)
     assert(Turntable_VerifySlot(2));run();Turntable_StatusGet(&s);
     assert(s.arrived && s.feedback_valid && !s.moving);
     assert(position_commands==moved && homes==homed && stop_commands==stopped);
+    tick+=2100; /* Same confirmed angle, but no longer fresh: read, do not move again. */
+    assert(Turntable_Index(2));run();Turntable_StatusGet(&s);
+    assert(s.arrived && s.feedback_valid && position_commands==moved && homes==homed);
     position_raw+=2000;assert(Turntable_VerifySlot(2));run();Turntable_StatusGet(&s);
     assert(!s.arrived && !strcmp(s.reason,"position_changed"));
     assert(position_commands==moved && homes==homed && stop_commands==stopped);
@@ -280,7 +286,7 @@ int main(void)
   Turntable_Stop();run();Turntable_StatusGet(&s);
   assert(!strcmp(s.reason,"stopped_unverified") && Turntable_ReferenceValid());
   assert(Turntable_InventoryGet(1).state==TURNTABLE_OCCUPIED);
-  missing=0;assert(MotorBus_RecoverAfterReset());
+  missing=0;assert(MotorBus_RecoverAfterReset());fixture_receive_modes(&uart,&tick);handled=sends;
   {
     unsigned before_stop=stop_commands;
     /* The motor executes, but its ACK is missing: still send priority Stop. */
@@ -295,7 +301,7 @@ int main(void)
   missing=reject=hold_position=missing_motion_ack=disabled=motor_fault=0;
   reached_missing=moving=speed_rpm=arrival_bias=0;handled=sends;position_raw=0;
   assert(MotorBus_RecoverAfterReset());
-  assert(MotorBus_Init(&uart)==HAL_OK);Turntable_Init();assert(Turntable_Origin());run();
+  assert(MotorBus_Init(&uart)==HAL_OK);fixture_receive_modes(&uart,&tick);handled=sends;Turntable_Init();assert(Turntable_Origin());run();
   float slot3;assert(Turntable_SlotAngleGet(3,&slot3) && slot3==180);
   position_raw=16300; /* Slightly below 90 must still take the positive half-turn. */
   unsigned before_clearance=position_commands;

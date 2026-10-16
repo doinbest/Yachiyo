@@ -40,7 +40,7 @@ def build_test(name, *sources):
         sources = (*sources, "template/App/chassis_model.c")
     # Existing virtual UART fixtures freeze time at ACK; the dedicated settle
     # test exercises the production 2 ms handover and emergency bypass.
-    if name not in ("motor_bus_reply_settle_test", "motor_bus_probe_test", "chassis_feedback_alignment_test", "motor_recovery_evidence_test"):
+    if name not in ("motor_bus_reply_settle_test", "motor_bus_probe_test", "chassis_feedback_alignment_test", "motor_recovery_evidence_test", "turntable_bus_fairness_test", "turntable_read_preemption_test", "chassis_none_bus_test"):
         flags = [*flags, "-DMOTOR_BUS_REPLY_SETTLE_MS=0"]
     run(flags + ["tests/" + name + ".c", *sources, "-lm", "-o", exe])
     run([exe])
@@ -59,6 +59,7 @@ if __name__ == "__main__":
     build_test("grab_heading_source_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("chassis_heading_test", "template/App/chassis_motion.c", "template/App/chassis_localization.c", "template/App/chassis_observer.c", "template/App/chassis_model.c", "template/App/chassis_heading.c")
     build_test("contest_heading_test", "template/Hardware/QR.c")
+    build_test("contest_departure_heading_test", "template/Hardware/QR.c", "tests/mission_heading_stub.c")
     build_test("contest_imu_pause_test", "template/Hardware/QR.c")
     build_test("qr_test", "template/Hardware/QR.c")
     build_test("contest_screen_test", "template/App/contest_screen.c")
@@ -117,6 +118,7 @@ if __name__ == "__main__":
     build_test("grab_mission_pause_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_raw_handoff_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_first_tray_clearance_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_parallel_transfer_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_choreography_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_bus_recovery_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_pose_test")
@@ -124,6 +126,8 @@ if __name__ == "__main__":
     build_test("grab_time_saving_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_axis_acceleration_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_arrival_fallback_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_feedback_schedule_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("turntable_feedback_schedule_test")
     build_test("test_radar_parser", "template/Hardware/lds_parser.c")
     build_test("test_radar_stability", "template/App/radar_geometry.c", "template/App/radar_stability.c")
     build_test("test_radar_map", "template/App/radar_map.c")
@@ -141,6 +145,7 @@ if __name__ == "__main__":
     build_test("grab_task_test")
     build_test("grab_static_frame_test")
     build_test("grab_static_optimization_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_static_preparation_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_measured_alignment_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("grab_calibration_task_test", "template/App/grab_calibration.c")
     build_test("grab_stack_test")
@@ -175,8 +180,14 @@ if __name__ == "__main__":
     build_test("motor_bus_ack_fairness_test", "template/Hardware/motor_bus.c")
     build_test("motor_bus_test", "template/Hardware/motor_bus.c")
     build_test("motor_arrival_test", "template/Hardware/motor_bus.c")
+    build_test("chassis_none_bus_test", "template/Hardware/motor_bus.c", "template/App/mecanum_chassis.c")
+    build_test("grab_none_profile_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
+    build_test("grab_recovery_stream_test", "template/App/grab_tracking.c", "template/App/chassis_observer.c", "template/App/chassis_model.c")
     build_test("motor_bus_probe_test", "template/Hardware/motor_bus.c")
     build_test("turntable_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
+    build_test("turntable_read_preemption_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
+    for case in ("missing", "motion", "home_command", "enable_command", "save_command", "deadline", "deadline_dense", "stop"):
+        run([OUT / "turntable_read_preemption_test.exe", case])
     build_test("turntable_bus_fairness_test", "template/App/turntable.c", "template/Hardware/motor_bus.c")
     build_test("motor_stop_read_noise_test", "template/App/mecanum_chassis.c", "template/Hardware/motor_bus.c")
     for scenario in ("fe", "ore", "missing", "fatal"):

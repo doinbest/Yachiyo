@@ -28,7 +28,7 @@ static void reply(const uint8_t *p,uint16_t n)
 static void tracking_modes(bool stopped)
 {
   uint8_t cfg[33]={7,0x42,33,21};
-  const uint8_t config_ack[]={7,0x48,2,0x6b},move_ack[]={7,0xfd,2,0x6b};
+  const uint8_t move_ack[]={7,0xfd,2,0x6b};
   MechanicalArm_EventTypeDef event;
   for(unsigned i=4;i<32;i++)cfg[i]=(uint8_t)i;
   cfg[22]=1;cfg[32]=0x6b;
@@ -53,32 +53,18 @@ static void tracking_modes(bool stopped)
   reply(move_ack,sizeof move_ack);
   assert(MechanicalArm_ResultGet(&event) && event.Result==MECHANICAL_ARM_RESULT_OK);
   assert(!MotorBus_PositionReached(7,event.TxDoneMs)); /* 02 only accepts the target. */
-  /* Fixed -> tracking -> fixed must each select and verify their own mode. */
+  /* Fixed and tracking X retain the same verified Receive configuration. */
   for(unsigned turn=0;turn<3;turn++) {
-    const uint8_t wanted=turn==1?1:3;
+    unsigned before=sends;
     MechanicalArm_ResultTypeDef result=turn==1?
       MechanicalArm_PositionTrackingEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE):
       MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE);
-    assert(result==MECHANICAL_ARM_RESULT_BUSY);
-    MotorBus_Process();assert(frame[0]==7 && frame[1]==0x42);
-    reply(cfg,sizeof cfg);
-    assert(frame[1]==0x48 && frame[3]==0 && frame[22]==wanted);
-    for(unsigned i=4;i<32;i++)if(i!=22)assert(frame[i]==cfg[i]);
-    reply(config_ack,sizeof config_ack);assert(frame[1]==0x42);
-    /* Before verification even a repeated request cannot submit FD. */
-    result=turn==1?
-      MechanicalArm_PositionTrackingEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE):
-      MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE);
-    assert(result==MECHANICAL_ARM_RESULT_BUSY && !MechanicalArm_IsBusy());
-    cfg[22]=wanted;reply(cfg,sizeof cfg);
-    result=turn==1?
-      MechanicalArm_PositionTrackingEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE):
-      MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_X,200,20,20,MECHANICAL_ARM_POSITION_ABSOLUTE);
-    assert(result==MECHANICAL_ARM_RESULT_NONE);MotorBus_Process();assert(frame[1]==0xfd);
+    assert(result==MECHANICAL_ARM_RESULT_NONE);MotorBus_Process();
+    assert(sends==before+1 && frame[1]==0xfd);
     reply(move_ack,sizeof move_ack);assert(MechanicalArm_ResultGet(&event));
     assert(!MotorBus_PositionReached(7,event.TxDoneMs));
   }
-  puts("tracking Receive, fixed Both, verified mode transitions PASS");
+  puts("tracking/fixed X share verified Receive without configuration traffic PASS");
 }
 int main(int argc,char **argv)
 {
@@ -105,20 +91,20 @@ int main(int argc,char **argv)
   const uint8_t home_ack[]={6,0x9a,2,0x6b};reply(home_ack,sizeof home_ack);
   MechanicalArm_EventTypeDef event;assert(MechanicalArm_ResultGet(&event));
   assert(event.Result==MECHANICAL_ARM_RESULT_OK && !MotorBus_IsQuarantined());
-  /* The first actual fixed X move still reads, preserves, RAM-selects Both,
+  /* The first actual fixed X move still reads, preserves, RAM-selects Receive,
    * verifies, and only then admits FD; no other axis is preconfigured. */
   assert(MechanicalArm_Position(MECHANICAL_ARM_AXIS_X,100)==MECHANICAL_ARM_RESULT_BUSY);
   MotorBus_Process();assert(frame[0]==7 && frame[1]==0x42);
   uint8_t cfg[33]={7,0x42,33,21};
   for(unsigned i=4;i<32;i++)cfg[i]=(uint8_t)i;
-  cfg[22]=1;cfg[32]=0x6b;reply(cfg,sizeof cfg);
-  assert(frame[0]==7 && frame[1]==0x48 && frame[3]==0 && frame[22]==3);
+  cfg[22]=3;cfg[32]=0x6b;reply(cfg,sizeof cfg);
+  assert(frame[0]==7 && frame[1]==0x48 && frame[3]==0 && frame[22]==1);
   for(unsigned i=4;i<32;i++)if(i!=22)assert(frame[i]==cfg[i]);
   const uint8_t config_ack[]={7,0x48,2,0x6b};reply(config_ack,sizeof config_ack);
   assert(frame[0]==7 && frame[1]==0x42);
-  cfg[22]=3;reply(cfg,sizeof cfg);
+  cfg[22]=1;reply(cfg,sizeof cfg);
   assert(MechanicalArm_Position(MECHANICAL_ARM_AXIS_X,100)==MECHANICAL_ARM_RESULT_NONE);
   MotorBus_Process();assert(frame[0]==7 && frame[1]==0xfd);
-  puts("lazy configuration: quiet boot, independent HOME, fixed X read/RAM-Both/verify before FD PASS");
+  puts("lazy configuration: quiet boot, independent HOME, fixed X read/RAM-Receive/verify before FD PASS");
   return 0;
 }

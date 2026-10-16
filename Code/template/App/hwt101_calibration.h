@@ -51,6 +51,9 @@ void HWT101_Cal_BootVerifyProcess(bool motion_idle);
  * @pre 调用者须确认所有运动任务空闲，用户保证整车静止；只在主循环调用。
  * @return 已开始为true；忙、无新鲜样本或寄存器读取异常为false。 */
 bool HWT101_Cal_Start(void);
+/** @brief 原生标定及保存流程不变，仅将后续完整新鲜采样验证改为10秒。
+ * @pre 同Start；不缩短模块配置的采集时长，不放宽漂移/噪声判据。 */
+bool HWT101_Cal_QuickStart(void);
 /** @brief 独立Z轴归零：解锁、写CALIYAW、等待新样本；不标定、不保存。
  * @pre 所有运动空闲且整车静止；撤销本次航向验证及地图锚点资格。
  * @return true仅表示流程开始；完成后检查zero_sample_received/zero_after_deg。 */

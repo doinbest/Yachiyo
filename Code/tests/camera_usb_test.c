@@ -8,6 +8,7 @@ static uint8_t tx_result = USBD_OK;
 static uint8_t usb_configured = 1U;
 static uint8_t tx[6];
 static uint16_t tx_length;
+static unsigned tx_calls;
 static uint32_t tick;
 static unsigned observed;
 static uint8_t observed_valid[4], observed_match[4];
@@ -23,6 +24,7 @@ uint32_t HAL_GetTick(void) { return tick; }
 uint8_t CDC_IsConfigured_FS(void) { return usb_configured; }
 uint8_t CDC_Transmit_FS(uint8_t *data, uint16_t length)
 {
+  tx_calls++;
   assert(length == 4U || length == 6U);
   tx_length = length;
   if (tx_result == USBD_OK) memcpy(tx, data, length);
@@ -84,8 +86,36 @@ static void b2_boundaries(void)
   tick=1300; assert(Camera_VisualStateGet(&snap)==CAMERA_VIS_STALE);
 }
 
+static void guarded_recovery_restart(void)
+{
+  uint8_t frame[14],retained;Camera_SnapshotTypeDef s;
+  Camera_Init();tx_result=USBD_OK;tick=100;
+  assert(Camera_MaterialStart(CAMERA_COLOR_BLUE)==HAL_OK);make_frame(frame,1);
+  Camera_UsbRxCallback(frame,14);Camera_Process();unsigned count=tx_calls;
+  assert(Camera_RestartIfMissing(3,90,250,&retained)==HAL_OK && retained && tx_calls==count);
+  Camera_SnapshotGet(&s);assert(s.HasValidData);
+  assert(Camera_RestartIfMissing(2,90,250,&retained)==HAL_ERROR && tx_calls==count);
+  /* IRQ bytes not yet parsed belong to the original stream. */
+  assert(Camera_MaterialStart(CAMERA_COLOR_BLUE)==HAL_OK);tick=200;
+  Camera_UsbRxCallback(frame,14);count=tx_calls;
+  assert(Camera_RestartIfMissing(3,190,250,&retained)==HAL_BUSY && tx_calls==count);
+  tick=205;Camera_Process();
+  assert(Camera_RestartIfMissing(3,190,250,&retained)==HAL_OK && retained && tx_calls==count);
+  /* A sustained invalid stream can still request reacquisition. */
+  make_frame(frame,0);Camera_UsbRxCallback(frame,14);Camera_Process();
+  assert(Camera_RestartIfMissing(3,190,250,&retained)==HAL_OK && !retained && tx_calls==count+1);
+  Camera_SnapshotGet(&s);assert(!s.HasFrame && !s.HasValidData);
+  /* Parsing a pre-boundary frame late cannot qualify it as recovered. */
+  make_frame(frame,1);tick=300;Camera_UsbRxCallback(frame,14);tick=500;Camera_Process();count=tx_calls;
+  assert(Camera_RestartIfMissing(3,350,250,&retained)==HAL_OK && !retained && tx_calls==count+1);
+  tick=UINT32_MAX-10;Camera_UsbRxCallback(frame,14);Camera_Process();tick=5;count=tx_calls;
+  assert(Camera_RestartIfMissing(3,UINT32_MAX-20,250,&retained)==HAL_OK && retained && tx_calls==count);
+  Camera_RequestStop();count=tx_calls;
+  assert(Camera_RestartIfMissing(3,0,250,&retained)==HAL_ERROR && tx_calls==count);
+}
 int main(void)
 {
+  guarded_recovery_restart();
   pixel_observer_test();
   Camera_SnapshotTypeDef snapshot;
   Camera_SnapshotTypeDef consumer;

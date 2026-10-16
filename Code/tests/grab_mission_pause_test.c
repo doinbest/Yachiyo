@@ -19,8 +19,9 @@ static void pause_resume(void)
 static void queued_next_pose(void)
 {
  setup();assert(GrabTask_TrackedStoreStart(3,1,GRAB_TRACK_FEEDBACK));
- run_to(GRAB_COMPLETE,1000,0);
- assert(!strcmp(status().result,"stored") && tray_inventory[0].state==TURNTABLE_OCCUPIED);
+ run_to(GRAB_RETRACT,1000,0);
+ GrabTask_Stop();run_to(GRAB_IDLE,200,0);
+ assert(TrackStoreReleased && TrackStoreRecorded && tray_inventory[0].state==TURNTABLE_OCCUPIED);
  assert(GrabTask_TrackedStoreStart(5,2,GRAB_TRACK_FEEDBACK));
  assert(status().state==GRAB_ROUTE_POSE && NextTrack.pending);
 }
@@ -85,7 +86,7 @@ int main(void)
  while(PoseStep!=5)step(true,0,0,0);
  pause_resume();
  assert(fabsf(physical[2]-72)<.15f && !strcmp(status().result,"qr_pose_ready") && !openings);
- const GrabTask_State_t store[]={GRAB_TRACK_OBSERVE,GRAB_DESCEND,GRAB_SETTLE,GRAB_CLOSE,GRAB_LIFT,GRAB_INDEX,GRAB_TURN,GRAB_PLACE,GRAB_RELEASE,GRAB_RETRACT,GRAB_RETURN_TURN};
+ const GrabTask_State_t store[]={GRAB_TRACK_OBSERVE,GRAB_DESCEND,GRAB_CLOSE,GRAB_LIFT,GRAB_INDEX,GRAB_TURN,GRAB_PLACE,GRAB_RELEASE,GRAB_RETRACT,GRAB_RETURN_TURN};
  for(unsigned i=0;i<sizeof store/sizeof *store;i++){
   setup();assert(GrabTask_TrackedStoreStart(3,2,GRAB_TRACK_FEEDBACK));run_to(store[i],1000,0);
   fprintf(stderr,"pause tracking phase=%u\n",store[i]);pause_resume();

@@ -72,11 +72,11 @@ static MechanicalArm_AxisConfigTypeDef MechanicalArm_AxisConfig[MECHANICAL_ARM_A
     {"z",
      MOTOR_ID_ARM_Z,
      MECHANICAL_ARM_Z_POSITIVE_DIR,
-     {2250U, 255U, 0U}}, /* At480 pulses/mm:250 mm/s; HOME uses drive parameters. */
+     {2250U, 0U, 0U}}, /* At480 pulses/mm:250 mm/s; gear0 is direct speed, HOME keeps drive parameters. */
     {"x",
      MOTOR_ID_ARM_X,
      MECHANICAL_ARM_X_POSITIVE_DIR,
-     {40U, 20U, MECHANICAL_ARM_COMMAND_PULSES_PER_REV}}};
+     {40U, 0U, MECHANICAL_ARM_COMMAND_PULSES_PER_REV}}};
 
 static UART_HandleTypeDef *MechanicalArm_Uart;
 static uint8_t MechanicalArm_StopPendingMask, MechanicalArm_StopMask;
@@ -183,9 +183,7 @@ static HAL_StatusTypeDef MechanicalArm_CurrentCommandSend(void)
 
   case MECHANICAL_ARM_ACTION_POSITION:
     {
-      int ready=MechanicalArm_Request.TrackingPosition?
-        MotorBus_PositionReplyEnsureMode(AxisConfig->MotorId,1):
-        MotorBus_PositionReplyEnsure(AxisConfig->MotorId);
+      int ready=MotorBus_PositionReplyEnsure(AxisConfig->MotorId);
       if(ready!=1)return ready<0?HAL_ERROR:HAL_BUSY;
     }
     MechanicalArm_Request.ExpectedFunction = 0xFDU;
@@ -528,7 +526,7 @@ HAL_StatusTypeDef MechanicalArm_Init(UART_HandleTypeDef *huart)
   MechanicalArm_Uart = huart;
   MechanicalArm_State = MECHANICAL_ARM_STATE_IDLE;
   MechanicalArm_EventReady = 0;
-  /* Both is required by fixed FD moves, not HOME or initialization. Prepare it
+  /* Receive is prepared for FD moves, not HOME or initialization. Prepare it
    * lazily in CurrentCommandSend so early configuration cannot cancel boot HOME. */
   MechanicalArm_StopPendingMask=MechanicalArm_StopMask=0;
   memset(&MechanicalArm_Request, 0, sizeof(MechanicalArm_Request));
@@ -721,7 +719,8 @@ static MechanicalArm_ResultTypeDef MechanicalArm_PositionSubmit(MechanicalArm_Ax
 {
   if ((MechanicalArm_AxisConfigGet(Axis) == NULL) ||
       ((Position == 0) && (Mode != MECHANICAL_ARM_POSITION_ABSOLUTE)) || (SpeedRpm < 1U) ||
-      (SpeedRpm > 3000U) || (Acceleration < 1U) ||
+      (SpeedRpm > 3000U) ||
+      ((Acceleration == 0U) && (Axis != MECHANICAL_ARM_AXIS_X) && (Axis != MECHANICAL_ARM_AXIS_Z)) ||
       ((Mode != MECHANICAL_ARM_POSITION_ABSOLUTE) &&
        (Mode != MECHANICAL_ARM_POSITION_RELATIVE_CURRENT)))
   {
@@ -911,7 +910,8 @@ uint8_t MechanicalArm_ConfigSet(MechanicalArm_AxisTypeDef Axis, uint16_t SpeedRp
   uint8_t Index;
 
   if ((Axis > MECHANICAL_ARM_AXIS_ALL) || (SpeedRpm < 1U) || (SpeedRpm > 3000U) ||
-      (Acceleration < 1U) || (PulseLimit > MECHANICAL_ARM_COMMAND_PULSES_PER_REV) ||
+      ((Acceleration == 0U) && (Axis != MECHANICAL_ARM_AXIS_X) && (Axis != MECHANICAL_ARM_AXIS_Z)) ||
+      (PulseLimit > MECHANICAL_ARM_COMMAND_PULSES_PER_REV) ||
       ((PulseLimit == 0U) && (Axis != MECHANICAL_ARM_AXIS_Z)))
   {
     return 0U;

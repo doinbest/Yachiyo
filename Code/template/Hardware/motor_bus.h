@@ -100,17 +100,21 @@ typedef struct
 /** @brief Main-loop RAM snapshot; timestamps/durations in MCU milliseconds. */
 void MotorBus_TimingGet(MotorBus_Timing_t *out);
 bool MotorBus_EventGet(MotorBus_Owner_t owner, MotorBus_Event_t *event);
-/* IDs5..8: read/preserve parameters, select Both in RAM, then verify.
+/* IDs5..8: read/preserve parameters, select Receive in RAM, then verify.
  * Returns 1 ready, 0 pending, -1 failed; no motion is sent by this helper. */
 int MotorBus_PositionReplyEnsure(uint8_t address);
 /* Same preserved RAM configuration/readback, selecting driver Receive=1 or
  * Both=3. Pending transitions never grant readiness from an older mode cache. */
 int MotorBus_PositionReplyEnsureMode(uint8_t address,uint8_t mode);
+/* IDs1..4: preserve full parameters, RAM-select None/Receive, verify readback.
+ * TX-only control policy never changes data-query or configuration replies. */
+int MotorBus_WheelReplyEnsure(uint8_t address,bool receive);
+void MotorBus_WheelReceiveSet(bool receive);
 /* Stop/arrival feedback owns the bus before background configuration resumes.
  * In-flight traffic completes or is preempted by the existing urgent-stop path;
  * only unsent configuration work is cancelled here. Main-loop only. */
 void MotorBus_PositionConfigStopHold(bool hold);
-/* Matching FD/9F after the latest transmitted position command. Receive/02,
+/* Explicit Both compatibility only: matching FD/9F after the latest TX. Receive/02,
  * stops, HOME and superseded position targets never establish completion. */
 bool MotorBus_PositionReached(uint8_t address, uint32_t accepted_ms);
 bool MotorBus_OwnerBusy(MotorBus_Owner_t owner);

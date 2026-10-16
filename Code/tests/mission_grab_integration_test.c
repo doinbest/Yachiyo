@@ -137,6 +137,7 @@ static void run_match(bool raised)
  motion.heading_valid=true;
  ContestMission_Init();ContestMission_Request_t request={MISSION_CODE_FIXED,"156+123+516+231",200,50,RADAR_START_LOWER,false,false,false,CHASSIS_PROFILE_LINEAR};
  request.align_raised=raised;
+ request.visual_heading_enabled=true;
  assert(ContestMission_Start(NULL,&request));
  request.align_raised=!raised; /* Caller edits cannot change this accepted match. */
  ContestMission_Report();assert(strstr(output,raised?"align=raised":"align=lowered"));
@@ -153,6 +154,8 @@ static void run_match(bool raised)
  visit(4,5);visit(2,6);visit(3,7);
  fprintf(stderr,"integration stored=%u placed=%u paused=%u overlap=%u overlap_pauses=%u busy=%u\n",stored,placed,pause_count,overlapping_moves,overlap_pauses,busy_moves);
  assert(stored==12 && placed==12 && pause_count==6 && overlap_pauses==3 && overlapping_moves>0 && busy_moves>0);
+ extern unsigned test_heading_competition_starts;
+ assert(test_heading_competition_starts==6); /* Four arrivals plus two processing departures. */
  route.state="done";cycle();assert(!ContestMission_IsBusy());
  if(raised)assert(raised_ring && raised_pick && raised_stack);
  ContestMission_Report();assert(strstr(output,raised?"align=raised":"align=lowered"));

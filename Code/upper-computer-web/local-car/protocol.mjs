@@ -33,7 +33,7 @@ export const grabParameters = [
   ...[['z_ppm','Z 命令脉冲 / mm'],['x_ppm','X 命令脉冲 / mm']].map(([key,label])=>({key,label,group:'尺度与行程'})),
   ...[['z_min','Z 最小位置'],['z_max','Z 最大位置'],['z_grab','Z 夹持位置'],['z_place','Z 放置位置'],['z_lift','Z 提起位置'],['z_observe','Z 观察位置'],['x_min','X 最小位置'],['x_max','X 最大位置'],['x_pre','X 预备位置']].map(([key,label])=>({key,label:`${label} / mm`,group:'尺度与行程'})),
   ...[['pos_tol','轴到位容差 / mm'],['stop_speed','停稳速度阈值 / mm·s⁻¹'],['dx_tol','DX 抓取窗口 / px'],['dy_tol','DY 抓取窗口 / px']].map(([key,label])=>({key,label,group:'反馈与抓取条件'})),
-  ...[['close_ms','闭爪后等待 / ms'],['release_ms','松爪后等待 / ms'],['car_pick_wait_ms','车仓开口后等待 / ms'],['stable_ms','精定位稳定时间 / ms'],['arrival_hold_ms','无到位标志的稳定等待 / ms']].map(([key,label])=>({key,label,group:'反馈与抓取条件'})),
+  ...[['close_ms','闭爪后等待 / ms'],['release_ms','松爪后等待 / ms'],['car_pick_wait_ms','车仓开口后等待 / ms'],['stable_ms','精定位稳定时间 / ms'],['arrival_hold_ms','机构到位稳定时间 / ms']].map(([key,label])=>({key,label,group:'反馈与抓取条件'})),
   ...[['feedback_ms','反馈最大年龄 / ms'],['age_ms','有效坐标接收超时 / ms']].map(([key,label])=>({key,label,group:'反馈与抓取条件'})),
   {key:'vision_wait_ms',label:'目标颜色等待窗口 / ms',group:'反馈与抓取条件'},
   {key:'base_home_degrade',label:'Base 回零降级继续（1 开启 / 0 严格）',group:'回零策略'},
@@ -93,7 +93,7 @@ export const commands = [
   ...[['fixed','固定位置抓取'],['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}`,'vision',label,mode==='align'?'grab align color 3 0':`grab start ${mode}`)),
   ...[['align','仅协同对准'],['pick','单件视觉抓取']].map(([mode,label])=>command(`grab-${mode}-color`,'vision',label,mode==='align'?'grab align color {color} 0':`grab start ${mode} {color}`,[choice('color','物料颜色',grabColorOptions,'3')])),
   command('grab-route','vision','启动蓝色首件入仓测试','grab route {speed}',[number('speed','路线平移速度 / mm·s⁻¹',1000,10,5000)],'右下起点、机械臂朝后；二维码点直接通过，到原料台抓蓝色入第一仓，再收回朝后结束。不覆盖任务码；第一仓需有参考、已配置且为空，先在地图页准备跑图。'),
-  command('grab-mission','vision','扫码并启动两批比赛','grab mission qr {speed} {turnSpeed}',[number('speed','路线速度 / mm/s',1000,10,5000),number('turnSpeed','转向速度 / °/s',100,5,500)],'前往二维码实际扫码，并采用本轮扫码任务码执行两批搬运。固定任务码在比赛任务页选择。'),
+  command('grab-mission','vision','扫码并启动两批比赛','grab mission qr {speed} {turnSpeed} lower fixed vhigh linear',[number('speed','路线速度 / mm/s',1000,10,5000),number('turnSpeed','转向速度 / °/s',100,5,360)],'前往二维码实际扫码，并采用本轮扫码任务码执行两批搬运。固定任务码在比赛任务页选择。'),
   command('grab-mission-continue','vision','补齐参数后继续本件','grab mission continue'),
   command('grab-mission-pause','vision','暂停比赛','grab mission pause',[],'停车并保留本轮进度，显式继续才恢复。'),
   command('grab-mission-stop','vision','停止比赛','grab mission stop',[],'停车后结束本轮，不再续接；保持夹爪、参数、参考及已完成库存。'),
@@ -113,7 +113,7 @@ export const commands = [
   command('origin','arm','保存机械零点','origin {axis}',[axis(true)],'将当前机械位置保存为零点，与计数清零不同。'),
   command('zero','arm','当前位置计数清零','zero {axis}',[axis(true)],'只清除当前位置计数，不执行回零运动。'),
   command('config-get','arm','读取运动配置','config {axis}',[axis(true)]),
-  command('config-set','arm','设置运动配置','config {axis} {rpm} {acc} {limit}',[axis(true),number('rpm','速度 / RPM',30,1,3000),number('acc','加速度参数',20,1,255),number('limit','脉冲限制',3200,0,3200)],'配置只保存在 RAM，复位后恢复默认；只有单独 Z 轴允许 limit=0。'),
+  command('config-set','arm','设置运动配置','config {axis} {rpm} {acc} {limit}',[axis(true),number('rpm','速度 / RPM',30,1,3000),number('acc','加速度参数',20,0,255),number('limit','脉冲限制',3200,0,3200)],'配置只保存在 RAM，复位后恢复默认；X/Z允许加速度0档（直接按目标速度运行），Base及all保持1～255；只有单独 Z 轴允许 limit=0。'),
   ...[['open','打开 · 2450 µs'],['catch','夹取 · 1920 µs'],['idle','待机松开 · 2450 µs']].map(([id,label]) => command(`grip-${id}`,'grip',label,`grip ${id}`)),
   command('grip-pulse','grip','自定义夹爪脉宽','grip duty {duty}',[number('pulse','脉宽 / μs',2450,500,2500,1)],'自动打开统一2450 μs，夹取1920 μs。仅点击应用时改变当前开口，输入值不改写任务参数。'),
   command('grip-duty','grip','手动设置占空比','grip duty {duty}',[number('duty','PWM 占空比 / %',9.6,2.5,12.5,0.1)],'50 Hz PWM；打开2450 µs = 12.25%，夹取1920 µs = 9.6%。'),
@@ -169,6 +169,7 @@ export const commands = [
   command('reset-confirmed','chassis','确认驱动已实际复位','chassis reset-confirmed',[],'仅在实物驱动器已复位后执行；此按钮不会复位驱动器。'),
   command('imu-status','system','读取 IMU 状态','imu status'),
   command('imu-cal-start','system','原生零偏标定','imu cal start',[],'整车静止约 20 秒标定 + 30 秒验证；验证通过后请求模块内部保存。'),
+  command('imu-cal-quick','system','比赛快速标定','imu cal quick',[],'整车静止约 20 秒标定 + 10 秒验证；内部标定与保存流程不变，漂移判定标准不变。'),
   command('imu-verify','system','重新验证 5 秒','imu verify'),
   command('imu-cal-cancel','system','取消标定或验证','imu cal cancel',[],'尝试恢复正常模式并清除本次航向控制验证资格。'),
   command('imu-stream-on','system','开启模块角度输出','imu stream on'),
@@ -188,7 +189,7 @@ export const commands = [
 
 // Keep stable command groups/IDs; owner is the six-page UI module.
 const debugIds = new Set(['position','grip-idle','grip-duty','move','velocity','wheel','wheel-stop','chassis-hold','chassis-status','feedback-read','feedback-select','feedback-on','feedback-off','camera-material','camera-status','camera-stop','imu-stream-on','imu-stream-off']);
-const calibrationIds = new Set(['home','origin','zero','config-get','config-set','grab-calib-ref','grab-calib','grab-calib-status','units','reset-confirmed','chassis-origin','imu-cal-start','imu-verify','imu-cal-cancel']);
+const calibrationIds = new Set(['home','origin','zero','config-get','config-set','grab-calib-ref','grab-calib','grab-calib-status','units','reset-confirmed','chassis-origin','imu-cal-start','imu-cal-quick','imu-verify','imu-cal-cancel']);
 for (const definition of commands) {
   definition.owner = definition.group === 'grip' ? 'arm' : definition.group;
   definition.section = calibrationIds.has(definition.id)||definition.id.startsWith('grab-set-') ? 'calibration' : debugIds.has(definition.id) ? 'debug' : 'common';
@@ -240,6 +241,8 @@ export function buildCommand(id, values = {}) {
   }
   if ((['pos','grab-base-pos'].includes(id) && Number(checked.degree) === 0) || (id === 'wheel' && Number(checked.rpm) === 0))
     throw new Error('运动值不能为 0，请使用对应的停止命令。');
+  if (id === 'config-set' && !['x','z'].includes(checked.axis) && Number(checked.acc) === 0)
+    throw new Error('只有单独 X/Z 轴允许加速度0档。');
   if (id === 'config-set' && checked.axis !== 'z' && Number(checked.limit) === 0)
     throw new Error('只有单独 Z 轴允许脉冲限制为 0。');
   if (id === 'chassis-test') {
@@ -391,7 +394,7 @@ export function describeGrabRoute(r) {
   if(r?.mode==='heading')return `独立航向测试 · ${reasonText(r.reason||r.heading_result||r.state)}`;
   if(r?.mode==='single'){const stage=({stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',car_pick:'车仓取出并保持',held_place:'持料视觉对准',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向姿态',driving:'行驶中',prepare_transfer:'准备抓取',transfer:'抓取入仓',prepare_departure:'准备收回',leaving:'收回朝后',config_wait:`等待补齐 ${describeGrabMissing(r.reason)} 后继续本件`,done:'入仓及收回完成',error:'任务故障',cancelled:'已取消'})[r.state]||r.state;return `蓝色首件 · 第一仓 · ${stage}`;}
   if(!['mission','ring_place'].includes(r?.mode))return `组合路线：${({idle:'空闲',driving:'行驶中',scan_wait:'扫码等待 1 秒',display_wait:'等待屏幕发送',handoff:'物料台已交接',error:'路线故障',cancelled:'已取消',done:'首件任务完成'})[r?.state]||r?.state||'未报告'}`;
-  const stage=({cancelling:'正在结束本轮',cancel_wait:'结束中 · 停车尚未确认',stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',empty_ring_align:'空爪对准目标编号环',empty_material_align:'空爪对准第一层同色物料',car_pick:'车仓取出并保持',held_place:'放置所取物料',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向行驶姿态',driving:'行驶中',ring_clear:'抬升收回',ring_move:'移动到指定环',transfer:'单件取放',leaving:'恢复后向姿态',return_center:'返回工位中心',config_wait:'等待补齐参数',done:'两批任务结束',error:'任务故障',cancelled:'已取消',prepare_ring:'准备换环',prepare_departure:'准备离站',prepare_transfer:'准备下一件取放'})[r.state]||r.state;
+  const stage=({cancelling:'正在结束本轮',cancel_wait:'结束中 · 停车尚未确认',stop_wait:'停车未确认 · 等待恢复',qr_prepare:'准备实际扫码',qr_scan:'等待本轮扫码',qr_display:'发送实际码到串口屏',qr_departure:'扫码后收回',empty_ring_align:'空爪对准目标编号环',empty_material_align:'空爪对准第一层同色物料',car_pick:'车仓取出并保持',held_place:'放置所取物料',stopping:'正在停止',paused:'已暂停',resuming:'恢复当前阶段',preparing_travel:'准备后向行驶姿态',driving:'行驶中',departure_heading_prepare:'准备加工区离站航向矫正',departure_heading:'加工区离站前航向矫正',ring_clear:'抬升收回',ring_move:'移动到指定环',transfer:'单件取放',leaving:'恢复后向姿态',return_center:'返回工位中心',config_wait:'等待补齐参数',done:'两批任务结束',error:'任务故障',cancelled:'已取消',prepare_ring:'准备换环',prepare_departure:'准备离站',prepare_transfer:'准备下一件取放'})[r.state]||r.state;
   const recoveryStage=missionResumeStatus(r)?.label||({bus_recovery_stopping:'通信异常 · 保留进度停车',bus_recovering:'恢复电机总线',bus_recovery_verify:'恢复后确认停稳',bus_recovery_wait:'总线恢复待处理',bus_recovery_retry:'通信恢复重试'})[r.state];
   if(r?.mode==='ring_place')return `编号环自动放置 · ${r.ring??'—'}号环 · ${r.slot??'—'}号料盘 · ${r.state==='done'?'取仓放置完成':recoveryStage||stage}`;
   return `${r.batch===2?'第二批':'第一批'} · 第 ${r.item??'—'} 件 · ${recoveryStage||stage}${r.state==='config_wait'?`：补齐 ${describeGrabMissing(r.reason)} 后继续本件`:''}`;

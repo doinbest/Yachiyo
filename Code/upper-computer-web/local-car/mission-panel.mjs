@@ -1,19 +1,17 @@
 import {describeGrabRoute,describeGrabMissing,reasonText,deviceText} from './protocol.mjs';
 import {missionResumeStatus} from './mission-resume-status.mjs';
 
-export function buildMissionCommand({source,code='',speed=1000,turnSpeed=100,start='lower',radar=false,align='raised',visualHeading=false,profile='linear'}){
+export function buildMissionCommand({source,code='',speed=1000,turnSpeed=100,start='lower',radar=false,profile='linear'}){
   if(!['qr','fixed'].includes(source))throw Error('请选择本轮执行码来源');
-  if(!String(speed).trim()||!Number.isFinite(Number(speed))||speed<10||speed>5000||!String(turnSpeed).trim()||!Number.isFinite(Number(turnSpeed))||turnSpeed<5||turnSpeed>500)throw Error('路线速度10–5000，转向速度5–500 °/s');
+  if(!String(speed).trim()||!Number.isFinite(Number(speed))||speed<10||speed>5000||!String(turnSpeed).trim()||!Number.isFinite(Number(turnSpeed))||turnSpeed<5||turnSpeed>360)throw Error('路线速度10–5000，转向速度5–360 °/s');
   if(!['lower','upper'].includes(start)||typeof radar!=='boolean')throw Error('请选择起点和雷达模式');
-  if(!['lowered','raised'].includes(align))throw Error('请选择工位视觉对准方式');
-  if(typeof visualHeading!=='boolean')throw Error('请选择视觉航向矫正');
   if(!['linear','cosine'].includes(profile))throw Error('请选择底盘加减速方式');
   code=code.trim();
   if(source==='fixed'){
     const groups=code.split('+');
     if(!/^[1-6]{3}\+[1-3]{3}\+[1-6]{3}\+[1-3]{3}$/.test(code)||groups.some(g=>new Set(g).size!==3)||[...groups[0]].sort().join('')!==[...groups[2]].sort().join(''))throw Error('任务码须为两批同色、各三件，例如156+123+516+231');
   }
-  const wire=`grab mission ${source}${source==='fixed'?' '+code:''} ${Number(speed)} ${Number(turnSpeed)} ${start} ${radar?'radar':'fixed'} ${visualHeading?(align==='raised'?'vhigh':'vlow'):align} ${profile}`;
+  const wire=`grab mission ${source}${source==='fixed'?' '+code:''} ${Number(speed)} ${Number(turnSpeed)} ${start} ${radar?'radar':'fixed'} vhigh ${profile}`;
   if(wire.length>95)throw Error('指令过长');
   return wire;
 }
@@ -34,16 +32,10 @@ export function mountMission({root,send,canSend}){
   for(const[value,text]of [['lower','右下起点 · 车头朝左'],['upper','右上起点 · 车头朝下']]){const o=make('option',text);o.value=value;start.append(o);}start.value='lower';
   const radar=field('激光雷达',make('select',undefined,undefined,'mission-radar'));
   for(const[value,text]of [['off','关闭 · 固定路线'],['on','开启 · 自动扫描并规划绕障']]){const o=make('option',text);o.value=value;radar.append(o);}radar.value='off';
-  const alignmentField=make('label','工位视觉对准','mission-alignment-field');
-  const alignment=make('select',undefined,undefined,'mission-align-height');
-  for(const value of ['raised','lowered']){const o=make('option',value==='lowered'?'下降对准 · 仅对照测试':deviceText(value));o.value=value;alignment.append(o);}alignment.value='raised';
-  const alignmentNote=make('span','加工与暂存默认在Z=0识别对准，停稳后直接衔接取放，不再先下降识别再抬高；实际取放高度与原料追踪不变。选择仅在开始新比赛时采用，暂停继续沿用本轮模式。','form-note','mission-align-note');
-  alignment.setAttribute('aria-describedby','mission-align-note');alignmentField.append(alignment,alignmentNote);fields.append(alignmentField);
-  const visualHeading=field('视觉航向矫正',make('select',undefined,undefined,'mission-visual-heading'));
-  for(const [value,text] of [['off','关闭 · 原流程'],['on','开启 · 测试']]){const o=make('option',text);o.value=value;visualHeading.append(o);}visualHeading.value='off';
-  setup.append(make('p','开启后每次进站仅核验一次：加工区及暂存第一批用色环，暂存第二批码垛用前方黑线；区内换环及加工取回不重复；每件位置对准照常执行。观测最多5秒，接受间断但一致的3帧，证据不足跳过。尚未标定时只观测，不自动改角或转车；暂停继续保留本轮选择。','form-note'));
+  setup.append(make('p','工位视觉对准：固定高位 · Z=0；视觉航向矫正：每轮开启。加工与暂存在高位识别并确认停稳后衔接取放，实际取放高度与原料追踪保持。','form-note'));
+  setup.append(make('p','每轮开启，每次进站仅核验一次：加工区及暂存第一批用色环，暂存第二批码垛用前方黑线；区内换环及逐件加工取回不重复；每批加工三件取回入仓后，离站前再矫正一次，完成后Base回行驶姿态，再退出转向。每件位置对准照常执行。色环采用已验证的反号1∶1关系，通过IMU闭环矫正，最高10°/s；黑线仍需独立标定，未标定时只观测。观测最多5秒，接受间断但一致的3帧，证据不足跳过；暂停继续保留本轮设置。','form-note'));
   const speed=field('路线速度 / mm/s',make('input'));speed.type='number';speed.value='1000';speed.min='10';speed.max='5000';
-  const turnSpeed=field('转向速度 / °/s',make('input'));turnSpeed.type='number';turnSpeed.value='100';turnSpeed.min='5';turnSpeed.max='500';
+  const turnSpeed=field('转向速度 / °/s',make('input'));turnSpeed.type='number';turnSpeed.value='100';turnSpeed.min='5';turnSpeed.max='360';
   const profile=field('底盘加减速',make('select',undefined,undefined,'mission-profile'));
   for(const [value,text] of [['linear','线性 · 起步500/800/1000，停车300 mm/s²'],['cosine','余弦 · K200 / 400 ms']]){const o=make('option',text);o.value=value;profile.append(o);}profile.value='linear';
   setup.append(fields,make('p','开启雷达：展开扫描→规划→收回雷达→出发；关闭雷达：直接走固定路线。最终返回所选起点。路线速度包含起点至扫码点；转向速度为原地转向上限，到角自动减速。两种方式都会前往二维码工位实际扫码。串口屏仅显示本轮扫描结果，固定码只决定后续搬运顺序。','form-note'));
@@ -57,7 +49,7 @@ export function mountMission({root,send,canSend}){
     actions.append(b);controls.push(update);return b;
   };
   const startAllowed=()=>!live||!snapshot||['idle','done','error','cancelled'].includes(snapshot.state);
-  button('开始本轮比赛',()=>buildMissionCommand({source:source.value,code:code.value,speed:speed.value,turnSpeed:turnSpeed.value,start:start.value,radar:radar.value==='on',align:alignment.value,visualHeading:visualHeading.value==='on',profile:profile.value}),'mission-start','primary',startAllowed);
+  button('开始本轮比赛',()=>buildMissionCommand({source:source.value,code:code.value,speed:speed.value,turnSpeed:turnSpeed.value,start:start.value,radar:radar.value==='on',profile:profile.value}),'mission-start','primary',startAllowed);
   button('暂停比赛','grab mission pause','mission-pause');
   button('停止比赛','grab mission stop','mission-stop','task-stop');
   button('继续当前阶段','grab mission continue','mission-continue','',()=>live&&['paused','config_wait','stop_wait','bus_recovery_wait'].includes(snapshot?.state));
@@ -81,10 +73,10 @@ export function mountMission({root,send,canSend}){
   const prep=make('details',undefined,'vision-card mission-preflight');prep.append(make('summary','工位高度配置'));
   const link=make('a','配置工位高度 →');link.href='#params/material/z_rough_align';prep.append(link,make('p','粗加工先空爪对准编号环并停稳，再保存X/Z回仓取料。1/2号盘夹取后提起并伸X30mm，3号盘保持收回；转回117.5°、恢复对准位置后下降放置。各工位高度按实物设置，缺项到该阶段填写后继续。','form-note'));root.append(prep);
   function updateAll(){code.disabled=source.value!=='fixed';profile.disabled=pending||profilePending||!!snapshot&&!['idle','done','error','cancelled'].includes(snapshot.state);controls.forEach(fn=>fn());}
-  for(const e of [source,code,speed,turnSpeed,start,radar,alignment,visualHeading,profile]){e.addEventListener('input',updateAll);e.addEventListener('change',updateAll);}
+  for(const e of [source,code,speed,turnSpeed,start,radar,profile]){e.addEventListener('input',updateAll);e.addEventListener('change',updateAll);}
   function render(){
     adoptedProfile.textContent=({linear:'线性 · 起步500/800/1000，停车300 mm/s²',cosine:'余弦 · K200 / 400 ms'})[snapshot?.profile]||'设备未报告';
-    adoptedHeading.textContent=snapshot?.visual_heading==='on'?'开启 · 测试':snapshot?.visual_heading==='off'?'关闭':'设备未报告';
+    adoptedHeading.textContent=snapshot?.visual_heading==='on'?'开启':snapshot?.visual_heading==='off'?'关闭':'设备未报告';
     const imageAngle=Number(snapshot?.heading_image),observationZ=Number(snapshot?.heading_z),headingSpeed=Number(snapshot?.heading_speed);
     const headingStrategy=snapshot?.heading_method==='direct_ring'?' · 已验证反号1∶1':'';
     headingResult.textContent=snapshot?.heading_result?`${snapshot.heading_source==='line'?'黑线 · ':snapshot.heading_source==='ring'?'色环 · ':''}${reasonText(snapshot.heading_result)}${headingStrategy}${Number.isFinite(headingSpeed)?` · 校正上限 ${headingSpeed.toFixed(1)} °/s`:""}${Number.isFinite(imageAngle)?` · 图像角 ${imageAngle.toFixed(2)}°`:''}${Number.isFinite(observationZ)?` · 观察Z ${observationZ.toFixed(2)} mm`:''}`:'尚无航向核验结果';

@@ -32,7 +32,8 @@ int main(void) {
     assert(!sample(i,600));assert(!sample(i,500));
     seed(i);Axes[i].flags=3;assert(!arrived(i,clock_ms)); /* No 9F: use measured fallback. */
     physical[i]=destination[i]=Axes[i].target;arrival_reply_enabled=true;
-    assert(arrived(i,clock_ms)); /* 9F completes without added hold. */
+    assert(!arrived(i,clock_ms)); /* Receive ignores legacy9F; measured hold remains. */
+    assert(sample(i,500));
     seed(i);assert(!arrived(i,clock_ms));Axes[i].quiet=false;
     assert(!sample(i,600));Axes[i].quiet=true;Axes[i].quiet_since=clock_ms;
     assert(!sample(i,300));assert(sample(i,500));

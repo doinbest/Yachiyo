@@ -56,6 +56,10 @@ bool GrabTask_QrDepartStart(void);
 bool GrabTask_QrDepartureActive(void);
 /* Schedule recognition of the next raw item while this item returns. */
 void GrabTask_NextRawColorSet(uint8_t color);
+/* Competition preparation only: B2 target 1..6 or 10..12, no actuator action.
+ * Matching preparation is adopted once, requiring NEW images after pose ready. */
+bool GrabTask_StationVisionPrepare(uint8_t target);
+void GrabTask_StationVisionCancel(void);
 /** @brief Launch Z/X collision and Base near HOME without waiting for other axes to finish.
  * Completion requires 0x3B flags and feedback: X/Z zero + reached, Base stable + enabled.
  * Base near-home does not imply numerical zero. Boot also waits for ID8's independent HOME
@@ -139,6 +143,10 @@ bool GrabTask_ProcessedStoreStart(uint8_t color,uint8_t ring,uint8_t slot);
  * vertical pickup/release. Standalone station entry points also default to raised alignment. */
 bool GrabTask_HeldPlaceStartEx(const char *scene,uint8_t target,uint8_t material_color,bool raised);
 bool GrabTask_AlignPlaceStartEx(const char *scene,uint8_t target,bool raised);
+/* Competition supplies the tray before alignment; legacy alignment has no implicit tray. */
+bool GrabTask_AlignPlaceStartForSlot(const char *scene,uint8_t target,bool raised,uint8_t slot);
+bool GrabTask_PrepareProcessedTray3(void);
+bool GrabTask_OwnsTrayGoal(void);
 bool GrabTask_ProcessedStoreStartEx(uint8_t color,uint8_t ring,uint8_t slot,bool raised);
 /** @brief 消费本任务发起的机械臂事件；非本任务返回0。 */
 uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event);

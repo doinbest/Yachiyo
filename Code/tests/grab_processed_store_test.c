@@ -90,7 +90,8 @@ int main(void)
 
  setup();move_arrives=false;assert(GrabTask_ProcessedStoreStartEx(5,2,1,false));
  for(unsigned i=0;i<100;i++)step(true,0,0,0);
- assert(status().state==GRAB_PREPARE && !camera_requests && !velocity_requests && !closures);
+ /* Recognition may prepare while Z moves; motion/closure cannot use those images. */
+ assert(status().state==GRAB_PREPARE && camera_requests==1 && !HaveCapture && !velocity_requests && !closures);
  move_arrives=true;physical[1]=destination[1];run_to(GRAB_ALIGN,200,0);
  for(unsigned i=0;i<200 && !closures;i++)step(true,0,1,-1);
  assert(closures==1 && physical[1]==-130);finish_store();

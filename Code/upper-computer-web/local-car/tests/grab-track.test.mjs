@@ -246,8 +246,8 @@ test('integrated pickup stores settings before a single firmware-owned transfer 
     const slot=ui.all().find(e=>e.dataset?.storeSlot);slot.value='2';
     const lift=ui.all().find(e=>e.dataset?.transferKey==='lift');lift.value='40';
     await ui.all().find(e=>e.title==='grab track pickstore').onclick();
-    assert.equal(values.get('z_grab'),-50);assert.equal(values.get('z_lift'),-10);
-    assert.equal(values.get('track_store_drop_mm'),20);
+    assert.equal(values.get('z_grab'),-45);assert.equal(values.get('z_lift'),-5);
+    assert.equal(values.get('track_store_drop_mm'),25);
     assert.equal(values.get('z_speed'),250);assert.equal(values.get('qr_z_speed'),250);
     assert.equal(wires.at(-1),'grab track pickstore 3 2 feedback');
     assert.equal(wires.filter(w=>/^grab track (?:pickstore|store)/.test(w)).length,1);
@@ -273,7 +273,7 @@ test('ground and turntable pickup are distinct, use competition Z settings and s
     await ground.onclick();
     assert.equal(wires.at(-1),'grab store ground 1 3');
     assert.equal(values.get('z_proc_place'),-120);assert.equal(values.get('z_grab'),-50);
-    assert.equal(values.get('z_car_lift'),0);assert.equal(values.get('z_place'),-20);
+    assert.equal(values.get('z_car_lift'),0);assert.equal(values.get('z_place'),-25);
     assert.equal(values.get('z_pick_speed'),250);
     assert.equal(values.get('z_speed'),250);assert.equal(values.get('qr_z_speed'),250);
     const count=wires.length;panel.connection(false);panel.connection(true);assert.equal(wires.length,count);

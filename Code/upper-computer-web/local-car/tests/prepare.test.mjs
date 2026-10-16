@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import {RoutePreparation,validCarConfig} from '../route-preparation.mjs';
 const config={profile:'receive',units_per_rev:65536,directions_confirmed:true};
 
+test('None motion profile still permits read-only preparation without switching back to Receive',()=>{
+  const f=fixture();f.p.start();
+  f.reply('OK chassis request accepted (not motion/ACK confirmation)');
+  f.reply('OK chassis task state=0 stage=5 error=0 ack=1 locked=0 units=65536');
+  f.reply('OK chassis route state=idle segment=0');
+  f.reply('OK chassis request accepted (not motion/ACK confirmation)');
+  f.reply('OK chassis task state=0 stage=5 error=0 ack=1 locked=0 units=65536');
+  assert.equal(f.p.phase,'select');assert.equal(f.wires.at(-1),'chassis feedback 0');
+  assert.ok(f.wires.every(w=>!w.startsWith('chassis profile ')));
+});
+
 function fixture(originFields='origin_valid=0') {
   let now=0, snapshot=null;
   const wires=[];

@@ -283,6 +283,7 @@ static bool StartRun(bool native, uint32_t duration_ms)
 }
 
 bool HWT101_Cal_Start(void) { return StartRun(true, 30000U); }
+bool HWT101_Cal_QuickStart(void) { return StartRun(true, 10000U); }
 bool HWT101_Cal_ZeroStart(void) { return StartRun(false, 0U); }
 
 bool HWT101_Cal_VerifyStart(uint32_t duration_ms)

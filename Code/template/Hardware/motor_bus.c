@@ -33,6 +33,17 @@ static MotorBus_Diagnostic_t first_fault;
 static volatile uint32_t tx_done_ms;
 static volatile bool wire_tx_completed;
 static volatile uint32_t wire_tx_ms;
+static volatile bool wire_tx_only;
+static bool wheel_receive_ack; /* Current wheel policy: default None. */
+static uint8_t wheel_none_observed;
+static bool WheelReceiveRequired(unsigned address)
+{return wheel_receive_ack && !(wheel_none_observed&(1U<<(address-1U)));}
+static void WheelModeObserved(unsigned address,uint8_t mode)
+{
+  if(address<1 || address>4)return;
+  if(mode==0)wheel_none_observed|=(uint8_t)(1U<<(address-1U));
+  else wheel_none_observed&=(uint8_t)~(1U<<(address-1U));
+}
 static uint8_t dma_rx[64], rx_ring[256], parse[MOTOR_BUS_FRAME_MAX];
 static uint32_t rx_time[256];
 static volatile uint16_t rx_write, rx_read;
@@ -102,23 +113,36 @@ bool MotorBus_RxErrorGet(MotorBus_RxErrorSnapshot_t *out,bool first_fault)
 
 int MotorBus_PositionReplyEnsure(uint8_t address)
 {
-  return MotorBus_PositionReplyEnsureMode(address,3);
+  return MotorBus_PositionReplyEnsureMode(address,1);
 }
 int MotorBus_PositionReplyEnsureMode(uint8_t address,uint8_t mode)
 {
   if(address<5 || address>8 || (mode!=1 && mode!=3))return -1;
   unsigned id=address-1U;
-  position_reply_requested[id]=mode;
+  position_reply_requested[id]=(uint8_t)(mode+1U);
+  if(position_config_id==address)return 0;
+  if(position_reply_mode[id]==mode+1U)return 1;
+  if(position_reply_failed[id]==mode+1U)return -1;
+  return 0;
+}
+void MotorBus_WheelReceiveSet(bool receive){wheel_receive_ack=receive;}
+int MotorBus_WheelReplyEnsure(uint8_t address,bool receive)
+{
+  if(address<1 || address>4)return -1;
+  uint8_t mode=receive?1U:0U;
+  unsigned id=address-1U;
+  /* Store mode+1: zero remains unknown/unrequested, not verified None. */
+  position_reply_requested[id]=(uint8_t)(mode+1U);
   /* A mode being read/written is not verified, even when an older cached
    * mode matches a new request. Finish this snapshot before switching again. */
   if(position_config_id==address)return 0;
-  if(position_reply_mode[id]==mode)return 1;
-  if(position_reply_failed[id]==mode)return -1;
+  if(position_reply_mode[id]==mode+1U)return 1;
+  if(position_reply_failed[id]==mode+1U)return -1;
   return 0;
 }
 bool MotorBus_PositionReached(uint8_t address,uint32_t accepted_ms)
 {
-  return address>=5 && address<=8 && position_motion[address-1].active &&
+  return address>=5 && address<=8 && position_reply_mode[address-1]==4U && position_motion[address-1].active &&
     position_motion[address-1].reached &&
     (int32_t)(position_motion[address-1].tx_ms-accepted_ms)>=0;
 }
@@ -138,32 +162,36 @@ static void PositionConfigProcess(void)
        * preserved fields after stop ownership ends, never replay the write. */
       if(event.result==MOTOR_BUS_CANCELLED && position_config_phase==2)return;
       if(event.result==MOTOR_BUS_CANCELLED) {
-        if(position_reply_requested[id]==position_config_mode)position_reply_requested[id]=0;
-      } else position_reply_failed[id]=position_config_mode;
+        if(position_reply_requested[id]==position_config_mode+1U)position_reply_requested[id]=0;
+      } else position_reply_failed[id]=(uint8_t)(position_config_mode+1U);
       position_config_id=0;return;
     }
     if(position_config_phase==0) {
       memcpy(position_config,event.data,33);
+      WheelModeObserved(position_config_id,event.data[22]);
       if(position_config[22]==position_config_mode) {
-        position_reply_mode[id]=position_config_mode;position_reply_failed[id]=0;
+        position_reply_mode[id]=(uint8_t)(position_config_mode+1U);position_reply_failed[id]=0;
         position_config_id=0;return;
       }
       position_config[1]=0x48;position_config[2]=0xd1;position_config[3]=0;
       position_config[22]=position_config_mode;position_config_phase=1;
-    } else if(position_config_phase==1)position_config_phase=2;
+    } else if(position_config_phase==1){
+      WheelModeObserved(position_config_id,position_config_mode);position_config_phase=2;
+    }
     else {
+      WheelModeObserved(position_config_id,event.data[22]);
       bool mismatch=memcmp(position_config+4,event.data+4,28)!=0;
-      position_reply_mode[id]=mismatch?0:position_config_mode;
-      position_reply_failed[id]=mismatch?position_config_mode:0;
+      position_reply_mode[id]=mismatch?0:(uint8_t)(position_config_mode+1U);
+      position_reply_failed[id]=mismatch?(uint8_t)(position_config_mode+1U):0;
       position_config_id=0;return;
     }
   }
   if(position_config_pending || quarantined || MotorBus_ProbeActive() || !PositionConfigAllowed())return;
-  if(!position_config_id)for(unsigned i=4;i<8;i++)if(position_reply_requested[i] &&
+  if(!position_config_id)for(unsigned i=0;i<8;i++)if(position_reply_requested[i] &&
     position_reply_requested[i]!=position_reply_mode[i] &&
     position_reply_requested[i]!=position_reply_failed[i]) {
     position_config_id=(uint8_t)(i+1);position_config_phase=0;
-    position_config_mode=position_reply_requested[i];position_reply_mode[i]=0;break;
+    position_config_mode=(uint8_t)(position_reply_requested[i]-1U);position_reply_mode[i]=0;break;
   }
   if(!position_config_id)return;
   const uint8_t read[]={position_config_id,0x42,0x6c,0x6b};
@@ -184,6 +212,17 @@ static uint8_t urgent_drain[8][2];
 static uint32_t urgent_started[8][2];
 static bool Urgent(const uint8_t *data, uint8_t length, bool priority)
 { return priority && ((length==5U && data[1]==0xfe) || (length==4U && data[1]==0x9c)); }
+static bool WheelControlNoReply(MotorBus_Owner_t owner,const uint8_t *data,uint8_t length)
+{
+  if(!data || length<3)return false;
+  if(!data[0])return !wheel_receive_ack && owner==MOTOR_BUS_CHASSIS && length==4U && data[1]==0xff;
+  if(data[0]>4 || WheelReceiveRequired(data[0]))return false;
+  switch(data[1]) {
+    case 0xf6:case 0xfd:case 0xfe:case 0xff:case 0xf3:
+    case 0x9a:case 0x9c:case 0x0a:case 0x0e:case 0x0f:return true;
+    default:return false; /* 35/36/3A/3B and42/48 still require real replies. */
+  }
+}
 static bool UrgentPending(void)
 { for(unsigned i=0;i<8;i++)for(unsigned k=0;k<2;k++)if(urgent_drain[i][k])return true;return false; }
 static uint8_t ExpectedReplyLength(const uint8_t *data,uint8_t length)
@@ -416,7 +455,8 @@ bool MotorBus_SubmitReplyTo(MotorBus_Owner_t owner,const uint8_t *data,uint8_t l
                            uint8_t reply_address,uint8_t reply_length,uint32_t token,bool priority)
 {
   Slot *s;
-  if(data && length>=3U && data[0]>=1U && data[0]<=8U && !reply_length && !Urgent(data,length,priority))
+  if(WheelControlNoReply(owner,data,length))reply_length=0;
+  else if(data && length>=3U && data[0]>=1U && data[0]<=8U && !reply_length && !Urgent(data,length,priority))
     reply_length=ExpectedReplyLength(data,length);
   if (!bus_uart || owner >= MOTOR_BUS_OWNER_COUNT || !data || length < 3 ||
       length > MOTOR_BUS_FRAME_MAX || reply_length > MOTOR_BUS_FRAME_MAX ||
@@ -523,7 +563,7 @@ void MotorBus_Cancel(MotorBus_Owner_t owner)
           active.length == 3U && (active.data[1] == 0x35 || active.data[1] == 0x36 ||
                                  active.data[1] == 0x3a || active.data[1] == 0x3b)) ||
           (owner == MOTOR_BUS_POSITION_CONFIG && active.length == 4U && active.reply_length == 33U &&
-           active.data[0]>=5U && active.data[0]<=8U && active.data[1]==0x42 &&
+           active.data[0]>=1U && active.data[0]<=8U && active.data[1]==0x42 &&
            active.data[2]==0x6c && active.data[3]==0x6b) ||
           (owner == MOTOR_BUS_CHASSIS && active.length == 8U && active.data[1] == 0xf6 &&
            active.data[3] == 0U && active.data[4] == 0U))
@@ -636,7 +676,7 @@ static void ParseByte(uint8_t value, uint32_t arrival_ms)
     reply_complete_ms=arrival_ms;reply_complete_valid=true;
     if(length==4 && parse[1]==0xfd && parse[2]==0x9f) {
       unsigned id=parse[0]-1U;
-      if(position_motion[id].active && (int32_t)(arrival_ms-position_motion[id].tx_ms)>=0) {
+      if(position_reply_mode[id]==4U && position_motion[id].active && (int32_t)(arrival_ms-position_motion[id].tx_ms)>=0) {
         position_motion[id].reached=true;
         /* Completion is stronger evidence than a missing Receive ACK, but
          * only the same on-wire FD can consume it; unrelated queries cannot. */
@@ -707,6 +747,7 @@ static void TxDoneProcess(void)
       unsigned k=active.data[1]==0x9c?1:0;
       unsigned first=active.data[0]?active.data[0]-1U:0U,last=active.data[0]?first+1U:8U;
       for(unsigned id=first;id<last;id++) {
+        if(id<4U && !WheelReceiveRequired(id+1U))continue;
         if(urgent_drain[id][k]<255)urgent_drain[id][k]++;
         urgent_started[id][k]=tx_done_ms;
       }
@@ -888,9 +929,12 @@ io_processed:
       if(candidate==MOTOR_BUS_POSITION_CONFIG && !PositionConfigAllowed())continue;
       if(probe_active && !Urgent(s->data,s->length,s->priority) &&
          !ProbeRead((MotorBus_Owner_t)candidate,s->data,s->length,s->reply_length)) continue;
-      /* Complete response is necessary, but the shared line must also hand over.
-       * Do not add a TX-based gap or delay urgent stopping behind normal ACKs. */
+      /* Receive hands over after a complete reply; None after completed TX.
+       * Urgent stops retain their separate TX spacing and preemption. */
       if(!Urgent(s->data,s->length,s->priority)) {
+        /* None has no reply to start the handover clock. Pace the next frame
+         * from actual TX completion, including a following read query. */
+        if(wire_tx_completed && wire_tx_only && (int32_t)(now-wire_tx_ms)<2)continue;
         if(reply_complete_valid && (int32_t)(now-reply_complete_ms)<(int32_t)reply_settle_ms)continue;
         /* HT/TC may split an asynchronous 9F while its last bytes are on wire.
          * A truncated fragment only defers ordinary TX for 2 ms of silence. */
@@ -981,6 +1025,7 @@ void MotorBus_TxCpltCallback(UART_HandleTypeDef *uart)
   {
     tx_done_ms = HAL_GetTick();
     wire_tx_ms = tx_done_ms;
+    wire_tx_only = active.reply_length==0;
     wire_tx_completed = true;
     if(active_owner==MOTOR_BUS_RECOVERY && recovery.active && active.token==recovery_request_token)recovery.tx_sent=true;
     tx_done = true;
@@ -1040,6 +1085,7 @@ bool MotorBus_RecoverAfterReset(void)
   quarantined = false;
   memset(&first_fault, 0, sizeof(first_fault));RxErrorFirst.sequence=0;
   memset(position_motion,0,sizeof position_motion);
+  wheel_none_observed=0; /* This API follows an explicit physical driver reset. */
   memset(position_reply_mode,0,sizeof position_reply_mode);
   memset(position_reply_requested,0,sizeof position_reply_requested);
   memset(position_reply_failed,0,sizeof position_reply_failed);
@@ -1137,17 +1183,18 @@ static void RecoveryProcess(void)
     } else { recovery_step=4;recovery.reason="checking"; }
   }
   if (MotorBus_EventGet(MOTOR_BUS_RECOVERY,&e)) {
-    if ((recovery_step<4 && e.result!=MOTOR_BUS_TX_DONE) ||
-        (recovery_step>=4 && e.result!=MOTOR_BUS_REPLY)) {
+    bool tx_only=recovery_step<4 || ((recovery_step==5 || recovery_step==6) && !WheelReceiveRequired(recovery.address));
+    if ((tx_only && e.result!=MOTOR_BUS_TX_DONE) ||
+        (!tx_only && e.result!=MOTOR_BUS_REPLY)) {
       RecoveryFail(e.result==MOTOR_BUS_TIMEOUT?(e.tx_completed?"reply_timeout":"tx_timeout"):"transport_error");return;
     }
     if((recovery_step==4 || recovery_step==7) && e.length==4 && (e.data[2]==0xe2 || e.data[2]==0xee)) {
       RecoveryFail("driver_rejected");return;
     }
-    if(recovery_step==5 && e.data[2]!=2U) {
+    if(recovery_step==5 && !tx_only && e.data[2]!=2U) {
       RecoveryFail("zero_ack_failed");return;
     }
-    if(recovery_step==6 && e.data[2]!=2U) {
+    if(recovery_step==6 && !tx_only && e.data[2]!=2U) {
       /* Every wheel already ACKed its zero cache. A refused addressed trigger
        * cannot execute an old nonzero cache; verify actual rest before release. */
       recovery.sync_warning_mask|=(uint8_t)(1U<<(recovery.address-1U));
@@ -1221,11 +1268,11 @@ submit:
     cmd[3]=0;cmd[4]=0;            /* 0 RPM, not enable/reset/home */
     cmd[5]=0;                    /* No acceleration ramp */
     cmd[6]=1;                    /* Replace pending synchronous command */
-    cmd[7]=0x6b;length=8;reply=4; /* Receive ACK required from each wheel */
+    cmd[7]=0x6b;length=8;reply=WheelReceiveRequired(recovery.address)?4:0;
   }
   else if (recovery_step==6) {
     /* Addressed sync never executes pending arm/turntable commands (IDs5..8). */
-    cmd[1]=0xff;cmd[2]=0x66;cmd[3]=0x6b;length=4;reply=4;
+    cmd[1]=0xff;cmd[2]=0x66;cmd[3]=0x6b;length=4;reply=WheelReceiveRequired(recovery.address)?4:0;
   }
   else { cmd[1]=functions[recovery_kind];cmd[2]=0x6b;length=3;reply=recovery_kind==0?6:4; }
   uint32_t token=recovery_request_token+1U;if(!token)token=1U;

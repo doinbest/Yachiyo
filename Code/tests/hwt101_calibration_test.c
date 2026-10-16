@@ -78,10 +78,34 @@ static void finish(void)
 }
 int main(void)
 {
+  /* Fast mode changes only the post-native measurement window. Both durations
+   * and the fresh-sample boundary must survive tick wrap and failed saving. */
+  for(unsigned wrap_tick=0;wrap_tick<2;wrap_tick++) {
+    setup(wrap_tick?UINT32_MAX-25000U:100);assert(HWT101_Cal_QuickStart());
+    assert(snapshot().native_wait_ms==20000 && snapshot().verify_ms==10000 && snapshot().total_ms==30000);
+    advance(19000,0);assert(starts==1 && !exits && !saves);
+    until_verify();sample(10,0);advance(9900,0);
+    assert(snapshot().verify_elapsed_ms==9900 && !snapshot().verified && !saves);
+    advance(100,0);assert(snapshot().verified && snapshot().samples==101 && !saves);
+    finish();assert(!strcmp(snapshot().result,"PASS") && snapshot().control_ready);
+    assert(snapshot().verify_elapsed_ms==10000 && snapshot().save_readback_ok);
+    assert(starts==1 && exits==1 && zeros==1 && saves==1);
+  }
+  setup(100);regs[0x4b]=10;regs[0x4d]=30;assert(HWT101_Cal_QuickStart());
+  assert(snapshot().native_wait_ms==40000 && snapshot().total_ms==50000);
+  advance(39000,0);assert(!exits && !saves);until_verify();finish();
+  assert(snapshot().verified && snapshot().verify_elapsed_ms==10000);
+  setup(100);assert(HWT101_Cal_QuickStart());until_verify();advance(10500,0.1f);finish();
+  assert(!snapshot().verified && !strcmp(snapshot().reason,"drift_or_noise") && !saves);
+  setup(100);assert(HWT101_Cal_QuickStart());until_verify();fail_save=true;finish();
+  assert(snapshot().verified && !strcmp(snapshot().result,"FAIL") && !snapshot().control_ready);
+  setup(100);assert(HWT101_Cal_QuickStart());advance(1000,0);HWT101_Cal_Cancel();finish();
+  assert(snapshot().state==HWT101_CAL_CANCELLED && !saves);
   for (unsigned owner = 0; owner < 2; owner++)
   {
     setup(100); route_busy = owner == 0; motion_busy = owner == 1;
     assert(!HWT101_Cal_Start()); assert(!HWT101_Cal_VerifyStart(30000));
+    assert(!HWT101_Cal_QuickStart());
     assert(!snapshot().busy && !writes);
     assert(HWT101_Cal_RefreshRegisters() == HAL_OK);
     HWT101_Cal_Cancel(); assert(!HWT101_Cal_IsBusy());
@@ -149,6 +173,7 @@ int main(void)
   for(unsigned run=0;run<2;run++)
   {
     setup(run?UINT32_MAX-5000:100);assert(HWT101_Cal_Start());
+    assert(snapshot().verify_ms==30000 && snapshot().total_ms==50000);
     assert(!HWT101_Cal_Start());assert(HWT101_Cal_RefreshRegisters()==HAL_BUSY);
     advance(19000,0);assert(starts==1 && exits==0 && saves==0);
     until_verify();assert(exits==1 && unlocks==3 && regs[0x48]==0);

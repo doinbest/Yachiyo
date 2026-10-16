@@ -84,6 +84,8 @@ static uint32_t WheelLastPositionTick[4];
 #define GRAB_VISION_GAP_MS 100U
 #define GRAB_GRACE_CONTROL_PERIOD_MS 100U
 #define GRAB_AXIS_POLL_MS 25U
+#define GRAB_AXIS_POLL_MIN_MS 5U
+#define GRAB_AXIS_BACKGROUND_MS 150U
 #define GRAB_RECOVERY_OBSERVATIONS 3U
 /* RecoveryUsed is diagnostic only; successful reacquisitions do not exhaust a quota. */
 static unsigned PrepareStep, PollIndex, Retries;
@@ -96,6 +98,18 @@ static bool HaveCapture, VisualStable, StopArmSent, StopArmTx, StopChassisSent;
 static bool WheelQuiet, WheelBaseline, FinishError, FreshVision;
 static bool AlignControlPending, AlignFeedbackDue, AlignHorizontalDue;
 static bool StopEvidenceStarted;
+/* Only the normal ALIGN -> SETTLE stop may bridge an already measured rest.
+ * Every post-stop field is still required; movement/loss invalidates the bridge. */
+static struct { bool active; uint32_t wheel,axis[3],motion_sequence; } AlignRest;
+static void alignment_rest_cancel(void)
+{
+  if(!AlignRest.active)return;
+  AlignRest.active=false;WheelQuiet=false;
+  for(unsigned i=0;i<3;i++)Axes[i].quiet=false;
+}
+static uint8_t StationVisionTarget;
+static bool StationVisionAdopted,StationVisionBoundary;
+static uint32_t StationVisionSequence;
 static bool FeedbackSelected;
 /* Last image is a finite spatial target, never a repeated movement increment.
  * Histories contain only actual common-time wheel/IMU and X measurements. */
@@ -192,6 +206,7 @@ static uint8_t TrackStoreSlot;
 static float TrackStoreLiftTarget,TrackStorePlaceTarget;
 static uint32_t TrackStoreReleaseTick;
 static bool CarPickActive,CarPickClosed,CarPickWaiting;
+static bool CarPickLiftConfirmed;
 static uint8_t CarPickSlot,CarPickColor;
 static float CarPickLiftTarget,CarPickTarget,CarPickClearanceX;
 /* First prealigned station placement owns this goal until tray arrival.
@@ -200,10 +215,16 @@ static struct {
   bool active,target_valid,submitted,verified;
   float target_angle,lift_z;
 } CarPickTrayClearance;
+/* The target is known before empty-claw alignment finishes. This context is
+ * owned by that alignment and handed to its matching car pickup only. */
+static struct {
+  bool active,submitted,verified;
+  uint8_t slot,target;GrabScene_t scene;
+} StationPreindex;
 /* Only processed material returning to tray 3 uses this clearance sequence.
  * Saved reference-relative angles survive stop/recovery; never accumulate jogs. */
 static struct {
-  bool active,returning,submitted,verified,recheck;
+  bool active,returning,submitted,verified,recheck,prefetched;
   float outside_angle,return_angle,lift_z;
 } ProcClearance;
 static uint32_t CarPickWaitTick,CarPickCloseTick;
@@ -375,10 +396,32 @@ static Camera_ColorTypeDef target_color(void)
 { return RingTest ? (Camera_ColorTypeDef)(0x09U+RingNumber) : ActiveColor; }
 static HAL_StatusTypeDef request_target(void)
 { return RingTest ? Camera_RingStart(RingNumber) : Camera_MaterialStart(ActiveColor); }
+void GrabTask_StationVisionCancel(void)
+{
+  if(StationVisionTarget){
+    Camera_SnapshotTypeDef s;Camera_SnapshotGet(&s);
+    if(s.RequestActive && s.RequestFunction==0xB2 && s.RequestTarget==StationVisionTarget)Camera_RequestStop();
+  }
+  StationVisionTarget=0;StationVisionAdopted=StationVisionBoundary=false;
+}
+bool GrabTask_StationVisionPrepare(uint8_t target)
+{
+  if(!((target>=1 && target<=6) || (target>=10 && target<=12)) || ResumePending || BootActive ||
+     CalibrationTask || !(Status.state==GRAB_IDLE || Status.state==GRAB_COMPLETE ||
+       Status.state==GRAB_ROUTE_POSE || (Status.state==GRAB_PREPARE && (EmptyPlaceAlignActive || ProcessedStoreActive))))return false;
+  Camera_SnapshotTypeDef s;Camera_SnapshotGet(&s);
+  if(StationVisionTarget==target && s.RequestActive && s.RequestFunction==0xB2 && s.RequestTarget==target)return true;
+  HAL_StatusTypeDef result=target>=10?Camera_RingStart((uint8_t)(target-9)):Camera_MaterialStart((Camera_ColorTypeDef)target);
+  if(result!=HAL_OK)return false;
+  StationVisionTarget=target;return true;
+}
 static Camera_ColorTypeDef default_color(const char *mode)
 { return mode && !strcmp(mode,"align") ? GRAB_ALIGN_COLOR : GRAB_PICK_COLOR; }
 static bool valid_mode(const char *mode)
 { return mode && (!strcmp(mode,"fixed") || !strcmp(mode,"align") || !strcmp(mode,"pick")); }
+static bool owned_tray_pending(void)
+{ return StationPreindex.active || CarPickTrayClearance.active || (ProcClearance.active && ProcClearance.prefetched); }
+bool GrabTask_OwnsTrayGoal(void){return owned_tray_pending();}
 static void enter(GrabTask_State_t state)
 { AlignedPlace.stop_handoff=false;
   if(state!=GRAB_ALIGN && state!=GRAB_VISION_GRACE)static_alignment_cancel();
@@ -524,6 +567,7 @@ bool GrabTask_IsBusy(void)
 void GrabTask_Init(void)
 {
   unsigned i;static_alignment_reset();
+  AlignRest.active=false;StationVisionTarget=0;StationVisionAdopted=StationVisionBoundary=false;
   NextTrack.pending=false;QrDeparting=false;NextRawColor=0;NextRawRequested=false;
   TrackCloseStopping=TrackCloseZeroRequested=TrackCloseXRequested=false;
   memset(&ProcClearance,0,sizeof ProcClearance);
@@ -531,6 +575,7 @@ void GrabTask_Init(void)
   TrackStoreActive=TrackStoreReleased=TrackStoreRecorded=TrackHeld=false;TrackStoreSlot=0;
   CarPickActive=CarPickClosed=CarPickWaiting=false;CarPickSlot=CarPickColor=0;
   memset(&CarPickTrayClearance,0,sizeof CarPickTrayClearance);
+  memset(&StationPreindex,0,sizeof StationPreindex);CarPickLiftConfirmed=false;
   EmptyPlaceAlignActive=PrealignedPlaceActive=AlignedPlace.valid=AlignedPlace.stop_handoff=false;
   BootActive=BootStopping=false;
   BootBaseDegraded=BootAcceptBase=BaseHomeAcceptAvailable=false;
@@ -580,7 +625,7 @@ void GrabTask_Init(void)
 }
 
 static void stable_reset(void)
-{ VisualStable=false; CaptureCount=0; StableTick=HAL_GetTick(); }
+{ alignment_rest_cancel();VisualStable=false; CaptureCount=0; StableTick=HAL_GetTick(); }
 /* Freeze the anchor until three new valid observations restore the episode.
  * Invalid packets or one intermittent good packet must not restart this clock. */
 static void loss_finish(uint32_t now)
@@ -616,11 +661,20 @@ static void stop_begin(void)
       ProcClearance.submitted=false;ProcClearance.recheck=true;
     }
     if(CarPickTrayClearance.active)CarPickTrayClearance.submitted=false;
+    if(StationPreindex.active){
+      Turntable_Status_t tray;float goal;
+      Turntable_StatusGet(&tray);
+      if(!Turntable_IsBusy() && tray.arrived && tray.slot==StationPreindex.slot &&
+         Turntable_SlotAngleGet(StationPreindex.slot,&goal) &&
+         fabsf(remainderf(tray.target_deg-goal,360))<.01f)StationPreindex.verified=true;
+      StationPreindex.submitted=false;
+    }
     IndexSubmitted=false;Turntable_Stop();
   }
 }
 static void fault(const char *reason)
 {
+  GrabTask_StationVisionCancel();
   TrackCloseStopping=false;
   NextRawColor=0;NextRawRequested=false;
   if(Status.state==GRAB_STOPPING || Status.state==GRAB_ERROR) return;
@@ -643,6 +697,7 @@ static void fault(const char *reason)
 }
 void GrabTask_Stop(void)
 {
+  GrabTask_StationVisionCancel();
   AlignedPlace.stop_handoff=false;
   TrackCloseStopping=false;
   /* A queued next pickup belongs to the retained pause, including its pose
@@ -651,7 +706,7 @@ void GrabTask_Stop(void)
   BaseHomeAcceptAvailable=false;
   if(BootActive) { boot_stop("home_cancelled",false); return; }
   if(CalibrationTask) GrabCalibration_Cancel();
-  if(Status.state==GRAB_IDLE || Status.state==GRAB_COMPLETE) return;
+  if((Status.state==GRAB_IDLE || Status.state==GRAB_COMPLETE) && !owned_tray_pending()) return;
   loss_finish(HAL_GetTick());
   RecoveryWaiting=RecoveryRestartPending=RecoveryPassive=false; RecoveryCount=0;
   /* Repeated console stops must not reset fresh standstill evidence or resend
@@ -669,6 +724,9 @@ void GrabTask_Stop(void)
 }
 void GrabTask_ReferenceInvalidate(MechanicalArm_AxisTypeDef axis)
 {
+  GrabTask_StationVisionCancel();AlignRest.active=false;
+  StationPreindex.active=CarPickTrayClearance.active=ProcClearance.active=false;
+  for(unsigned n=0;n<3;n++){arrival_reset(n);Axes[n].commanded=false;}
   AlignedPlace.valid=false;
   Config[C_HEAD_PROC_GAIN]=Config[C_HEAD_TEMP_GAIN]=NAN;
   Config[C_HEAD_LINE_GAIN]=NAN;
@@ -739,8 +797,23 @@ static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOpera
    * drained zero from a retired producer need not retain its historical busy
    * veto. Reject before overwriting the previous result or operation. */
   bool zero_handoff=Mecanum_VelocityHandoffReady();
+  bool pick_owned=op==OP_CAR_PICK && StationPreindex.active && slot==StationPreindex.slot &&
+    AlignedPlace.valid && !AlignedPlace.picked && AlignedPlace.scene==StationPreindex.scene &&
+    AlignedPlace.ring==StationPreindex.target;
+  bool place_owned=op==OP_ALIGN && mode && !strcmp(mode,"fixed") &&
+    CarPickTrayClearance.active && AlignedPlace.valid && AlignedPlace.picked && scene==AlignedPlace.scene;
+  bool proc_owned=op==OP_STORE && scene==SCENE_PROC && slot==3U &&
+    ProcClearance.active && ProcClearance.prefetched && !ProcClearance.returning;
+  Turntable_Status_t owned_tray;Turntable_StatusGet(&owned_tray);
+  float pick_angle=0;bool pick_angle_valid=pick_owned && Turntable_SlotAngleGet(slot,&pick_angle);
+  bool tray_owned=(pick_angle_valid && StationPreindex.submitted && owned_tray.slot==slot &&
+      fabsf(remainderf(owned_tray.target_deg-pick_angle,360))<.01f) ||
+    (place_owned && CarPickTrayClearance.submitted && CarPickTrayClearance.target_valid && owned_tray.slot==0 &&
+      fabsf(remainderf(owned_tray.target_deg-CarPickTrayClearance.target_angle,360))<.01f) ||
+    (proc_owned && ProcClearance.submitted && owned_tray.slot==0 &&
+      fabsf(remainderf(owned_tray.target_deg-ProcClearance.outside_angle,360))<.01f);
   if(ChassisRoute_IsBusy() || ChassisMotion_IsBusy() || MechanicalArm_IsBusy() ||
-     (Mecanum_IsBusy() && !zero_handoff) || HWT101_Cal_IsBusy() || Turntable_IsBusy())
+     (Mecanum_IsBusy() && !zero_handoff) || HWT101_Cal_IsBusy() || (Turntable_IsBusy() && !tray_owned))
   { Status.reason="busy";return false; }
   bool reuse_stop=false;
   if(op==OP_CAR_PICK && !CarPickActive && !ResumePending && Status.state==GRAB_COMPLETE &&
@@ -750,7 +823,8 @@ static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOpera
       bus.stop_sequence==AlignedPlace.stop_sequence && aligned_stop_ready(HAL_GetTick());
     if(GrabTask_IsBusy())return false; /* A real drive fault found by wheels owns the stop. */
   }
-  memset(&ProcClearance,0,sizeof ProcClearance);
+  if(!proc_owned)memset(&ProcClearance,0,sizeof ProcClearance);
+  else ProcClearance.prefetched=false;
   CalibrationTask=false;HeldPlaceActive=ProcessedStoreActive=ResumePending=FinalAlignmentRetry=StationAlignRaised=false;
   EmptyPlaceAlignActive=PrealignedPlaceActive=false;
   Mecanum_TrackingTiming(false,0); TrackMoving=false;
@@ -792,7 +866,7 @@ static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOpera
       inventory.state==TURNTABLE_OCCUPIED?inventory.color:0);
   }
   Mecanum_StatusGet(&bus);
-  if(bus.locked || bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)
+  if(bus.locked || bus.stop_pending || (bus.ack_profile!=MECANUM_ACK_RECEIVE && bus.ack_profile!=MECANUM_ACK_NONE))
   { Status.reason="bus_unavailable"; return false; }
   if(strcmp(mode,"fixed") && (!HWT101_Cal_ControlAngleGet(&angle) || !isfinite(angle.yaw) ||
      (uint32_t)(HAL_GetTick()-angle.last_update_ms)>HWT101_DATA_FRESH_MS))
@@ -805,7 +879,8 @@ static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOpera
   StackTest=false;
   RingStayLow=false;
   RingApproachSequence=0;AlignControlPending=AlignFeedbackDue=AlignHorizontalDue=false;LastControl=LastXControl=HAL_GetTick();
-  InventoryTouched=IndexSubmitted=false; ToCar=op!=OP_RETURN;
+  InventoryTouched=false;IndexSubmitted=pick_owned && StationPreindex.submitted;ToCar=op!=OP_RETURN;
+  if(!pick_owned)StationPreindex.active=false;
   StoreFinishTravel=false;
   if(reuse_stop) {
     /* The snapshot just certified these same physical axes. Keep measured rest,
@@ -825,9 +900,9 @@ static bool start_operation(const char *mode,Camera_ColorTypeDef color,GrabOpera
   enter(GRAB_PREPARE);
   if(!reuse_stop)stop_begin();
   else {Status.stop_requested=false;memset(PreviousVelocity,0,sizeof PreviousVelocity);XIntegral=Axes[0].mm;}
-  stable_reset();
+  StationVisionAdopted=StationVisionBoundary=false;stable_reset();
   if(op!=OP_CAR_PLACE){TrackStoreActive=TrackStoreReleased=TrackStoreRecorded=TrackHeld=false;TrackStoreSlot=0;}
-  if(op!=OP_CAR_PICK){CarPickActive=CarPickClosed=CarPickWaiting=false;CarPickTrayClearance.active=false;}
+  if(op!=OP_CAR_PICK){CarPickActive=CarPickClosed=CarPickWaiting=false;if(!place_owned)CarPickTrayClearance.active=false;}
   return true;
 }
 bool GrabTask_AlignStart(uint8_t target,float z,bool stay)
@@ -892,6 +967,8 @@ bool GrabTask_AlignPlaceStartEx(const char *scene,uint8_t target,bool raised)
   Scene=rough?SCENE_ROUGH:stack?SCENE_TEMP2:SCENE_TEMP1;RingReleaseZ=Config[release];
   Status.operation=stack?"empty_material_align":"empty_ring_align";Status.scene=SceneNames[Scene];
   Status.reason=stack?"empty_material_align":"empty_ring_align";
+  StationVisionAdopted=true;
+  (void)GrabTask_StationVisionPrepare(stack?target:(uint8_t)(target+9));
   return true;
 }
 bool GrabTask_AlignedPlaceStart(const char *scene,uint8_t target,uint8_t material_color)
@@ -919,6 +996,15 @@ bool GrabTask_AlignedPlaceStart(const char *scene,uint8_t target,uint8_t materia
   Status.operation="aligned_place";Status.scene=SceneNames[Scene];Status.reason="restore_aligned_position";
   return true;
 }
+bool GrabTask_AlignPlaceStartForSlot(const char *scene,uint8_t target,bool raised,uint8_t slot)
+{
+  if(slot<1U || slot>3U || !Turntable_ReferenceValid() || !Turntable_SlotConfigured(slot))
+  {Status.reason="turntable_reference_missing";return false;}
+  if(!GrabTask_AlignPlaceStartEx(scene,target,raised))return false;
+  StationPreindex.active=true;StationPreindex.submitted=StationPreindex.verified=false;
+  StationPreindex.slot=slot;StationPreindex.target=target;StationPreindex.scene=Scene;
+  return true;
+}
 static bool processed_store_start(uint8_t color,uint8_t slot,bool raised)
 {
   float align_z;
@@ -927,7 +1013,7 @@ static bool processed_store_start(uint8_t color,uint8_t slot,bool raised)
   {Status.reason="config_missing";Status.missing="z_proc_place";return false;}
   if(!start_operation("pick",(Camera_ColorTypeDef)color,OP_STORE,SCENE_PROC,slot))return false;
   ProcessedStoreActive=StaticAlignTest=true;
-  if(Status.slot==3 && Turntable_SlotAngleGet(3,&ProcClearance.return_angle)) {
+  if(Status.slot==3 && !ProcClearance.active && Turntable_SlotAngleGet(3,&ProcClearance.return_angle)) {
     ProcClearance.active=true;
     ProcClearance.outside_angle=fmodf(ProcClearance.return_angle+90.0f,360.0f);
     ProcClearance.lift_z=Config[C_Z_CAR_LIFT];
@@ -939,7 +1025,9 @@ static bool processed_store_start(uint8_t color,uint8_t slot,bool raised)
   /* Fully open before visual acquisition so the fingers do not hide material.
    * Keep the narrower opening exclusive to pickup inside the car trays. */
   Arm_GripperDutySet((float)ARM_GRIPPER_OPEN_PULSE_US/200.0f);
-  Status.reason="processed_alignment";return true;
+  Status.reason="processed_alignment";
+  StationVisionAdopted=true;(void)GrabTask_StationVisionPrepare(color);
+  return true;
 }
 bool GrabTask_ProcessedStoreStartEx(uint8_t color,uint8_t ring,uint8_t slot,bool raised)
 {
@@ -954,9 +1042,10 @@ bool GrabTask_ProcessedStoreStart(uint8_t color,uint8_t ring,uint8_t slot)
 {return GrabTask_ProcessedStoreStartEx(color,ring,slot,true);}
 bool GrabTask_Pause(void)
 {
+  GrabTask_StationVisionCancel();AlignRest.active=false;
   AlignedPlace.stop_handoff=false;
   if(ResumePending){if(Status.state==GRAB_ERROR)GrabTask_Stop();return true;}
-  if(!GrabTask_IsBusy() || Status.state==GRAB_STOPPING || Status.state==GRAB_HOMING)return false;
+  if((!GrabTask_IsBusy() && !owned_tray_pending()) || Status.state==GRAB_STOPPING || Status.state==GRAB_HOMING)return false;
   ResumeState=Status.state;ResumePrepare=PrepareStep;ResumeElapsed=HAL_GetTick()-StateTick;
   ResumeReason=Status.reason;ResumeResult=Status.result;ResumePending=true;
   GrabTask_Stop();return true;
@@ -965,9 +1054,9 @@ void GrabTask_Cancel(void)
 {
   NextRawColor=0;NextRawRequested=false;
   AlignedPlace.valid=false;
-  ProcClearance.active=false;
   ResumePending=false;
   GrabTask_Stop();
+  StationPreindex.active=ProcClearance.active=false;
   /* End pickup ownership without changing the claw output or held-material fact. */
   if(CarPickClosed)TrackHeld=true;
   CarPickActive=CarPickClosed=CarPickWaiting=false;CarPickTrayClearance.active=false;
@@ -1095,7 +1184,10 @@ static bool pose_start(bool work,bool qr)
   uint32_t now=HAL_GetTick();
   bool reuse=Status.state==GRAB_COMPLETE && !Status.stop_requested;
   Mecanum_Status_t bus;
-  if(GrabTask_IsBusy() || MechanicalArm_IsBusy() || Turntable_IsBusy() ||
+  Turntable_Status_t tray;Turntable_StatusGet(&tray);
+  bool owned=work && !qr && ProcClearance.active && ProcClearance.prefetched && ProcClearance.submitted &&
+    tray.slot==0 && fabsf(remainderf(tray.target_deg-ProcClearance.outside_angle,360))<.01f;
+  if(GrabTask_IsBusy() || MechanicalArm_IsBusy() || (Turntable_IsBusy() && !owned) ||
      HWT101_Cal_IsBusy())
   { Status.reason="busy";return false; }
   if(!RearReferenceValid && !ManualBaseHomePending) { Status.reason="rear_reference_missing";return false; }
@@ -1119,7 +1211,7 @@ static bool pose_start(bool work,bool qr)
   Status.missing="none";
   Status.stop_requested=false;Status.stop_confirmed=false;Status.slot=0;
   if(reuse) {
-    for(i=0;i<3;i++){arrival_reset(i);Axes[i].commanded=false;}
+    for(i=0;i<3;i++)Axes[i].commanded=false;
   } else memset(Axes,0,sizeof Axes);
   PendingAction=MECHANICAL_ARM_ACTION_NONE;
   StartTick=LastPoll=now;OutsideBase=RearBase+GRAB_BASE_WORK_OFFSET_DEG;
@@ -1190,6 +1282,14 @@ static bool axis_move(unsigned i,float target)
   if(PendingAction!=MECHANICAL_ARM_ACTION_NONE || MechanicalArm_IsBusy()) return false;
   pulses=(int32_t)lroundf(target*ppm);
   target=(float)pulses/ppm;
+  /* Stage handoff of the very same confirmed target keeps its measured hold.
+   * A different target, even within the tolerance window, is a new motion. */
+  if(Axes[i].arrival_accepted && lroundf(Axes[i].target*ppm)==pulses &&
+     held_feedback(i,HAL_GetTick()) && fabsf(Axes[i].mm-target)<=Config[C_POS_TOL]) {
+    Axes[i].commanded=Axes[i].target_reused=true;
+    if(i==0)Status.x_target_mm=target;else Status.z_target_mm=target;
+    return true;
+  }
   if((Status.state==GRAB_PREPARE || Status.state==GRAB_LIFT || Status.state==GRAB_RETRACT ||
       Status.state==GRAB_X_RETRACT || Status.state==GRAB_CAR_EXTEND || Status.state==GRAB_EXTERNAL_EXTEND ||
       Status.state==GRAB_OBSERVE_Z || Status.state==GRAB_OBSERVE_X || Status.state==GRAB_ROUTE_POSE) &&
@@ -1224,6 +1324,10 @@ static bool base_move(float target)
   /* Use the measured multi-turn absolute anchor. On this car FD mode 2
    * returned +90 for a -90 -> 0 request; avoid that firmware interpretation. */
   pulses=(int32_t)lroundf(target*3200.0f/360.0f);
+  if(Axes[2].arrival_accepted && lroundf(Axes[2].target*3200.f/360.f)==pulses &&
+     held_feedback(2,HAL_GetTick()) && fabsf(Axes[2].mm-Axes[2].target)<=GRAB_BASE_POSITION_TOL_DEG) {
+    Axes[2].commanded=Axes[2].target_reused=true;return true;
+  }
   uint32_t accepted_ms=HAL_GetTick();
   if(!result_accept(MechanicalArm_PositionEx(MECHANICAL_ARM_AXIS_BASE,pulses,
     config.SpeedRpm,config.Acceleration,MECHANICAL_ARM_POSITION_ABSOLUTE),
@@ -1249,14 +1353,15 @@ static bool held_feedback(unsigned i,uint32_t now)
   return axis_quiet(i,now,now-(uint32_t)Config[C_FEEDBACK_MS]-1U) &&
     (Axes[i].flags&0x0dU)==1U && isfinite(Axes[i].mm);
 }
-/* Fallback for missing driver reached, never for missing communication.
- * Each axis owns its timer; only new position AND state samples advance it. */
+/* Receive confirms acceptance only. Each axis accumulates its own measured
+ * hold as feedback arrives, independently of the stage currently being run. */
 static bool axis_stable_arrival(unsigned i,uint32_t now,uint32_t hold_ms,float tolerance)
 {
   GrabAxis_t *a=&Axes[i];
   if(!a->commanded || !axis_fresh(i,now) || !a->quiet ||
      (int32_t)(a->position_tick-a->command_tick)<=0 || (int32_t)(a->state_tick-a->command_tick)<=0 ||
-     (a->flags&0x0dU)!=1U || !isfinite(a->mm) || !isfinite(a->target)) {
+     (a->flags&0x0dU)!=1U || !isfinite(a->mm) || !isfinite(a->target) ||
+     fabsf(a->mm-a->target)>tolerance) {
     a->arrival_waiting=a->arrival_accepted=false;return false;
   }
   if(a->arrival_waiting &&
@@ -1290,10 +1395,10 @@ static bool axis_stable_arrival(unsigned i,uint32_t now,uint32_t hold_ms,float t
 static bool arrived(unsigned i,uint32_t now)
 {
   float tolerance=i==2?GRAB_BASE_POSITION_TOL_DEG:Config[C_POS_TOL];
-  const uint8_t ids[]={MOTOR_ID_ARM_X,MOTOR_ID_ARM_Z,MOTOR_ID_ARM_BASE};
-  if(Axes[i].commanded && !Axes[i].target_reused && axis_fresh(i,now) &&
-     (Axes[i].flags&0x09U)==1U &&
-     MotorBus_PositionReached(ids[i],Axes[i].command_tick))return true;
+  if(!axis_fresh(i,now) || (Axes[i].flags&0x0dU)!=1U) {
+    Axes[i].arrival_waiting=Axes[i].arrival_accepted=Axes[i].target_reused=false;
+    return false;
+  }
   if(Axes[i].commanded && Axes[i].target_reused) {
     if(!held_feedback(i,now))return false;
     if(fabsf(Axes[i].mm-Axes[i].target)<=tolerance)return true;
@@ -1304,8 +1409,7 @@ static bool arrived(unsigned i,uint32_t now)
      (Axes[i].flags&0x0dU)!=1U) {
     Axes[i].arrival_waiting=false;return false;
   }
-  /* A missing 9F uses measured rest over arrival_hold_ms; Receive/02 alone
-   * cannot finish a movement and normal completion has no added dwell. */
+  /* Revalidate cached evidence; unchanged timestamps cannot advance the hold. */
   return axis_stable_arrival(i,now,(uint32_t)Config[C_ARRIVAL_HOLD_MS],tolerance);
 }
 /* A stopped coarse turn can leave encoder error beyond the temporary Base business
@@ -1330,20 +1434,57 @@ static bool base_arrival(uint32_t now)
 }
 static void poll_axes(uint32_t now)
 {
-  unsigned i; MechanicalArm_AxisTypeDef axis; MechanicalArm_ActionTypeDef action;
+  unsigned i,selected=6;uint32_t most_overdue=0;
+  MechanicalArm_AxisTypeDef axis; MechanicalArm_ActionTypeDef action;
   if(((Status.state==GRAB_PREPARE && PrepareStep==0) || Status.state==GRAB_SETTLE ||
       Status.state==GRAB_VISION_PAUSE || Status.state==GRAB_STOPPING) && !StopEvidenceStarted) return;
   if(PendingAction!=MECHANICAL_ARM_ACTION_NONE || MechanicalArm_IsBusy())return;
-  if(now-LastPoll<GRAB_AXIS_POLL_MS)return;
-  i=(PollIndex/2)%3; axis=i==2?MECHANICAL_ARM_AXIS_BASE:(i==0?MECHANICAL_ARM_AXIS_X:MECHANICAL_ARM_AXIS_Z);
-  action=(PollIndex%2)==0?MECHANICAL_ARM_ACTION_POSITION_READ:MECHANICAL_ARM_ACTION_STATE;
+  if(now-LastPoll<GRAB_AXIS_POLL_MIN_MS)return;
+  /* Poll fields by their real sample ages, not a fixed six-item/150ms round.
+   * Active axes get25ms field deadlines; held axes keep150ms background
+   * deadlines. Old background data eventually outranks active data, so this
+   * preference cannot starve the other axes. The bus still owns wire gaps,
+   * owner fairness, atomic wheel batches and emergency preemption. */
+  for(unsigned n=0;n<6;n++) {
+    unsigned item=(PollIndex+n)%6,kind=item%2;
+    i=item/2;GrabAxis_t *a=&Axes[i];
+    uint32_t stamp=kind?a->state_tick:a->position_tick;
+    bool valid=kind?a->state_valid:a->position_valid;
+    bool active=a->commanded && !a->target_reused && !a->arrival_accepted;
+    uint32_t interval=active?GRAB_AXIS_POLL_MS:GRAB_AXIS_BACKGROUND_MS;
+    /* Explicit stop evidence must follow this stop. Pose preparation also
+     * needs its own fresh samples even when none of the axes has moved. */
+    bool stop=StopEvidenceStarted && (Status.state==GRAB_PREPARE || Status.state==GRAB_SETTLE ||
+      Status.state==GRAB_VISION_PAUSE || Status.state==GRAB_STOPPING);
+    bool pose=Status.state==GRAB_ROUTE_POSE && PoseStep==0;
+    if(stop || pose)interval=GRAB_AXIS_POLL_MS;
+    if((stop && (int32_t)(stamp-StopTick)<=0) ||
+       (pose && (int32_t)(stamp-PoseEvidenceTick)<=0))valid=false;
+    /* Respect a deliberately shorter feedback freshness configuration too. */
+    uint32_t budget=(uint32_t)Config[C_FEEDBACK_MS]/4U;
+    if(!budget)budget=1;
+    if(interval>budget)interval=budget;
+    uint32_t age=now-stamp;
+    if(valid && age<interval)continue;
+    uint32_t overdue=valid?age-interval:UINT32_MAX;
+    if(selected==6 || overdue>most_overdue){selected=item;most_overdue=overdue;}
+  }
+  /* A visual correction yielded a read opportunity, but all fields may already
+   * be current. Release that yield instead of waiting for a future deadline. */
+  if(selected==6){AlignFeedbackDue=false;return;}
+  i=selected/2;axis=i==2?MECHANICAL_ARM_AXIS_BASE:(i==0?MECHANICAL_ARM_AXIS_X:MECHANICAL_ARM_AXIS_Z);
+  action=(selected%2)==0?MECHANICAL_ARM_ACTION_POSITION_READ:MECHANICAL_ARM_ACTION_STATE;
   if(result_accept(action==MECHANICAL_ARM_ACTION_POSITION_READ?MechanicalArm_PositionRead(axis):
-    MechanicalArm_StateRead(axis),action,axis)) { PollIndex=(PollIndex+1)%6; LastPoll=now;AlignFeedbackDue=false; }
+    MechanicalArm_StateRead(axis),action,axis)) { PollIndex=(selected+1)%6; LastPoll=now;AlignFeedbackDue=false; }
 }
 uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
 {
   unsigned i; GrabAxis_t *axis; uint32_t now=HAL_GetTick();
   if(!event) return 0;
+  if(event->Transmitted && event->Action!=MECHANICAL_ARM_ACTION_POSITION_READ &&
+     event->Action!=MECHANICAL_ARM_ACTION_STATE && event->Action!=MECHANICAL_ARM_ACTION_SPEED_READ &&
+     !(event->Action==MECHANICAL_ARM_ACTION_STOP && PendingAction==MECHANICAL_ARM_ACTION_STOP &&
+       event->Axis==PendingAxis))alignment_rest_cancel();
   /* Reads can drain after capture. A transmitted motion/configuration action
    * ends the immediate handoff even before a fresh position reveals movement. */
   if(event->Transmitted && event->Action!=MECHANICAL_ARM_ACTION_POSITION_READ &&
@@ -1367,6 +1508,14 @@ uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
      * their events. Lost ACK after TX cannot preserve a trusted old coordinate. */
     if(event->Transmitted)
     {
+      if(event->Action==MECHANICAL_ARM_ACTION_POSITION || event->Action==MECHANICAL_ARM_ACTION_STOP) {
+        for(unsigned n=0;n<3;n++) {
+          MechanicalArm_AxisTypeDef name=n==2?MECHANICAL_ARM_AXIS_BASE:n==0?MECHANICAL_ARM_AXIS_X:MECHANICAL_ARM_AXIS_Z;
+          if(event->Axis==name || event->Axis==MECHANICAL_ARM_AXIS_ALL) {
+            arrival_reset(n);Axes[n].commanded=Axes[n].quiet=false;
+          }
+        }
+      }
       if((event->Action==MECHANICAL_ARM_ACTION_ZERO || event->Action==MECHANICAL_ARM_ACTION_HOME) &&
          event->Axis!=MECHANICAL_ARM_AXIS_BASE) GrabTask_ReferenceInvalidate(event->Axis);
       if((event->Action==MECHANICAL_ARM_ACTION_HOME || event->Action==MECHANICAL_ARM_ACTION_ZERO ||
@@ -1400,6 +1549,11 @@ uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
   { if(Status.state!=GRAB_STOPPING) fault("motor_feedback"); return 1; }
   if(event->Action==MECHANICAL_ARM_ACTION_STOP) { StopArmTx=event->Transmitted!=0; return 1; }
   i=event->Axis==MECHANICAL_ARM_AXIS_BASE?2:(event->Axis==MECHANICAL_ARM_AXIS_X?0:1); axis=&Axes[i];
+  if(event->Action==MECHANICAL_ARM_ACTION_POSITION && event->Transmitted) {
+    /* The final ACK carries the actual DMA completion time. No pre-TX
+     * feedback may confirm the just accepted absolute target. */
+    axis->command_tick=event->TxDoneMs;
+  }
   if(event->Action==MECHANICAL_ARM_ACTION_POSITION_READ)
   {
     float ppm=i==2?3200.0f/360:Config[i==0?C_X_PPM:C_Z_PPM]; int64_t raw=event->CurrentPositionRaw;
@@ -1412,10 +1566,12 @@ uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
       axis->signed_speed=isfinite(ppm)?(float)(raw-axis->raw)*3200/65536/ppm*1000/(now-axis->position_tick):0;
       if(axis->speed<=(i==2?1.0f:Config[C_STOP_SPEED]))
       { if(!axis->quiet) axis->quiet_since=now; axis->quiet=true; }
-      else axis->quiet=false;
+      else {axis->quiet=false;alignment_rest_cancel();}
     }
+    if(!axis->position_valid || now-axis->position_tick>(uint32_t)Config[C_FEEDBACK_MS])alignment_rest_cancel();
+    if(AlignRest.active && axis->quiet)axis->quiet_since=AlignRest.axis[i];
     if(!axis->quiet || !axis->position_valid || now-axis->position_tick>(uint32_t)Config[C_FEEDBACK_MS])
-      axis->arrival_waiting=axis->arrival_accepted=false;
+      axis->arrival_waiting=axis->arrival_accepted=axis->target_reused=false;
     axis->raw=raw; axis->position_tick=now; axis->position_valid=true;
     axis->mm=isfinite(ppm)?(float)raw*3200/65536/ppm:NAN;
     if(i==0) Status.x_mm=axis->mm; else if(i==1) Status.z_mm=axis->mm;
@@ -1426,7 +1582,7 @@ uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
      * Keep the raw flags, but only protection or disabled state aborts motion. */
     if(!axis->state_valid || now-axis->state_tick>(uint32_t)Config[C_FEEDBACK_MS] ||
        (event->StateFlags[event->Axis]&0x0dU)!=1U)
-      axis->arrival_waiting=axis->arrival_accepted=false;
+      axis->arrival_waiting=axis->arrival_accepted=axis->target_reused=false;
     axis->flags=event->StateFlags[event->Axis]; axis->state_tick=now; axis->state_valid=true;
     if((axis->flags&0x08U)!=0 || !(axis->flags&1U))
     {
@@ -1434,6 +1590,10 @@ uint8_t GrabTask_MotorEventHandle(const MechanicalArm_EventTypeDef *event)
       track_motor_fault(ids[i],"axis",axis->flags,now,now);fault("axis_disabled_or_stall");
     }
   }
+  if(axis->commanded && !axis->target_reused &&
+     (event->Action==MECHANICAL_ARM_ACTION_POSITION_READ || event->Action==MECHANICAL_ARM_ACTION_STATE))
+    (void)axis_stable_arrival(i,now,(uint32_t)Config[C_ARRIVAL_HOLD_MS],
+      i==2?GRAB_BASE_POSITION_TOL_DEG:Config[C_POS_TOL]);
   return 1;
 }
 
@@ -1449,7 +1609,7 @@ static bool wheels(uint32_t now)
     Mecanum_Feedback_t f;
     if(!Mecanum_FeedbackGet(i,&f) || !f.speed_valid || !f.position_valid || !f.state_valid ||
       now-f.speed_ms>Config[C_FEEDBACK_MS] || now-f.position_ms>Config[C_FEEDBACK_MS] ||
-      now-f.state_ms>Config[C_FEEDBACK_MS]) { WheelQuiet=false; return false; }
+      now-f.state_ms>Config[C_FEEDBACK_MS]) { alignment_rest_cancel();WheelQuiet=false; return false; }
     if((f.state_flags&0x08U) || !(f.state_flags&1U))
     { track_motor_fault((uint8_t)(i+1),"wheel",f.state_flags,f.state_ms,now);WheelQuiet=false;fault("wheel_disabled_or_stall");return false; }
     if(!WheelBaseline) WheelOrigin[i]=f.position_raw;
@@ -1461,10 +1621,11 @@ static bool wheels(uint32_t now)
     if(fabsf((float)f.speed_rpm)*65536*mm_per_unit/60>Config[C_STOP_SPEED] ||
        (int32_t)(f.speed_ms-StopTick)<=0 || (int32_t)(f.position_ms-StopTick)<=0 ||
        (int32_t)(f.state_ms-StopTick)<=0) quiet=false;
+    if(fabsf((float)f.speed_rpm)*65536*mm_per_unit/60>Config[C_STOP_SPEED])alignment_rest_cancel();
     if(f.position_ms==WheelLastPositionTick[i]) group_new=false;
     if(WheelLastPositionTick[i] && f.position_ms!=WheelLastPositionTick[i] &&
        fabsf((float)(f.position_raw-WheelLastPosition[i])*mm_per_unit)*1000/
-       (uint32_t)(f.position_ms-WheelLastPositionTick[i])>Config[C_STOP_SPEED]) quiet=false;
+       (uint32_t)(f.position_ms-WheelLastPositionTick[i])>Config[C_STOP_SPEED]) {quiet=false;alignment_rest_cancel();}
     if((int32_t)(f.position_ms-group)<0) group=f.position_ms;
   }
   if(group_new && group!=WheelGroupTick)
@@ -1472,7 +1633,7 @@ static bool wheels(uint32_t now)
     for(i=0;i<4;i++)
     { Mecanum_Feedback_t f; (void)Mecanum_FeedbackGet(i,&f); WheelLastPosition[i]=f.position_raw; WheelLastPositionTick[i]=f.position_ms; }
     WheelGroupTick=group;
-    if(quiet) { if(!WheelQuiet) WheelQuietTick=now; WheelQuiet=true; } else WheelQuiet=false;
+    if(quiet) { if(!WheelQuiet) WheelQuietTick=AlignRest.active?AlignRest.wheel:now; WheelQuiet=true; } else WheelQuiet=false;
   }
   if(!quiet) WheelQuiet=false;
   WheelBaseline=true; return true;
@@ -1488,6 +1649,8 @@ static bool aligned_stop_ready(uint32_t now)
 static void stop_process(uint32_t now,bool emergency)
 {
   Mecanum_Status_t bus;
+  Mecanum_StatusGet(&bus);
+  if(AlignRest.active && bus.motion_sequence!=AlignRest.motion_sequence)alignment_rest_cancel();
   /* Normal stops drain the arm request as well: a priority chassis stop would
    * otherwise cancel its ACK/read and quarantine the shared UART. */
   if(!StopChassisSent && (emergency || (PendingAction==MECHANICAL_ARM_ACTION_NONE &&
@@ -1701,7 +1864,9 @@ static void vision_loss_begin(uint32_t now)
      vision_near_window(Status.dx,Status.dy)) {
     bool keep_stream=Config[C_LOSS_GRACE_MS]>0 && now-LossTick<Config[C_LOSS_GRACE_MS] &&
       (Status.state==GRAB_SETTLE || vision_near_window(Status.dx,Status.dy));
-    vision_pause_begin(keep_stream); return;
+    const char *reason=vision_near_window(Status.dx,Status.dy)?"vision_pause_near_window":
+      Status.state==GRAB_ALIGN?"vision_gap_expired":"vision_pause_stopping";
+    vision_pause_begin(keep_stream);Status.reason=reason;return;
   }
   GraceCount=0; GraceSequence=LastSequence;
   Status.reason="vision_gap_decelerating"; enter(GRAB_VISION_GRACE);
@@ -1737,7 +1902,7 @@ static void vision_grace_process(uint32_t now)
     enter(GRAB_ALIGN);if(vision_read(now))align_control(now);return;
   }
   if(now-LossTick>=Config[C_LOSS_GRACE_MS] || now-LossTick>Config[C_AGE_MS])
-  { vision_pause_begin(false); return; }
+  { vision_pause_begin(false);Status.reason="vision_gap_expired";return; }
   if(s.InvalidCount!=LastInvalidCount) { GraceCount=0; LastInvalidCount=s.InvalidCount; }
   valid=s.HasValidData && s.TargetValid && s.Data.Function==0xB2 &&
     s.Data.Target==target_color() && (int32_t)(s.Data.Tick-LossTick)>0 &&
@@ -1749,10 +1914,11 @@ static void vision_grace_process(uint32_t now)
     dx=alignment_dx(&s.Data);dy=alignment_dy(&s.Data);
     /* A new near-window or reversed error makes the previous direction unsafe
      * to reuse even before three observations have confirmed visual recovery. */
-    if(vision_near_window(dx,dy) ||
+    bool near=vision_near_window(dx,dy);
+    if(near ||
        (dx*(int)Status.dx<0 && abs(dx)>align_parameter(C_DX_TOL) && abs(Status.dx)>align_parameter(C_DX_TOL)) ||
        (dy*(int)Status.dy<0 && abs(dy)>align_parameter(C_DY_TOL) && abs(Status.dy)>align_parameter(C_DY_TOL)))
-    { vision_pause_begin(vision_near_window(dx,dy)); return; }
+    { vision_pause_begin(near);Status.reason=near?"vision_pause_near_window":"vision_pause_direction_change";return; }
     if(GraceCount<GRAB_RECOVERY_OBSERVATIONS) GraceCount++;
     if(GraceCount>=GRAB_RECOVERY_OBSERVATIONS)
     {
@@ -1772,9 +1938,24 @@ static void vision_pause_process(uint32_t now)
   if(bus.locked || bus.stage==MECANUM_STAGE_FAULT) { fault("chassis_tx"); return; }
   Camera_SnapshotGet(&s);
   if(!vision_request_valid(&s)) return;
-  if(RecoveryPassive && s.HasValidData && s.TargetValid && s.Data.Function==0xB2 &&
-     s.Data.Target==target_color() && (int32_t)(s.Data.Tick-RequestTick)>=0)
-    RecoveryValidTick=s.Data.Tick;
+  /* Deceleration/stop verification can outlast the miss. Preserve an original
+   * stream that has already recovered instead of resetting the Pi tracker.
+   * Pre-pause/stale/cross-target snapshots cannot cancel a pending restart;
+   * only later post-standstill observations may advance RecoveryCount. */
+  uint32_t live_age=(uint32_t)Config[C_LOSS_GRACE_MS];
+  if(!live_age)live_age=GRAB_VISION_GAP_MS;
+  if(live_age>(uint32_t)Config[C_AGE_MS])live_age=(uint32_t)Config[C_AGE_MS];
+  uint32_t live_tick=s.Data.HasReceiveTime?s.Data.ReceivedTick:s.Data.Tick;
+  bool live=s.HasFrame && s.HasValidData && s.TargetValid && s.Data.Function==0xB2 &&
+    s.Data.Target==target_color() && (int32_t)(live_tick-RequestTick)>=0 &&
+    (int32_t)(live_tick-StateTick)>=0 && now-live_tick<=live_age;
+  if(live){
+    RecoveryValidTick=live_tick;
+    if(RecoveryRestartPending){
+      RecoveryRestartPending=false;RecoveryPassive=true;
+      Status.reason="vision_stream_retained";ReportPending=true;
+    }
+  }
   Status.stop_confirmed=false; /* Recheck current feedback; do not reuse a latched confirmation. */
   stop_process(now,false);
   if(Status.state!=GRAB_VISION_PAUSE) return;
@@ -1790,15 +1971,23 @@ static void vision_pause_process(uint32_t now)
   if(elapsed>GRAB_RECOVERY_WINDOW_MS) { fault("vision_recover_timeout"); return; }
   /* Brief near-target misses keep the live stream while physically stopped.
    * Only a sustained absence of valid coordinates restarts recognition. */
-  if(RecoveryPassive && (uint32_t)(now-RecoveryValidTick)>=Config[C_LOSS_GRACE_MS])
+  if(RecoveryPassive && !live && (uint32_t)(now-RecoveryValidTick)>=Config[C_LOSS_GRACE_MS])
   {RecoveryPassive=false;RecoveryRestartPending=true;}
   if(RecoveryRestartPending)
   {
-    HAL_StatusTypeDef result;
+    HAL_StatusTypeDef result;uint8_t retained=0;
     if(!Status.stop_confirmed) return;
-    result=request_target();
+    uint32_t after=(int32_t)(StateTick-RequestTick)>=0?StateTick:RequestTick;
+    result=Camera_RestartIfMissing((uint8_t)target_color(),after,live_age,&retained);
     if(result==HAL_BUSY) return; /* Retries share the existing bounded recovery window. */
     if(result!=HAL_OK) { fault("camera_tx"); return; }
+    if(retained){
+      Camera_SnapshotGet(&s);
+      RecoveryRestartPending=false;RecoveryPassive=true;
+      RecoveryValidTick=s.Data.HasReceiveTime?s.Data.ReceivedTick:s.Data.Tick;
+      Status.reason="vision_stream_retained";ReportPending=true;
+      return; /* This frame cannot replace the three subsequent recovery samples. */
+    }
     RecoveryRestartPending=false; RequestTick=now;
     RecoverySequence=0; LastInvalidCount=0; RecoveryCount=0;
     Status.reason="vision_reacquire_wait"; ReportPending=true;
@@ -1807,12 +1996,12 @@ static void vision_pause_process(uint32_t now)
   if(s.InvalidCount!=LastInvalidCount)
   { RecoveryCount=0; LastInvalidCount=s.InvalidCount; }
   if(!s.HasValidData || !s.TargetValid || s.Data.Function!=0xB2 || s.Data.Target!=target_color() ||
-     (uint32_t)(now-s.Data.Tick)>Config[C_AGE_MS])
+     (uint32_t)(now-live_tick)>Config[C_AGE_MS])
   { RecoveryCount=0; return; }
   if(s.Data.Sequence!=RecoverySequence)
   {
     RecoverySequence=s.Data.Sequence;
-    if((int32_t)(s.Data.Tick-RecoveryTick)<0 || (int32_t)(s.Data.Tick-RequestTick)<0) return;
+    if((int32_t)(live_tick-RecoveryTick)<0 || (int32_t)(live_tick-RequestTick)<0) return;
     if(RecoveryCount<GRAB_RECOVERY_OBSERVATIONS) RecoveryCount++;
   }
   /* Freshness and rest can become true independently of a new coordinate packet. */
@@ -1833,12 +2022,18 @@ static bool vision_read(uint32_t now)
   bool measured_before=AlignMeasured;AlignMeasured=false;
   if(!vision_request_valid(&s)) return false;
   /* Preserve invalid events even when the latest packet in a USB batch is valid. */
+  if(StationVisionBoundary){
+    uint32_t received=s.Data.HasReceiveTime?s.Data.ReceivedTick:s.Data.Tick;
+    if(!s.HasValidData || s.Data.Sequence==StationVisionSequence || (int32_t)(received-RequestTick)<=0)return false;
+    StationVisionBoundary=false;
+  }
   if(s.InvalidCount!=LastInvalidCount)
   {
     LastInvalidCount=s.InvalidCount; stable_reset();
-    bool newer=AlignTarget.source_ready && s.HasValidData && s.TargetValid &&
+    uint32_t received=s.Data.HasReceiveTime?s.Data.ReceivedTick:s.Data.Tick;
+    bool newer=s.HasFrame && s.HasValidData && s.TargetValid &&
       s.Data.Function==0xB2 && s.Data.Target==target_color() && s.Data.Sequence!=LastSequence &&
-      (int32_t)(s.Data.Tick-RequestTick)>=0 && now-s.Data.Tick<=Config[C_AGE_MS];
+      (int32_t)(received-RequestTick)>=0 && now-received<=Config[C_AGE_MS];
     if(HaveCapture && !newer)return vision_measured_missing(now);
   }
   if(!s.HasValidData || !s.TargetValid || !s.RequestActive ||
@@ -1868,7 +2063,10 @@ static bool vision_read(uint32_t now)
   AlignControlPending=true;
   Status.dx=(int16_t)alignment_dx(&Vision);
   Status.dy=(int16_t)alignment_dy(&Vision);
-  if(measured_before || (LossActive && AlignTarget.valid)){loss_finish(now);Status.reason="vision_measured_recovered";ReportPending=true;}
+  if(measured_before || LossActive){
+    bool measured=measured_before || AlignTarget.valid;
+    loss_finish(now);Status.reason=measured?"vision_measured_recovered":"vision_gap_recovered";ReportPending=true;
+  }
   static_alignment_capture(now);
   return true;
 }
@@ -2135,7 +2333,7 @@ static bool car_pick_start(uint8_t slot,float depth)
     CarPickTrayClearance.active=slot==1U && AlignedPlace.valid && !AlignedPlace.picked &&
       (AlignedPlace.scene==SCENE_ROUGH || AlignedPlace.scene==SCENE_TEMP1 || AlignedPlace.scene==SCENE_TEMP2);
     CarPickTrayClearance.lift_z=top;
-    CarPickColor=(uint8_t)ActiveColor;CarPickClosed=false;
+    CarPickColor=(uint8_t)ActiveColor;CarPickClosed=CarPickLiftConfirmed=false;
   }
   CarPickActive=true;CarPickWaiting=false;
   Status.reason=CarPickClosed?"car_pick_continue":"car_pick_prepare";
@@ -2148,24 +2346,27 @@ static void car_pick_complete(void)
   OutsideBase=RearBase+GRAB_BASE_WORK_OFFSET_DEG;
   ObserveX=observation_return_target(0);ObserveZ=observation_return_target(1);
   OutsideReferenceValid=OutsidePose=true;RearPose=false;
-  CarPickActive=CarPickWaiting=false;CarPickTrayClearance.active=false;TrackHeld=true;
+  CarPickActive=CarPickWaiting=false;TrackHeld=true;
   if(AlignedPlace.valid)AlignedPlace.picked=true;
   Status.result="picked";Status.reason="car_pick_complete";
   Status.reference_cause="work_pose_verified";Status.missing="none";
   Status.stop_requested=false;enter(GRAB_COMPLETE);
 }
-/* Base has just reached the outside work pose. Keep the child busy until
- * the remaining stock has moved+90 and actual tray arrival is confirmed. */
+/* X clearance permits this owned rotation while Z and Base finish. The goal
+ * survives pickup completion; the placement joins it before descending. */
 static bool car_pick_tray_clearance_ready(uint32_t now)
 {
   if(!CarPickTrayClearance.active)return true;
   Turntable_Status_t tray;
   if(!CarPickTrayClearance.submitted){
     if(Turntable_IsBusy())return false;
-    if(!axis_quiet(1,now,0) || (Axes[1].flags&0x0dU)!=1U ||
-       Axes[1].mm<CarPickTrayClearance.lift_z-Config[C_POS_TOL] ||
-       !axis_quiet(2,now,0) || (Axes[2].flags&0x0dU)!=1U ||
-       fabsf(Axes[2].mm-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))>GRAB_BASE_POSITION_TOL_DEG)return false;
+    bool x_clear=Operation==OP_CAR_PICK && CarPickClosed && CarPickSlot==1U &&
+      arrived(0,now) && fabsf(Axes[0].mm-CarPickClearanceX)<=Config[C_POS_TOL];
+    bool outside=PrealignedPlaceActive && axis_quiet(1,now,0) && (Axes[1].flags&0x0dU)==1U &&
+      Axes[1].mm>=CarPickTrayClearance.lift_z-Config[C_POS_TOL] &&
+      axis_quiet(2,now,0) && (Axes[2].flags&0x0dU)==1U &&
+      fabsf(Axes[2].mm-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))<=GRAB_BASE_POSITION_TOL_DEG;
+    if(!CarPickTrayClearance.verified && !x_clear && !outside)return false;
     if(!CarPickTrayClearance.target_valid){
       float slot_angle;
       /* Slot1 HOME can refresh its reference during this pickup. Snapshot
@@ -2231,6 +2432,24 @@ static bool processing_clearance_ready(uint32_t now)
   if(!tray.feedback_valid){ProcClearance.submitted=false;return false;}
   return !tray.moving && tray.slot==slot;
 }
+bool GrabTask_PrepareProcessedTray3(void)
+{
+  uint32_t now=HAL_GetTick();float target;
+  if(ProcClearance.active)return ProcClearance.prefetched;
+  if(ResumePending || Status.stop_requested ||
+     (Status.state!=GRAB_COMPLETE && Status.state!=GRAB_ROUTE_POSE) || Turntable_IsBusy() ||
+     !RearReferenceValid || !Turntable_ReferenceValid() || !Turntable_SlotAngleGet(3,&target) ||
+     !axis_quiet(1,now,0) || (Axes[1].flags&0x0dU)!=1U ||
+     Axes[1].mm<Config[C_Z_CAR_LIFT]-Config[C_POS_TOL] ||
+     !axis_quiet(2,now,0) || (Axes[2].flags&0x0dU)!=1U ||
+     fabsf(Axes[2].mm-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))>GRAB_BASE_POSITION_TOL_DEG)return false;
+  memset(&ProcClearance,0,sizeof ProcClearance);
+  ProcClearance.active=ProcClearance.prefetched=true;
+  ProcClearance.return_angle=target;ProcClearance.outside_angle=fmodf(target+90,360);
+  ProcClearance.lift_z=Config[C_Z_CAR_LIFT];
+  (void)processing_clearance_ready(now);
+  return Status.state!=GRAB_STOPPING && Status.state!=GRAB_ERROR;
+}
 static bool transfer_preindex_enabled(void)
 { return Operation==OP_CAR_PICK || ProcessedStoreActive || TrackStoreActive; }
 /* Raw pickup owns an established outside pose until a Base move invalidates
@@ -2244,18 +2463,27 @@ static void transfer_preindex(uint32_t now)
 {
   if(ProcClearance.active)return;
   bool taking=Operation==OP_CAR_PICK && !CarPickClosed &&
-    (Status.state==GRAB_RETRACT || Status.state==GRAB_X_RETRACT);
+    (Status.state==GRAB_PREPARE || Status.state==GRAB_RETRACT || Status.state==GRAB_X_RETRACT);
   bool storing=(ProcessedStoreActive || TrackStoreActive) && ToCar &&
-    (Status.state==GRAB_LIFT || Status.state==GRAB_X_RETRACT);
-  if(!taking && !storing)return;
+    (Status.state==GRAB_LIFT || Status.state==GRAB_X_RETRACT || (ProcessedStoreActive &&
+     (Status.state==GRAB_PREPARE || Status.state==GRAB_ACQUIRE || Status.state==GRAB_ALIGN ||
+      Status.state==GRAB_SETTLE || Status.state==GRAB_DESCEND || Status.state==GRAB_CLOSE)));
+  bool aligning=StationPreindex.active && EmptyPlaceAlignActive;
+  if(!taking && !storing && !aligning)return;
   if(TrackStoreActive) { if(!raw_preindex_ready(now))return; }
   else if(!RearReferenceValid || !axis_quiet(2,now,0) ||
           (Axes[2].flags&0x0dU)!=1U ||
           fabsf(Axes[2].mm-(RearBase+GRAB_BASE_WORK_OFFSET_DEG))>GRAB_BASE_POSITION_TOL_DEG)return;
   Turntable_Status_t tray;
-  if(!IndexSubmitted)
+  bool submitted=aligning?StationPreindex.submitted:IndexSubmitted;
+  uint8_t slot=aligning?StationPreindex.slot:Status.slot;
+  if(!submitted)
   {
-    if(Turntable_Index(Status.slot))IndexSubmitted=true;
+    bool verified=StationPreindex.active && (aligning || taking) && StationPreindex.verified;
+    if(verified?Turntable_VerifySlot(slot):Turntable_Index(slot)){
+      if(aligning)StationPreindex.submitted=true;
+      else {IndexSubmitted=true;if(taking && StationPreindex.active)StationPreindex.submitted=true;}
+    }
     else {
       Turntable_StatusGet(&tray);
       if(strcmp(tray.reason,"busy") && strcmp(tray.reason,"bus_busy"))fault(tray.reason);
@@ -2265,10 +2493,15 @@ static void transfer_preindex(uint32_t now)
   {
     Turntable_StatusGet(&tray);
     if(!tray.arrived)fault(tray.reason);
+    else if(aligning)StationPreindex.verified=true;
   }
 }
 static void transfer_process(uint32_t now)
 {
+  if(PrealignedPlaceActive){
+    (void)car_pick_tray_clearance_ready(now);
+    if(Status.state==GRAB_STOPPING || Status.state==GRAB_ERROR)return;
+  }
   if(TrackStoreActive && TrackStoreReleased && TrackStoreRecorded && NextRawColor &&
      !StoreFinishTravel &&
      (Status.state==GRAB_RETURN_TURN || Status.state==GRAB_OBSERVE_Z || Status.state==GRAB_OBSERVE_X)) {
@@ -2283,21 +2516,29 @@ static void transfer_process(uint32_t now)
      (Status.state==GRAB_X_RETRACT || Status.state==GRAB_TURN))
     (void)processing_clearance_ready(now);
   if(Status.state==GRAB_STOPPING || Status.state==GRAB_ERROR)return;
-  if(Operation==OP_CAR_PICK && Status.state==GRAB_LIFT)
+  if(Operation==OP_CAR_PICK && (Status.state==GRAB_LIFT || Status.state==GRAB_RETURN_TURN))
   {
-    if(strcmp(Status.reason,"car_pick_lift_clearance"))
+    if(Status.state==GRAB_LIFT && strcmp(Status.reason,"car_pick_lift_clearance"))
     {Status.reason="car_pick_lift_clearance";ReportPending=true;}
     /* UART requests drain one at a time; both independent drives run in this
      * same stage. Absolute saved targets avoid adding another 30 mm on resume. */
     if(!Axes[1].commanded && !axis_move(1,CarPickLiftTarget))return;
     if(!Axes[0].commanded || fabsf(Axes[0].target-CarPickClearanceX)>0.5f/Config[C_X_PPM])
       if(!axis_move(0,CarPickClearanceX))return;
-    if(!arrived(1,now) || !arrived(0,now))return;
-    if(!Turntable_InventorySet(Status.slot,TURNTABLE_EMPTY,0))
-    {fault("inventory_record_failed");return;}
-    InventoryTouched=false;ToCar=false;TrackHeld=true;
-    /* Keep X extended through the Base turn to clear the other tray contents. */
-    enter_axis(GRAB_RETURN_TURN,2);return;
+    bool z_ready=arrived(1,now),x_ready=arrived(0,now);
+    if(z_ready && x_ready && !CarPickLiftConfirmed){
+      if(!Turntable_InventorySet(Status.slot,TURNTABLE_EMPTY,0))
+      {fault("inventory_record_failed");return;}
+      CarPickLiftConfirmed=true;InventoryTouched=false;
+    }
+    if(!x_ready || (CarPickSlot==3U && !z_ready))return;
+    ToCar=false;TrackHeld=true;
+    if(Status.state==GRAB_LIFT)enter_axis(GRAB_RETURN_TURN,2);
+    if(!Axes[2].commanded)(void)base_move(RearBase+GRAB_BASE_WORK_OFFSET_DEG);
+    (void)car_pick_tray_clearance_ready(now);
+    if(Status.state==GRAB_STOPPING || Status.state==GRAB_ERROR)return;
+    if(z_ready && base_arrival(now))car_pick_complete();
+    return;
   }
   if(RingRaise)
   {
@@ -2312,6 +2553,7 @@ static void transfer_process(uint32_t now)
   if(Status.state==GRAB_DESCEND || Status.state==GRAB_LIFT ||
      Status.state==GRAB_PLACE || Status.state==GRAB_RETRACT || Status.state==GRAB_OBSERVE_Z)
   {
+    if(Status.state==GRAB_DESCEND && PrealignedPlaceActive && !car_pick_tray_clearance_ready(now))return;
     float target;
     if(Status.state==GRAB_DESCEND) target=FinalAlignmentRetry?RingAlignZ:RingPlaceActive?RingReleaseZ:Config[Operation==OP_TAKE?release_key():grab_key()];
     else if(Status.state==GRAB_LIFT) target=Operation==OP_CAR_PICK?CarPickLiftTarget:
@@ -2404,7 +2646,7 @@ static void transfer_process(uint32_t now)
       {
         RingPlaceActive=false; Status.mode="align";Status.result="released";
         Status.reason="ring_place_complete";
-        if(HeldPlaceActive){HeldPlaceActive=PrealignedPlaceActive=AlignedPlace.valid=false;ActiveColor=(Camera_ColorTypeDef)HeldMaterialColor;Camera_RequestStop();enter(GRAB_COMPLETE);}
+        if(HeldPlaceActive){HeldPlaceActive=PrealignedPlaceActive=AlignedPlace.valid=false;CarPickTrayClearance.active=false;ActiveColor=(Camera_ColorTypeDef)HeldMaterialColor;Camera_RequestStop();enter(GRAB_COMPLETE);}
         else enter(GRAB_HOLD);
       }
       else if(Operation==OP_TAKE && !ToCar) enter_axis(GRAB_OBSERVE_Z,1);
@@ -2469,7 +2711,10 @@ static void transfer_process(uint32_t now)
     else if(!Turntable_IsBusy())
     {
       Turntable_StatusGet(&turntable);
-      if(turntable.arrived && turntable.feedback_valid && !turntable.moving && turntable.slot==Status.slot) enter_axis(GRAB_TURN,2);
+      if(turntable.arrived && turntable.feedback_valid && !turntable.moving && turntable.slot==Status.slot) {
+        StationPreindex.active=false;
+        enter_axis(GRAB_TURN,2);
+      }
       else if(turntable.arrived && !turntable.feedback_valid && transfer_preindex_enabled())
       { if(!Turntable_VerifySlot(Status.slot)){
           Turntable_StatusGet(&turntable);
@@ -2486,6 +2731,10 @@ static void transfer_process(uint32_t now)
       Operation==OP_CAR_PICK?RearBase+(Status.state==GRAB_RETURN_TURN?GRAB_BASE_WORK_OFFSET_DEG:0):
       TrackStoreActive?RearBase+(Status.state==GRAB_RETURN_TURN?GRAB_BASE_WORK_OFFSET_DEG:0):
       OutsideBase+(Status.state==GRAB_TURN?Config[C_BASE_CAR_OFFSET]:0);
+    if(Status.state==GRAB_TURN && Operation==OP_CAR_PICK && !CarPickClosed && !CarPickWaiting){
+      Arm_GripperDutySet((float)GRAB_CAR_PICK_OPEN_PULSE_US/200.0f);
+      CarPickWaiting=true;CarPickWaitTick=now;Status.reason="car_pick_wait";ReportPending=true;
+    }
     if(!Axes[2].commanded) (void)base_move(target);
     else if(base_arrival(now))
     {
@@ -2711,6 +2960,9 @@ static void qr_scan_process(uint32_t now)
 void GrabTask_Process(void)
 {
   uint32_t now=HAL_GetTick(); bool feedback;
+  if(ProcClearance.active && ProcClearance.prefetched && !ResumePending && !Status.stop_requested &&
+     (Status.state==GRAB_COMPLETE || Status.state==GRAB_ROUTE_POSE))
+    (void)processing_clearance_ready(now);
   static_alignment_observe(now);
   if(TrackCloseStopping)track_close_stop();
   if(Tracking.reference_valid || tracking_mode()) track_observer(now);
@@ -2758,6 +3010,9 @@ void GrabTask_Process(void)
      (Axes[1].mm<Config[C_Z_MIN]-Config[C_POS_TOL] || Axes[1].mm>Config[C_Z_MAX]+Config[C_POS_TOL] ||
       (Axes[0].mm<Config[C_X_MIN]-Config[C_POS_TOL] ||
        Axes[0].mm>Config[C_X_MAX]+Config[C_POS_TOL]))) fault("axis_limit");
+  if(Status.state!=GRAB_STOPPING && Status.state!=GRAB_ERROR)transfer_preindex(now);
+  if(PrealignedPlaceActive && Status.state!=GRAB_STOPPING && Status.state!=GRAB_ERROR)
+    (void)car_pick_tray_clearance_ready(now);
   if(Status.state==GRAB_STOPPING)
   {
     Mecanum_Status_t bus; Turntable_Status_t turntable; bool tray_stopped;
@@ -2874,8 +3129,16 @@ void GrabTask_Process(void)
       ObserveX=StaticAlignTest?observation_target(0,Axes[0].mm):observation_return_target(0);
       /* Processing observation does not change the raised posture after storage. */
       ObserveZ=ProcessedStoreActive?Config[C_Z_MAX]:observation_return_target(1);
-      result=request_target();
-      if(result==HAL_OK) { RequestTick=now; LastControl=LastXControl=now; LastInvalidCount=0; stable_reset(); enter(GRAB_ACQUIRE); }
+      Camera_SnapshotTypeDef prepared;Camera_SnapshotGet(&prepared);
+      bool retained=StationVisionAdopted && StationVisionTarget==(uint8_t)target_color() &&
+        prepared.RequestActive && prepared.RequestFunction==0xB2 && prepared.RequestTarget==StationVisionTarget;
+      result=retained?HAL_OK:request_target();
+      if(result==HAL_OK) {
+        StationVisionTarget=0;StationVisionAdopted=false;
+        StationVisionBoundary=retained;StationVisionSequence=prepared.Data.Sequence;
+        RequestTick=now; LastControl=LastXControl=now; LastInvalidCount=retained?prepared.InvalidCount:0;
+        stable_reset(); enter(GRAB_ACQUIRE);
+      }
       else if(result!=HAL_BUSY) fault("camera_tx");
     }
   }
@@ -2905,8 +3168,18 @@ void GrabTask_Process(void)
       if(StaticAlignTest && !ProcessedStoreActive && (!RingLowerSent || !arrived(1,now))) stable_reset();
       if(VisualStable)
       {
+        bool carry=WheelQuiet && now-WheelQuietTick>=Config[C_STABLE_MS];
+        uint32_t wheel_tick=WheelQuietTick,axis_ticks[3];
+        for(unsigned i=0;i<3;i++){
+          axis_ticks[i]=Axes[i].quiet_since;
+          if(!axis_quiet(i,now,now-(uint32_t)Config[C_FEEDBACK_MS]-1U) || (Axes[i].flags&0x0dU)!=1U ||
+             fabsf(PreviousVelocity[i])>.00001f)carry=false;
+        }
         uint32_t stable_tick=StableTick;unsigned count=CaptureCount;
         enter(GRAB_SETTLE);stop_begin();
+        AlignRest.active=carry;AlignRest.wheel=wheel_tick;
+        memcpy(AlignRest.axis,axis_ticks,sizeof axis_ticks);
+        Mecanum_Status_t rest_bus;Mecanum_StatusGet(&rest_bus);AlignRest.motion_sequence=rest_bus.motion_sequence;
         /* Only this alignment-owned stop inherits the completed image window.
          * Actual stop feedback is still reacquired after all stop writes. */
         StableTick=stable_tick;CaptureCount=count;VisualStable=true;
@@ -2931,8 +3204,11 @@ void GrabTask_Process(void)
         { Retries++; enter(GRAB_ALIGN); Status.stop_requested=Status.stop_confirmed=false; stable_reset(); LastControl=LastXControl=now; }
       }
       if(Status.state==GRAB_SETTLE && Status.stop_confirmed && VisualStable && FreshVision &&
-         (int32_t)(Vision.Tick-StopTick)>0 && aligned_stop_ready(now))
+         (int32_t)((Vision.HasReceiveTime?Vision.ReceivedTick:Vision.Tick)-StopTick)>0 && aligned_stop_ready(now))
       {
+        /* New post-stop proof has consumed the bridge. Keep the certified rest
+         * for the existing immediate snapshot -> tray-pickup handoff. */
+        AlignRest.active=false;
         if(!strcmp(Status.mode,"align"))
         {
           if(HeldPlaceActive)
@@ -4219,7 +4495,7 @@ static bool tracking_start(Camera_ColorTypeDef color,uint8_t slot,GrabTracking_M
      * clients; only this owned handoff may reuse the drained zero batch. */
     bool raw_handoff=Status.state==GRAB_COMPLETE && Operation==OP_STORE && Scene==SCENE_RAW &&
       !strcmp(Status.result,"stored") && Mecanum_VelocityHandoffReady();
-    if(tx.locked || tx.stop_pending || tx.ack_profile!=MECANUM_ACK_RECEIVE ||
+    if(tx.locked || tx.stop_pending || (tx.ack_profile!=MECANUM_ACK_RECEIVE && tx.ack_profile!=MECANUM_ACK_NONE) ||
        (tx.sent_velocity_valid && (tx.sent_rpm[0] || tx.sent_rpm[1] || tx.sent_rpm[2] || tx.sent_rpm[3])) ||
        (!tracking_mode() && (MechanicalArm_IsBusy() || (Mecanum_IsBusy() && !raw_handoff))))
     { Status.reason="bus_unavailable";return false; }
@@ -4788,7 +5064,7 @@ bool GrabTask_Command(unsigned count,char *tokens[])
     if((Status.state!=GRAB_IDLE && Status.state!=GRAB_COMPLETE && Status.state!=GRAB_ERROR) || MechanicalArm_IsBusy() ||
        ChassisRoute_IsBusy() ||
        ChassisMotion_IsBusy() || Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy() ||
-       bus.locked || bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)
+       bus.locked || bus.stop_pending || (bus.ack_profile!=MECANUM_ACK_RECEIVE && bus.ack_profile!=MECANUM_ACK_NONE))
       reply("ERR grab rehome rejected; stop tasks and inspect bus status\r\n");
     else { boot_home_start(false); reply("OK grab rehome accepted; Z/X/Base verification pending\r\n"); status_write(false); }
   }
@@ -4798,7 +5074,7 @@ bool GrabTask_Command(unsigned count,char *tokens[])
     if(Status.state!=GRAB_ERROR || !BaseHomeAcceptAvailable || (BootVerifiedMask&3U)!=3U ||
        MechanicalArm_IsBusy() || ChassisRoute_IsBusy() || ChassisMotion_IsBusy() ||
        Mecanum_IsBusy() || HWT101_Cal_IsBusy() || Turntable_IsBusy() || bus.locked ||
-       bus.stop_pending || bus.ack_profile!=MECANUM_ACK_RECEIVE)
+       bus.stop_pending || (bus.ack_profile!=MECANUM_ACK_RECEIVE && bus.ack_profile!=MECANUM_ACK_NONE))
       reply("ERR grab home accept rejected; inspect grab status\r\n");
     else {
       /* Explicit acceptance retries fresh feedback, never HOME or X/Z motion.

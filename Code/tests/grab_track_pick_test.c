@@ -24,8 +24,12 @@ static void high_window_continuous_descent(void)
  /* Z completion closes even while X/wheels are moving, with no low-plane
   * pixel gate and no GRAB_SETTLE/all-axis standstill round. */
  physical[1]=-8;arrival_reply_enabled=true;wheel_moving=true;Axes[0].quiet=false;
+ uint32_t stopped_z=clock_ms;
  step(true,0,140,70);
+ assert(!closures); /* Receive/legacy9F does not replace the Z measured hold. */
+ for(unsigned n=0;n<30 && !closures;n++)step(true,0,140,70);
  assert(closures==1 && status().state==GRAB_CLOSE && !status().stop_requested);
+ assert(clock_ms-stopped_z>=200 && wheel_moving);
  assert(TrackCloseStopping);
 }
 static void hold_only_at_high_plane(void)

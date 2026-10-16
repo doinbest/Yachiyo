@@ -129,8 +129,25 @@ static void stale_pose_does_not_start_work(void)
   unsigned old=pose_calls;ContestMission_Process();
   assert(State==M_DRIVING && !WorkStarted && !WorkReady && pose_calls==old);
 }
+static void station_vision_starts_during_ring_travel(void)
+{
+  extern unsigned test_station_vision_prepares,test_station_vision_cancels;
+  extern uint8_t test_station_vision_target;
+  for(unsigned kind=0;kind<4;kind++) {
+    fixture(M_RING_MOVE);Station=kind<2?2:3;Pass=kind==1;Batch=kind==3;
+    Rings[Batch][0]=2;Colors[Batch][0]=5;
+    motion.state=CHASSIS_MOTION_RUNNING;motion.stop_confirmed=false;
+    unsigned before=test_station_vision_prepares;
+    ContestMission_Process();
+    assert(State==M_RING_MOVE && test_station_vision_prepares==before+1);
+    assert(test_station_vision_target==((kind==1 || kind==3)?5:11));
+    before=test_station_vision_cancels;ContestMission_Stop();
+    assert(test_station_vision_cancels>before);
+  }
+}
 int main(void)
 {
+  station_vision_starts_during_ring_travel();
   raw_departure_waits_then_continues();
   legacy_mission_main();assert(store_travel_calls==5); /* four batches + single-piece route */
   processing_exit_target();

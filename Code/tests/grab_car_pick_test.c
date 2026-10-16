@@ -26,11 +26,12 @@ static void three_slots(void)
     tray_arrives=true;run_to(GRAB_TURN,200,0);
     while(strcmp(status().reason,"car_pick_wait")){step(true,0,0,0);assert(physical[0]==0);}
     assert(grip_custom_calls==1 && fabsf(grip_custom_duty-10.6f)<.001f && !closures);
-    uint32_t ready=clock_ms;unsigned moves=positions;
+    uint32_t ready=CarPickWaitTick;unsigned moves=positions;base_arrives=false;
     for(unsigned i=0;i<5;i++)step(true,0,0,0);
-    assert(clock_ms-ready==250 && positions==moves && !closures && !openings);
+    assert(clock_ms-ready>=250 && positions==moves && !closures && !openings);
+    base_arrives=true;physical[2]=destination[2];
     run_to(GRAB_CLOSE,100,0);
-    assert(clock_ms-ready>=300 && fabsf(physical[1]+40)<.01f && closures==1 && !openings && physical[0]==0);
+    assert(CarPickWaitTick==ready && clock_ms-ready>=100 && fabsf(physical[1]+25)<.01f && closures==1 && !openings && physical[0]==0);
     assert(tray_inventory[slot-1].state==TURNTABLE_OCCUPIED);
     run_to(GRAB_COMPLETE,300,0);
     assert(!strcmp(status().operation,"car_pick") && !strcmp(status().result,"picked"));
@@ -63,7 +64,7 @@ static void stop_before_close(void)
     for(unsigned n=0;n<20;n++)step(true,0,0,0);
     assert(positions==before && status().state==GRAB_IDLE);
     move_arrives=true;start(1,"20");run_to(GRAB_CLOSE,400,0);
-    assert(fabsf(physical[1]+40)<.01f); /* Preserve this pickup's original depth. */
+    assert(fabsf(physical[1]+25)<.01f); /* Preserve this pickup's original depth. */
     run_to(GRAB_COMPLETE,300,0);assert(closures==1 && !openings && tray_inventory[0].state==TURNTABLE_EMPTY);
   }
 }
@@ -141,5 +142,5 @@ int main(void)
   three_slots();stop_and_continue();stop_before_close();reject_before_motion();manual_selection_needs_no_stock_or_color();
   pickup_clearance_precedes_base_turn();clearance_stop_preserves_absolute_target();insufficient_clearance_rejects_before_motion();
   cancel_ends_pickup_ownership();
-  puts("car pickup: three slots, 300ms wait, lift + X30 before Base+117.5, closed claw, stop/resume PASS");
+  puts("car pickup: three slots, 100ms open overlaps Base, X30 releases Base while Z lifts, closed claw, stop/resume PASS");
 }

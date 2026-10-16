@@ -368,7 +368,7 @@ bool ChassisRoute_TaskStartEx(const RadarPlan_t *plan,float speed,const ChassisR
 {
   if(ChassisRoute_IsBusy() || ChassisRoute_StationReserved())return false;
   if(!options || !isfinite(options->qr_scan_y_mm) || options->qr_scan_y_mm<1100 || options->qr_scan_y_mm>1300 ||
-     !isfinite(options->turn_speed_deg_s) || options->turn_speed_deg_s<5 || options->turn_speed_deg_s>CHASSIS_MOTION_MAX_OMEGA_DEG_S)return false;
+     !isfinite(options->turn_speed_deg_s) || options->turn_speed_deg_s<5 || options->turn_speed_deg_s>CHASSIS_TURN_MAX_SPEED_DEG_S)return false;
   TaskOptions=*options;PauseState=FeedbackResumeState=NULL;ResumeFeedbackStarted=RecoveryHold=false;RequestTask=true;
   bool ok;
   if(!plan && options->start_id==RADAR_START_UPPER){

@@ -161,8 +161,39 @@ static void new_frame_revokes_wrong_or_spent_x_lead(void)
   assert(fabsf(XIntegral-40)<.001f && PreviousVelocity[2]==0);
   assert(fabsf(Status.forward_mm_s)<.001f && Status.left_mm_s<=0);
 }
+static void mixed_frame_batches_do_not_throttle_fresh_control(void)
+{
+  setup_target();Config[C_LAMBDA]=2.5f;Config[C_ACCEL]=300;
+  Config[C_BODY_SPEED]=160;Config[C_X_SPEED]=60;
+  pixel(1010,-64,-48);static_alignment_reset();
+  unsigned stopped=stops,requested=camera_requests;
+  LastControl=LastXControl=1010;
+  for(unsigned i=1;i<=20;i++){
+    clock_ms=1010+30*i;camera.InvalidCount++;camera.Data.Sequence++;
+    camera.Data.Tick=camera.Data.ReceivedTick=clock_ms;
+    camera.Data.DX=(int16_t)(-64+2*(int)i);camera.Data.DY=(int16_t)(-48+(int)i);
+    assert(vision_read(clock_ms) && FreshVision && Status.state==GRAB_ALIGN);
+    PendingAction=MECHANICAL_ARM_ACTION_NONE;pending_valid=false;
+    AlignFeedbackDue=false;LastPoll=clock_ms; /* A feedback-ready control opportunity. */
+    align_control(clock_ms);
+    assert(velocity_requests==i && stops==stopped && camera_requests==requested);
+    assert(hypotf(Status.forward_mm_s,Status.left_mm_s)<=160.001f);
+    assert(fabsf(PreviousVelocity[2])<=60.001f && !closures);
+  }
+}
 int main(void)
 {
+  /* Geometry history is needed for blind continuation, never for accepting a
+   * new valid pixel after an invalid report in the same USB batch. */
+  setup_target();pixel(1010,-64,-48);static_alignment_reset();
+  LossActive=true;LossTick=1000;
+  camera.InvalidCount++;camera.Data.Sequence++;camera.Data.Tick=camera.Data.ReceivedTick=1020;
+  camera.Data.DX=-20;camera.Data.DY=-10;clock_ms=1020;
+  CaptureCount=5;VisualStable=true;
+  assert(vision_read(clock_ms) && FreshVision && Status.state==GRAB_ALIGN);
+  assert(Vision.DX==-20 && Vision.DY==-10 && !VisualStable && CaptureCount==0);
+  assert(!LossActive); /* A real recovered image ends the old miss even without a map bracket. */
+  mixed_frame_batches_do_not_throttle_fresh_control();
   no_duplicate_control_before_time_bracket();one_in_window_axis_does_not_block_the_other();
   new_frame_revokes_wrong_or_spent_x_lead();
   delayed_bracket_can_resume_the_budget();timestamp_wrap_and_new_target();
